@@ -1,34 +1,11 @@
-﻿// =========================================================================
-// FreePBX VPN Node Web - Cloudflare Workers & Pages 纯净管理面板与订阅生成器
-// 特性：纯单文件运行、内置账号密码登录、零环境变量依赖、可视化节点管理、自动生成 Mihomo/Clash 订阅
+// =========================================================================
+// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.0
+// 修复：彻底消除嵌套模板字符串语法错误
 // =========================================================================
 
 const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
-const DEFAULT_TOKEN = "d31_secret_token";
-
-// 内存回退存储 (在未绑定 KV 时提供基础运行支持)
-let MEMORY_STORE = {
-  admin_user: DEFAULT_USER,
-  admin_pass: DEFAULT_PASS,
-  sub_token: DEFAULT_TOKEN,
-  cf_preferred_ip: "104.16.80.80",
-  nodes: [
-    {
-      id: "node-oracle-osaka",
-      name: "Oracle-Osaka-VPS2",
-      type: "vless",
-      server: "oracle.yourdomain.com",
-      port: 443,
-      uuid: "11111111-2222-3333-4444-555555555555",
-      network: "ws",
-      path: "/stream-oracle",
-      tls: true,
-      sni: "oracle.yourdomain.com",
-      custom_ip: ""
-    }
-  ]
-};
+const DEFAULT_TOKEN = "d31";
 
 async function getStore(env, key) {
   if (env && env.SUB_STORE_KV) {
@@ -37,11 +14,17 @@ async function getStore(env, key) {
       try { return JSON.parse(val); } catch(e) { return val; }
     }
   }
-  return MEMORY_STORE[key];
+  const defaults = {
+    admin_user: DEFAULT_USER,
+    admin_pass: DEFAULT_PASS,
+    sub_token: DEFAULT_TOKEN,
+    cf_preferred_ip: "104.16.80.80",
+    nodes: []
+  };
+  return defaults[key] !== undefined ? defaults[key] : null;
 }
 
 async function setStore(env, key, value) {
-  MEMORY_STORE[key] = value;
   if (env && env.SUB_STORE_KV) {
     await env.SUB_STORE_KV.put(key, typeof value === "object" ? JSON.stringify(value) : String(value));
   }
@@ -51,572 +34,365 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
+    const method = request.method;
 
-    // 1. 订阅下发接口: /sub/:name 或 /sub?token=xxx
+    // 订阅下发
     if (pathname.startsWith("/sub")) {
       return handleSubscription(url, env);
     }
 
-    // 2. 后端 RESTful API 路由
-    if (pathname.startsWith("/api/")) {
-      return handleApi(request, env, pathname);
+    // API 路由
+    if (pathname === "/api/login" && method === "POST") {
+      try {
+        const { username, password } = await request.json();
+        const dbUser = (await getStore(env, "admin_user")) || DEFAULT_USER;
+        const dbPass = (await getStore(env, "admin_pass")) || DEFAULT_PASS;
+        if (username === dbUser && password === dbPass) {
+          return json({ ok: true });
+        }
+        return json({ ok: false, msg: "账号或密码错误" }, 401);
+      } catch(e) {
+        return json({ ok: false, msg: e.message }, 400);
+      }
     }
 
-    // 3. 前端 Web 管理界面 (HTML / CSS / JS)
+    if (pathname === "/api/data" && method === "GET") {
+      const nodes = (await getStore(env, "nodes")) || [];
+      const sub_token = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
+      const cf_ip = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
+      const admin_user = (await getStore(env, "admin_user")) || DEFAULT_USER;
+      return json({ ok: true, nodes, sub_token, cf_ip, admin_user });
+    }
+
+    if (pathname === "/api/save" && method === "POST") {
+      try {
+        const data = await request.json();
+        if (Array.isArray(data.nodes)) await setStore(env, "nodes", data.nodes);
+        if (data.sub_token) await setStore(env, "sub_token", data.sub_token);
+        if (data.cf_ip !== undefined) await setStore(env, "cf_ip", data.cf_ip);
+        if (data.new_password) await setStore(env, "admin_pass", data.new_password);
+        return json({ ok: true });
+      } catch(e) {
+        return json({ ok: false, msg: e.message }, 400);
+      }
+    }
+
+    // 前端 HTML
     return new Response(renderHtml(), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
   }
 };
 
-// ==========================================
-// 订阅生成器处理逻辑
-// ==========================================
-async function handleSubscription(url, env) {
-  const token = url.searchParams.get("token") || url.pathname.split("/").pop();
-  const configuredToken = await getStore(env, "sub_token") || DEFAULT_TOKEN;
-  
-  if (token !== configuredToken && token !== "d31" && token !== "all") {
-    return new Response("Unauthorized: Invalid subscription token", { status: 401 });
-  }
-
-  const nodes = await getStore(env, "nodes") || [];
-  const globalCfIp = await getStore(env, "cf_preferred_ip") || "104.16.80.80";
-
-  // 构建 Mihomo (Clash.Meta) YAML 格式
-  let proxiesYaml = "";
-  let proxyNames = [];
-
-  for (const node of nodes) {
-    const connectServer = node.custom_ip || globalCfIp || node.server;
-    proxyNames.push(`      - "${node.name}"`);
-    
-    proxiesYaml += `  - name: "${node.name}"\n` +
-      `    type: ${node.type}\n` +
-      `    server: ${connectServer}\n` +
-      `    port: ${node.port || 443}\n` +
-      `    uuid: ${node.uuid}\n` +
-      `    network: ${node.network || "ws"}\n` +
-      `    tls: ${node.tls ? "true" : "false"}\n` +
-      `    udp: true\n` +
-      `    servername: "${node.sni || node.server}"\n` +
-      `    ws-opts:\n` +
-      `      path: "${node.path || "/"}"\n` +
-      `      headers:\n` +
-      `        Host: "${node.sni || node.server}"\n\n`;
-  }
-
-  if (nodes.length === 0) {
-    proxiesYaml = `  - name: "DIRECT"\n    type: direct\n`;
-    proxyNames.push(`      - "DIRECT"`);
-  }
-
-  const clashYaml = `# ==========================================
-# D31 / FreePBX 自动下发订阅配置 (Mihomo/Clash.Meta)
-# 生成时间: ${new Date().toISOString()}
-# ==========================================
-mixed-port: 7890
-allow-lan: true
-mode: rule
-log-level: warning
-ipv6: false
-tcp-concurrent: true
-
-# 1. 代理节点池
-proxies:
-${proxiesYaml}
-# 2. 智能延迟测速与自适应竞速组
-proxy-groups:
-  - name: "PROXY-MODE"
-    type: select
-    proxies:
-      - "AUTO-FASTEST"
-      - "DIRECT"
-${proxyNames.join("\n")}
-
-  - name: "AUTO-FASTEST"
-    type: url-test
-    proxies:
-      - "DIRECT"
-${proxyNames.join("\n")}
-    url: 'http://cp.cloudflare.com/generate_204'
-    interval: 60
-    tolerance: 15
-
-# 3. 智能规则分流
-rules:
-  - DOMAIN-SUFFIX,telegram.org,PROXY-MODE
-  - DOMAIN-SUFFIX,t.me,PROXY-MODE
-  - IP-CIDR,91.108.4.0/22,PROXY-MODE
-  - IP-CIDR,149.154.160.0/20,PROXY-MODE
-  - GEOIP,lan,DIRECT
-  - IP-CIDR,192.168.0.0/16,DIRECT
-  - IP-CIDR,10.0.0.0/8,DIRECT
-  - MATCH,PROXY-MODE
-`;
-
-  return new Response(clashYaml, {
-    headers: {
-      "Content-Type": "text/yaml; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="d31_subscription.yaml"',
-      "Cache-Control": "no-cache"
-    }
-  });
-}
-
-// ==========================================
-// RESTful API 路由处理
-// ==========================================
-async function handleApi(request, env, pathname) {
-  const method = request.method;
-
-  // 1. 登录认证接口
-  if (pathname === "/api/login" && method === "POST") {
-    try {
-      const { username, password } = await request.json();
-      const dbUser = await getStore(env, "admin_user") || DEFAULT_USER;
-      const dbPass = await getStore(env, "admin_pass") || DEFAULT_PASS;
-
-      if (username === dbUser && password === dbPass) {
-        return jsonResp({ success: true, token: "session_" + Date.now(), user: username });
-      }
-      return jsonResp({ success: false, message: "账号或密码错误" }, 401);
-    } catch(e) {
-      return jsonResp({ success: false, message: e.message }, 400);
-    }
-  }
-
-  // 2. 获取节点列表与配置
-  if (pathname === "/api/data" && method === "GET") {
-    const nodes = await getStore(env, "nodes") || [];
-    const sub_token = await getStore(env, "sub_token") || DEFAULT_TOKEN;
-    const cf_preferred_ip = await getStore(env, "cf_preferred_ip") || "104.16.80.80";
-    const admin_user = await getStore(env, "admin_user") || DEFAULT_USER;
-    return jsonResp({ success: true, nodes, sub_token, cf_preferred_ip, admin_user });
-  }
-
-  // 3. 保存节点列表与配置
-  if (pathname === "/api/save" && method === "POST") {
-    try {
-      const data = await request.json();
-      if (data.nodes) await setStore(env, "nodes", data.nodes);
-      if (data.sub_token) await setStore(env, "sub_token", data.sub_token);
-      if (data.cf_preferred_ip !== undefined) await setStore(env, "cf_preferred_ip", data.cf_preferred_ip);
-      if (data.new_password) await setStore(env, "admin_pass", data.new_password);
-      if (data.admin_user) await setStore(env, "admin_user", data.admin_user);
-      return jsonResp({ success: true, message: "配置保存成功" });
-    } catch(e) {
-      return jsonResp({ success: false, message: e.message }, 400);
-    }
-  }
-
-  return jsonResp({ error: "Not Found" }, 404);
-}
-
-function jsonResp(data, status = 200) {
+function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" }
   });
 }
 
+async function handleSubscription(url, env) {
+  const token = url.searchParams.get("token") || url.pathname.split("/").pop();
+  const configuredToken = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
+  if (token !== configuredToken && token !== "d31") {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const nodes = (await getStore(env, "nodes")) || [];
+  const globalCfIp = (await getStore(env, "cf_ip")) || "104.16.80.80";
+
+  let proxiesYaml = "";
+  let proxyNames = "";
+
+  for (const node of nodes) {
+    const srv = node.custom_ip || globalCfIp || node.server;
+    proxyNames += "      - \"" + node.name + "\"\n";
+    proxiesYaml +=
+      "  - name: \"" + node.name + "\"\n" +
+      "    type: " + (node.type || "vless") + "\n" +
+      "    server: " + srv + "\n" +
+      "    port: " + (node.port || 443) + "\n" +
+      "    uuid: " + node.uuid + "\n" +
+      "    network: ws\n" +
+      "    tls: true\n" +
+      "    udp: true\n" +
+      "    servername: \"" + (node.sni || node.server) + "\"\n" +
+      "    ws-opts:\n" +
+      "      path: \"" + (node.path || "/") + "\"\n" +
+      "      headers:\n" +
+      "        Host: \"" + (node.sni || node.server) + "\"\n\n";
+  }
+
+  const yaml =
+    "# D31 FreePBX 代理订阅 - " + new Date().toISOString() + "\n" +
+    "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: warning\nipv6: false\n\n" +
+    "tun:\n  enable: true\n  stack: gvisor\n  dns-hijack:\n    - \"any:53\"\n  auto-route: true\n  auto-detect-interface: true\n\n" +
+    "proxies:\n" + (proxiesYaml || "  []\n") +
+    "proxy-groups:\n" +
+    "  - name: \"PROXY-MODE\"\n    type: select\n    proxies:\n      - \"AUTO-FASTEST\"\n      - \"DIRECT\"\n" + proxyNames +
+    "  - name: \"AUTO-FASTEST\"\n    type: url-test\n    proxies:\n      - \"DIRECT\"\n" + proxyNames +
+    "    url: 'http://cp.cloudflare.com/generate_204'\n    interval: 60\n    tolerance: 15\n\n" +
+    "rules:\n" +
+    "  - DOMAIN-SUFFIX,telegram.org,PROXY-MODE\n" +
+    "  - DOMAIN-SUFFIX,t.me,PROXY-MODE\n" +
+    "  - IP-CIDR,91.108.4.0/22,PROXY-MODE\n" +
+    "  - IP-CIDR,149.154.160.0/20,PROXY-MODE\n" +
+    "  - GEOIP,lan,DIRECT\n" +
+    "  - IP-CIDR,192.168.0.0/16,DIRECT\n" +
+    "  - IP-CIDR,10.0.0.0/8,DIRECT\n" +
+    "  - MATCH,PROXY-MODE\n";
+
+  return new Response(yaml, {
+    headers: {
+      "Content-Type": "text/yaml; charset=utf-8",
+      "Content-Disposition": "attachment; filename=\"d31_sub.yaml\"",
+      "Cache-Control": "no-cache"
+    }
+  });
+}
+
 // ==========================================
-// 内置现代化单页面 Web 管理后台 (HTML/CSS/JS)
+// HTML 前端 - 完全避免嵌套模板字符串
+// 所有动态 DOM 操作改用字符串拼接
 // ==========================================
 function renderHtml() {
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FreePBX VPN Node 管理面板 (Sub-Store Serverless)</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-  <style>
-    body { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
-  </style>
-</head>
-<body class="min-h-screen flex flex-col">
+  // 注意：整个 HTML 用普通字符串拼接，完全不使用模板字面量
+  // 这样彻底消除嵌套反引号导致的 JS 语法错误
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="zh-CN">',
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<title>FreePBX VPN Node 管理面板</title>',
+    '<script src="https://cdn.tailwindcss.com"><\/script>',
+    '<style>',
+    'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
+    '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
+    '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
+    '.inp:focus{border-color:#3b82f6}',
+    '.btn-blue{padding:.65rem 1.2rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none}',
+    '.btn-blue:hover{background:#1d4ed8}',
+    '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-green:hover{background:#047857}',
+    '.btn-gray{padding:.5rem 1rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
+    '.btn-gray:hover{background:#475569}',
+    '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
+    'table{width:100%;border-collapse:collapse}',
+    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6)}',
+    'td{padding:.7rem 1rem;font-size:.85rem;border-top:1px solid #1e293b}',
+    'tr:hover td{background:rgba(30,41,59,.5)}',
+    '<\/style>',
+    '<\/head>',
+    '<body>',
 
-  <!-- 登录模态框 -->
-  <div id="loginModal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50">
-    <div class="glass-card p-8 rounded-2xl w-full max-w-md shadow-2xl border border-slate-700">
-      <div class="text-center mb-6">
-        <div class="inline-flex p-3 rounded-full bg-blue-500/20 text-blue-400 mb-3 text-2xl">
-          <i class="fa-solid fa-server"></i>
-        </div>
-        <h2 class="text-2xl font-bold">FreePBX 节点管理中枢</h2>
-        <p class="text-slate-400 text-sm mt-1">请输入管理员凭据登录 (默认 admin / admin888)</p>
-      </div>
-      <div class="space-y-4">
-        <div>
-          <label class="block text-xs font-semibold text-slate-300 mb-1">账号</label>
-          <input id="loginUser" type="text" value="admin" class="w-full px-4 py-2.5 rounded-lg bg-slate-900/80 border border-slate-700 focus:outline-none focus:border-blue-500 text-white">
-        </div>
-        <div>
-          <label class="block text-xs font-semibold text-slate-300 mb-1">密码</label>
-          <input id="loginPass" type="password" value="admin888" class="w-full px-4 py-2.5 rounded-lg bg-slate-900/80 border border-slate-700 focus:outline-none focus:border-blue-500 text-white">
-        </div>
-        <button onclick="doLogin()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-lg font-semibold text-white transition shadow-lg shadow-blue-600/30">
-          <i class="fa-solid fa-right-to-bracket mr-2"></i>登 录
-        </button>
-        <p id="loginError" class="text-red-400 text-xs text-center hidden"></p>
-      </div>
-    </div>
-  </div>
+    // 登录模态框
+    '<div id="loginWrap" class="modal-bg">',
+    '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
+    '<div style="text-align:center;margin-bottom:1.5rem">',
+    '<div style="font-size:2rem;margin-bottom:.5rem">&#128225;</div>',
+    '<h2 style="font-size:1.3rem;font-weight:700">FreePBX 节点管理中枢</h2>',
+    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">默认账号 admin / admin888</p>',
+    '<\/div>',
+    '<div style="margin-bottom:1rem">',
+    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">账号<\/label>',
+    '<input id="lu" type="text" value="admin" class="inp">',
+    '<\/div>',
+    '<div style="margin-bottom:1.2rem">',
+    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">密码<\/label>',
+    '<input id="lp" type="password" value="admin888" class="inp">',
+    '<\/div>',
+    '<button class="btn-blue" style="width:100%" onclick="doLogin()">登 录<\/button>',
+    '<p id="lerr" style="color:#f87171;font-size:.8rem;margin-top:.6rem;text-align:center;display:none"><\/p>',
+    '<\/div>',
+    '<\/div>',
 
-  <!-- 主控导航栏 -->
-  <header class="border-b border-slate-800 bg-slate-900/60 sticky top-0 z-30 backdrop-blur">
-    <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-      <div class="flex items-center space-x-3">
-        <div class="p-2 bg-gradient-to-tr from-blue-600 to-indigo-500 rounded-lg text-white">
-          <i class="fa-solid fa-network-wired text-lg"></i>
-        </div>
-        <span class="font-bold text-lg tracking-wide">FreePBX Node Manager</span>
-        <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">Serverless</span>
-      </div>
-      <div class="flex items-center space-x-3">
-        <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm transition">
-          <i class="fa-solid fa-gear mr-1.5"></i>全局设置
-        </button>
-        <button onclick="logout()" class="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 text-sm transition">
-          <i class="fa-solid fa-arrow-right-from-bracket mr-1.5"></i>退出
-        </button>
-      </div>
-    </div>
-  </header>
+    // 主导航
+    '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
+    '<div style="max-width:1100px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
+    '<div style="display:flex;align-items:center;gap:.8rem">',
+    '<span style="font-weight:700;font-size:1.1rem">&#127760; FreePBX Node Manager<\/span>',
+    '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
+    '<\/div>',
+    '<div style="display:flex;gap:.6rem">',
+    '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',
+    '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
+    '<\/div>',
+    '<\/div>',
+    '<\/header>',
 
-  <!-- 主体工作区 -->
-  <main class="max-w-6xl mx-auto px-4 py-8 flex-1 w-full space-y-6">
+    // 订阅卡片
+    '<main style="max-width:1100px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
+    '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:1rem">',
+    '<div>',
+    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128225; D31 智能座机订阅源<\/h3>',
+    '<p style="font-size:.8rem;color:#64748b">Mihomo 内核通过此链接自动同步所有节点<\/p>',
+    '<\/div>',
+    '<div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">',
+    '<input id="subUrl" type="text" readonly class="inp" style="width:320px;font-size:.8rem;font-family:monospace">',
+    '<button class="btn-blue" style="font-size:.8rem" onclick="copyUrl()">复制订阅链接<\/button>',
+    '<\/div>',
+    '<\/div>',
+    '<\/div>',
 
-    <!-- 订阅概览卡片 -->
-    <div class="glass-card rounded-2xl p-6 shadow-xl border border-slate-800">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h3 class="text-lg font-bold text-white flex items-center">
-            <i class="fa-solid fa-rss text-blue-400 mr-2"></i>D31 智能座机订阅源
-          </h3>
-          <p class="text-xs text-slate-400 mt-1">D31 座机的 Mihomo 内核将自动通过此链接毫秒级拉取所有节点</p>
-        </div>
-        <div class="flex items-center space-x-2">
-          <input id="subUrl" type="text" readonly class="bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-xs font-mono text-slate-300 w-72 focus:outline-none">
-          <button onclick="copySubUrl()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition">
-            <i class="fa-regular fa-copy mr-1.5"></i>复制订阅链接
-          </button>
-        </div>
-      </div>
-    </div>
+    // 节点管理卡片
+    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem;padding-bottom:1rem;border-bottom:1px solid #1e293b">',
+    '<div>',
+    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128257; 代理服务器节点池<\/h3>',
+    '<p style="font-size:.8rem;color:#64748b">管理甲骨文 VPS 节点及 3 个月轮换的 GCP 节点<\/p>',
+    '<\/div>',
+    '<button class="btn-green" onclick="openAdd()">+ 添加新节点<\/button>',
+    '<\/div>',
+    '<div style="overflow-x:auto">',
+    '<table>',
+    '<thead><tr>',
+    '<th>节点名称<\/th><th>协议/端口<\/th><th>服务器域名 (SNI)<\/th><th>WS 路径<\/th><th>优选 IP<\/th><th style="text-align:right">操作<\/th>',
+    '<\/tr><\/thead>',
+    '<tbody id="ntb"><tr><td colspan="6" style="text-align:center;color:#475569;padding:2rem">暂无节点，点击右上角添加<\/td><\/tr><\/tbody>',
+    '<\/table>',
+    '<\/div>',
+    '<\/div>',
+    '<\/main>',
 
-    <!-- 节点管理卡片 -->
-    <div class="glass-card rounded-2xl p-6 shadow-xl border border-slate-800">
-      <div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
-        <div>
-          <h3 class="text-lg font-bold text-white flex items-center">
-            <i class="fa-solid fa-server text-emerald-400 mr-2"></i>代理服务器节点池
-          </h3>
-          <p class="text-xs text-slate-400 mt-1">管理甲骨文 VPS 节点及 3 个月轮换的谷歌云 (GCP) 测试机节点</p>
-        </div>
-        <button onclick="openAddNodeModal()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition shadow-lg shadow-emerald-600/20">
-          <i class="fa-solid fa-plus mr-1.5"></i>添加新节点
-        </button>
-      </div>
+    // 节点编辑模态框
+    '<div id="nodeWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">',
+    '<h3 id="nodeTitle" style="font-weight:700;margin-bottom:1rem">添加节点<\/h3>',
+    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">节点名称<\/label><input id="nName" type="text" placeholder="如: GCP-Tokyo-01" class="inp"><\/div>',
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">服务器域名<\/label><input id="nServer" type="text" placeholder="gcp.yourdomain.com" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">端口<\/label><input id="nPort" type="number" value="443" class="inp"><\/div>',
+    '<\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">UUID<\/label><input id="nUuid" type="text" placeholder="11111111-2222-3333-4444-555555555555" class="inp" style="font-family:monospace"><\/div>',
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">WebSocket 路径<\/label><input id="nPath" type="text" value="/stream-proxy" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">SNI 域名<\/label><input id="nSni" type="text" placeholder="gcp.yourdomain.com" class="inp"><\/div>',
+    '<\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">独立 CF 优选 IP（留空则继承全局）<\/label><input id="nIp" type="text" placeholder="104.16.80.80" class="inp"><\/div>',
+    '<\/div>',
+    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
+    '<button class="btn-gray" onclick="closeNode()">取消<\/button>',
+    '<button class="btn-green" onclick="saveNode()">保存节点<\/button>',
+    '<\/div>',
+    '<\/div>',
+    '<\/div>',
 
-      <!-- 节点列表表格 -->
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
-            <tr>
-              <th class="px-4 py-3 rounded-l-lg">节点名称</th>
-              <th class="px-4 py-3">协议 / 端口</th>
-              <th class="px-4 py-3">服务器域名 (SNI)</th>
-              <th class="px-4 py-3">WS 路径</th>
-              <th class="px-4 py-3">优选 IP 覆写</th>
-              <th class="px-4 py-3 text-right rounded-r-lg">操作</th>
-            </tr>
-          </thead>
-          <tbody id="nodeTableBody" class="divide-y divide-slate-800/60">
-            <!-- 动态渲染 -->
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </main>
+    // 设置模态框
+    '<div id="setWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:420px">',
+    '<h3 style="font-weight:700;margin-bottom:1rem">全局设置<\/h3>',
+    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">全局 CF 优选 IP<\/label><input id="sCfIp" type="text" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">订阅 Token<\/label><input id="sToken" type="text" class="inp" style="font-family:monospace"><\/div>',
+    '<div style="border-top:1px solid #1e293b;padding-top:.8rem"><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">修改密码（留空不修改）<\/label><input id="sPass" type="password" placeholder="输入新密码" class="inp"><\/div>',
+    '<\/div>',
+    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
+    '<button class="btn-gray" onclick="closeSettings()">取消<\/button>',
+    '<button class="btn-blue" onclick="saveSettings()">保存<\/button>',
+    '<\/div>',
+    '<\/div>',
+    '<\/div>',
 
-  <!-- 添加/编辑节点模态框 -->
-  <div id="nodeModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-40 hidden">
-    <div class="glass-card p-6 rounded-2xl w-full max-w-lg shadow-2xl border border-slate-700 max-h-[90vh] overflow-y-auto">
-      <h3 id="nodeModalTitle" class="text-lg font-bold mb-4">添加代理节点</h3>
-      <div class="space-y-3 text-xs">
-        <div>
-          <label class="text-slate-300 font-semibold mb-1 block">节点备注名称</label>
-          <input id="nodeName" type="text" placeholder="例如: GCP-Tokyo-01" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-slate-300 font-semibold mb-1 block">服务器域名 / IP</label>
-            <input id="nodeServer" type="text" placeholder="gcp.yourdomain.com" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-          </div>
-          <div>
-            <label class="text-slate-300 font-semibold mb-1 block">端口 (默认 443)</label>
-            <input id="nodePort" type="number" value="443" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-          </div>
-        </div>
-        <div>
-          <label class="text-slate-300 font-semibold mb-1 block">用户 UUID</label>
-          <input id="nodeUuid" type="text" placeholder="11111111-2222-3333-4444-555555555555" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 font-mono text-white">
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-slate-300 font-semibold mb-1 block">WebSocket 路径</label>
-            <input id="nodePath" type="text" value="/stream-proxy" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-          </div>
-          <div>
-            <label class="text-slate-300 font-semibold mb-1 block">TLS / SNI 域名</label>
-            <input id="nodeSni" type="text" placeholder="gcp.yourdomain.com" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-          </div>
-        </div>
-        <div>
-          <label class="text-slate-300 font-semibold mb-1 block">独立 CF 优选 IP (可选留空)</label>
-          <input id="nodeCustomIp" type="text" placeholder="例如 104.16.80.80 (留空则继承全局优选 IP)" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-        </div>
-      </div>
-      <div class="flex justify-end space-x-3 mt-6">
-        <button onclick="closeNodeModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded text-xs text-slate-300">取消</button>
-        <button onclick="saveNode()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded text-xs font-semibold text-white">保存节点</button>
-      </div>
-    </div>
-  </div>
+    // 核心 JavaScript - 全部用普通函数和 DOM API，零模板字符串
+    '<script>',
+    'var D = {nodes:[], sub_token:"d31", cf_ip:"", admin_user:""};',
+    'var editIdx = -1;',
 
-  <!-- 全局设置模态框 -->
-  <div id="settingsModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-40 hidden">
-    <div class="glass-card p-6 rounded-2xl w-full max-w-md shadow-2xl border border-slate-700">
-      <h3 class="text-lg font-bold mb-4">全局设置与安全管理</h3>
-      <div class="space-y-3 text-xs">
-        <div>
-          <label class="text-slate-300 font-semibold mb-1 block">全局 Cloudflare 优选 IP</label>
-          <input id="setCfIp" type="text" placeholder="104.16.80.80" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-        </div>
-        <div>
-          <label class="text-slate-300 font-semibold mb-1 block">订阅 Token</label>
-          <input id="setSubToken" type="text" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 font-mono text-white">
-        </div>
-        <div class="border-t border-slate-800 pt-3">
-          <label class="text-slate-300 font-semibold mb-1 block">修改管理员密码 (留空则不修改)</label>
-          <input id="setNewPass" type="password" placeholder="输入新密码" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-white">
-        </div>
-      </div>
-      <div class="flex justify-end space-x-3 mt-6">
-        <button onclick="closeSettingsModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded text-xs text-slate-300">取消</button>
-        <button onclick="saveSettings()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs font-semibold text-white">保存设置</button>
-      </div>
-    </div>
-  </div>
+    'function $(id){return document.getElementById(id)}',
+    'function show(id){$(id).style.display="flex"}',
+    'function hide(id){$(id).style.display="none"}',
 
-  <script>
-    let appData = { nodes: [], sub_token: "", cf_preferred_ip: "", admin_user: "" };
-    let editingNodeIndex = -1;
+    'function checkAuth(){',
+    '  var t = localStorage.getItem("_pt");',
+    '  if(t){ hide("loginWrap"); loadData(); }',
+    '  else { show("loginWrap"); }',
+    '}',
 
-    async function checkAuth() {
-      const token = localStorage.getItem("panel_auth_token");
-      if (token) {
-        document.getElementById("loginModal").classList.add("hidden");
-        loadData();
-      } else {
-        document.getElementById("loginModal").classList.remove("hidden");
-      }
-    }
+    'function doLogin(){',
+    '  var u = $("lu").value, p = $("lp").value;',
+    '  $("lerr").style.display="none";',
+    '  fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})})',
+    '  .then(function(r){return r.json();})',
+    '  .then(function(d){',
+    '    if(d.ok){ localStorage.setItem("_pt","1"); hide("loginWrap"); loadData(); }',
+    '    else{ $("lerr").innerText = d.msg||"登录失败"; $("lerr").style.display="block"; }',
+    '  })',
+    '  .catch(function(e){ $("lerr").innerText="网络错误:"+e.message; $("lerr").style.display="block"; });',
+    '}',
 
-    async function doLogin() {
-      const u = document.getElementById("loginUser").value;
-      const p = document.getElementById("loginPass").value;
-      const err = document.getElementById("loginError");
-      err.classList.add("hidden");
+    'function logout(){ localStorage.removeItem("_pt"); hide("loginWrap"); show("loginWrap"); location.reload(); }',
 
-      try {
-        const res = await fetch("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: u, password: p })
-        });
-        const d = await res.json();
-        if (d.success) {
-          localStorage.setItem("panel_auth_token", d.token);
-          document.getElementById("loginModal").classList.add("hidden");
-          loadData();
-        } else {
-          err.innerText = d.message || "登录失败";
-          err.classList.remove("hidden");
-        }
-      } catch(e) {
-        err.innerText = "网络通信错误: " + e.message;
-        err.classList.remove("hidden");
-      }
-    }
+    'function loadData(){',
+    '  fetch("/api/data").then(function(r){return r.json();}).then(function(d){',
+    '    D = d;',
+    '    $("subUrl").value = location.origin+"/sub/"+d.sub_token;',
+    '    renderNodes();',
+    '  });',
+    '}',
 
-    function logout() {
-      localStorage.removeItem("panel_auth_token");
-      document.getElementById("loginModal").classList.remove("hidden");
-    }
+    'function renderNodes(){',
+    '  var tb = $("ntb");',
+    '  if(!D.nodes || D.nodes.length===0){',
+    '    tb.innerHTML = "<tr><td colspan=\\"6\\" style=\\"text-align:center;color:#475569;padding:2rem\\">暂无节点，点击右上角添加<\\/td><\\/tr>";',
+    '    return;',
+    '  }',
+    '  var html = "";',
+    '  for(var i=0;i<D.nodes.length;i++){',
+    '    var n = D.nodes[i];',
+    '    var ip = n.custom_ip || D.cf_ip || "全局默认";',
+    '    html += "<tr>";',
+    '    html += "<td><span style=\\"color:#34d399\\">&#9679;<\\/span> "+n.name+"<\\/td>";',
+    '    html += "<td><span style=\\"background:rgba(59,130,246,.2);color:#60a5fa;padding:.1rem .4rem;border-radius:.3rem;font-family:monospace\\">VLESS<\\/span>:"+n.port+"<\\/td>";',
+    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+( n.sni||n.server)+"<\\/td>";',
+    '    html += "<td style=\\"font-family:monospace;color:#94a3b8;font-size:.8rem\\">"+n.path+"<\\/td>";',
+    '    html += "<td style=\\"color:#fbbf24;font-size:.8rem\\">"+ip+"<\\/td>";',
+    '    html += "<td style=\\"text-align:right\\"><button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem\\" onclick=\\"editNode("+i+")\\">编辑<\\/button> ";',
+    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;color:#f87171\\" onclick=\\"delNode("+i+")\\">删除<\\/button><\\/td>";',
+    '    html += "<\\/tr>";',
+    '  }',
+    '  tb.innerHTML = html;',
+    '}',
 
-    async function loadData() {
-      try {
-        const res = await fetch("/api/data");
-        appData = await res.json();
-        renderNodes();
-        document.getElementById("subUrl").value = window.location.origin + "/sub/" + (appData.sub_token || "d31");
-      } catch(e) {
-        console.error("加载数据失败", e);
-      }
-    }
+    'function openAdd(){ editIdx=-1; $("nodeTitle").innerText="添加新节点"; $("nName").value=""; $("nServer").value=""; $("nPort").value=443; $("nUuid").value=""; $("nPath").value="/stream-proxy"; $("nSni").value=""; $("nIp").value=""; show("nodeWrap"); }',
 
-    function renderNodes() {
-      const tbody = document.getElementById("nodeTableBody");
-      tbody.innerHTML = "";
-      if (!appData.nodes || appData.nodes.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-500 text-xs">暂无节点，请点击右上角添加新节点</td></tr>';
-        return;
-      }
-      appData.nodes.forEach((node, idx) => {
-        const tr = document.createElement("tr");
-        tr.className = "hover:bg-slate-800/40 transition";
-        tr.innerHTML = \`
-          <td class="px-4 py-3 font-semibold text-white flex items-center">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span>
-            \${node.name}
-          </td>
-          <td class="px-4 py-3"><span class="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs uppercase font-mono">\${node.type || "vless"}</span> : \${node.port || 443}</td>
-          <td class="px-4 py-3 font-mono text-xs text-slate-300">\${node.sni || node.server}</td>
-          <td class="px-4 py-3 font-mono text-xs text-slate-400">\${node.path || "/"}</td>
-          <td class="px-4 py-3 font-mono text-xs text-amber-400">\${node.custom_ip || appData.cf_preferred_ip || "全局默认"}</td>
-          <td class="px-4 py-3 text-right space-x-2">
-            <button onclick="editNode(\${idx})" class="text-blue-400 hover:text-blue-300 text-xs"><i class="fa-solid fa-pen-to-square"></i></button>
-            <button onclick="deleteNode(\${idx})" class="text-red-400 hover:text-red-300 text-xs"><i class="fa-solid fa-trash"></i></button>
-          </td>
-        \`;
-        tbody.appendChild(tr);
-      });
-    }
+    'function editNode(i){ editIdx=i; var n=D.nodes[i]; $("nodeTitle").innerText="编辑节点"; $("nName").value=n.name||""; $("nServer").value=n.server||""; $("nPort").value=n.port||443; $("nUuid").value=n.uuid||""; $("nPath").value=n.path||"/stream-proxy"; $("nSni").value=n.sni||""; $("nIp").value=n.custom_ip||""; show("nodeWrap"); }',
 
-    function openAddNodeModal() {
-      editingNodeIndex = -1;
-      document.getElementById("nodeModalTitle").innerText = "添加新节点";
-      document.getElementById("nodeName").value = "";
-      document.getElementById("nodeServer").value = "";
-      document.getElementById("nodePort").value = "443";
-      document.getElementById("nodeUuid").value = "";
-      document.getElementById("nodePath").value = "/stream-proxy";
-      document.getElementById("nodeSni").value = "";
-      document.getElementById("nodeCustomIp").value = "";
-      document.getElementById("nodeModal").classList.remove("hidden");
-    }
+    'function closeNode(){ hide("nodeWrap"); }',
 
-    function editNode(idx) {
-      editingNodeIndex = idx;
-      const n = appData.nodes[idx];
-      document.getElementById("nodeModalTitle").innerText = "编辑节点";
-      document.getElementById("nodeName").value = n.name || "";
-      document.getElementById("nodeServer").value = n.server || "";
-      document.getElementById("nodePort").value = n.port || 443;
-      document.getElementById("nodeUuid").value = n.uuid || "";
-      document.getElementById("nodePath").value = n.path || "/stream-proxy";
-      document.getElementById("nodeSni").value = n.sni || "";
-      document.getElementById("nodeCustomIp").value = n.custom_ip || "";
-      document.getElementById("nodeModal").classList.remove("hidden");
-    }
+    'function saveNode(){',
+    '  var n = { name:$("nName").value||"Node-"+(D.nodes.length+1), server:$("nServer").value.trim(), port:parseInt($("nPort").value)||443, uuid:$("nUuid").value.trim(), path:$("nPath").value.trim()||"/stream-proxy", sni:$("nSni").value.trim(), custom_ip:$("nIp").value.trim(), type:"vless", tls:true };',
+    '  if(!n.server||!n.uuid){ alert("服务器域名和 UUID 不能为空"); return; }',
+    '  if(editIdx>=0){ D.nodes[editIdx]=n; } else { D.nodes.push(n); }',
+    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})});',
+    '  closeNode(); renderNodes();',
+    '}',
 
-    function closeNodeModal() { document.getElementById("nodeModal").classList.add("hidden"); }
+    'function delNode(i){ if(confirm("确认删除该节点？")){ D.nodes.splice(i,1); fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})}); renderNodes(); } }',
 
-    async function saveNode() {
-      const node = {
-        name: document.getElementById("nodeName").value.trim() || "Node-" + (appData.nodes.length + 1),
-        server: document.getElementById("nodeServer").value.trim(),
-        port: parseInt(document.getElementById("nodePort").value) || 443,
-        uuid: document.getElementById("nodeUuid").value.trim(),
-        path: document.getElementById("nodePath").value.trim() || "/stream-proxy",
-        sni: document.getElementById("nodeSni").value.trim(),
-        custom_ip: document.getElementById("nodeCustomIp").value.trim(),
-        type: "vless",
-        network: "ws",
-        tls: true
-      };
+    'function openSettings(){ $("sCfIp").value=D.cf_ip||"104.16.80.80"; $("sToken").value=D.sub_token||"d31"; $("sPass").value=""; show("setWrap"); }',
+    'function closeSettings(){ hide("setWrap"); }',
 
-      if (!node.server || !node.uuid) {
-        alert("服务器域名和 UUID 不能为空！");
-        return;
-      }
+    'function saveSettings(){',
+    '  var payload = { cf_ip:$("sCfIp").value, sub_token:$("sToken").value||"d31" };',
+    '  if($("sPass").value) payload.new_password = $("sPass").value;',
+    '  D.cf_ip = payload.cf_ip; D.sub_token = payload.sub_token;',
+    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});',
+    '  $("subUrl").value = location.origin+"/sub/"+D.sub_token;',
+    '  closeSettings();',
+    '  renderNodes();',
+    '  alert("设置已保存");',
+    '}',
 
-      if (editingNodeIndex >= 0) {
-        appData.nodes[editingNodeIndex] = node;
-      } else {
-        appData.nodes.push(node);
-      }
+    'function copyUrl(){ var u=$("subUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("订阅链接已复制:\\n"+u); }); }',
 
-      await syncSave();
-      closeNodeModal();
-      renderNodes();
-    }
+    // 监听回车键登录
+    'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none"){ doLogin(); } });',
 
-    async function deleteNode(idx) {
-      if (confirm("确定要删除该节点吗？")) {
-        appData.nodes.splice(idx, 1);
-        await syncSave();
-        renderNodes();
-      }
-    }
-
-    function openSettingsModal() {
-      document.getElementById("setCfIp").value = appData.cf_preferred_ip || "104.16.80.80";
-      document.getElementById("setSubToken").value = appData.sub_token || "d31";
-      document.getElementById("setNewPass").value = "";
-      document.getElementById("settingsModal").classList.remove("hidden");
-    }
-
-    function closeSettingsModal() { document.getElementById("settingsModal").classList.add("hidden"); }
-
-    async function saveSettings() {
-      const cfIp = document.getElementById("setCfIp").value.trim();
-      const token = document.getElementById("setSubToken").value.trim();
-      const newPass = document.getElementById("setNewPass").value.trim();
-
-      appData.cf_preferred_ip = cfIp;
-      appData.sub_token = token || "d31";
-
-      const payload = {
-        cf_preferred_ip: cfIp,
-        sub_token: token || "d31"
-      };
-      if (newPass) payload.new_password = newPass;
-
-      await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      closeSettingsModal();
-      document.getElementById("subUrl").value = window.location.origin + "/sub/" + appData.sub_token;
-      renderNodes();
-      alert("全局设置保存成功！");
-    }
-
-    async function syncSave() {
-      await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodes: appData.nodes })
-      });
-    }
-
-    function copySubUrl() {
-      const url = document.getElementById("subUrl").value;
-      navigator.clipboard.writeText(url).then(() => {
-        alert("订阅链接已复制到剪贴板！\n" + url);
-      });
-    }
-
-    checkAuth();
-  </script>
-</body>
-</html>`;
+    'checkAuth();',
+    '<\/script>',
+    '<\/body>',
+    '<\/html>'
+  ].join('\n');
 }
