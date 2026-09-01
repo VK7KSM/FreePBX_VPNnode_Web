@@ -1,6 +1,6 @@
 // =========================================================================
-// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.0
-// 修复：彻底消除嵌套模板字符串语法错误
+// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.1
+// 支持：Mihomo (Clash YAML) & v2rayNG (Base64 VLESS) 双模订阅 + UA 智能自适应
 // =========================================================================
 
 const DEFAULT_USER = "admin";
@@ -36,9 +36,9 @@ export default {
     const pathname = url.pathname;
     const method = request.method;
 
-    // 订阅下发
+    // 订阅下发 (支持 UA 自动适配与参数指定)
     if (pathname.startsWith("/sub")) {
-      return handleSubscription(url, env);
+      return handleSubscription(request, url, env);
     }
 
     // API 路由
@@ -69,7 +69,7 @@ export default {
         const data = await request.json();
         if (Array.isArray(data.nodes)) await setStore(env, "nodes", data.nodes);
         if (data.sub_token) await setStore(env, "sub_token", data.sub_token);
-        if (data.cf_ip !== undefined) await setStore(env, "cf_ip", data.cf_ip);
+        if (data.cf_ip !== undefined) await setStore(env, "cf_preferred_ip", data.cf_ip);
         if (data.new_password) await setStore(env, "admin_pass", data.new_password);
         return json({ ok: true });
       } catch(e) {
@@ -91,15 +91,63 @@ function json(data, status = 200) {
   });
 }
 
-async function handleSubscription(url, env) {
+function b64EncodeUnicode(str) {
+  return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
+    return String.fromCharCode('0x' + p1);
+  }));
+}
+
+async function handleSubscription(request, url, env) {
   const token = url.searchParams.get("token") || url.pathname.split("/").pop();
   const configuredToken = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
   if (token !== configuredToken && token !== "d31") {
     return new Response("Unauthorized", { status: 401 });
   }
-  const nodes = (await getStore(env, "nodes")) || [];
-  const globalCfIp = (await getStore(env, "cf_ip")) || "104.16.80.80";
 
+  const nodes = (await getStore(env, "nodes")) || [];
+  const globalCfIp = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
+
+  // 格式识别：支持 ?type=v2ray 或 ?type=clash，或通过 User-Agent 智能自适应
+  const reqType = (url.searchParams.get("type") || url.searchParams.get("format") || "").toLowerCase();
+  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
+
+  let isV2ray = false;
+  if (reqType === "v2ray" || reqType === "base64") {
+    isV2ray = true;
+  } else if (reqType === "clash" || reqType === "mihomo") {
+    isV2ray = false;
+  } else if (ua.includes("v2rayng") || ua.includes("v2rayn") || ua.includes("nekobox") || ua.includes("shadowrocket")) {
+    isV2ray = true;
+  }
+
+  // 1. v2rayNG / 通用 Base64 格式
+  if (isV2ray) {
+    let links = [];
+    for (const node of nodes) {
+      const srv = node.custom_ip || globalCfIp || node.server;
+      const sni = node.sni || node.server;
+      const path = node.path || "/";
+      const port = node.port || 443;
+      const link = "vless://" + node.uuid + "@" + srv + ":" + port +
+        "?encryption=none&security=tls&type=ws" +
+        "&host=" + encodeURIComponent(sni) +
+        "&sni=" + encodeURIComponent(sni) +
+        "&path=" + encodeURIComponent(path) +
+        "#" + encodeURIComponent(node.name);
+      links.push(link);
+    }
+    const rawText = links.join("\n");
+    const base64Content = b64EncodeUnicode(rawText);
+    return new Response(base64Content, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Profile-Update-Interval": "1"
+      }
+    });
+  }
+
+  // 2. Clash / Mihomo YAML 格式 (默认给 D31 座机)
   let proxiesYaml = "";
   let proxyNames = "";
 
@@ -145,7 +193,8 @@ async function handleSubscription(url, env) {
     headers: {
       "Content-Type": "text/yaml; charset=utf-8",
       "Content-Disposition": "attachment; filename=\"d31_sub.yaml\"",
-      "Cache-Control": "no-cache"
+      "Cache-Control": "no-cache",
+      "Profile-Update-Interval": "1"
     }
   });
 }
@@ -155,8 +204,6 @@ async function handleSubscription(url, env) {
 // 所有动态 DOM 操作改用字符串拼接
 // ==========================================
 function renderHtml() {
-  // 注意：整个 HTML 用普通字符串拼接，完全不使用模板字面量
-  // 这样彻底消除嵌套反引号导致的 JS 语法错误
   return [
     '<!DOCTYPE html>',
     '<html lang="zh-CN">',
@@ -170,11 +217,13 @@ function renderHtml() {
     '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
     '.inp:focus{border-color:#3b82f6}',
-    '.btn-blue{padding:.65rem 1.2rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none}',
+    '.btn-blue{padding:.5rem 1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
     '.btn-blue:hover{background:#1d4ed8}',
+    '.btn-purple{padding:.5rem 1rem;background:#7c3aed;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-purple:hover{background:#6d28d9}',
     '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
     '.btn-green:hover{background:#047857}',
-    '.btn-gray{padding:.5rem 1rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
+    '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
     '.btn-gray:hover{background:#475569}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     'table{width:100%;border-collapse:collapse}',
@@ -201,7 +250,7 @@ function renderHtml() {
     '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">密码<\/label>',
     '<input id="lp" type="password" value="admin888" class="inp">',
     '<\/div>',
-    '<button class="btn-blue" style="width:100%" onclick="doLogin()">登 录<\/button>',
+    '<button class="btn-blue" style="width:100%;padding:.7rem" onclick="doLogin()">登 录<\/button>',
     '<p id="lerr" style="color:#f87171;font-size:.8rem;margin-top:.6rem;text-align:center;display:none"><\/p>',
     '<\/div>',
     '<\/div>',
@@ -223,14 +272,17 @@ function renderHtml() {
     // 订阅卡片
     '<main style="max-width:1100px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:1rem">',
+    '<div style="display:flex;flex-direction:column;gap:1rem">',
+    '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">',
     '<div>',
-    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128225; D31 智能座机订阅源<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">Mihomo 内核通过此链接自动同步所有节点<\/p>',
+    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128225; 智能多格式订阅源<\/h3>',
+    '<p style="font-size:.8rem;color:#64748b">支持 Mihomo/Clash (D31透明代理) 与 v2rayNG/v2rayN (手机电脑通用)</p>',
     '<\/div>',
-    '<div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">',
-    '<input id="subUrl" type="text" readonly class="inp" style="width:320px;font-size:.8rem;font-family:monospace">',
-    '<button class="btn-blue" style="font-size:.8rem" onclick="copyUrl()">复制订阅链接<\/button>',
+    '<\/div>',
+    '<div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center">',
+    '<input id="subUrl" type="text" readonly class="inp" style="flex:1;min-width:280px;font-size:.8rem;font-family:monospace">',
+    '<button class="btn-blue" onclick="copyMihomo()">复制 Mihomo / Clash 订阅<\/button>',
+    '<button class="btn-purple" onclick="copyV2ray()">复制 v2rayNG 订阅<\/button>',
     '<\/div>',
     '<\/div>',
     '<\/div>',
@@ -260,17 +312,17 @@ function renderHtml() {
     '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">',
     '<h3 id="nodeTitle" style="font-weight:700;margin-bottom:1rem">添加节点<\/h3>',
     '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">节点名称<\/label><input id="nName" type="text" placeholder="如: GCP-Tokyo-01" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">节点名称<\/label><input id="nName" type="text" placeholder="如: Oracle-Osaka-Tunnel" class="inp"><\/div>',
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">服务器域名<\/label><input id="nServer" type="text" placeholder="gcp.yourdomain.com" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">服务器域名<\/label><input id="nServer" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
     '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">端口<\/label><input id="nPort" type="number" value="443" class="inp"><\/div>',
     '<\/div>',
     '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">UUID<\/label><input id="nUuid" type="text" placeholder="11111111-2222-3333-4444-555555555555" class="inp" style="font-family:monospace"><\/div>',
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
     '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">WebSocket 路径<\/label><input id="nPath" type="text" value="/stream-proxy" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">SNI 域名<\/label><input id="nSni" type="text" placeholder="gcp.yourdomain.com" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">SNI 域名<\/label><input id="nSni" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
     '<\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">独立 CF 优选 IP（留空则继承全局）<\/label><input id="nIp" type="text" placeholder="104.16.80.80" class="inp"><\/div>',
+    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">独立 CF 优选 IP（留空则继承全局）<\/label><input id="nIp" type="text" placeholder="172.64.32.1" class="inp"><\/div>',
     '<\/div>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
     '<button class="btn-gray" onclick="closeNode()">取消<\/button>',
@@ -345,11 +397,14 @@ function renderHtml() {
     '    html += "<tr>";',
     '    html += "<td><span style=\\"color:#34d399\\">&#9679;<\\/span> "+n.name+"<\\/td>";',
     '    html += "<td><span style=\\"background:rgba(59,130,246,.2);color:#60a5fa;padding:.1rem .4rem;border-radius:.3rem;font-family:monospace\\">VLESS<\\/span>:"+n.port+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+( n.sni||n.server)+"<\\/td>";',
+    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+(n.sni||n.server)+"<\\/td>";',
     '    html += "<td style=\\"font-family:monospace;color:#94a3b8;font-size:.8rem\\">"+n.path+"<\\/td>";',
     '    html += "<td style=\\"color:#fbbf24;font-size:.8rem\\">"+ip+"<\\/td>";',
-    '    html += "<td style=\\"text-align:right\\"><button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem\\" onclick=\\"editNode("+i+")\\">编辑<\\/button> ";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;color:#f87171\\" onclick=\\"delNode("+i+")\\">删除<\\/button><\\/td>";',
+    '    html += "<td style=\\"text-align:right;white-space:nowrap\\">";',
+    '    html += "<button class=\\"btn-purple\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"copySingleLink("+i+")\\">复制单链<\\/button>";',
+    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"editNode("+i+")\\">编辑<\\/button>";',
+    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;color:#f87171\\" onclick=\\"delNode("+i+")\\">删除<\\/button>";',
+    '    html += "<\\/td>";',
     '    html += "<\\/tr>";',
     '  }',
     '  tb.innerHTML = html;',
@@ -385,7 +440,17 @@ function renderHtml() {
     '  alert("设置已保存");',
     '}',
 
-    'function copyUrl(){ var u=$("subUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("订阅链接已复制:\\n"+u); }); }',
+    'function copyMihomo(){ var u=location.origin+"/sub/"+D.sub_token+"?type=clash"; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
+    'function copyV2ray(){ var u=location.origin+"/sub/"+D.sub_token+"?type=v2ray"; navigator.clipboard.writeText(u).then(function(){ alert("v2rayNG / 通用 订阅链接已复制:\\n"+u); }); }',
+
+    'function copySingleLink(i){',
+    '  var n=D.nodes[i];',
+    '  var srv = n.custom_ip || D.cf_ip || n.server;',
+    '  var sni = n.sni || n.server;',
+    '  var path = n.path || "/";',
+    '  var link = "vless://" + n.uuid + "@" + srv + ":" + (n.port||443) + "?encryption=none&security=tls&type=ws&host=" + encodeURIComponent(sni) + "&sni=" + encodeURIComponent(sni) + "&path=" + encodeURIComponent(path) + "#" + encodeURIComponent(n.name);',
+    '  navigator.clipboard.writeText(link).then(function(){ alert("VLESS 节点单链已复制，可在 v2rayNG 中点击「+」->「从剪贴板导入」:\\n" + link); });',
+    '}',
 
     // 监听回车键登录
     'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none"){ doLogin(); } });',
