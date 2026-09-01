@@ -1,6 +1,6 @@
 // =========================================================================
-// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.1
-// 支持：Mihomo (Clash YAML) & v2rayNG (Base64 VLESS) 双模订阅 + UA 智能自适应
+// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.2
+// 升级：订阅中心分别独立展示 Mihomo/Clash 与 v2rayNG 两个专属输入框及复制按钮
 // =========================================================================
 
 const DEFAULT_USER = "admin";
@@ -217,9 +217,9 @@ function renderHtml() {
     '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
     '.inp:focus{border-color:#3b82f6}',
-    '.btn-blue{padding:.5rem 1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
     '.btn-blue:hover{background:#1d4ed8}',
-    '.btn-purple{padding:.5rem 1rem;background:#7c3aed;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-purple{padding:.55rem 1.1rem;background:#7c3aed;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
     '.btn-purple:hover{background:#6d28d9}',
     '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
     '.btn-green:hover{background:#047857}',
@@ -269,21 +269,45 @@ function renderHtml() {
     '<\/div>',
     '<\/header>',
 
-    // 订阅卡片
+    // 订阅卡片 (分别独立显示两个格式的输入框和专属复制按钮)
     '<main style="max-width:1100px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;flex-direction:column;gap:1rem">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">',
+    '<div style="display:flex;flex-direction:column;gap:1.2rem">',
     '<div>',
-    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128225; 智能多格式订阅源<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">支持 Mihomo/Clash (D31透明代理) 与 v2rayNG/v2rayN (手机电脑通用)</p>',
+    '<h3 style="font-weight:700;font-size:1.1rem;margin-bottom:.3rem">&#128225; 订阅中心 (分格式专属链接)<\/h3>',
+    '<p style="font-size:.8rem;color:#64748b">根据不同设备与客户端类型，直接复制对应的专用订阅链接<\/p>',
+    '<\/div>',
+
+    // 1. Mihomo / Clash 专属卡片
+    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(59,130,246,.25)">',
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
+    '<div style="display:flex;align-items:center;gap:.5rem">',
+    '<span style="font-size:.9rem;font-weight:600;color:#60a5fa">&#128752; Mihomo / Clash 订阅源<\/span>',
+    '<span style="font-size:.75rem;color:#94a3b8">（专供 D31 智能座机 / TUN 全局透明代理）<\/span>',
+    '<\/div>',
+    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(59,130,246,.15);color:#93c5fd;font-weight:600">YAML 格式<\/span>',
+    '<\/div>',
+    '<div style="display:flex;gap:.6rem;align-items:center">',
+    '<input id="clashUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#93c5fd">',
+    '<button class="btn-blue" onclick="copyMihomo()">复制 Mihomo 订阅<\/button>',
     '<\/div>',
     '<\/div>',
-    '<div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center">',
-    '<input id="subUrl" type="text" readonly class="inp" style="flex:1;min-width:280px;font-size:.8rem;font-family:monospace">',
-    '<button class="btn-blue" onclick="copyMihomo()">复制 Mihomo / Clash 订阅<\/button>',
+
+    // 2. v2rayNG 专属卡片
+    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(124,58,237,.25)">',
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
+    '<div style="display:flex;align-items:center;gap:.5rem">',
+    '<span style="font-size:.9rem;font-weight:600;color:#c084fc">&#128640; v2rayNG / 通用 订阅源<\/span>',
+    '<span style="font-size:.75rem;color:#94a3b8">（专供 手机 Android / 电脑 v2rayN 客户端）<\/span>',
+    '<\/div>',
+    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(124,58,237,.15);color:#d8b4fe;font-weight:600">Base64 VLESS<\/span>',
+    '<\/div>',
+    '<div style="display:flex;gap:.6rem;align-items:center">',
+    '<input id="v2rayUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#d8b4fe">',
     '<button class="btn-purple" onclick="copyV2ray()">复制 v2rayNG 订阅<\/button>',
     '<\/div>',
+    '<\/div>',
+
     '<\/div>',
     '<\/div>',
 
@@ -379,7 +403,8 @@ function renderHtml() {
     'function loadData(){',
     '  fetch("/api/data").then(function(r){return r.json();}).then(function(d){',
     '    D = d;',
-    '    $("subUrl").value = location.origin+"/sub/"+d.sub_token;',
+    '    $("clashUrl").value = location.origin+"/sub/"+d.sub_token+"?type=clash";',
+    '    $("v2rayUrl").value = location.origin+"/sub/"+d.sub_token+"?type=v2ray";',
     '    renderNodes();',
     '  });',
     '}',
@@ -434,14 +459,15 @@ function renderHtml() {
     '  if($("sPass").value) payload.new_password = $("sPass").value;',
     '  D.cf_ip = payload.cf_ip; D.sub_token = payload.sub_token;',
     '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});',
-    '  $("subUrl").value = location.origin+"/sub/"+D.sub_token;',
+    '  $("clashUrl").value = location.origin+"/sub/"+D.sub_token+"?type=clash";',
+    '  $("v2rayUrl").value = location.origin+"/sub/"+D.sub_token+"?type=v2ray";',
     '  closeSettings();',
     '  renderNodes();',
     '  alert("设置已保存");',
     '}',
 
-    'function copyMihomo(){ var u=location.origin+"/sub/"+D.sub_token+"?type=clash"; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
-    'function copyV2ray(){ var u=location.origin+"/sub/"+D.sub_token+"?type=v2ray"; navigator.clipboard.writeText(u).then(function(){ alert("v2rayNG / 通用 订阅链接已复制:\\n"+u); }); }',
+    'function copyMihomo(){ var u=$("clashUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
+    'function copyV2ray(){ var u=$("v2rayUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("v2rayNG / 通用 订阅链接已复制:\\n"+u); }); }',
 
     'function copySingleLink(i){',
     '  var n=D.nodes[i];',
