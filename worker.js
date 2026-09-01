@@ -1,7 +1,9 @@
 // =========================================================================
-// FreePBX VPN Node Web - Cloudflare Workers 管理面板与订阅生成器 v2.3
+// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.3.1
 // 升级：SIP 管理独立页 + 甲骨文 SIP 机负荷心跳监控
 // =========================================================================
+
+import { LOGO_PNG_B64 } from "./logo.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
@@ -35,6 +37,10 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
+
+    if (pathname === "/logo.png" || pathname === "/favicon.ico") {
+      return logoResponse();
+    }
 
     // 订阅下发 (支持 UA 自动适配与参数指定)
     if (pathname.startsWith("/sub")) {
@@ -317,6 +323,25 @@ async function handleSubscription(request, url, env) {
 // HTML 前端 - 完全避免嵌套模板字符串
 // 所有动态 DOM 操作改用字符串拼接
 // ==========================================
+function logoResponse() {
+  const bin = Uint8Array.from(atob(LOGO_PNG_B64), function (c) { return c.charCodeAt(0); });
+  return new Response(bin, {
+    headers: {
+      "Content-Type": "image/png",
+      "Cache-Control": "public, max-age=86400"
+    }
+  });
+}
+
+function brandHtml() {
+  return [
+    '<a href="/" style="display:flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit">',
+    '<img src="/logo.png" alt="elfRadio" width="36" height="36" style="width:36px;height:36px;border-radius:.55rem;object-fit:cover;flex-shrink:0">',
+    '<span style="font-weight:700;font-size:1.05rem;white-space:nowrap">elfRadio SIP/VPN Manage</span>',
+    '</a>'
+  ].join("");
+}
+
 function renderHtml() {
   return [
     '<!DOCTYPE html>',
@@ -324,7 +349,8 @@ function renderHtml() {
     '<head>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>FreePBX VPN Node 管理面板</title>',
+    '<title>elfRadio SIP/VPN Manage</title>',
+    '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
     'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
@@ -341,7 +367,7 @@ function renderHtml() {
     '.btn-gray:hover{background:#475569}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     'table{width:100%;border-collapse:collapse}',
-    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6)}',
+    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6);white-space:nowrap}',
     'td{padding:.7rem 1rem;font-size:.85rem;border-top:1px solid #1e293b}',
     'tr:hover td{background:rgba(30,41,59,.5)}',
     '<\/style>',
@@ -352,8 +378,8 @@ function renderHtml() {
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
     '<div style="text-align:center;margin-bottom:1.5rem">',
-    '<div style="font-size:2rem;margin-bottom:.5rem">&#128225;</div>',
-    '<h2 style="font-size:1.3rem;font-weight:700">FreePBX 节点管理中枢</h2>',
+    '<img src="/logo.png" alt="elfRadio" width="64" height="64" style="width:64px;height:64px;border-radius:.8rem;object-fit:cover;margin-bottom:.6rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage</h2>',
     '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">默认账号 admin / admin888</p>',
     '<\/div>',
     '<div style="margin-bottom:1rem">',
@@ -373,7 +399,7 @@ function renderHtml() {
     '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
     '<div style="max-width:1100px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
     '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">',
-    '<span style="font-weight:700;font-size:1.1rem">&#127760; FreePBX Node Manager<\/span>',
+    brandHtml(),
     '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
     '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
     '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
@@ -611,7 +637,8 @@ function renderSipHtml() {
     '<head>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>SIP 管理 - FreePBX Node Manager<\/title>',
+    '<title>elfRadio SIP/VPN Manage</title>',
+    '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
     'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
@@ -622,16 +649,25 @@ function renderSipHtml() {
     '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     'table{width:100%;border-collapse:collapse}',
-    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6)}',
-    'td{padding:.7rem 1rem;font-size:.85rem;border-top:1px solid #1e293b}',
+    'th{text-align:left;padding:.65rem .7rem;font-size:.8rem;color:#94a3b8;background:rgba(15,23,42,.6);white-space:nowrap}',
+    'td{padding:.65rem .7rem;font-size:.85rem;border-top:1px solid #1e293b;vertical-align:middle}',
+    'tr.sel td{background:rgba(30,58,95,.55)}',
+    '.rowchk{width:16px;height:16px;accent-color:#3b82f6;cursor:pointer}',
     '.stat{flex:1;min-width:140px;padding:1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b}',
     '.ok{color:#34d399}.bad{color:#f87171}.warn{color:#fbbf24}',
+    'a.extlink{color:#93c5fd;text-decoration:none;font-weight:600;cursor:pointer}',
+    'a.namelink{color:#e2e8f0;text-decoration:none;cursor:pointer}',
+    'a.extlink:hover,a.namelink:hover{text-decoration:underline}',
     '<\/style>',
     '<\/head>',
     '<body>',
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
-    '<h2 style="font-size:1.3rem;font-weight:700;text-align:center;margin-bottom:1rem">SIP 管理登录<\/h2>',
+    '<div style="text-align:center;margin-bottom:1rem">',
+    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
+    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">SIP 管理登录<\/p>',
+    '<\/div>',
     '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
     '<input id="lp" type="password" value="admin888" class="inp" style="margin-bottom:1rem">',
     '<button class="btn-blue" style="width:100%" onclick="doLogin()">登 录<\/button>',
@@ -639,11 +675,11 @@ function renderSipHtml() {
     '<\/div><\/div>',
 
     '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
-    '<div style="max-width:1100px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
-    '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">',
-    '<span style="font-weight:700;font-size:1.1rem">&#127760; FreePBX Node Manager<\/span>',
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
+    '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
+    '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
+    brandHtml(),
+    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
     '<\/div>',
     '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
     '<\/div><\/header>',
@@ -661,12 +697,16 @@ function renderSipHtml() {
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
     '<div><h3 style="font-weight:700">分机目录<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b;margin-top:.3rem">绿点在线，灰点离线。通话记录来自 Asterisk CDR。<\/p><\/div>',
+    '<p style="font-size:.8rem;color:#64748b;margin-top:.3rem">绿点在线，灰点离线。勾选一行后可编辑或删除。点击分机号或名称查看通话记录。<\/p><\/div>',
+    '<div style="display:flex;gap:.5rem;align-items:center;flex-shrink:0">',
     '<button class="btn-green" onclick="openExt()">+ 添加分机<\/button>',
+    '<button class="btn-gray" onclick="editSelected()">编辑<\/button>',
+    '<button class="btn-gray" style="color:#f87171" onclick="delSelected()">删除<\/button>',
+    '<\/div>',
     '<\/div>',
     '<div style="overflow-x:auto">',
     '<table><thead><tr>',
-    '<th>在线<\/th><th>分机<\/th><th>名称<\/th><th>传输<\/th><th>登录 IP<\/th><th>位置<\/th><th>连接延时<\/th><th>最近上线<\/th><th>拨打次数<\/th><th>总通话时长<\/th><th>通话记录<\/th><th style="text-align:right">操作<\/th>',
+    '<th><\/th><th>在线<\/th><th>分机<\/th><th>名称<\/th><th>传输<\/th><th>IP<\/th><th>延时<\/th><th>最近上线<\/th><th>拨打次数<\/th><th>总通话时长<\/th>',
     '<\/tr><\/thead><tbody id="etb"><\/tbody><\/table>',
     '<\/div><\/div>',
     '<\/main>',
@@ -697,7 +737,7 @@ function renderSipHtml() {
     '<\/div><\/div>',
 
     '<script>',
-    'var E = []; var ST = null; var GEO = {}; var STALE = true; var editIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25;',
+    'var E = []; var ST = null; var GEO = {}; var STALE = true; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25;',
     'function $(id){return document.getElementById(id)}',
     'function show(id){$(id).style.display="flex"}',
     'function hide(id){$(id).style.display="none"}',
@@ -745,6 +785,14 @@ function renderSipHtml() {
     '  return h>0 ? h+":"+z(m)+":"+z(s) : z(m)+":"+z(s);',
     '}',
     'function fmtTime(t){ if(!t) return "-"; return t.replace("T"," ").replace("Z","").substring(0,19); }',
+    'function fmtSeen(t){',
+    '  var s = fmtTime(t);',
+    '  if(!s || s==="-") return "-";',
+    '  var p = s.split(" ");',
+    '  if(p.length<2) return s;',
+    '  return "<div style=\\"line-height:1.25;white-space:nowrap\\">"+p[0]+"<\\/div><div style=\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem;white-space:nowrap\\">"+p[1]+"<\\/div>";',
+    '}',
+    'function pickRow(i,on){ selIdx = on ? i : (selIdx===i ? -1 : selIdx); renderExt(); }',
     'function cdrFor(ext){',
     '  var all = (ST && ST.cdr) || []; var out=[];',
     '  for(var i=0;i<all.length;i++){',
@@ -760,32 +808,32 @@ function renderSipHtml() {
     '}',
     'function renderExt(){',
     '  var tb=$("etb"); var html=""; var live=liveMap(); var last=(ST && ST.last_seen)||{};',
+    '  if(selIdx>=E.length) selIdx=-1;',
     '  for(var i=0;i<E.length;i++){',
     '    var x=E[i]; var L=live[String(x.ext)];',
     '    var online = !STALE && L && String(L.status).toLowerCase().indexOf("avail")>=0;',
     '    var dot = online ? "<span class=\\"ok\\">&#9679;<\/span>" : "<span style=\\"color:#64748b\\">&#9679;<\/span>";',
     '    var tr = online ? (L.transport||x.transport||"-") : (x.transport||"-");',
     '    tr = String(tr).toUpperCase();',
-    '    var ip = online ? (L.ip||"-") : "-";',
-    '    var loc = (ip && GEO[ip]) ? GEO[ip] : (online ? "查询中" : "-");',
+    '    var ip = online ? (L.ip||"") : "";',
+    '    var loc = ip ? (GEO[ip] || "查询中") : "-";',
+    '    var ipCell = ip ? "<div style=\\"font-family:monospace;font-size:.8rem;line-height:1.25;white-space:nowrap\\">"+ip+"<\\/div><div style=\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem\\">"+loc+"<\\/div>" : "-";',
     '    var rtt = online && L.rtt!=null ? L.rtt+" ms" : "-";',
-    '    var seen = last[x.ext] ? fmtTime(last[x.ext]) : "-";',
+    '    var seen = last[x.ext] ? fmtSeen(last[x.ext]) : "-";',
     '    var st = statsFor(x.ext);',
-    '    html += "<tr>";',
+    '    html += "<tr"+(selIdx===i?" class=\\"sel\\"":"")+">";',
+    '    html += "<td><input class=\\"rowchk\\" type=\\"checkbox\\" "+(selIdx===i?"checked":"")+" onchange=\\"pickRow("+i+",this.checked)\\"><\\/td>";',
     '    html += "<td style=\\"font-size:1.1rem\\">"+dot+"<\\/td>";',
-    '    html += "<td>"+x.ext+"<\\/td><td>"+x.name+"<\\/td>";',
+    '    html += "<td><a class=\\"extlink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.ext+"<\\/a><\\/td>";',
+    '    html += "<td><a class=\\"namelink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.name+"<\\/a><\\/td>";',
     '    html += "<td>"+tr+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+ip+"<\\/td>";',
-    '    html += "<td style=\\"font-size:.8rem\\">"+loc+"<\\/td>";',
-    '    html += "<td>"+rtt+"<\\/td>";',
-    '    html += "<td style=\\"font-size:.8rem;white-space:nowrap\\">"+seen+"<\\/td>";',
-    '    html += "<td>"+st.count+"<\\/td><td>"+fmtDur(st.dur)+"<\\/td>";',
-    '    html += "<td><button class=\\"btn-gray\\" onclick=\\"openCdr(\'"+x.ext+"\')\\">查看<\\/button><\\/td>";',
-    '    html += "<td style=\\"text-align:right;white-space:nowrap\\">";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"margin-right:.3rem\\" onclick=\\"editExt("+i+")\\">编辑<\\/button>";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"color:#f87171\\" onclick=\\"delExt("+i+")\\">删除<\\/button><\\/td><\\/tr>";',
+    '    html += "<td>"+ipCell+"<\\/td>";',
+    '    html += "<td style=\\"white-space:nowrap\\">"+rtt+"<\\/td>";',
+    '    html += "<td>"+seen+"<\\/td>";',
+    '    html += "<td>"+st.count+"<\\/td><td style=\\"white-space:nowrap\\">"+fmtDur(st.dur)+"<\\/td>";',
+    '    html += "<\\/tr>";',
     '  }',
-    '  tb.innerHTML = html || "<tr><td colspan=\\"12\\" style=\\"text-align:center;color:#475569;padding:1.2rem\\">暂无分机<\\/td><\\/tr>";',
+    '  tb.innerHTML = html || "<tr><td colspan=\\"10\\" style=\\"text-align:center;color:#475569;padding:1.2rem\\">暂无分机<\\/td><\\/tr>";',
     '}',
     'function openCdr(ext){ cdrExt=String(ext); cdrPage=1; $("cdrTitle").innerText="分机 "+ext+" 通话记录"; show("cdrWrap"); drawCdr(); }',
     'function drawCdr(){',
@@ -819,14 +867,25 @@ function renderSipHtml() {
     '}',
     'function openExt(){ editIdx=-1; $("extTitle").innerText="添加分机"; $("eExt").value=""; $("eName").value=""; $("eTr").value="udp"; show("extWrap"); }',
     'function editExt(i){ editIdx=i; var x=E[i]; $("extTitle").innerText="编辑分机"; $("eExt").value=x.ext; $("eName").value=x.name; $("eTr").value=x.transport||"udp"; show("extWrap"); }',
+    'function editSelected(){',
+    '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
+    '  editExt(selIdx);',
+    '}',
     'function saveExt(){',
     '  var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), transport:$("eTr").value };',
     '  if(!n.ext){ alert("分机号不能为空"); return; }',
-    '  if(editIdx>=0) E[editIdx]=n; else E.push(n);',
+    '  if(editIdx>=0) E[editIdx]=n; else { E.push(n); selIdx=E.length-1; }',
     '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})});',
     '  hide("extWrap"); renderExt();',
     '}',
-    'function delExt(i){ if(confirm("删除该分机目录项？不会自动改 Asterisk。")){ E.splice(i,1); fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}); renderExt(); } }',
+    'function delSelected(){',
+    '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
+    '  var x=E[selIdx];',
+    '  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\\n此操作只改面板目录，不会改 SIP 服务器上的 Asterisk 分机。")) return;',
+    '  E.splice(selIdx,1); selIdx=-1;',
+    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})});',
+    '  renderExt();',
+    '}',
     'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });',
     'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 30000);',
     'checkAuth();',
