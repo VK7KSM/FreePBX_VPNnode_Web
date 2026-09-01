@@ -1,5 +1,5 @@
 // =========================================================================
-// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.3.1
+// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.4.0
 // 升级：SIP 管理独立页 + 甲骨文 SIP 机负荷心跳监控
 // =========================================================================
 
@@ -84,10 +84,26 @@ export default {
     }
 
     if (pathname === "/api/sip" && method === "GET") {
-      const extensions = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
+      const raw = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
+      const secrets = (await getStore(env, "sip_secrets")) || {};
+      const extensions = raw.map(function (x) { return publicExtension(x, secrets); });
       const status = (await getStore(env, "sip_status")) || null;
       const geo = await geoForStatus(env, status);
-      return json({ ok: true, extensions, status, geo, stale: isSipStale(status) });
+      const config_rev = (await getStore(env, "sip_config_rev")) || 0;
+      const applied_rev = (status && status.applied_rev) || 0;
+      return json({
+        ok: true,
+        extensions,
+        status,
+        geo,
+        stale: isSipStale(status),
+        sync: {
+          config_rev,
+          applied_rev,
+          pending: Number(config_rev) !== Number(applied_rev),
+          error: (status && status.apply_error) || ""
+        }
+      });
     }
 
     if (pathname === "/api/sip/save" && method === "POST") {
@@ -96,8 +112,34 @@ export default {
         if (!Array.isArray(data.extensions)) {
           return json({ ok: false, msg: "extensions 必须是数组" }, 400);
         }
-        await setStore(env, "sip_extensions", data.extensions);
-        return json({ ok: true });
+        const secrets = Object.assign({}, (await getStore(env, "sip_secrets")) || {});
+        const cleaned = [];
+        for (let i = 0; i < data.extensions.length; i++) {
+          const src = data.extensions[i] || {};
+          const ext = String(src.ext || "").trim();
+          if (!/^[0-9]{3,6}$/.test(ext)) {
+            return json({ ok: false, msg: "分机号必须是 3 到 6 位数字" }, 400);
+          }
+          const item = publicExtension(src, secrets);
+          if (src.password) {
+            secrets[ext] = String(src.password);
+            item.has_password = true;
+          }
+          if (src.clear_password) {
+            delete secrets[ext];
+            item.has_password = false;
+          }
+          delete item.has_password;
+          cleaned.push(item);
+        }
+        const keep = {};
+        for (let i = 0; i < cleaned.length; i++) keep[cleaned[i].ext] = true;
+        Object.keys(secrets).forEach(function (k) { if (!keep[k]) delete secrets[k]; });
+        const prevRev = (await getStore(env, "sip_config_rev")) || 0;
+        await setStore(env, "sip_extensions", cleaned);
+        await setStore(env, "sip_secrets", secrets);
+        await setStore(env, "sip_config_rev", prevRev + 1);
+        return json({ ok: true, config_rev: prevRev + 1 });
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
       }
@@ -121,7 +163,30 @@ export default {
         }
         body.last_seen = lastSeen;
         await setStore(env, "sip_status", body);
-        return json({ ok: true });
+        let raw = await getStore(env, "sip_extensions");
+        if (!raw) {
+          raw = defaultSipExtensions();
+          await setStore(env, "sip_extensions", raw);
+        }
+        const secrets = (await getStore(env, "sip_secrets")) || {};
+        let config_rev = (await getStore(env, "sip_config_rev")) || 0;
+        if (!config_rev) {
+          config_rev = 1;
+          await setStore(env, "sip_config_rev", 1);
+        }
+        const applied = body.applied_rev || 0;
+        const pending = Number(config_rev) !== Number(applied);
+        const resp = { ok: true, config_rev, applied_rev: applied, pending };
+        if (pending) {
+          resp.extensions = raw.map(function (x) {
+            const item = publicExtension(x, secrets);
+            const pw = secrets[item.ext];
+            if (pw) item.password = pw;
+            delete item.has_password;
+            return item;
+          });
+        }
+        return json(resp);
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
       }
@@ -141,27 +206,54 @@ export default {
 };
 
 function defaultSipExtensions() {
-  return [
-    { ext: "101", name: "Yealink 1", transport: "udp" },
-    { ext: "102", name: "Yealink 2", transport: "udp" },
-    { ext: "103", name: "Ricky Song", transport: "tls" },
-    { ext: "104", name: "Pixel 5", transport: "tls" },
-    { ext: "105", name: "D31-Chengdu", transport: "udp" },
-    { ext: "106", name: "iPhone XR", transport: "tls" },
-    { ext: "107", name: "JiMaMu", transport: "tls" },
-    { ext: "108", name: "Elvin Sydney", transport: "tls" },
-    { ext: "201", name: "D22-BB", transport: "udp" },
-    { ext: "202", name: "D22-JJ", transport: "udp" },
-    { ext: "203", name: "H13", transport: "udp" },
-    { ext: "300", name: "Pixel3 GSM Gateway", transport: "tls" }
+  const rows = [
+    ["101", "Yealink 1", true, true],
+    ["102", "Yealink 2", true, false],
+    ["103", "Ricky Song", true, false],
+    ["104", "Pixel 5", true, false],
+    ["105", "D31-Chengdu", true, false],
+    ["106", "iPhone XR", true, false],
+    ["107", "JiMaMu", true, false],
+    ["108", "Elvin Sydney", true, false],
+    ["201", "D22-BB", true, false],
+    ["202", "D22-JJ", true, false],
+    ["203", "H13", true, false],
+    ["300", "Pixel3 GSM Gateway", false, true]
   ];
+  return rows.map(function (r) {
+    return publicExtension({
+      ext: r[0],
+      name: r[1],
+      outbound: r[2],
+      sms: r[3],
+      gateway: r[0] === "300" ? "none" : "pixel"
+    }, {});
+  });
+}
+
+function publicExtension(x, secrets) {
+  const ext = String((x && x.ext) || "").trim();
+  const isGw = ext === "300";
+  const ring = parseInt(x && x.ringtimer, 10);
+  return {
+    ext: ext,
+    name: String((x && x.name) || "").trim(),
+    outbound: isGw ? false : (x && x.outbound) !== false,
+    sms: (x && x.sms) != null ? !!x.sms : (ext === "101" || ext === "300"),
+    gateway: isGw ? "none" : ((x && x.gateway) || "pixel"),
+    cf: String((x && x.cf) || "").trim(),
+    cf_busy: String((x && x.cf_busy) || "").trim(),
+    cf_noreply: String((x && x.cf_noreply) || "").trim(),
+    ringtimer: ring > 0 ? ring : 60,
+    has_password: !!(secrets && secrets[ext])
+  };
 }
 
 function isSipStale(status) {
   if (!status || !status.received_at) return true;
   const t = Date.parse(status.received_at);
   if (!t) return true;
-  return (Date.now() - t) > 90000;
+  return (Date.now() - t) > 20000;
 }
 
 function isPrivateIp(ip) {
@@ -655,6 +747,8 @@ function renderSipHtml() {
     '.rowchk{width:16px;height:16px;accent-color:#3b82f6;cursor:pointer}',
     '.stat{flex:1;min-width:140px;padding:1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b}',
     '.ok{color:#34d399}.bad{color:#f87171}.warn{color:#fbbf24}',
+    '.dot{display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
+    '.dot-on{background:#22c55e}.dot-off{background:#ef4444}',
     'a.extlink{color:#93c5fd;text-decoration:none;font-weight:600;cursor:pointer}',
     'a.namelink{color:#e2e8f0;text-decoration:none;cursor:pointer}',
     'a.extlink:hover,a.namelink:hover{text-decoration:underline}',
@@ -697,7 +791,8 @@ function renderSipHtml() {
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
     '<div><h3 style="font-weight:700">分机目录<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b;margin-top:.3rem">绿点在线，灰点离线。勾选一行后可编辑或删除。点击分机号或名称查看通话记录。<\/p><\/div>',
+    '<p style="font-size:.8rem;color:#64748b;margin-top:.3rem">绿灯在线，红灯离线。传输为当前注册真实方式。勾选后可编辑或删除；点击分机号或名称查看通话记录。<\/p>',
+    '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin-top:.25rem">等待同步状态...<\/p><\/div>',
     '<div style="display:flex;gap:.5rem;align-items:center;flex-shrink:0">',
     '<button class="btn-green" onclick="openExt()">+ 添加分机<\/button>',
     '<button class="btn-gray" onclick="editSelected()">编辑<\/button>',
@@ -706,22 +801,32 @@ function renderSipHtml() {
     '<\/div>',
     '<div style="overflow-x:auto">',
     '<table><thead><tr>',
-    '<th><\/th><th>在线<\/th><th>分机<\/th><th>名称<\/th><th>传输<\/th><th>IP<\/th><th>延时<\/th><th>最近上线<\/th><th>拨打次数<\/th><th>总通话时长<\/th>',
+    '<th><\/th><th>在线<\/th><th>分机号<\/th><th>名称<\/th><th>传输<\/th><th>IP<\/th><th>延时<\/th><th>最近上线<\/th><th>拨打次数<\/th><th>总通话时长<\/th>',
     '<\/tr><\/thead><tbody id="etb"><\/tbody><\/table>',
     '<\/div><\/div>',
     '<\/main>',
 
     '<div id="extWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:420px">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:520px;max-height:90vh;overflow:auto">',
     '<h3 id="extTitle" style="font-weight:700;margin-bottom:1rem">添加分机<\/h3>',
     '<div style="display:flex;flex-direction:column;gap:.8rem">',
     '<div><label style="font-size:.8rem;color:#cbd5e1">分机号<\/label><input id="eExt" class="inp"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">名称<\/label><input id="eName" class="inp"><\/div>',
-    '<div><label style="font-size:.8rem;color:#cbd5e1">传输<\/label><select id="eTr" class="inp"><option value="udp">UDP 5060<\/option><option value="tcp">TCP 5060<\/option><option value="tls">TLS 5061<\/option><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">密码<\/label><input id="ePw" type="password" class="inp" placeholder="留空则不修改现有密码"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">网关路由<\/label><select id="eGw" class="inp"><option value="pixel">Pixel GSM 网关 (300)<\/option><option value="none">仅内部分机<\/option><\/select><\/div>',
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">外呼权限<\/label><select id="eOut" class="inp"><option value="1">允许<\/option><option value="0">禁止<\/option><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">短信权限<\/label><select id="eSms" class="inp"><option value="0">禁止<\/option><option value="1">允许<\/option><\/select><\/div>',
     '<\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">无条件呼叫转移<\/label><input id="eCf" class="inp" placeholder="空=不转移"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">遇忙转移<\/label><input id="eCfb" class="inp" placeholder="空=不转移"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">无应答转移<\/label><input id="eCfu" class="inp" placeholder="空=不转移"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">振铃超时（秒）<\/label><input id="eRing" type="number" class="inp" value="60"><\/div>',
+    '<\/div>',
+    '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到大阪 SIP 机，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
     '<button class="btn-gray" onclick="hide(\'extWrap\')">取消<\/button>',
-    '<button class="btn-green" onclick="saveExt()">保存<\/button>',
+    '<button class="btn-green" onclick="saveExt()">保存并同步<\/button>',
     '<\/div><\/div><\/div>',
 
     '<div id="cdrWrap" class="modal-bg" style="display:none">',
@@ -737,7 +842,7 @@ function renderSipHtml() {
     '<\/div><\/div>',
 
     '<script>',
-    'var E = []; var ST = null; var GEO = {}; var STALE = true; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25;',
+    'var E = []; var ST = null; var GEO = {}; var STALE = true; var SYNC = null; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25;',
     'function $(id){return document.getElementById(id)}',
     'function show(id){$(id).style.display="flex"}',
     'function hide(id){$(id).style.display="none"}',
@@ -752,9 +857,10 @@ function renderSipHtml() {
     'function logout(){ localStorage.removeItem("_pt"); location.href="/"; }',
     'function loadSip(){',
     '  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){',
-    '    E = d.extensions||[]; ST = d.status||null; GEO = d.geo||{}; STALE = !!d.stale;',
+    '    E = d.extensions||[]; ST = d.status||null; GEO = d.geo||{}; STALE = !!d.stale; SYNC = d.sync||null;',
     '    renderStatus();',
     '    renderExt();',
+    '    renderSync();',
     '  });',
     '}',
     'function renderStatus(){',
@@ -812,9 +918,8 @@ function renderSipHtml() {
     '  for(var i=0;i<E.length;i++){',
     '    var x=E[i]; var L=live[String(x.ext)];',
     '    var online = !STALE && L && String(L.status).toLowerCase().indexOf("avail")>=0;',
-    '    var dot = online ? "<span class=\\"ok\\">&#9679;<\/span>" : "<span style=\\"color:#64748b\\">&#9679;<\/span>";',
-    '    var tr = online ? (L.transport||x.transport||"-") : (x.transport||"-");',
-    '    tr = String(tr).toUpperCase();',
+    '    var dot = online ? "<span class=\\"dot dot-on\\" title=\\"在线\\"><\\/span>" : "<span class=\\"dot dot-off\\" title=\\"离线\\"><\\/span>";',
+    '    var tr = online && L.transport ? String(L.transport).toUpperCase() : "-";',
     '    var ip = online ? (L.ip||"") : "";',
     '    var loc = ip ? (GEO[ip] || "查询中") : "-";',
     '    var ipCell = ip ? "<div style=\\"font-family:monospace;font-size:.8rem;line-height:1.25;white-space:nowrap\\">"+ip+"<\\/div><div style=\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem\\">"+loc+"<\\/div>" : "-";',
@@ -823,7 +928,7 @@ function renderSipHtml() {
     '    var st = statsFor(x.ext);',
     '    html += "<tr"+(selIdx===i?" class=\\"sel\\"":"")+">";',
     '    html += "<td><input class=\\"rowchk\\" type=\\"checkbox\\" "+(selIdx===i?"checked":"")+" onchange=\\"pickRow("+i+",this.checked)\\"><\\/td>";',
-    '    html += "<td style=\\"font-size:1.1rem\\">"+dot+"<\\/td>";',
+    '    html += "<td style=\\"text-align:center\\">"+dot+"<\\/td>";',
     '    html += "<td><a class=\\"extlink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.ext+"<\\/a><\\/td>";',
     '    html += "<td><a class=\\"namelink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.name+"<\\/a><\\/td>";',
     '    html += "<td>"+tr+"<\\/td>";',
@@ -865,29 +970,49 @@ function renderSipHtml() {
     '  pg += "<button class=\\"btn-gray\\" onclick=\\"cdrPage++;drawCdr()\\">下一页<\\/button><\\/span>";',
     '  $("cdrPager").innerHTML = pg;',
     '}',
-    'function openExt(){ editIdx=-1; $("extTitle").innerText="添加分机"; $("eExt").value=""; $("eName").value=""; $("eTr").value="udp"; show("extWrap"); }',
-    'function editExt(i){ editIdx=i; var x=E[i]; $("extTitle").innerText="编辑分机"; $("eExt").value=x.ext; $("eName").value=x.name; $("eTr").value=x.transport||"udp"; show("extWrap"); }',
+    'function renderSync(){',
+    '  var el=$("syncHint"); if(!el) return;',
+    '  if(!SYNC){ el.innerText="尚未建立与 SIP 机的同步。"; return; }',
+    '  if(SYNC.error){ el.innerHTML="<span class=\\"bad\\">同步失败：<\\/span>"+SYNC.error; return; }',
+    '  if(SYNC.pending){ el.innerHTML="<span class=\\"warn\\">正在同步到 SIP 机...<\\/span> 配置版本 "+SYNC.config_rev+"，机上已应用 "+SYNC.applied_rev; return; }',
+    '  el.innerHTML="<span class=\\"ok\\">已同步到 SIP 机<\\/span> · 版本 "+SYNC.config_rev;',
+    '}',
+    'function fillExtForm(x){',
+    '  $("eExt").value=x.ext||""; $("eName").value=x.name||""; $("ePw").value="";',
+    '  $("eGw").value=x.gateway||"pixel"; $("eOut").value=x.outbound===false?"0":"1";',
+    '  $("eSms").value=x.sms?"1":"0"; $("eCf").value=x.cf||""; $("eCfb").value=x.cf_busy||""; $("eCfu").value=x.cf_noreply||"";',
+    '  $("eRing").value=x.ringtimer||60;',
+    '}',
+    'function openExt(){ editIdx=-1; $("extTitle").innerText="添加分机"; $("eExt").readOnly=false; fillExtForm({outbound:true,sms:false,gateway:"pixel",ringtimer:60}); $("ePw").placeholder="新分机必须填写密码"; show("extWrap"); }',
+    'function editExt(i){ editIdx=i; var x=E[i]; $("extTitle").innerText="编辑分机 "+x.ext; $("eExt").readOnly=true; fillExtForm(x); $("ePw").placeholder=x.has_password?"已有密码，留空则不修改":"请设置密码"; show("extWrap"); }',
     'function editSelected(){',
     '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
     '  editExt(selIdx);',
     '}',
     'function saveExt(){',
-    '  var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), transport:$("eTr").value };',
+    '  var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), gateway:$("eGw").value, outbound:$("eOut").value==="1", sms:$("eSms").value==="1", cf:$("eCf").value.trim(), cf_busy:$("eCfb").value.trim(), cf_noreply:$("eCfu").value.trim(), ringtimer:parseInt($("eRing").value,10)||60 };',
+    '  var pw=$("ePw").value;',
     '  if(!n.ext){ alert("分机号不能为空"); return; }',
-    '  if(editIdx>=0) E[editIdx]=n; else { E.push(n); selIdx=E.length-1; }',
-    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})});',
-    '  hide("extWrap"); renderExt();',
+    '  if(!/^[0-9]{3,6}$/.test(n.ext)){ alert("分机号必须是 3 到 6 位数字"); return; }',
+    '  if(editIdx<0 && !pw){ alert("新分机必须设置密码"); return; }',
+    '  if(n.ext==="300"){ n.outbound=false; n.gateway="none"; }',
+    '  if(pw) n.password=pw;',
+    '  if(editIdx>=0){ n.has_password = !!(pw || E[editIdx].has_password); E[editIdx]=n; } else { n.has_password=!!pw; E.push(n); selIdx=E.length-1; }',
+    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}).then(function(r){return r.json();}).then(function(d){',
+    '    if(!d.ok){ alert(d.msg||"保存失败"); return; }',
+    '    hide("extWrap"); loadSip();',
+    '  }).catch(function(){ alert("保存失败"); });',
     '}',
     'function delSelected(){',
     '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
     '  var x=E[selIdx];',
-    '  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\\n此操作只改面板目录，不会改 SIP 服务器上的 Asterisk 分机。")) return;',
+    '  if(String(x.ext)==="300"){ alert("Pixel 网关 300 不能从面板删除。"); return; }',
+    '  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\\n将同步删除 SIP 机上的 Asterisk 分机账号。")) return;',
     '  E.splice(selIdx,1); selIdx=-1;',
-    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})});',
-    '  renderExt();',
+    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}).then(function(){ loadSip(); });',
     '}',
     'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });',
-    'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 30000);',
+    'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 5000);',
     'checkAuth();',
     '<\/script>',
     '<\/body><\/html>'
