@@ -156,10 +156,20 @@ export default {
         body.received_at = new Date().toISOString();
         const prev = (await getStore(env, "sip_status")) || {};
         const lastSeen = prev.last_seen || {};
+        const prevContacts = Array.isArray(prev.contacts) ? prev.contacts : [];
+        const incoming = Array.isArray(body.contacts) ? body.contacts : null;
+        const dumpOk = body.contacts_ok !== false && incoming !== null;
+        if (!dumpOk) {
+          body.contacts = prevContacts;
+        } else if (incoming.length === 0 && prevContacts.length > 0 && body.contacts_ok !== true) {
+          body.contacts = prevContacts;
+        } else {
+          body.contacts = incoming;
+        }
         const contacts = body.contacts || [];
         for (let i = 0; i < contacts.length; i++) {
           const c = contacts[i];
-          if (c && c.ext) lastSeen[c.ext] = body.received_at;
+          if (c && c.ext && dumpOk && incoming && incoming.length) lastSeen[c.ext] = body.received_at;
         }
         body.last_seen = lastSeen;
         await setStore(env, "sip_status", body);
@@ -253,7 +263,7 @@ function isSipStale(status) {
   if (!status || !status.received_at) return true;
   const t = Date.parse(status.received_at);
   if (!t) return true;
-  return (Date.now() - t) > 20000;
+  return (Date.now() - t) > 90000;
 }
 
 function isPrivateIp(ip) {
@@ -789,14 +799,15 @@ function renderSipHtml() {
     '<\/div>',
 
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
-    '<div><h3 style="font-weight:700">分机目录<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b;margin-top:.3rem">绿灯在线，红灯离线。传输为当前注册真实方式。勾选后可编辑或删除；点击分机号或名称查看通话记录。<\/p>',
-    '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin-top:.25rem">等待同步状态...<\/p><\/div>',
-    '<div style="display:flex;gap:.5rem;align-items:center;flex-shrink:0">',
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;gap:1rem">',
+    '<h3 style="font-weight:700;line-height:2.2rem;margin:0">分机目录<\/h3>',
+    '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:.4rem;flex-shrink:0">',
+    '<div style="display:flex;gap:.5rem;align-items:center">',
     '<button class="btn-green" onclick="openExt()">+ 添加分机<\/button>',
     '<button class="btn-gray" onclick="editSelected()">编辑<\/button>',
     '<button class="btn-gray" style="color:#f87171" onclick="delSelected()">删除<\/button>',
+    '<\/div>',
+    '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin:0">等待同步状态...<\/p>',
     '<\/div>',
     '<\/div>',
     '<div style="overflow-x:auto">',
@@ -842,7 +853,7 @@ function renderSipHtml() {
     '<\/div><\/div>',
 
     '<script>',
-    'var E = []; var ST = null; var GEO = {}; var STALE = true; var SYNC = null; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25;',
+    'var E = []; var ST = null; var GEO = {}; var STALE = true; var SYNC = null; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25; var HOLD = {};',
     'function $(id){return document.getElementById(id)}',
     'function show(id){$(id).style.display="flex"}',
     'function hide(id){$(id).style.display="none"}',
@@ -880,8 +891,14 @@ function renderSipHtml() {
     '  box.innerHTML = html;',
     '}',
     'function liveMap(){',
-    '  var m = {}; var cs = (ST && ST.contacts) || [];',
-    '  for(var i=0;i<cs.length;i++){ if(cs[i].ext) m[String(cs[i].ext)] = cs[i]; }',
+    '  var m = {}; var cs = (ST && ST.contacts) || []; var now = Date.now();',
+    '  for(var i=0;i<cs.length;i++){',
+    '    if(!cs[i].ext) continue;',
+    '    var id=String(cs[i].ext);',
+    '    m[id]=cs[i];',
+    '    if(String(cs[i].status||"").toLowerCase().indexOf("avail")>=0) HOLD[id]={c:cs[i], until:now+30000};',
+    '  }',
+    '  for(var k in HOLD){ if(!m[k] && HOLD[k] && now<HOLD[k].until) m[k]=HOLD[k].c; }',
     '  return m;',
     '}',
     'function fmtDur(sec){',
@@ -917,7 +934,7 @@ function renderSipHtml() {
     '  if(selIdx>=E.length) selIdx=-1;',
     '  for(var i=0;i<E.length;i++){',
     '    var x=E[i]; var L=live[String(x.ext)];',
-    '    var online = !STALE && L && String(L.status).toLowerCase().indexOf("avail")>=0;',
+    '    var online = L && String(L.status).toLowerCase().indexOf("avail")>=0;',
     '    var dot = online ? "<span class=\\"dot dot-on\\" title=\\"在线\\"><\\/span>" : "<span class=\\"dot dot-off\\" title=\\"离线\\"><\\/span>";',
     '    var tr = online && L.transport ? String(L.transport).toUpperCase() : "-";',
     '    var ip = online ? (L.ip||"") : "";',
