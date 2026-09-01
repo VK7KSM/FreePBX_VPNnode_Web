@@ -1,0 +1,11 @@
+{
+  "name": "freepbx-vpnnode-web",
+  "version": "2.3.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.127.1"
+  }
+}
