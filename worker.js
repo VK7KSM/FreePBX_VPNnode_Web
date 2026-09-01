@@ -172,6 +172,7 @@ export default {
           if (c && c.ext && dumpOk && incoming && incoming.length) lastSeen[c.ext] = body.received_at;
         }
         body.last_seen = lastSeen;
+        attachHistory(prev, body);
         await setStore(env, "sip_status", body);
         let raw = await getStore(env, "sip_extensions");
         if (!raw) {
@@ -264,6 +265,46 @@ function isSipStale(status) {
   const t = Date.parse(status.received_at);
   if (!t) return true;
   return (Date.now() - t) > 90000;
+}
+
+function countOnlineContacts(contacts) {
+  let n = 0;
+  const cs = contacts || [];
+  for (let i = 0; i < cs.length; i++) {
+    if (cs[i] && String(cs[i].status || "").toLowerCase().indexOf("avail") >= 0) n++;
+  }
+  return n;
+}
+
+function attachHistory(prev, body) {
+  const hist = Array.isArray(prev.history) ? prev.history.slice() : [];
+  const t0 = Date.parse(prev.received_at || "") || 0;
+  const t1 = Date.parse(body.received_at || "") || Date.now();
+  const dt = (t1 - t0) / 1000;
+  let rxBps = 0;
+  let txBps = 0;
+  if (dt > 0.5 && prev.rx_bytes != null && body.rx_bytes != null) {
+    rxBps = Math.max(0, (Number(body.rx_bytes) - Number(prev.rx_bytes)) / dt);
+    txBps = Math.max(0, (Number(body.tx_bytes) - Number(prev.tx_bytes)) / dt);
+  } else if (prev.rx_bps != null) {
+    rxBps = Number(prev.rx_bps) || 0;
+    txBps = Number(prev.tx_bps) || 0;
+  }
+  const online = countOnlineContacts(body.contacts);
+  hist.push({
+    t: body.received_at,
+    cpu: Number(body.cpu_pct) || 0,
+    mem: Number(body.mem_pct) || 0,
+    disk: Number(body.disk_pct) || 0,
+    rx: rxBps,
+    tx: txBps,
+    online: online,
+    calls: Number(body.active_calls) || 0
+  });
+  body.history = hist.length > 120 ? hist.slice(hist.length - 120) : hist;
+  body.rx_bps = rxBps;
+  body.tx_bps = txBps;
+  body.online_count = online;
 }
 
 function isPrivateIp(ip) {
@@ -755,7 +796,10 @@ function renderSipHtml() {
     'td{padding:.65rem .7rem;font-size:.85rem;border-top:1px solid #1e293b;vertical-align:middle}',
     'tr.sel td{background:rgba(30,58,95,.55)}',
     '.rowchk{width:16px;height:16px;accent-color:#3b82f6;cursor:pointer}',
-    '.stat{flex:1;min-width:140px;padding:1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b}',
+    '.stat{flex:1;min-width:120px;padding:.85rem 1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b}',
+    '.mon-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem;width:100%}',
+    '.mon-card{background:rgba(15,23,42,.75);border:1px solid #1e293b;border-radius:.8rem;padding:.85rem 1rem;min-width:0}',
+    '@media(max-width:800px){.mon-grid{grid-template-columns:1fr}}',
     '.ok{color:#34d399}.bad{color:#f87171}.warn{color:#fbbf24}',
     '.dot{display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
     '.dot-on{background:#22c55e}.dot-off{background:#ef4444}',
@@ -878,16 +922,47 @@ function renderSipHtml() {
     '  var box = $("stats"); var hint = $("staleHint"); var s = ST;',
     '  if(!s){ hint.innerText="大阪机尚未上报心跳。"; box.innerHTML=""; return; }',
     '  hint.innerHTML = STALE ? "<span class=\\"bad\\">心跳超时，机器可能卡住或离线<\\/span> · 上次 "+s.received_at : "<span class=\\"ok\\">心跳正常<\\/span> · "+s.received_at;',
-    '  function card(t,v,c){ return "<div class=\\"stat\\"><div style=\\"font-size:.75rem;color:#94a3b8\\">"+t+"<\\/div><div style=\\"font-size:1.15rem;font-weight:700;margin-top:.3rem\\" class=\\""+(c||"")+"\\">"+v+"<\\/div><\\/div>"; }',
-    '  var html = "";',
-    '  html += card("主机", s.hostname||"-");',
-    '  html += card("Asterisk", s.asterisk||"-", s.asterisk==="active"?"ok":"bad");',
-    '  html += card("负载", s.load||"-");',
-    '  html += card("CPU", (s.cpu_pct!=null? s.cpu_pct+"%" : "-"), (s.cpu_pct||0)>85?"bad":"");',
-    '  html += card("内存", s.mem_used+" / "+s.mem_total, (s.mem_pct||0)>90?"bad":"");',
-    '  html += card("磁盘", s.disk_used+" / "+s.disk_total, (s.disk_pct||0)>90?"bad":"");',
-    '  html += card("网卡", s.net||"-");',
-    '  html += card("运行时长", s.uptime||"-");',
+    '  function kpi(t,v,c){ return "<div class=\\"stat\\"><div style=\\"font-size:.75rem;color:#94a3b8\\">"+t+"<\\/div><div style=\\"font-size:1.15rem;font-weight:700;margin-top:.25rem\\" class=\\""+(c||"")+"\\">"+v+"<\\/div><\\/div>"; }',
+    '  function series(hist,key){ var o=[]; for(var i=0;i<hist.length;i++) o.push(Number(hist[i][key])||0); return o; }',
+    '  function svgArea(vals,color,yMax){',
+    '    var w=100,h=38,n=vals.length;',
+    '    if(!n) return "<div style=\\"height:72px\\"><\\/div>";',
+    '    var mx=yMax||0; for(var i=0;i<n;i++) if(vals[i]>mx) mx=vals[i]; if(mx<=0) mx=1;',
+    '    function pt(i,v){ var x=n===1?50:(i/(n-1)*w); var y=h-(v/mx)*h*0.9; return x.toFixed(2)+","+y.toFixed(2); }',
+    '    var line=[], fill=["0,"+h];',
+    '    for(var j=0;j<n;j++){ var p=pt(j,vals[j]); line.push(p); fill.push(p); }',
+    '    fill.push(w+","+h);',
+    '    return "<svg viewBox=\\"0 0 "+w+" "+h+"\\" preserveAspectRatio=\\"none\\" style=\\"width:100%;height:72px;display:block\\"><polygon fill=\\""+color+"22\\" points=\\""+fill.join(" ")+"\\"/><polyline fill=\\"none\\" stroke=\\""+color+"\\" stroke-width=\\"1.4\\" stroke-linejoin=\\"round\\" points=\\""+line.join(" ")+"\\"/><\\/svg>";',
+    '  }',
+    '  function svgDual(a,b,ca,cb,yMax){',
+    '    var w=100,h=38,n=Math.max(a.length,b.length);',
+    '    if(!n) return "<div style=\\"height:72px\\"><\\/div>";',
+    '    var mx=yMax||0; for(var i=0;i<n;i++){ if((a[i]||0)>mx) mx=a[i]; if((b[i]||0)>mx) mx=b[i]; } if(mx<=0) mx=1;',
+    '    function poly(vals,col){ var pts=[]; for(var i=0;i<n;i++){ var x=n===1?50:(i/(n-1)*w); var y=h-((vals[i]||0)/mx)*h*0.9; pts.push(x.toFixed(2)+","+y.toFixed(2)); } return "<polyline fill=\\"none\\" stroke=\\""+col+"\\" stroke-width=\\"1.4\\" stroke-linejoin=\\"round\\" points=\\""+pts.join(" ")+"\\"/>"; }',
+    '    return "<svg viewBox=\\"0 0 "+w+" "+h+"\\" preserveAspectRatio=\\"none\\" style=\\"width:100%;height:72px;display:block\\">"+poly(a,ca)+poly(b,cb)+"<\\/svg>";',
+    '  }',
+    '  function fmtRate(bps){ bps=Number(bps)||0; if(bps<1024) return Math.round(bps)+" B/s"; if(bps<1048576) return (bps/1024).toFixed(1)+" KB/s"; return (bps/1048576).toFixed(2)+" MB/s"; }',
+    '  function todayCalls(st){',
+    '    var rows=(st&&st.cdr)||[]; var day=String(st.received_at||"").slice(0,10); var n=0;',
+    '    for(var i=0;i<rows.length;i++){ var t=String(rows[i].time||""); if(!day || t.indexOf(day)>=0) n++; }',
+    '    return n;',
+    '  }',
+    '  var hist=s.history||[];',
+    '  var live=liveMap(); var online=0; for(var k in live){ if(live[k] && String(live[k].status||"").toLowerCase().indexOf("avail")>=0) online++; }',
+    '  var callsNow=s.active_calls!=null?s.active_calls:0;',
+    '  var html="<div style=\\"display:flex;flex-wrap:wrap;gap:.7rem;width:100%;margin-bottom:.9rem\\">";',
+    '  html += kpi("主机", s.hostname||"-");',
+    '  html += kpi("Asterisk", s.asterisk||"-", s.asterisk==="active"?"ok":"bad");',
+    '  html += kpi("运行时长", s.uptime||"-");',
+    '  html += kpi("在线分机", online+" / "+(E.length||0), online?"ok":"");',
+    '  html += kpi("当前呼叫", String(callsNow), callsNow?"ok":"");',
+    '  html += kpi("今日通话", String(todayCalls(s)));',
+    '  html += "</div><div class=\\"mon-grid\\">";',
+    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">CPU<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.cpu_pct||0)>85?"bad":"")+"\\">"+(s.cpu_pct!=null?s.cpu_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">负载 "+(s.load||"-")+"<\\/div>"+svgArea(series(hist,"cpu"),"#4ade80",100)+"<\\/div>";',
+    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">内存<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.mem_pct||0)>90?"bad":"")+"\\">"+(s.mem_pct!=null?s.mem_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">"+(s.mem_used||"-")+" / "+(s.mem_total||"-")+"<\\/div>"+svgArea(series(hist,"mem"),"#a78bfa",100)+"<\\/div>";',
+    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">磁盘<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.disk_pct||0)>90?"bad":"")+"\\">"+(s.disk_pct!=null?s.disk_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">"+(s.disk_used||"-")+" / "+(s.disk_total||"-")+"<\\/div>"+svgArea(series(hist,"disk"),"#fbbf24",100)+"<\\/div>";',
+    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">网卡<\\/span><span style=\\"font-size:1.05rem;font-weight:700\\">↓ "+fmtRate(s.rx_bps)+" · ↑ "+fmtRate(s.tx_bps)+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\"><span style=\\"color:#38bdf8\\">接收<\\/span> / <span style=\\"color:#fb7185\\">发送<\\/span> · 累计 "+(s.net||"-")+"<\\/div>"+svgDual(series(hist,"rx"),series(hist,"tx"),"#38bdf8","#fb7185")+"<\\/div>";',
+    '  html += "</div>";',
     '  box.innerHTML = html;',
     '}',
     'function liveMap(){',
