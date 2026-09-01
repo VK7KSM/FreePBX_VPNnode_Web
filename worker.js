@@ -32,6 +32,19 @@ async function setStore(env, key, value) {
   }
 }
 
+function contactFingerprint(contacts) {
+  const cs = contacts || [];
+  const parts = [];
+  for (let i = 0; i < cs.length; i++) {
+    const c = cs[i];
+    if (!c || !c.ext) continue;
+    const on = String(c.status || "").toLowerCase().indexOf("avail") >= 0 ? "1" : "0";
+    parts.push(String(c.ext) + ":" + on);
+  }
+  parts.sort();
+  return parts.join(",");
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -172,8 +185,25 @@ export default {
           if (c && c.ext && dumpOk && incoming && incoming.length) lastSeen[c.ext] = body.received_at;
         }
         body.last_seen = lastSeen;
-        attachHistory(prev, body);
-        await setStore(env, "sip_status", body);
+        const lastWrite = Date.parse(prev.kv_written_at || "") || 0;
+        const due = (Date.now() - lastWrite) >= 120000;
+        const contactsChanged = contactFingerprint(body.contacts) !== contactFingerprint(prev.contacts);
+        const callsChanged = Number(body.active_calls || 0) !== Number(prev.active_calls || 0);
+        if (due || contactsChanged || callsChanged || !prev.received_at) {
+          attachHistory(prev, body);
+          body.kv_written_at = body.received_at;
+          try {
+            await setStore(env, "sip_status", body);
+          } catch (e) {
+            body.kv_error = String(e && e.message ? e.message : e);
+          }
+        } else {
+          body.history = prev.history || [];
+          body.rx_bps = prev.rx_bps || 0;
+          body.tx_bps = prev.tx_bps || 0;
+          body.online_count = countOnlineContacts(body.contacts);
+          body.kv_written_at = prev.kv_written_at;
+        }
         let raw = await getStore(env, "sip_extensions");
         if (!raw) {
           raw = defaultSipExtensions();
@@ -264,7 +294,7 @@ function isSipStale(status) {
   if (!status || !status.received_at) return true;
   const t = Date.parse(status.received_at);
   if (!t) return true;
-  return (Date.now() - t) > 90000;
+  return (Date.now() - t) > 360000;
 }
 
 function countOnlineContacts(contacts) {
@@ -338,7 +368,7 @@ async function geoForStatus(env, status) {
       const label = (j && j.status === "success")
         ? [j.country, j.regionName, j.city].filter(Boolean).join(" ")
         : "未知";
-      await setStore(env, "geo_" + ip, label);
+      try { await setStore(env, "geo_" + ip, label); } catch (e) {}
       geo[ip] = label;
     } catch (e) {
       geo[ip] = "未知";
@@ -921,7 +951,7 @@ function renderSipHtml() {
     'function renderStatus(){',
     '  var box = $("stats"); var hint = $("staleHint"); var s = ST;',
     '  if(!s){ hint.innerText="大阪机尚未上报心跳。"; box.innerHTML=""; return; }',
-    '  hint.innerHTML = STALE ? "<span class=\\"bad\\">心跳超时，机器可能卡住或离线<\\/span> · 上次 "+s.received_at : "<span class=\\"ok\\">心跳正常<\\/span> · "+s.received_at;',
+    '  hint.innerHTML = STALE ? "<span class=\\"bad\\">心跳超时，机器可能卡住或离线<\\/span> · 上次 "+fmtSydney(s.received_at) : "<span class=\\"ok\\">心跳正常<\\/span> · "+fmtSydney(s.received_at);',
     '  function kpi(t,v,c){ return "<div class=\\"stat\\"><div style=\\"font-size:.75rem;color:#94a3b8\\">"+t+"<\\/div><div style=\\"font-size:1.15rem;font-weight:700;margin-top:.25rem\\" class=\\""+(c||"")+"\\">"+v+"<\\/div><\\/div>"; }',
     '  function series(hist,key){ var o=[]; for(var i=0;i<hist.length;i++) o.push(Number(hist[i][key])||0); return o; }',
     '  function svgArea(vals,color,yMax){',
@@ -943,8 +973,8 @@ function renderSipHtml() {
     '  }',
     '  function fmtRate(bps){ bps=Number(bps)||0; if(bps<1024) return Math.round(bps)+" B/s"; if(bps<1048576) return (bps/1024).toFixed(1)+" KB/s"; return (bps/1048576).toFixed(2)+" MB/s"; }',
     '  function todayCalls(st){',
-    '    var rows=(st&&st.cdr)||[]; var day=String(st.received_at||"").slice(0,10); var n=0;',
-    '    for(var i=0;i<rows.length;i++){ var t=String(rows[i].time||""); if(!day || t.indexOf(day)>=0) n++; }',
+    '    var rows=(st&&st.cdr)||[]; var day=sydneyDay(parseTime(st.received_at)); var n=0;',
+    '    for(var i=0;i<rows.length;i++){ var d=sydneyDay(parseTime(rows[i].time)); if(!day || d===day) n++; }',
     '    return n;',
     '  }',
     '  var hist=s.history||[];',
@@ -982,9 +1012,28 @@ function renderSipHtml() {
     '  function z(n){return n<10?"0"+n:""+n;}',
     '  return h>0 ? h+":"+z(m)+":"+z(s) : z(m)+":"+z(s);',
     '}',
-    'function fmtTime(t){ if(!t) return "-"; return t.replace("T"," ").replace("Z","").substring(0,19); }',
+    'function parseTime(t){',
+    '  if(!t) return null;',
+    '  var s=String(t).trim();',
+    '  if(/^\\d{4}-\\d{2}-\\d{2} /.test(s) && s.indexOf("Z")<0 && s.indexOf("+")<0) s=s.replace(" ","T")+"Z";',
+    '  var d=new Date(s);',
+    '  return isNaN(d.getTime())?null:d;',
+    '}',
+    'function sydneyDay(d){',
+    '  if(!d) return "";',
+    '  var p=new Intl.DateTimeFormat("en-CA",{timeZone:"Australia/Sydney",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(d);',
+    '  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return ""; }',
+    '  return g("year")+"-"+g("month")+"-"+g("day");',
+    '}',
+    'function fmtSydney(t){',
+    '  var d=parseTime(t); if(!d) return "-";',
+    '  var p=new Intl.DateTimeFormat("en-CA",{timeZone:"Australia/Sydney",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(d);',
+    '  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return ""; }',
+    '  return g("year")+"-"+g("month")+"-"+g("day")+" "+g("hour")+":"+g("minute")+":"+g("second");',
+    '}',
+    'function fmtTime(t){ return fmtSydney(t); }',
     'function fmtSeen(t){',
-    '  var s = fmtTime(t);',
+    '  var s = fmtSydney(t);',
     '  if(!s || s==="-") return "-";',
     '  var p = s.split(" ");',
     '  if(p.length<2) return s;',
