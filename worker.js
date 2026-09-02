@@ -259,7 +259,9 @@ async function fetchOsakaStatus(env) {
       }
     });
     if (!r.ok) return { status: null, err: "大阪接口 HTTP " + r.status };
-    const st = await r.json();
+    const txt = await r.text();
+    const safe = txt.replace(/:\s*-?Infinity\b/g, ":null").replace(/:\s*NaN\b/g, ":null");
+    const st = JSON.parse(safe);
     if (!st || st.ok === false) return { status: null, err: (st && st.msg) || "大阪接口返回失败" };
     return { status: st, err: "" };
   } catch (e) {
@@ -919,15 +921,18 @@ function renderSipHtml() {
     'function logout(){ localStorage.removeItem("_pt"); location.href="/"; }',
     'function loadSip(){',
     '  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){',
-    '    E = d.extensions||[]; ST = d.status||null; GEO = d.geo||{}; STALE = !!d.stale; SYNC = d.sync||null;',
+    '    if(d.extensions) E = d.extensions;',
+    '    if(d.status){ ST = d.status; if(d.geo) GEO = d.geo; }',
+    '    STALE = !!d.stale || !d.status;',
+    '    SYNC = d.sync||null;',
     '    renderStatus();',
     '    renderExt();',
     '    renderSync();',
-    '  });',
+    '  }).catch(function(){ STALE=true; renderStatus(); });',
     '}',
     'function renderStatus(){',
     '  var box = $("stats"); var hint = $("staleHint"); var s = ST;',
-    '  if(!s){ hint.innerText="大阪机尚未上报心跳。"; box.innerHTML=""; return; }',
+    '  if(!s){ hint.innerText="暂时读不到新数据，图表保持上次。"; return; }',
     '  hint.innerHTML = STALE ? "<span class=\\"bad\\">心跳超时，机器可能卡住或离线<\\/span> · 上次 "+fmtSydney(s.received_at) : "<span class=\\"ok\\">心跳正常<\\/span> · "+fmtSydney(s.received_at);',
     '  function kpi(t,v,c){ return "<div class=\\"stat\\"><div style=\\"font-size:.75rem;color:#94a3b8\\">"+t+"<\\/div><div style=\\"font-size:1.15rem;font-weight:700;margin-top:.25rem\\" class=\\""+(c||"")+"\\">"+v+"<\\/div><\\/div>"; }',
     '  function series(hist,key){ var o=[]; for(var i=0;i<hist.length;i++) o.push(Number(hist[i][key])||0); return o; }',
@@ -1133,7 +1138,7 @@ function renderSipHtml() {
     '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}).then(function(){ loadSip(); });',
     '}',
     'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });',
-    'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 5000);',
+    'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 2000);',
     'checkAuth();',
     '<\/script>',
     '<\/body><\/html>'
