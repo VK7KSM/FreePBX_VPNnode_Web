@@ -100,7 +100,8 @@ export default {
       const raw = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
       const secrets = (await getStore(env, "sip_secrets")) || {};
       const extensions = raw.map(function (x) { return publicExtension(x, secrets); });
-      const status = (await getStore(env, "sip_status")) || null;
+      const osaka = await fetchOsakaStatus(env);
+      const status = osaka.status;
       const geo = await geoForStatus(env, status);
       const config_rev = (await getStore(env, "sip_config_rev")) || 0;
       const applied_rev = (status && status.applied_rev) || 0;
@@ -109,14 +110,38 @@ export default {
         extensions,
         status,
         geo,
-        stale: isSipStale(status),
+        stale: isSipStale(status) || !!osaka.err,
         sync: {
           config_rev,
           applied_rev,
           pending: Number(config_rev) !== Number(applied_rev),
-          error: (status && status.apply_error) || ""
+          error: (status && status.apply_error) || osaka.err || ""
         }
       });
+    }
+
+    if (pathname === "/api/sip/pull" && method === "GET") {
+      const token = request.headers.get("X-Heartbeat-Token") || "";
+      const expected = (await getStore(env, "sip_heartbeat_token")) || "";
+      if (!expected || token !== expected) {
+        return json({ ok: false, msg: "heartbeat token 无效" }, 401);
+      }
+      const raw = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
+      const secrets = (await getStore(env, "sip_secrets")) || {};
+      const config_rev = (await getStore(env, "sip_config_rev")) || 0;
+      const applied = parseInt(url.searchParams.get("applied") || "0", 10) || 0;
+      const pending = Number(config_rev) !== Number(applied);
+      const resp = { ok: true, config_rev, applied_rev: applied, pending };
+      if (pending) {
+        resp.extensions = raw.map(function (x) {
+          const item = publicExtension(x, secrets);
+          const pw = secrets[item.ext];
+          if (pw) item.password = pw;
+          delete item.has_password;
+          return item;
+        });
+      }
+      return json(resp);
     }
 
     if (pathname === "/api/sip/save" && method === "POST") {
@@ -164,73 +189,7 @@ export default {
       if (!expected || token !== expected) {
         return json({ ok: false, msg: "heartbeat token 无效" }, 401);
       }
-      try {
-        const body = await request.json();
-        body.received_at = new Date().toISOString();
-        const prev = (await getStore(env, "sip_status")) || {};
-        const lastSeen = prev.last_seen || {};
-        const prevContacts = Array.isArray(prev.contacts) ? prev.contacts : [];
-        const incoming = Array.isArray(body.contacts) ? body.contacts : null;
-        const dumpOk = body.contacts_ok !== false && incoming !== null;
-        if (!dumpOk) {
-          body.contacts = prevContacts;
-        } else if (incoming.length === 0 && prevContacts.length > 0 && body.contacts_ok !== true) {
-          body.contacts = prevContacts;
-        } else {
-          body.contacts = incoming;
-        }
-        const contacts = body.contacts || [];
-        for (let i = 0; i < contacts.length; i++) {
-          const c = contacts[i];
-          if (c && c.ext && dumpOk && incoming && incoming.length) lastSeen[c.ext] = body.received_at;
-        }
-        body.last_seen = lastSeen;
-        const lastWrite = Date.parse(prev.kv_written_at || "") || 0;
-        const due = (Date.now() - lastWrite) >= 120000;
-        const contactsChanged = contactFingerprint(body.contacts) !== contactFingerprint(prev.contacts);
-        const callsChanged = Number(body.active_calls || 0) !== Number(prev.active_calls || 0);
-        if (due || contactsChanged || callsChanged || !prev.received_at) {
-          attachHistory(prev, body);
-          body.kv_written_at = body.received_at;
-          try {
-            await setStore(env, "sip_status", body);
-          } catch (e) {
-            body.kv_error = String(e && e.message ? e.message : e);
-          }
-        } else {
-          body.history = prev.history || [];
-          body.rx_bps = prev.rx_bps || 0;
-          body.tx_bps = prev.tx_bps || 0;
-          body.online_count = countOnlineContacts(body.contacts);
-          body.kv_written_at = prev.kv_written_at;
-        }
-        let raw = await getStore(env, "sip_extensions");
-        if (!raw) {
-          raw = defaultSipExtensions();
-          await setStore(env, "sip_extensions", raw);
-        }
-        const secrets = (await getStore(env, "sip_secrets")) || {};
-        let config_rev = (await getStore(env, "sip_config_rev")) || 0;
-        if (!config_rev) {
-          config_rev = 1;
-          await setStore(env, "sip_config_rev", 1);
-        }
-        const applied = body.applied_rev || 0;
-        const pending = Number(config_rev) !== Number(applied);
-        const resp = { ok: true, config_rev, applied_rev: applied, pending };
-        if (pending) {
-          resp.extensions = raw.map(function (x) {
-            const item = publicExtension(x, secrets);
-            const pw = secrets[item.ext];
-            if (pw) item.password = pw;
-            delete item.has_password;
-            return item;
-          });
-        }
-        return json(resp);
-      } catch(e) {
-        return json({ ok: false, msg: e.message }, 400);
-      }
+      return json({ ok: true, stored: "osaka-local" });
     }
 
     if (pathname === "/sip" || pathname === "/sip/") {
@@ -290,11 +249,29 @@ function publicExtension(x, secrets) {
   };
 }
 
+async function fetchOsakaStatus(env) {
+  const token = (await getStore(env, "sip_heartbeat_token")) || "";
+  try {
+    const r = await fetch("https://api.elfradio.net/status", {
+      headers: {
+        "X-Heartbeat-Token": token,
+        "User-Agent": "sip-panel/1.0"
+      }
+    });
+    if (!r.ok) return { status: null, err: "大阪接口 HTTP " + r.status };
+    const st = await r.json();
+    if (!st || st.ok === false) return { status: null, err: (st && st.msg) || "大阪接口返回失败" };
+    return { status: st, err: "" };
+  } catch (e) {
+    return { status: null, err: "无法连接大阪隧道: " + (e && e.message ? e.message : e) };
+  }
+}
+
 function isSipStale(status) {
   if (!status || !status.received_at) return true;
   const t = Date.parse(status.received_at);
   if (!t) return true;
-  return (Date.now() - t) > 360000;
+  return (Date.now() - t) > 45000;
 }
 
 function countOnlineContacts(contacts) {
