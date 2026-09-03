@@ -1,6 +1,6 @@
 // =========================================================================
-// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.4.0
-// 升级：SIP 管理独立页 + 甲骨文 SIP 机负荷心跳监控
+// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
+// 升级：通话组 + 网关账户 + 分级分机目录
 // =========================================================================
 
 import { LOGO_PNG_B64 } from "./logo.js";
@@ -97,9 +97,7 @@ export default {
     }
 
     if (pathname === "/api/sip" && method === "GET") {
-      const raw = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
-      const secrets = (await getStore(env, "sip_secrets")) || {};
-      const extensions = raw.map(function (x) { return publicExtension(x, secrets); });
+      const bundle = await loadSipBundle(env);
       const osaka = await fetchOsakaStatus(env);
       const status = osaka.status;
       const geo = await geoForStatus(env, status);
@@ -107,7 +105,9 @@ export default {
       const applied_rev = (status && status.applied_rev) || 0;
       return json({
         ok: true,
-        extensions,
+        extensions: bundle.extensions,
+        groups: bundle.groups,
+        gateways: bundle.gateways,
         status,
         geo,
         stale: isSipStale(status) || !!osaka.err,
@@ -126,20 +126,15 @@ export default {
       if (!expected || token !== expected) {
         return json({ ok: false, msg: "heartbeat token 无效" }, 401);
       }
-      const raw = (await getStore(env, "sip_extensions")) || defaultSipExtensions();
-      const secrets = (await getStore(env, "sip_secrets")) || {};
+      const bundle = await loadSipBundle(env);
       const config_rev = (await getStore(env, "sip_config_rev")) || 0;
       const applied = parseInt(url.searchParams.get("applied") || "0", 10) || 0;
       const pending = Number(config_rev) !== Number(applied);
       const resp = { ok: true, config_rev, applied_rev: applied, pending };
       if (pending) {
-        resp.extensions = raw.map(function (x) {
-          const item = publicExtension(x, secrets);
-          const pw = secrets[item.ext];
-          if (pw) item.password = pw;
-          delete item.has_password;
-          return item;
-        });
+        resp.extensions = withPasswords(bundle.extensions, bundle.secrets);
+        resp.groups = bundle.groups;
+        resp.gateways = withPasswords(bundle.gateways, bundle.secrets);
       }
       return json(resp);
     }
@@ -147,34 +142,57 @@ export default {
     if (pathname === "/api/sip/save" && method === "POST") {
       try {
         const data = await request.json();
-        if (!Array.isArray(data.extensions)) {
-          return json({ ok: false, msg: "extensions 必须是数组" }, 400);
+        if (!Array.isArray(data.extensions) || !Array.isArray(data.groups) || !Array.isArray(data.gateways)) {
+          return json({ ok: false, msg: "extensions、groups、gateways 都必须是数组" }, 400);
         }
         const secrets = Object.assign({}, (await getStore(env, "sip_secrets")) || {});
+        const gwSet = {};
+        const gateways = [];
+        for (let i = 0; i < data.gateways.length; i++) {
+          const src = data.gateways[i] || {};
+          const ext = String(src.ext || "").trim();
+          if (!/^[0-9]{3,6}$/.test(ext)) {
+            return json({ ok: false, msg: "网关分机号必须是 3 到 6 位数字" }, 400);
+          }
+          if (gwSet[ext]) return json({ ok: false, msg: "网关分机号重复: " + ext }, 400);
+          gwSet[ext] = true;
+          const item = publicGateway(src, secrets);
+          if (src.password) secrets[ext] = String(src.password);
+          if (src.clear_password) delete secrets[ext];
+          gateways.push(stripSecretFlag(item));
+        }
+        if (!gateways.length) {
+          return json({ ok: false, msg: "至少需要一个网关账户" }, 400);
+        }
+        const groups = symmetrizeGroups((data.groups || []).map(publicGroup).filter(function (g) { return !!g.id; }));
+        const groupIds = {};
+        for (let i = 0; i < groups.length; i++) groupIds[groups[i].id] = true;
         const cleaned = [];
+        const extSet = {};
         for (let i = 0; i < data.extensions.length; i++) {
           const src = data.extensions[i] || {};
           const ext = String(src.ext || "").trim();
           if (!/^[0-9]{3,6}$/.test(ext)) {
             return json({ ok: false, msg: "分机号必须是 3 到 6 位数字" }, 400);
           }
+          if (gwSet[ext]) return json({ ok: false, msg: "分机号与网关重复: " + ext }, 400);
+          if (extSet[ext]) return json({ ok: false, msg: "分机号重复: " + ext }, 400);
+          extSet[ext] = true;
           const item = publicExtension(src, secrets);
-          if (src.password) {
-            secrets[ext] = String(src.password);
-            item.has_password = true;
-          }
-          if (src.clear_password) {
-            delete secrets[ext];
-            item.has_password = false;
-          }
-          delete item.has_password;
-          cleaned.push(item);
+          if (item.group_id && !groupIds[item.group_id]) item.group_id = "";
+          if (src.password) secrets[ext] = String(src.password);
+          if (src.clear_password) delete secrets[ext];
+          cleaned.push(stripSecretFlag(item));
         }
-        const keep = {};
-        for (let i = 0; i < cleaned.length; i++) keep[cleaned[i].ext] = true;
+        for (let i = 0; i < groups.length; i++) {
+          if (groups[i].gateway && !gwSet[groups[i].gateway]) groups[i].gateway = "";
+        }
+        const keep = Object.assign({}, gwSet, extSet);
         Object.keys(secrets).forEach(function (k) { if (!keep[k]) delete secrets[k]; });
         const prevRev = (await getStore(env, "sip_config_rev")) || 0;
         await setStore(env, "sip_extensions", cleaned);
+        await setStore(env, "sip_groups", groups);
+        await setStore(env, "sip_gateways", gateways);
         await setStore(env, "sip_secrets", secrets);
         await setStore(env, "sip_config_rev", prevRev + 1);
         return json({ ok: true, config_rev: prevRev + 1 });
@@ -217,36 +235,151 @@ function defaultSipExtensions() {
     ["108", "Elvin Sydney", true, false],
     ["201", "D22-BB", true, false],
     ["202", "D22-JJ", true, false],
-    ["203", "H13", true, false],
-    ["300", "Pixel3 GSM Gateway", false, true]
+    ["203", "H13", true, false]
   ];
   return rows.map(function (r) {
     return publicExtension({
       ext: r[0],
       name: r[1],
       outbound: r[2],
-      sms: r[3],
-      gateway: r[0] === "300" ? "none" : "pixel"
+      sms: r[3]
     }, {});
   });
 }
 
+function defaultSipGateways() {
+  return [publicGateway({
+    ext: "300",
+    name: "Pixel3 GSM Gateway",
+    public_number: "",
+    inbound_fwd: "101",
+    sms_fwd: "101"
+  }, {})];
+}
+
 function publicExtension(x, secrets) {
   const ext = String((x && x.ext) || "").trim();
-  const isGw = ext === "300";
   const ring = parseInt(x && x.ringtimer, 10);
   return {
     ext: ext,
     name: String((x && x.name) || "").trim(),
-    outbound: isGw ? false : (x && x.outbound) !== false,
-    sms: (x && x.sms) != null ? !!x.sms : (ext === "101" || ext === "300"),
-    gateway: isGw ? "none" : ((x && x.gateway) || "pixel"),
+    outbound: (x && x.outbound) !== false,
+    sms: (x && x.sms) != null ? !!x.sms : ext === "101",
+    group_id: String((x && x.group_id) || "").trim(),
     cf: String((x && x.cf) || "").trim(),
     cf_busy: String((x && x.cf_busy) || "").trim(),
     cf_noreply: String((x && x.cf_noreply) || "").trim(),
     ringtimer: ring > 0 ? ring : 60,
     has_password: !!(secrets && secrets[ext])
   };
+}
+
+function publicGateway(x, secrets) {
+  const ext = String((x && x.ext) || "").trim();
+  return {
+    ext: ext,
+    name: String((x && x.name) || "").trim(),
+    public_number: String((x && x.public_number) || "").trim(),
+    inbound_fwd: String((x && x.inbound_fwd) || "").trim(),
+    sms_fwd: String((x && x.sms_fwd) || "").trim(),
+    has_password: !!(secrets && secrets[ext])
+  };
+}
+
+function publicGroup(x) {
+  const pol = (x && x.internal) || "self";
+  const internal = (pol === "peers" || pol === "all" || pol === "self") ? pol : "self";
+  const peers = Array.isArray(x && x.peers) ? x.peers.map(function (id) { return String(id || "").trim(); }).filter(Boolean) : [];
+  return {
+    id: String((x && x.id) || "").trim(),
+    name: String((x && x.name) || "").trim(),
+    internal: internal,
+    peers: peers,
+    gateway: String((x && x.gateway) || "").trim()
+  };
+}
+
+function stripSecretFlag(item) {
+  const o = Object.assign({}, item);
+  delete o.has_password;
+  delete o.password;
+  return o;
+}
+
+function symmetrizeGroups(groups) {
+  const byId = {};
+  for (let i = 0; i < groups.length; i++) byId[groups[i].id] = groups[i];
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    if (g.internal !== "peers") {
+      g.peers = [];
+      continue;
+    }
+    const next = [];
+    for (let j = 0; j < g.peers.length; j++) {
+      const pid = g.peers[j];
+      if (!pid || pid === g.id || !byId[pid]) continue;
+      next.push(pid);
+      const o = byId[pid];
+      o.internal = "peers";
+      if (o.peers.indexOf(g.id) < 0) o.peers.push(g.id);
+    }
+    g.peers = next;
+  }
+  return groups;
+}
+
+async function loadSipBundle(env) {
+  const secrets = (await getStore(env, "sip_secrets")) || {};
+  let raw = await getStore(env, "sip_extensions");
+  if (!Array.isArray(raw)) raw = defaultSipExtensions();
+  let groups = await getStore(env, "sip_groups");
+  let gateways = await getStore(env, "sip_gateways");
+  let persist = false;
+  if (!Array.isArray(gateways)) {
+    gateways = [];
+    const kept = [];
+    for (let i = 0; i < raw.length; i++) {
+      const x = raw[i];
+      if (String(x.ext) === "300") {
+        gateways.push({
+          ext: "300",
+          name: x.name || "Pixel3 GSM Gateway",
+          public_number: "",
+          inbound_fwd: "101",
+          sms_fwd: "101"
+        });
+      } else kept.push(x);
+    }
+    raw = kept;
+    persist = true;
+  }
+  if (!Array.isArray(groups)) {
+    groups = [];
+    persist = true;
+  }
+  const gwSet = {};
+  gateways = gateways.map(function (g) { return publicGateway(g, secrets); });
+  for (let i = 0; i < gateways.length; i++) gwSet[gateways[i].ext] = true;
+  raw = raw.filter(function (x) { return !gwSet[String(x.ext)]; });
+  groups = symmetrizeGroups(groups.map(publicGroup).filter(function (g) { return !!g.id; }));
+  const extensions = raw.map(function (x) { return publicExtension(x, secrets); });
+  if (persist) {
+    await setStore(env, "sip_extensions", extensions.map(stripSecretFlag));
+    await setStore(env, "sip_groups", groups);
+    await setStore(env, "sip_gateways", gateways.map(stripSecretFlag));
+  }
+  return { extensions: extensions, groups: groups, gateways: gateways, secrets: secrets };
+}
+
+function withPasswords(list, secrets) {
+  return list.map(function (item) {
+    const o = Object.assign({}, item);
+    const pw = secrets[o.ext];
+    if (pw) o.password = pw;
+    delete o.has_password;
+    return o;
+  });
 }
 
 async function fetchOsakaStatus(env) {
@@ -853,21 +986,39 @@ function renderSipHtml() {
 
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;gap:1rem">',
-    '<h3 style="font-weight:700;line-height:2.2rem;margin:0">分机目录<\/h3>',
-    '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:.4rem;flex-shrink:0">',
+    '<h3 style="font-weight:700;line-height:2.2rem;margin:0">通话组<\/h3>',
     '<div style="display:flex;gap:.5rem;align-items:center">',
-    '<button class="btn-green" onclick="openExt()">+ 添加分机<\/button>',
-    '<button class="btn-gray" onclick="editSelected()">编辑<\/button>',
-    '<button class="btn-gray" style="color:#f87171" onclick="delSelected()">删除<\/button>',
+    '<button class="btn-green" onclick="openGrp()">+ 添加通话组<\/button>',
+    '<button class="btn-gray" onclick="editSelGrp()">编辑<\/button>',
+    '<button class="btn-gray" style="color:#f87171" onclick="delSelGrp()">删除<\/button>',
+    '<\/div><\/div>',
+    '<div style="overflow-x:auto"><table><thead><tr>',
+    '<th><\/th><th>组名<\/th><th>人数<\/th><th>外呼出口<\/th><th>内部通话<\/th>',
+    '<\/tr><\/thead><tbody id="gtb"><\/tbody><\/table><\/div><\/div>',
+
+    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;gap:1rem">',
+    '<h3 style="font-weight:700;line-height:2.2rem;margin:0">网关账户<\/h3>',
+    '<div style="display:flex;gap:.5rem;align-items:center">',
+    '<button class="btn-green" onclick="openGw()">+ 添加网关<\/button>',
+    '<button class="btn-gray" onclick="editSelGw()">编辑<\/button>',
+    '<button class="btn-gray" style="color:#f87171" onclick="delSelGw()">删除<\/button>',
+    '<\/div><\/div>',
+    '<div style="overflow-x:auto"><table><thead><tr>',
+    '<th><\/th><th>在线<\/th><th>分机号<\/th><th>名称<\/th><th>公网号码<\/th><th>呼入/短信转发<\/th><th>被哪些组当出口<\/th><th>传输<\/th><th>延时<\/th>',
+    '<\/tr><\/thead><tbody id="wtb"><\/tbody><\/table><\/div><\/div>',
+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;flex-wrap:wrap">',
+    '<h3 style="font-weight:700;margin:0">分机目录<\/h3>',
+    '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:.4rem">',
+    '<div style="display:flex;gap:.5rem;align-items:center">',
+    '<button class="btn-green" onclick="openExt(\'\')">+ 添加分机<\/button>',
+    '<button class="btn-gray" onclick="editSelExt()">编辑<\/button>',
+    '<button class="btn-gray" style="color:#f87171" onclick="delSelExt()">删除<\/button>',
     '<\/div>',
     '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin:0">等待同步状态...<\/p>',
-    '<\/div>',
-    '<\/div>',
-    '<div style="overflow-x:auto">',
-    '<table><thead><tr>',
-    '<th><\/th><th>在线<\/th><th>分机号<\/th><th>名称<\/th><th>传输<\/th><th>IP<\/th><th>延时<\/th><th>最近上线<\/th><th>拨打次数<\/th><th>总通话时长<\/th>',
-    '<\/tr><\/thead><tbody id="etb"><\/tbody><\/table>',
     '<\/div><\/div>',
+    '<div id="groupBoxes" style="display:flex;flex-direction:column;gap:1.2rem"><\/div>',
     '<\/main>',
 
     '<div id="extWrap" class="modal-bg" style="display:none">',
@@ -877,7 +1028,7 @@ function renderSipHtml() {
     '<div><label style="font-size:.8rem;color:#cbd5e1">分机号<\/label><input id="eExt" class="inp"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">名称<\/label><input id="eName" class="inp"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">密码<\/label><input id="ePw" type="password" class="inp" placeholder="留空则不修改现有密码"><\/div>',
-    '<div><label style="font-size:.8rem;color:#cbd5e1">网关路由<\/label><select id="eGw" class="inp"><option value="pixel">Pixel GSM 网关 (300)<\/option><option value="none">仅内部分机<\/option><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">通话组<\/label><select id="eGroup" class="inp"><\/select><\/div>',
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
     '<div><label style="font-size:.8rem;color:#cbd5e1">外呼权限<\/label><select id="eOut" class="inp"><option value="1">允许<\/option><option value="0">禁止<\/option><\/select><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">短信权限<\/label><select id="eSms" class="inp"><option value="0">禁止<\/option><option value="1">允许<\/option><\/select><\/div>',
@@ -893,6 +1044,37 @@ function renderSipHtml() {
     '<button class="btn-green" onclick="saveExt()">保存并同步<\/button>',
     '<\/div><\/div><\/div>',
 
+    '<div id="grpWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:520px;max-height:90vh;overflow:auto">',
+    '<h3 id="grpTitle" style="font-weight:700;margin-bottom:1rem">添加通话组<\/h3>',
+    '<div style="display:flex;flex-direction:column;gap:.8rem">',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">组名<\/label><input id="gName" class="inp"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">外呼出口<\/label><select id="gGw" class="inp"><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">内部通话<\/label><select id="gInt" class="inp" onchange="togglePeers()"><option value="self">仅组内<\/option><option value="peers">指定组（对称）<\/option><option value="all">全部内网<\/option><\/select><\/div>',
+    '<div id="gPeerBox" style="display:none"><label style="font-size:.8rem;color:#cbd5e1">可互打的组<\/label><div id="gPeers" style="display:flex;flex-direction:column;gap:.35rem;margin-top:.4rem"><\/div><\/div>',
+    '<\/div>',
+    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
+    '<button class="btn-gray" onclick="hide(\'grpWrap\')">取消<\/button>',
+    '<button class="btn-green" onclick="saveGrp()">保存并同步<\/button>',
+    '<\/div><\/div><\/div>',
+
+    '<div id="gwWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:520px;max-height:90vh;overflow:auto">',
+    '<h3 id="gwTitle" style="font-weight:700;margin-bottom:1rem">添加网关<\/h3>',
+    '<div style="display:flex;flex-direction:column;gap:.8rem">',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">分机号<\/label><input id="wExt" class="inp"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">名称<\/label><input id="wName" class="inp"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">密码<\/label><input id="wPw" type="password" class="inp" placeholder="留空则不修改现有密码"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">公网电话号码<\/label><input id="wNum" class="inp" placeholder="例如 +61412345678"><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">呼入转发到<\/label><select id="wIn" class="inp"><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#cbd5e1">短信转发到<\/label><select id="wSms" class="inp"><\/select><\/div>',
+    '<div><label style="font-size:.8rem;color:#94a3b8">被哪些组当出口（只读，在通话组里指定）<\/label><div id="wUsed" style="font-size:.85rem;color:#cbd5e1;margin-top:.3rem">无<\/div><\/div>',
+    '<\/div>',
+    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
+    '<button class="btn-gray" onclick="hide(\'gwWrap\')">取消<\/button>',
+    '<button class="btn-green" onclick="saveGw()">保存并同步<\/button>',
+    '<\/div><\/div><\/div>',
+
     '<div id="cdrWrap" class="modal-bg" style="display:none">',
     '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:1100px;max-height:90vh;overflow:auto">',
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
@@ -906,241 +1088,13 @@ function renderSipHtml() {
     '<\/div><\/div>',
 
     '<script>',
-    'var E = []; var ST = null; var GEO = {}; var STALE = true; var SYNC = null; var editIdx = -1; var selIdx = -1; var cdrPage = 1; var cdrExt = ""; var PAGE = 25; var HOLD = {};',
-    'function $(id){return document.getElementById(id)}',
-    'function show(id){$(id).style.display="flex"}',
-    'function hide(id){$(id).style.display="none"}',
-    'function checkAuth(){ if(localStorage.getItem("_pt")){ hide("loginWrap"); loadSip(); } else show("loginWrap"); }',
-    'function doLogin(){',
-    '  fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("lu").value,password:$("lp").value})})',
-    '  .then(function(r){return r.json();}).then(function(d){',
-    '    if(d.ok){ localStorage.setItem("_pt","1"); hide("loginWrap"); loadSip(); }',
-    '    else { $("lerr").innerText=d.msg||"失败"; $("lerr").style.display="block"; }',
-    '  });',
-    '}',
-    'function logout(){ localStorage.removeItem("_pt"); location.href="/"; }',
-    'function loadSip(){',
-    '  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){',
-    '    if(d.extensions) E = d.extensions;',
-    '    if(d.status){ ST = d.status; if(d.geo) GEO = d.geo; }',
-    '    STALE = !!d.stale || !d.status;',
-    '    SYNC = d.sync||null;',
-    '    renderStatus();',
-    '    renderExt();',
-    '    renderSync();',
-    '  }).catch(function(){ STALE=true; renderStatus(); });',
-    '}',
-    'function renderStatus(){',
-    '  var box = $("stats"); var hint = $("staleHint"); var s = ST;',
-    '  if(!s){ hint.innerText="暂时读不到新数据，图表保持上次。"; return; }',
-    '  hint.innerHTML = STALE ? "<span class=\\"bad\\">心跳超时，机器可能卡住或离线<\\/span> · 上次 "+fmtSydney(s.received_at) : "<span class=\\"ok\\">心跳正常<\\/span> · "+fmtSydney(s.received_at);',
-    '  function kpi(t,v,c){ return "<div class=\\"stat\\"><div style=\\"font-size:.75rem;color:#94a3b8\\">"+t+"<\\/div><div style=\\"font-size:1.15rem;font-weight:700;margin-top:.25rem\\" class=\\""+(c||"")+"\\">"+v+"<\\/div><\\/div>"; }',
-    '  function series(hist,key){ var o=[]; for(var i=0;i<hist.length;i++) o.push(Number(hist[i][key])||0); return o; }',
-    '  function svgArea(vals,color,yMax){',
-    '    var w=100,h=38,n=vals.length;',
-    '    if(!n) return "<div style=\\"height:72px\\"><\\/div>";',
-    '    var mx=yMax||0; for(var i=0;i<n;i++) if(vals[i]>mx) mx=vals[i]; if(mx<=0) mx=1;',
-    '    function pt(i,v){ var x=n===1?50:(i/(n-1)*w); var y=h-(v/mx)*h*0.9; return x.toFixed(2)+","+y.toFixed(2); }',
-    '    var line=[], fill=["0,"+h];',
-    '    for(var j=0;j<n;j++){ var p=pt(j,vals[j]); line.push(p); fill.push(p); }',
-    '    fill.push(w+","+h);',
-    '    return "<svg viewBox=\\"0 0 "+w+" "+h+"\\" preserveAspectRatio=\\"none\\" style=\\"width:100%;height:72px;display:block\\"><polygon fill=\\""+color+"22\\" points=\\""+fill.join(" ")+"\\"/><polyline fill=\\"none\\" stroke=\\""+color+"\\" stroke-width=\\"1.2\\" stroke-linejoin=\\"round\\" vector-effect=\\"non-scaling-stroke\\" points=\\""+line.join(" ")+"\\"/><\\/svg>";',
-    '  }',
-    '  function svgDual(a,b,ca,cb,yMax){',
-    '    var w=100,h=38,n=Math.max(a.length,b.length);',
-    '    if(!n) return "<div style=\\"height:72px\\"><\\/div>";',
-    '    var mx=yMax||0; for(var i=0;i<n;i++){ if((a[i]||0)>mx) mx=a[i]; if((b[i]||0)>mx) mx=b[i]; } if(mx<=0) mx=1;',
-    '    function poly(vals,col){ var pts=[]; for(var i=0;i<n;i++){ var x=n===1?50:(i/(n-1)*w); var y=h-((vals[i]||0)/mx)*h*0.9; pts.push(x.toFixed(2)+","+y.toFixed(2)); } return "<polyline fill=\\"none\\" stroke=\\""+col+"\\" stroke-width=\\"1\\" stroke-linejoin=\\"miter\\" stroke-linecap=\\"butt\\" vector-effect=\\"non-scaling-stroke\\" points=\\""+pts.join(" ")+"\\"/>"; }',
-    '    return "<svg viewBox=\\"0 0 "+w+" "+h+"\\" preserveAspectRatio=\\"none\\" style=\\"width:100%;height:72px;display:block\\">"+poly(a,ca)+poly(b,cb)+"<\\/svg>";',
-    '  }',
-    '  function fmtRate(bps){ bps=Number(bps)||0; if(bps<1024) return Math.round(bps)+" B/s"; if(bps<1048576) return (bps/1024).toFixed(1)+" KB/s"; return (bps/1048576).toFixed(2)+" MB/s"; }',
-    '  function todayCalls(st){',
-    '    var rows=(st&&st.cdr)||[]; var day=sydneyDay(parseTime(st.received_at)); var n=0;',
-    '    for(var i=0;i<rows.length;i++){ var d=sydneyDay(parseTime(rows[i].time)); if(!day || d===day) n++; }',
-    '    return n;',
-    '  }',
-    '  var hist=s.history||[];',
-    '  var live=liveMap(); var online=0; for(var k in live){ if(live[k] && String(live[k].status||"").toLowerCase().indexOf("avail")>=0) online++; }',
-    '  var callsNow=s.active_calls!=null?s.active_calls:0;',
-    '  var html="<div style=\\"display:flex;flex-wrap:wrap;gap:.7rem;width:100%;margin-bottom:.9rem\\">";',
-    '  html += kpi("主机", s.hostname||"-");',
-    '  html += kpi("Asterisk", s.asterisk||"-", s.asterisk==="active"?"ok":"bad");',
-    '  html += kpi("运行时长", s.uptime||"-");',
-    '  html += kpi("在线分机", online+" / "+(E.length||0), online?"ok":"");',
-    '  html += kpi("当前呼叫", String(callsNow), callsNow?"ok":"");',
-    '  html += kpi("今日通话", String(todayCalls(s)));',
-    '  html += "</div><div class=\\"mon-grid\\">";',
-    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">CPU<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.cpu_pct||0)>85?"bad":"")+"\\">"+(s.cpu_pct!=null?s.cpu_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">负载 "+(s.load||"-")+"<\\/div>"+svgArea(series(hist,"cpu"),"#4ade80",100)+"<\\/div>";',
-    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">内存<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.mem_pct||0)>90?"bad":"")+"\\">"+(s.mem_pct!=null?s.mem_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">"+(s.mem_used||"-")+" / "+(s.mem_total||"-")+"<\\/div>"+svgArea(series(hist,"mem"),"#a78bfa",100)+"<\\/div>";',
-    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">磁盘<\\/span><span style=\\"font-size:1.25rem;font-weight:700\\" class=\\""+((s.disk_pct||0)>90?"bad":"")+"\\">"+(s.disk_pct!=null?s.disk_pct+"%":"-")+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\">"+(s.disk_used||"-")+" / "+(s.disk_total||"-")+"<\\/div>"+svgArea(series(hist,"disk"),"#fbbf24",100)+"<\\/div>";',
-    '  html += "<div class=\\"mon-card\\"><div style=\\"display:flex;justify-content:space-between;align-items:baseline\\"><span style=\\"font-size:.8rem;color:#94a3b8\\">网卡<\\/span><span style=\\"font-size:1.05rem;font-weight:700\\">↓ "+fmtRate(s.rx_bps)+" · ↑ "+fmtRate(s.tx_bps)+"<\\/span><\\/div><div style=\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\"><span style=\\"color:#38bdf8\\">接收<\\/span> / <span style=\\"color:#fb7185\\">发送<\\/span> · 累计 "+(s.net||"-")+"<\\/div>"+svgDual(series(hist,"rx"),series(hist,"tx"),"#38bdf8","#fb7185")+"<\\/div>";',
-    '  html += "</div>";',
-    '  box.innerHTML = html;',
-    '}',
-    'function liveMap(){',
-    '  var m = {}; var cs = (ST && ST.contacts) || []; var now = Date.now();',
-    '  for(var i=0;i<cs.length;i++){',
-    '    if(!cs[i].ext) continue;',
-    '    var id=String(cs[i].ext);',
-    '    m[id]=cs[i];',
-    '    if(String(cs[i].status||"").toLowerCase().indexOf("avail")>=0) HOLD[id]={c:cs[i], until:now+30000};',
-    '  }',
-    '  for(var k in HOLD){ if(!m[k] && HOLD[k] && now<HOLD[k].until) m[k]=HOLD[k].c; }',
-    '  return m;',
-    '}',
-    'function fmtDur(sec){',
-    '  sec = parseInt(sec,10)||0;',
-    '  var h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;',
-    '  function z(n){return n<10?"0"+n:""+n;}',
-    '  return h>0 ? h+":"+z(m)+":"+z(s) : z(m)+":"+z(s);',
-    '}',
-    'function parseTime(t){',
-    '  if(!t) return null;',
-    '  var s=String(t).trim();',
-    '  if(/^\\d{4}-\\d{2}-\\d{2} /.test(s) && s.indexOf("Z")<0 && s.indexOf("+")<0) s=s.replace(" ","T")+"Z";',
-    '  var d=new Date(s);',
-    '  return isNaN(d.getTime())?null:d;',
-    '}',
-    'function sydneyDay(d){',
-    '  if(!d) return "";',
-    '  var p=new Intl.DateTimeFormat("en-CA",{timeZone:"Australia/Sydney",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(d);',
-    '  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return ""; }',
-    '  return g("year")+"-"+g("month")+"-"+g("day");',
-    '}',
-    'function fmtSydney(t){',
-    '  var d=parseTime(t); if(!d) return "-";',
-    '  var p=new Intl.DateTimeFormat("en-CA",{timeZone:"Australia/Sydney",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(d);',
-    '  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return ""; }',
-    '  return g("year")+"-"+g("month")+"-"+g("day")+" "+g("hour")+":"+g("minute")+":"+g("second");',
-    '}',
-    'function fmtTime(t){ return fmtSydney(t); }',
-    'function fmtSeen(t){',
-    '  var s = fmtSydney(t);',
-    '  if(!s || s==="-") return "-";',
-    '  var p = s.split(" ");',
-    '  if(p.length<2) return s;',
-    '  return "<div style=\\"line-height:1.25;white-space:nowrap\\">"+p[0]+"<\\/div><div style=\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem;white-space:nowrap\\">"+p[1]+"<\\/div>";',
-    '}',
-    'function pickRow(i,on){ selIdx = on ? i : (selIdx===i ? -1 : selIdx); renderExt(); }',
-    'function cdrFor(ext){',
-    '  var all = (ST && ST.cdr) || []; var out=[];',
-    '  for(var i=0;i<all.length;i++){',
-    '    var r=all[i];',
-    '    if(String(r.src)===String(ext) || String(r.dst)===String(ext)) out.push(r);',
-    '  }',
-    '  return out.reverse();',
-    '}',
-    'function statsFor(ext){',
-    '  var rows = cdrFor(ext); var n=0, dur=0;',
-    '  for(var i=0;i<rows.length;i++){ n++; dur += parseInt(rows[i].billsec||rows[i].duration||0,10)||0; }',
-    '  return {count:n, dur:dur};',
-    '}',
-    'function renderExt(){',
-    '  var tb=$("etb"); var html=""; var live=liveMap(); var last=(ST && ST.last_seen)||{};',
-    '  if(selIdx>=E.length) selIdx=-1;',
-    '  for(var i=0;i<E.length;i++){',
-    '    var x=E[i]; var L=live[String(x.ext)];',
-    '    var online = L && String(L.status).toLowerCase().indexOf("avail")>=0;',
-    '    var dot = online ? "<span class=\\"dot dot-on\\" title=\\"在线\\"><\\/span>" : "<span class=\\"dot dot-off\\" title=\\"离线\\"><\\/span>";',
-    '    var tr = online && L.transport ? String(L.transport).toUpperCase() : "-";',
-    '    var ip = online ? (L.ip||"") : "";',
-    '    var loc = ip ? (GEO[ip] || "查询中") : "-";',
-    '    var ipCell = ip ? "<div style=\\"font-family:monospace;font-size:.8rem;line-height:1.25;white-space:nowrap\\">"+ip+"<\\/div><div style=\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem\\">"+loc+"<\\/div>" : "-";',
-    '    var rtt = online && L.rtt!=null ? L.rtt+" ms" : "-";',
-    '    var seen = last[x.ext] ? fmtSeen(last[x.ext]) : "-";',
-    '    var st = statsFor(x.ext);',
-    '    html += "<tr"+(selIdx===i?" class=\\"sel\\"":"")+">";',
-    '    html += "<td><input class=\\"rowchk\\" type=\\"checkbox\\" "+(selIdx===i?"checked":"")+" onchange=\\"pickRow("+i+",this.checked)\\"><\\/td>";',
-    '    html += "<td style=\\"text-align:center\\">"+dot+"<\\/td>";',
-    '    html += "<td><a class=\\"extlink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.ext+"<\\/a><\\/td>";',
-    '    html += "<td><a class=\\"namelink\\" href=\\"#\\" onclick=\\"openCdr(\'"+x.ext+"\');return false;\\">"+x.name+"<\\/a><\\/td>";',
-    '    html += "<td>"+tr+"<\\/td>";',
-    '    html += "<td>"+ipCell+"<\\/td>";',
-    '    html += "<td style=\\"white-space:nowrap\\">"+rtt+"<\\/td>";',
-    '    html += "<td>"+seen+"<\\/td>";',
-    '    html += "<td>"+st.count+"<\\/td><td style=\\"white-space:nowrap\\">"+fmtDur(st.dur)+"<\\/td>";',
-    '    html += "<\\/tr>";',
-    '  }',
-    '  tb.innerHTML = html || "<tr><td colspan=\\"10\\" style=\\"text-align:center;color:#475569;padding:1.2rem\\">暂无分机<\\/td><\\/tr>";',
-    '}',
-    'function openCdr(ext){ cdrExt=String(ext); cdrPage=1; $("cdrTitle").innerText="分机 "+ext+" 通话记录"; show("cdrWrap"); drawCdr(); }',
-    'function drawCdr(){',
-    '  var rows = cdrFor(cdrExt);',
-    '  var total = rows.length; var pages = Math.max(1, Math.ceil(total/PAGE));',
-    '  if(cdrPage>pages) cdrPage=pages; if(cdrPage<1) cdrPage=1;',
-    '  var start=(cdrPage-1)*PAGE; var slice=rows.slice(start, start+PAGE);',
-    '  var html="";',
-    '  if(!slice.length){ html="<tr><td colspan=\\"9\\" style=\\"text-align:center;color:#475569;padding:1.5rem\\">暂无通话<\\/td><\\/tr>"; }',
-    '  else {',
-    '    for(var i=0;i<slice.length;i++){',
-    '      var r=slice[i];',
-    '      var qc = r.quality==="好"?"ok":(r.quality==="差"?"bad":"warn");',
-    '      html += "<tr>";',
-    '      html += "<td style=\\"white-space:nowrap\\">"+fmtTime(r.time)+"<\\/td>";',
-    '      html += "<td>"+r.src+"<\\/td><td>"+r.dst+"<\\/td>";',
-    '      html += "<td>"+(r.disposition||"-")+"<\\/td>";',
-    '      html += "<td>"+fmtDur(r.billsec||r.duration)+"<\\/td>";',
-    '      html += "<td class=\\""+qc+"\\">"+(r.quality||"-")+"<\\/td>";',
-    '      html += "<td>"+(r.media_rtt||"-")+"<\\/td>";',
-    '      html += "<td>"+(r.jitter||"-")+"<\\/td>";',
-    '      html += "<td>"+(r.loss||"-")+"<\\/td>";',
-    '      html += "<\\/tr>";',
-    '    }',
-    '  }',
-    '  $("cdrBody").innerHTML = html;',
-    '  var pg = "第 "+cdrPage+" / "+pages+" 页，共 "+total+" 条";',
-    '  pg += " <span><button class=\\"btn-gray\\" onclick=\\"cdrPage--;drawCdr()\\">上一页<\\/button> ";',
-    '  pg += "<button class=\\"btn-gray\\" onclick=\\"cdrPage++;drawCdr()\\">下一页<\\/button><\\/span>";',
-    '  $("cdrPager").innerHTML = pg;',
-    '}',
-    'function renderSync(){',
-    '  var el=$("syncHint"); if(!el) return;',
-    '  el.style.display="block";',
-    '  if(SYNC && SYNC.error){ el.innerHTML="<span class=\\"bad\\">保存到交换机失败：<\\/span>"+SYNC.error; return; }',
-    '  if(SYNC && SYNC.pending && window._sipSaved){ el.innerHTML="<span class=\\"warn\\">正在保存到 SIP 服务器…<\\/span>"; return; }',
-    '  window._sipSaved=false;',
-    '  el.innerHTML="<span class=\\"ok\\">已同步到 SIP 服务器<\\/span>";',
-    '}',
-    'function fillExtForm(x){',
-    '  $("eExt").value=x.ext||""; $("eName").value=x.name||""; $("ePw").value="";',
-    '  $("eGw").value=x.gateway||"pixel"; $("eOut").value=x.outbound===false?"0":"1";',
-    '  $("eSms").value=x.sms?"1":"0"; $("eCf").value=x.cf||""; $("eCfb").value=x.cf_busy||""; $("eCfu").value=x.cf_noreply||"";',
-    '  $("eRing").value=x.ringtimer||60;',
-    '}',
-    'function openExt(){ editIdx=-1; $("extTitle").innerText="添加分机"; $("eExt").readOnly=false; fillExtForm({outbound:true,sms:false,gateway:"pixel",ringtimer:60}); $("ePw").placeholder="新分机必须填写密码"; show("extWrap"); }',
-    'function editExt(i){ editIdx=i; var x=E[i]; $("extTitle").innerText="编辑分机 "+x.ext; $("eExt").readOnly=true; fillExtForm(x); $("ePw").placeholder=x.has_password?"已有密码，留空则不修改":"请设置密码"; show("extWrap"); }',
-    'function editSelected(){',
-    '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
-    '  editExt(selIdx);',
-    '}',
-    'function saveExt(){',
-    '  var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), gateway:$("eGw").value, outbound:$("eOut").value==="1", sms:$("eSms").value==="1", cf:$("eCf").value.trim(), cf_busy:$("eCfb").value.trim(), cf_noreply:$("eCfu").value.trim(), ringtimer:parseInt($("eRing").value,10)||60 };',
-    '  var pw=$("ePw").value;',
-    '  if(!n.ext){ alert("分机号不能为空"); return; }',
-    '  if(!/^[0-9]{3,6}$/.test(n.ext)){ alert("分机号必须是 3 到 6 位数字"); return; }',
-    '  if(editIdx<0 && !pw){ alert("新分机必须设置密码"); return; }',
-    '  if(n.ext==="300"){ n.outbound=false; n.gateway="none"; }',
-    '  if(pw) n.password=pw;',
-    '  if(editIdx>=0){ n.has_password = !!(pw || E[editIdx].has_password); E[editIdx]=n; } else { n.has_password=!!pw; E.push(n); selIdx=E.length-1; }',
-    '  window._sipSaved=true;',
-    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}).then(function(r){return r.json();}).then(function(d){',
-    '    if(!d.ok){ alert(d.msg||"保存失败"); window._sipSaved=false; return; }',
-    '    hide("extWrap"); loadSip();',
-    '  }).catch(function(){ alert("保存失败"); });',
-    '}',
-    'function delSelected(){',
-    '  if(selIdx<0 || selIdx>=E.length){ alert("请先勾选一个分机"); return; }',
-    '  var x=E[selIdx];',
-    '  if(String(x.ext)==="300"){ alert("Pixel 网关 300 不能从面板删除。"); return; }',
-    '  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\\n将同步删除 SIP 机上的 Asterisk 分机账号。")) return;',
-    '  E.splice(selIdx,1); selIdx=-1;',
-    '  window._sipSaved=true;',
-    '  fetch("/api/sip/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extensions:E})}).then(function(){ loadSip(); });',
-    '}',
-    'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });',
-    'setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 2000);',
-    'checkAuth();',
+    sipClientJs(),
     '<\/script>',
-    '<\/body><\/html>'
+    '<\/body>',
+    '<\/html>'
   ].join('\n');
+}
+
+function sipClientJs() {
+  return "var E = [];\nvar G = [];\nvar W = [];\nvar ST = null;\nvar GEO = {};\nvar STALE = true;\nvar SYNC = null;\nvar cdrPage = 1;\nvar cdrExt = \"\";\nvar PAGE = 25;\nvar PAGE_G = 10;\nvar HOLD = {};\nvar selExt = \"\";\nvar selGw = \"\";\nvar selGrp = \"\";\nvar GP = {};\nvar editingExt = \"\";\nvar editingGw = \"\";\nvar editingGrp = \"\";\n\nfunction $(id){ return document.getElementById(id); }\nfunction show(id){ $(id).style.display = \"flex\"; }\nfunction hide(id){ $(id).style.display = \"none\"; }\nfunction checkAuth(){ if(localStorage.getItem(\"_pt\")){ hide(\"loginWrap\"); loadSip(); } else show(\"loginWrap\"); }\nfunction doLogin(){\n  fetch(\"/api/login\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({username:$(\"lu\").value,password:$(\"lp\").value})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(d.ok){ localStorage.setItem(\"_pt\",\"1\"); hide(\"loginWrap\"); loadSip(); }\n    else { $(\"lerr\").innerText=d.msg||\"失败\"; $(\"lerr\").style.display=\"block\"; }\n  });\n}\nfunction logout(){ localStorage.removeItem(\"_pt\"); location.href=\"/\"; }\nfunction loadSip(){\n  fetch(\"/api/sip\").then(function(r){return r.json();}).then(function(d){\n    if(d.extensions) E = d.extensions;\n    if(d.groups) G = d.groups;\n    if(d.gateways) W = d.gateways;\n    if(d.status){ ST = d.status; if(d.geo) GEO = d.geo; }\n    STALE = !!d.stale || !d.status;\n    SYNC = d.sync||null;\n    renderStatus();\n    renderAll();\n    renderSync();\n  }).catch(function(){ STALE=true; renderStatus(); });\n}\nfunction saveAll(done){\n  window._sipSaved = true;\n  fetch(\"/api/sip/save\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({extensions:E,groups:G,gateways:W})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(!d.ok){ alert(d.msg||\"保存失败\"); window._sipSaved=false; return; }\n    if(done) done();\n    loadSip();\n  }).catch(function(){ alert(\"保存失败\"); window._sipSaved=false; });\n}\nfunction gwName(ext){\n  for(var i=0;i<W.length;i++) if(String(W[i].ext)===String(ext)) return W[i].name || ext;\n  return ext;\n}\nfunction grpName(id){\n  for(var i=0;i<G.length;i++) if(G[i].id===id) return G[i].name || id;\n  return id;\n}\nfunction grpOf(id){\n  for(var i=0;i<G.length;i++) if(G[i].id===id) return G[i];\n  return null;\n}\nfunction membersOf(gid){\n  var out=[];\n  for(var i=0;i<E.length;i++){\n    var id = E[i].group_id || \"\";\n    if(gid===\"__none\" && !id) out.push(E[i]);\n    else if(id===gid) out.push(E[i]);\n  }\n  return out;\n}\nfunction groupsUsingGw(ext){\n  var names=[];\n  for(var i=0;i<G.length;i++) if(String(G[i].gateway)===String(ext)) names.push(G[i].name||G[i].id);\n  return names;\n}\nfunction peerLabel(g){\n  if(g.internal===\"all\") return \"全部内网\";\n  if(g.internal===\"peers\"){\n    var names=[];\n    for(var i=0;i<(g.peers||[]).length;i++) names.push(grpName(g.peers[i]));\n    return names.length ? (\"互打：\"+names.join(\"、\")) : \"指定组（未选）\";\n  }\n  return \"仅组内\";\n}\nfunction liveMap(){\n  var m = {}; var cs = (ST && ST.contacts) || []; var now = Date.now();\n  for(var i=0;i<cs.length;i++){\n    if(!cs[i].ext) continue;\n    var id=String(cs[i].ext);\n    m[id]=cs[i];\n    if(String(cs[i].status||\"\").toLowerCase().indexOf(\"avail\")>=0) HOLD[id]={c:cs[i], until:now+30000};\n  }\n  for(var k in HOLD){ if(!m[k] && HOLD[k] && now<HOLD[k].until) m[k]=HOLD[k].c; }\n  return m;\n}\nfunction isOnline(ext, live){\n  var L = live[String(ext)];\n  return !!(L && String(L.status).toLowerCase().indexOf(\"avail\")>=0);\n}\nfunction fmtDur(sec){\n  sec = parseInt(sec,10)||0;\n  var h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;\n  function z(n){return n<10?\"0\"+n:\"\"+n;}\n  return h>0 ? h+\":\"+z(m)+\":\"+z(s) : z(m)+\":\"+z(s);\n}\nfunction parseTime(t){\n  if(!t) return null;\n  var s=String(t).trim();\n  if(/^\\d{4}-\\d{2}-\\d{2} /.test(s) && s.indexOf(\"Z\")<0 && s.indexOf(\"+\")<0) s=s.replace(\" \",\"T\")+\"Z\";\n  var d=new Date(s);\n  return isNaN(d.getTime())?null:d;\n}\nfunction sydneyDay(d){\n  if(!d) return \"\";\n  var p=new Intl.DateTimeFormat(\"en-CA\",{timeZone:\"Australia/Sydney\",year:\"numeric\",month:\"2-digit\",day:\"2-digit\"}).formatToParts(d);\n  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return \"\"; }\n  return g(\"year\")+\"-\"+g(\"month\")+\"-\"+g(\"day\");\n}\nfunction fmtSydney(t){\n  var d=parseTime(t); if(!d) return \"-\";\n  var p=new Intl.DateTimeFormat(\"en-CA\",{timeZone:\"Australia/Sydney\",year:\"numeric\",month:\"2-digit\",day:\"2-digit\",hour:\"2-digit\",minute:\"2-digit\",second:\"2-digit\",hour12:false}).formatToParts(d);\n  function g(tp){ for(var i=0;i<p.length;i++) if(p[i].type===tp) return p[i].value; return \"\"; }\n  return g(\"year\")+\"-\"+g(\"month\")+\"-\"+g(\"day\")+\" \"+g(\"hour\")+\":\"+g(\"minute\")+\":\"+g(\"second\");\n}\nfunction fmtTime(t){ return fmtSydney(t); }\nfunction fmtSeen(t){\n  var s = fmtSydney(t);\n  if(!s || s===\"-\") return \"-\";\n  var p = s.split(\" \");\n  if(p.length<2) return s;\n  return \"<div style=\\\"line-height:1.25;white-space:nowrap\\\">\"+p[0]+\"</div><div style=\\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem;white-space:nowrap\\\">\"+p[1]+\"</div>\";\n}\nfunction cdrFor(ext){\n  var all = (ST && ST.cdr) || []; var out=[];\n  for(var i=0;i<all.length;i++){\n    var r=all[i];\n    if(String(r.src)===String(ext) || String(r.dst)===String(ext)) out.push(r);\n  }\n  return out.reverse();\n}\nfunction statsFor(ext){\n  var rows = cdrFor(ext); var n=0, dur=0;\n  for(var i=0;i<rows.length;i++){ n++; dur += parseInt(rows[i].billsec||rows[i].duration||0,10)||0; }\n  return {count:n, dur:dur};\n}\nfunction renderStatus(){\n  var box = $(\"stats\"); var hint = $(\"staleHint\"); var s = ST;\n  if(!s){ hint.innerText=\"暂时读不到新数据，图表保持上次。\"; return; }\n  hint.innerHTML = STALE ? \"<span class=\\\"bad\\\">心跳超时，机器可能卡住或离线</span> · 上次 \"+fmtSydney(s.received_at) : \"<span class=\\\"ok\\\">心跳正常</span> · \"+fmtSydney(s.received_at);\n  function kpi(t,v,c){ return \"<div class=\\\"stat\\\"><div style=\\\"font-size:.75rem;color:#94a3b8\\\">\"+t+\"</div><div style=\\\"font-size:1.15rem;font-weight:700;margin-top:.25rem\\\" class=\\\"\"+(c||\"\")+\"\\\">\"+v+\"</div></div>\"; }\n  function series(hist,key){ var o=[]; for(var i=0;i<hist.length;i++) o.push(Number(hist[i][key])||0); return o; }\n  function svgArea(vals,color,yMax){\n    var w=100,h=38,n=vals.length;\n    if(!n) return \"<div style=\\\"height:72px\\\"></div>\";\n    var mx=yMax||0; for(var i=0;i<n;i++) if(vals[i]>mx) mx=vals[i]; if(mx<=0) mx=1;\n    function pt(i,v){ var x=n===1?50:(i/(n-1)*w); var y=h-(v/mx)*h*0.9; return x.toFixed(2)+\",\"+y.toFixed(2); }\n    var line=[], fill=[\"0,\"+h];\n    for(var j=0;j<n;j++){ var p=pt(j,vals[j]); line.push(p); fill.push(p); }\n    fill.push(w+\",\"+h);\n    return \"<svg viewBox=\\\"0 0 \"+w+\" \"+h+\"\\\" preserveAspectRatio=\\\"none\\\" style=\\\"width:100%;height:72px;display:block\\\"><polygon fill=\\\"\"+color+\"22\\\" points=\\\"\"+fill.join(\" \")+\"\\\"/><polyline fill=\\\"none\\\" stroke=\\\"\"+color+\"\\\" stroke-width=\\\"1.2\\\" stroke-linejoin=\\\"round\\\" vector-effect=\\\"non-scaling-stroke\\\" points=\\\"\"+line.join(\" \")+\"\\\"/></svg>\";\n  }\n  function svgDual(a,b,ca,cb,yMax){\n    var w=100,h=38,n=Math.max(a.length,b.length);\n    if(!n) return \"<div style=\\\"height:72px\\\"></div>\";\n    var mx=yMax||0; for(var i=0;i<n;i++){ if((a[i]||0)>mx) mx=a[i]; if((b[i]||0)>mx) mx=b[i]; } if(mx<=0) mx=1;\n    function poly(vals,col){ var pts=[]; for(var i=0;i<n;i++){ var x=n===1?50:(i/(n-1)*w); var y=h-((vals[i]||0)/mx)*h*0.9; pts.push(x.toFixed(2)+\",\"+y.toFixed(2)); } return \"<polyline fill=\\\"none\\\" stroke=\\\"\"+col+\"\\\" stroke-width=\\\"1\\\" stroke-linejoin=\\\"miter\\\" stroke-linecap=\\\"butt\\\" vector-effect=\\\"non-scaling-stroke\\\" points=\\\"\"+pts.join(\" \")+\"\\\"/>\"; }\n    return \"<svg viewBox=\\\"0 0 \"+w+\" \"+h+\"\\\" preserveAspectRatio=\\\"none\\\" style=\\\"width:100%;height:72px;display:block\\\">\"+poly(a,ca)+poly(b,cb)+\"</svg>\";\n  }\n  function fmtRate(bps){ bps=Number(bps)||0; if(bps<1024) return Math.round(bps)+\" B/s\"; if(bps<1048576) return (bps/1024).toFixed(1)+\" KB/s\"; return (bps/1048576).toFixed(2)+\" MB/s\"; }\n  function todayCalls(st){\n    var rows=(st&&st.cdr)||[]; var day=sydneyDay(parseTime(st.received_at)); var n=0;\n    for(var i=0;i<rows.length;i++){ var d=sydneyDay(parseTime(rows[i].time)); if(!day || d===day) n++; }\n    return n;\n  }\n  var hist=s.history||[];\n  var live=liveMap(); var online=0;\n  for(var i=0;i<E.length;i++) if(isOnline(E[i].ext, live)) online++;\n  var callsNow=s.active_calls!=null?s.active_calls:0;\n  var html=\"<div style=\\\"display:flex;flex-wrap:wrap;gap:.7rem;width:100%;margin-bottom:.9rem\\\">\";\n  html += kpi(\"主机\", s.hostname||\"-\");\n  html += kpi(\"Asterisk\", s.asterisk||\"-\", s.asterisk===\"active\"?\"ok\":\"bad\");\n  html += kpi(\"运行时长\", s.uptime||\"-\");\n  html += kpi(\"在线分机\", online+\" / \"+(E.length||0), online?\"ok\":\"\");\n  html += kpi(\"当前呼叫\", String(callsNow), callsNow?\"ok\":\"\");\n  html += kpi(\"今日通话\", String(todayCalls(s)));\n  html += \"</div><div class=\\\"mon-grid\\\">\";\n  html += \"<div class=\\\"mon-card\\\"><div style=\\\"display:flex;justify-content:space-between;align-items:baseline\\\"><span style=\\\"font-size:.8rem;color:#94a3b8\\\">CPU</span><span style=\\\"font-size:1.25rem;font-weight:700\\\" class=\\\"\"+((s.cpu_pct||0)>85?\"bad\":\"\")+\"\\\">\"+(s.cpu_pct!=null?s.cpu_pct+\"%\":\"-\")+\"</span></div><div style=\\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\\">负载 \"+(s.load||\"-\")+\"</div>\"+svgArea(series(hist,\"cpu\"),\"#4ade80\",100)+\"</div>\";\n  html += \"<div class=\\\"mon-card\\\"><div style=\\\"display:flex;justify-content:space-between;align-items:baseline\\\"><span style=\\\"font-size:.8rem;color:#94a3b8\\\">内存</span><span style=\\\"font-size:1.25rem;font-weight:700\\\" class=\\\"\"+((s.mem_pct||0)>90?\"bad\":\"\")+\"\\\">\"+(s.mem_pct!=null?s.mem_pct+\"%\":\"-\")+\"</span></div><div style=\\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\\">\"+(s.mem_used||\"-\")+\" / \"+(s.mem_total||\"-\")+\"</div>\"+svgArea(series(hist,\"mem\"),\"#a78bfa\",100)+\"</div>\";\n  html += \"<div class=\\\"mon-card\\\"><div style=\\\"display:flex;justify-content:space-between;align-items:baseline\\\"><span style=\\\"font-size:.8rem;color:#94a3b8\\\">磁盘</span><span style=\\\"font-size:1.25rem;font-weight:700\\\" class=\\\"\"+((s.disk_pct||0)>90?\"bad\":\"\")+\"\\\">\"+(s.disk_pct!=null?s.disk_pct+\"%\":\"-\")+\"</span></div><div style=\\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\\">\"+(s.disk_used||\"-\")+\" / \"+(s.disk_total||\"-\")+\"</div>\"+svgArea(series(hist,\"disk\"),\"#fbbf24\",100)+\"</div>\";\n  html += \"<div class=\\\"mon-card\\\"><div style=\\\"display:flex;justify-content:space-between;align-items:baseline\\\"><span style=\\\"font-size:.8rem;color:#94a3b8\\\">网卡</span><span style=\\\"font-size:1.05rem;font-weight:700\\\">↓ \"+fmtRate(s.rx_bps)+\" · ↑ \"+fmtRate(s.tx_bps)+\"</span></div><div style=\\\"font-size:.75rem;color:#64748b;margin:.2rem 0 .35rem\\\"><span style=\\\"color:#38bdf8\\\">接收</span> / <span style=\\\"color:#fb7185\\\">发送</span> · 累计 \"+(s.net||\"-\")+\"</div>\"+svgDual(series(hist,\"rx\"),series(hist,\"tx\"),\"#38bdf8\",\"#fb7185\")+\"</div>\";\n  html += \"</div>\";\n  box.innerHTML = html;\n}\nfunction renderSync(){\n  var el=$(\"syncHint\"); if(!el) return;\n  el.style.display=\"block\";\n  if(SYNC && SYNC.error){ el.innerHTML=\"<span class=\\\"bad\\\">保存到交换机失败：</span>\"+SYNC.error; return; }\n  if(SYNC && SYNC.pending && window._sipSaved){ el.innerHTML=\"<span class=\\\"warn\\\">正在保存到 SIP 服务器…</span>\"; return; }\n  window._sipSaved=false;\n  el.innerHTML=\"<span class=\\\"ok\\\">已同步到 SIP 服务器</span>\";\n}\nfunction extRowHtml(x, live){\n  var L=live[String(x.ext)];\n  var online = isOnline(x.ext, live);\n  var dot = online ? \"<span class=\\\"dot dot-on\\\" title=\\\"在线\\\"></span>\" : \"<span class=\\\"dot dot-off\\\" title=\\\"离线\\\"></span>\";\n  var tr = online && L.transport ? String(L.transport).toUpperCase() : \"-\";\n  var ip = online ? (L.ip||\"\") : \"\";\n  var loc = ip ? (GEO[ip] || \"查询中\") : \"-\";\n  var ipCell = ip ? \"<div style=\\\"font-family:monospace;font-size:.8rem;line-height:1.25;white-space:nowrap\\\">\"+ip+\"</div><div style=\\\"font-size:.75rem;color:#94a3b8;margin-top:.15rem\\\">\"+loc+\"</div>\" : \"-\";\n  var rtt = online && L.rtt!=null ? L.rtt+\" ms\" : \"-\";\n  var last=(ST && ST.last_seen)||{};\n  var seen = last[x.ext] ? fmtSeen(last[x.ext]) : \"-\";\n  var st = statsFor(x.ext);\n  var html = \"<tr\"+(selExt===String(x.ext)?\" class=\\\"sel\\\"\":\"\")+\">\";\n  html += \"<td><input class=\\\"rowchk\\\" type=\\\"checkbox\\\" \"+(selExt===String(x.ext)?\"checked\":\"\")+\" onchange=\\\"pickExt('\"+x.ext+\"',this.checked)\\\"></td>\";\n  html += \"<td style=\\\"text-align:center\\\">\"+dot+\"</td>\";\n  html += \"<td><a class=\\\"extlink\\\" href=\\\"#\\\" onclick=\\\"openCdr('\"+x.ext+\"');return false;\\\">\"+x.ext+\"</a></td>\";\n  html += \"<td><a class=\\\"namelink\\\" href=\\\"#\\\" onclick=\\\"openCdr('\"+x.ext+\"');return false;\\\">\"+x.name+\"</a></td>\";\n  html += \"<td>\"+tr+\"</td><td>\"+ipCell+\"</td>\";\n  html += \"<td style=\\\"white-space:nowrap\\\">\"+rtt+\"</td>\";\n  html += \"<td>\"+seen+\"</td>\";\n  html += \"<td>\"+st.count+\"</td><td style=\\\"white-space:nowrap\\\">\"+fmtDur(st.dur)+\"</td>\";\n  html += \"</tr>\";\n  return html;\n}\nfunction renderAll(){\n  renderGroupsTable();\n  renderGatewaysTable();\n  renderGroupBoxes();\n}\nfunction renderGroupsTable(){\n  var tb=$(\"gtb\"); if(!tb) return;\n  var html=\"\";\n  for(var i=0;i<G.length;i++){\n    var g=G[i];\n    var n=membersOf(g.id).length;\n    var out = g.gateway ? (g.gateway+\" \"+gwName(g.gateway)) : \"无\";\n    html += \"<tr\"+(selGrp===g.id?\" class=\\\"sel\\\"\":\"\")+\">\";\n    html += \"<td><input class=\\\"rowchk\\\" type=\\\"checkbox\\\" \"+(selGrp===g.id?\"checked\":\"\")+\" onchange=\\\"pickGrp('\"+g.id+\"',this.checked)\\\"></td>\";\n    html += \"<td>\"+g.name+\"</td><td>\"+n+\"</td><td>\"+out+\"</td><td>\"+peerLabel(g)+\"</td></tr>\";\n  }\n  tb.innerHTML = html || \"<tr><td colspan=\\\"5\\\" style=\\\"text-align:center;color:#475569;padding:1.2rem\\\">暂无通话组，请先添加</td></tr>\";\n}\nfunction renderGatewaysTable(){\n  var tb=$(\"wtb\"); if(!tb) return;\n  var live=liveMap(); var html=\"\";\n  for(var i=0;i<W.length;i++){\n    var x=W[i]; var L=live[String(x.ext)];\n    var online=isOnline(x.ext, live);\n    var dot = online ? \"<span class=\\\"dot dot-on\\\"></span>\" : \"<span class=\\\"dot dot-off\\\"></span>\";\n    var tr = online && L && L.transport ? String(L.transport).toUpperCase() : \"-\";\n    var rtt = online && L && L.rtt!=null ? L.rtt+\" ms\" : \"-\";\n    var used = groupsUsingGw(x.ext);\n    html += \"<tr\"+(selGw===String(x.ext)?\" class=\\\"sel\\\"\":\"\")+\">\";\n    html += \"<td><input class=\\\"rowchk\\\" type=\\\"checkbox\\\" \"+(selGw===String(x.ext)?\"checked\":\"\")+\" onchange=\\\"pickGw('\"+x.ext+\"',this.checked)\\\"></td>\";\n    html += \"<td style=\\\"text-align:center\\\">\"+dot+\"</td>\";\n    html += \"<td>\"+x.ext+\"</td><td>\"+x.name+\"</td>\";\n    html += \"<td>\"+(x.public_number||\"-\")+\"</td>\";\n    html += \"<td>呼入 \"+(x.inbound_fwd||\"-\")+\" / 短信 \"+(x.sms_fwd||\"-\")+\"</td>\";\n    html += \"<td>\"+(used.length?used.join(\"、\"):\"无\")+\"</td>\";\n    html += \"<td>\"+tr+\"</td><td style=\\\"white-space:nowrap\\\">\"+rtt+\"</td></tr>\";\n  }\n  tb.innerHTML = html || \"<tr><td colspan=\\\"9\\\" style=\\\"text-align:center;color:#475569;padding:1.2rem\\\">暂无网关账户</td></tr>\";\n}\nfunction renderGroupBoxes(){\n  var box=$(\"groupBoxes\"); if(!box) return;\n  var live=liveMap();\n  var html=\"\";\n  function oneBox(gid, title, meta){\n    var rows=membersOf(gid);\n    var page=GP[gid]||1;\n    var pages=Math.max(1, Math.ceil(rows.length/PAGE_G));\n    if(page>pages) page=pages;\n    GP[gid]=page;\n    var start=(page-1)*PAGE_G;\n    var slice=rows.slice(start, start+PAGE_G);\n    var pager=\"\";\n    if(rows.length>PAGE_G){\n      pager=\"<div style=\\\"display:flex;justify-content:space-between;align-items:center;margin-top:.8rem;font-size:.8rem;color:#94a3b8\\\"><span>第 \"+page+\" / \"+pages+\" 页，共 \"+rows.length+\" 个分机</span><span><button class=\\\"btn-gray\\\" onclick=\\\"setGPage('\"+gid+\"',\"+(page-1)+\")\\\">上一页</button> <button class=\\\"btn-gray\\\" onclick=\\\"setGPage('\"+gid+\"',\"+(page+1)+\")\\\">下一页</button></span></div>\";\n    }\n    var body=\"<table><thead><tr><th></th><th>在线</th><th>分机号</th><th>名称</th><th>传输</th><th>IP</th><th>延时</th><th>最近上线</th><th>拨打次数</th><th>总通话时长</th></tr></thead><tbody>\";\n    if(!slice.length) body += \"<tr><td colspan=\\\"10\\\" style=\\\"text-align:center;color:#475569;padding:1.2rem\\\">暂无分机</td></tr>\";\n    else for(var i=0;i<slice.length;i++) body += extRowHtml(slice[i], live);\n    body += \"</tbody></table>\";\n    html += \"<div class=\\\"card\\\" style=\\\"padding:1.5rem;border-radius:1rem\\\">\";\n    html += \"<div style=\\\"display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;gap:1rem;flex-wrap:wrap\\\">\";\n    html += \"<div><h3 style=\\\"font-weight:700;margin:0\\\">\"+title+\"</h3><p style=\\\"font-size:.8rem;color:#94a3b8;margin:.35rem 0 0\\\">\"+meta+\"</p></div>\";\n    html += \"<button class=\\\"btn-green\\\" onclick=\\\"openExt('\"+gid+\"')\\\">+ 添加分机</button>\";\n    html += \"</div><div style=\\\"overflow-x:auto\\\">\"+body+\"</div>\"+pager+\"</div>\";\n  }\n  for(var i=0;i<G.length;i++){\n    var g=G[i];\n    var mem=membersOf(g.id);\n    var on=0; for(var j=0;j<mem.length;j++) if(isOnline(mem[j].ext, live)) on++;\n    var out = g.gateway ? g.gateway : \"无\";\n    oneBox(g.id, g.name, mem.length+\" 人 · \"+on+\" 在线 · 外呼：\"+out+\" · \"+peerLabel(g));\n  }\n  var none=membersOf(\"__none\");\n  var onn=0; for(var k=0;k<none.length;k++) if(isOnline(none[k].ext, live)) onn++;\n  oneBox(\"__none\", \"未分组\", none.length+\" 人 · \"+onn+\" 在线 · 外呼：无 · 仅未分组互打\");\n  box.innerHTML = html;\n}\nfunction setGPage(gid, page){ if(page<1) page=1; GP[gid]=page; renderGroupBoxes(); }\nfunction pickExt(ext,on){ selExt = on ? String(ext) : (selExt===String(ext)?\"\":selExt); renderGroupBoxes(); }\nfunction pickGw(ext,on){ selGw = on ? String(ext) : (selGw===String(ext)?\"\":selGw); renderGatewaysTable(); }\nfunction pickGrp(id,on){ selGrp = on ? id : (selGrp===id?\"\":selGrp); renderGroupsTable(); }\nfunction fillGroupSelect(sel, cur, includeNone){\n  var html = includeNone ? \"<option value=\\\"\\\">未分组</option>\" : \"<option value=\\\"\\\">无</option>\";\n  for(var i=0;i<G.length;i++) html += \"<option value=\\\"\"+G[i].id+\"\\\">\"+G[i].name+\"</option>\";\n  sel.innerHTML = html;\n  sel.value = cur || \"\";\n}\nfunction fillExtSelect(sel, cur){\n  var html = \"<option value=\\\"\\\">（不转发）</option>\";\n  for(var i=0;i<E.length;i++) html += \"<option value=\\\"\"+E[i].ext+\"\\\">\"+E[i].ext+\" \"+(E[i].name||\"\")+\"</option>\";\n  sel.innerHTML = html;\n  sel.value = cur || \"\";\n}\nfunction fillGwSelect(sel, cur){\n  var html = \"<option value=\\\"\\\">无</option>\";\n  for(var i=0;i<W.length;i++) html += \"<option value=\\\"\"+W[i].ext+\"\\\">\"+W[i].ext+\" \"+(W[i].name||\"\")+\"</option>\";\n  sel.innerHTML = html;\n  sel.value = cur || \"\";\n}\nfunction fillExtForm(x){\n  $(\"eExt\").value=x.ext||\"\"; $(\"eName\").value=x.name||\"\"; $(\"ePw\").value=\"\";\n  fillGroupSelect($(\"eGroup\"), x.group_id||\"\", true);\n  $(\"eOut\").value=x.outbound===false?\"0\":\"1\";\n  $(\"eSms\").value=x.sms?\"1\":\"0\"; $(\"eCf\").value=x.cf||\"\"; $(\"eCfb\").value=x.cf_busy||\"\"; $(\"eCfu\").value=x.cf_noreply||\"\";\n  $(\"eRing\").value=x.ringtimer||60;\n}\nfunction openExt(gid){\n  editingExt=\"\"; $(\"extTitle\").innerText=\"添加分机\"; $(\"eExt\").readOnly=false;\n  var pre = (gid && gid!==\"__none\") ? gid : \"\";\n  fillExtForm({outbound:true,sms:false,ringtimer:60,group_id:pre});\n  $(\"ePw\").placeholder=\"新分机必须填写密码\"; show(\"extWrap\");\n}\nfunction editSelExt(){\n  if(!selExt){ alert(\"请先勾选一个分机\"); return; }\n  var x=null; for(var i=0;i<E.length;i++) if(String(E[i].ext)===selExt) x=E[i];\n  if(!x){ alert(\"未找到该分机\"); return; }\n  editingExt=selExt; $(\"extTitle\").innerText=\"编辑分机 \"+x.ext; $(\"eExt\").readOnly=true;\n  fillExtForm(x); $(\"ePw\").placeholder=x.has_password?\"已有密码，留空则不修改\":\"请设置密码\"; show(\"extWrap\");\n}\nfunction saveExt(){\n  var n={ ext:$(\"eExt\").value.trim(), name:$(\"eName\").value.trim(), group_id:$(\"eGroup\").value, outbound:$(\"eOut\").value===\"1\", sms:$(\"eSms\").value===\"1\", cf:$(\"eCf\").value.trim(), cf_busy:$(\"eCfb\").value.trim(), cf_noreply:$(\"eCfu\").value.trim(), ringtimer:parseInt($(\"eRing\").value,10)||60 };\n  var pw=$(\"ePw\").value;\n  if(!n.ext){ alert(\"分机号不能为空\"); return; }\n  if(!/^[0-9]{3,6}$/.test(n.ext)){ alert(\"分机号必须是 3 到 6 位数字\"); return; }\n  for(var i=0;i<W.length;i++) if(String(W[i].ext)===n.ext){ alert(\"该号码已是网关账户\"); return; }\n  if(!editingExt && !pw){ alert(\"新分机必须设置密码\"); return; }\n  if(pw) n.password=pw;\n  if(editingExt){\n    for(var j=0;j<E.length;j++) if(String(E[j].ext)===editingExt){ n.has_password=!!(pw||E[j].has_password); E[j]=n; }\n  } else {\n    for(var k=0;k<E.length;k++) if(String(E[k].ext)===n.ext){ alert(\"分机号已存在\"); return; }\n    n.has_password=!!pw; E.push(n); selExt=n.ext;\n  }\n  hide(\"extWrap\"); saveAll();\n}\nfunction delSelExt(){\n  if(!selExt){ alert(\"请先勾选一个分机\"); return; }\n  var x=null; for(var i=0;i<E.length;i++) if(String(E[i].ext)===selExt) x=E[i];\n  if(!x) return;\n  if(!confirm(\"确定删除分机 \"+x.ext+\"（\"+(x.name||\"\")+\"）？\\n将同步删除 SIP 机上的 Asterisk 分机账号。\")) return;\n  E = E.filter(function(e){ return String(e.ext)!==selExt; });\n  selExt=\"\"; saveAll();\n}\nfunction togglePeers(){\n  $(\"gPeerBox\").style.display = $(\"gInt\").value===\"peers\" ? \"block\" : \"none\";\n}\nfunction openGrp(){\n  editingGrp=\"\"; $(\"grpTitle\").innerText=\"添加通话组\"; $(\"gName\").value=\"\";\n  fillGwSelect($(\"gGw\"), \"\"); $(\"gInt\").value=\"self\";\n  renderPeerChecks([]); togglePeers(); show(\"grpWrap\");\n}\nfunction editSelGrp(){\n  if(!selGrp){ alert(\"请先勾选一个通话组\"); return; }\n  var g=grpOf(selGrp); if(!g) return;\n  editingGrp=g.id; $(\"grpTitle\").innerText=\"编辑通话组\"; $(\"gName\").value=g.name||\"\";\n  fillGwSelect($(\"gGw\"), g.gateway||\"\"); $(\"gInt\").value=g.internal||\"self\";\n  renderPeerChecks(g.peers||[]); togglePeers(); show(\"grpWrap\");\n}\nfunction renderPeerChecks(selected){\n  var html=\"\";\n  for(var i=0;i<G.length;i++){\n    if(editingGrp && G[i].id===editingGrp) continue;\n    var on = selected.indexOf(G[i].id)>=0;\n    html += \"<label style=\\\"display:flex;gap:.5rem;align-items:center;font-size:.85rem\\\"><input type=\\\"checkbox\\\" class=\\\"peerchk\\\" value=\\\"\"+G[i].id+\"\\\" \"+(on?\"checked\":\"\")+\"> \"+G[i].name+\"</label>\";\n  }\n  if(!html) html = \"<span style=\\\"color:#64748b;font-size:.8rem\\\">还没有其他通话组</span>\";\n  $(\"gPeers\").innerHTML = html;\n}\nfunction saveGrp(){\n  var name=$(\"gName\").value.trim();\n  if(!name){ alert(\"请填写组名\"); return; }\n  var peers=[];\n  var boxes=$(\"gPeers\").querySelectorAll(\".peerchk\");\n  for(var i=0;i<boxes.length;i++) if(boxes[i].checked) peers.push(boxes[i].value);\n  var g={ id: editingGrp || (\"g\"+Date.now()), name:name, gateway:$(\"gGw\").value, internal:$(\"gInt\").value, peers: $(\"gInt\").value===\"peers\"?peers:[] };\n  if(editingGrp){\n    for(var j=0;j<G.length;j++) if(G[j].id===editingGrp) G[j]=g;\n  } else { G.push(g); selGrp=g.id; }\n  hide(\"grpWrap\"); saveAll();\n}\nfunction delSelGrp(){\n  if(!selGrp){ alert(\"请先勾选一个通话组\"); return; }\n  var g=grpOf(selGrp); if(!g) return;\n  if(!confirm(\"确定删除通话组「\"+g.name+\"」？组内分机将变为未分组。\")) return;\n  for(var i=0;i<E.length;i++) if(E[i].group_id===selGrp) E[i].group_id=\"\";\n  G = G.filter(function(x){ return x.id!==selGrp; });\n  selGrp=\"\"; saveAll();\n}\nfunction openGw(){\n  editingGw=\"\"; $(\"gwTitle\").innerText=\"添加网关\"; $(\"wExt\").readOnly=false;\n  $(\"wExt\").value=\"\"; $(\"wName\").value=\"\"; $(\"wPw\").value=\"\"; $(\"wNum\").value=\"\";\n  fillExtSelect($(\"wIn\"), \"\"); fillExtSelect($(\"wSms\"), \"\");\n  $(\"wUsed\").innerText=\"无\"; $(\"wPw\").placeholder=\"新网关必须填写密码\"; show(\"gwWrap\");\n}\nfunction editSelGw(){\n  if(!selGw){ alert(\"请先勾选一个网关\"); return; }\n  var x=null; for(var i=0;i<W.length;i++) if(String(W[i].ext)===selGw) x=W[i];\n  if(!x) return;\n  editingGw=selGw; $(\"gwTitle\").innerText=\"编辑网关 \"+x.ext; $(\"wExt\").readOnly=true;\n  $(\"wExt\").value=x.ext; $(\"wName\").value=x.name||\"\"; $(\"wPw\").value=\"\"; $(\"wNum\").value=x.public_number||\"\";\n  fillExtSelect($(\"wIn\"), x.inbound_fwd||\"\"); fillExtSelect($(\"wSms\"), x.sms_fwd||\"\");\n  var used=groupsUsingGw(x.ext); $(\"wUsed\").innerText=used.length?used.join(\"、\"):\"无\";\n  $(\"wPw\").placeholder=x.has_password?\"已有密码，留空则不修改\":\"请设置密码\"; show(\"gwWrap\");\n}\nfunction saveGw(){\n  var n={ ext:$(\"wExt\").value.trim(), name:$(\"wName\").value.trim(), public_number:$(\"wNum\").value.trim(), inbound_fwd:$(\"wIn\").value, sms_fwd:$(\"wSms\").value };\n  var pw=$(\"wPw\").value;\n  if(!n.ext){ alert(\"分机号不能为空\"); return; }\n  if(!/^[0-9]{3,6}$/.test(n.ext)){ alert(\"分机号必须是 3 到 6 位数字\"); return; }\n  for(var i=0;i<E.length;i++) if(String(E[i].ext)===n.ext){ alert(\"该号码已是内网分机\"); return; }\n  if(!editingGw && !pw){ alert(\"新网关必须设置密码\"); return; }\n  if(pw) n.password=pw;\n  if(editingGw){\n    for(var j=0;j<W.length;j++) if(String(W[j].ext)===editingGw){ n.has_password=!!(pw||W[j].has_password); W[j]=n; }\n  } else {\n    for(var k=0;k<W.length;k++) if(String(W[k].ext)===n.ext){ alert(\"网关分机号已存在\"); return; }\n    n.has_password=!!pw; W.push(n); selGw=n.ext;\n  }\n  hide(\"gwWrap\"); saveAll();\n}\nfunction delSelGw(){\n  if(!selGw){ alert(\"请先勾选一个网关\"); return; }\n  if(W.length<=1){ alert(\"至少保留一个网关账户\"); return; }\n  var x=null; for(var i=0;i<W.length;i++) if(String(W[i].ext)===selGw) x=W[i];\n  if(!x) return;\n  if(!confirm(\"确定删除网关 \"+x.ext+\"（\"+(x.name||\"\")+\"）？\")) return;\n  for(var j=0;j<G.length;j++) if(String(G[j].gateway)===selGw) G[j].gateway=\"\";\n  W = W.filter(function(e){ return String(e.ext)!==selGw; });\n  selGw=\"\"; saveAll();\n}\nfunction openCdr(ext){ cdrExt=String(ext); cdrPage=1; $(\"cdrTitle\").innerText=\"分机 \"+ext+\" 通话记录\"; show(\"cdrWrap\"); drawCdr(); }\nfunction drawCdr(){\n  var rows = cdrFor(cdrExt);\n  var total = rows.length; var pages = Math.max(1, Math.ceil(total/PAGE));\n  if(cdrPage>pages) cdrPage=pages; if(cdrPage<1) cdrPage=1;\n  var start=(cdrPage-1)*PAGE; var slice=rows.slice(start, start+PAGE);\n  var html=\"\";\n  if(!slice.length){ html=\"<tr><td colspan=\\\"9\\\" style=\\\"text-align:center;color:#475569;padding:1.5rem\\\">暂无通话</td></tr>\"; }\n  else {\n    for(var i=0;i<slice.length;i++){\n      var r=slice[i];\n      var qc = r.quality===\"好\"?\"ok\":(r.quality===\"差\"?\"bad\":\"warn\");\n      html += \"<tr>\";\n      html += \"<td style=\\\"white-space:nowrap\\\">\"+fmtTime(r.time)+\"</td>\";\n      html += \"<td>\"+r.src+\"</td><td>\"+r.dst+\"</td>\";\n      html += \"<td>\"+(r.disposition||\"-\")+\"</td>\";\n      html += \"<td>\"+fmtDur(r.billsec||r.duration)+\"</td>\";\n      html += \"<td class=\\\"\"+qc+\"\\\">\"+(r.quality||\"-\")+\"</td>\";\n      html += \"<td>\"+(r.media_rtt||\"-\")+\"</td>\";\n      html += \"<td>\"+(r.jitter||\"-\")+\"</td>\";\n      html += \"<td>\"+(r.loss||\"-\")+\"</td>\";\n      html += \"</tr>\";\n    }\n  }\n  $(\"cdrBody\").innerHTML = html;\n  var pg = \"第 \"+cdrPage+\" / \"+pages+\" 页，共 \"+total+\" 条\";\n  pg += \" <span><button class=\\\"btn-gray\\\" onclick=\\\"cdrPage--;drawCdr()\\\">上一页</button> \";\n  pg += \"<button class=\\\"btn-gray\\\" onclick=\\\"cdrPage++;drawCdr()\\\">下一页</button></span>\";\n  $(\"cdrPager\").innerHTML = pg;\n}\ndocument.addEventListener(\"keydown\", function(e){ if(e.key===\"Enter\" && $(\"loginWrap\").style.display!==\"none\") doLogin(); });\nsetInterval(function(){ if(localStorage.getItem(\"_pt\")) loadSip(); }, 2000);\ncheckAuth();\n";
 }
