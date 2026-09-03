@@ -222,9 +222,19 @@ function renderSync(){
   window._sipSaved=false;
   el.innerHTML="<span class=\"ok\">已同步到 SIP 服务器</span>";
 }
+function talkingSet(){
+  var a = (ST && ST.talking_exts) || [];
+  var s = {};
+  for(var i=0;i<a.length;i++) s[String(a[i])] = true;
+  return s;
+}
+function talkDelay(){
+  return (-((Date.now() % 2600) / 1000)).toFixed(3) + "s";
+}
 function extRowHtml(x, live){
   var L=live[String(x.ext)];
   var online = isOnline(x.ext, live);
+  var talking = !!talkingSet()[String(x.ext)];
   var dot = online ? "<span class=\"dot dot-on\" title=\"在线\"></span>" : "<span class=\"dot dot-off\" title=\"离线\"></span>";
   var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
   var ipCell = (online && L && L.ip) ? twoLine(L.ip, GEO[L.ip] || "查询中") : twoLine("-", "\u00a0");
@@ -232,7 +242,8 @@ function extRowHtml(x, live){
   var last=(ST && ST.last_seen)||{};
   var seen = last[x.ext] ? fmtSeen(last[x.ext]) : twoLine("-", "\u00a0");
   var st = statsFor(x.ext);
-  var html = "<tr"+(selExt===String(x.ext)?" class=\"sel\"":"")+">";
+  var cls = (selExt===String(x.ext)?"sel":"")+(talking?" talking":"");
+  var html = "<tr class=\""+cls.trim()+"\""+(talking?" style=\"animation-delay:"+talkDelay()+"\"":"")+">";
   html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selExt===String(x.ext)?"checked":"")+" onchange=\"pickExt('"+x.ext+"',this.checked)\"></td>";
   html += "<td style=\"text-align:center\">"+dot+"</td>";
   html += "<td><a class=\"extlink\" href=\"#\" onclick=\"openCdr('"+x.ext+"');return false;\">"+x.ext+"</a></td>";
@@ -268,6 +279,7 @@ function renderGatewaysTable(){
   for(var i=0;i<W.length;i++){
     var x=W[i]; var L=live[String(x.ext)];
     var online=isOnline(x.ext, live);
+    var talking = !!talkingSet()[String(x.ext)];
     var dot = online ? "<span class=\"dot dot-on\"></span>" : "<span class=\"dot dot-off\"></span>";
     var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
     var rtt = (online && L) ? fmtRtt(L) : "-";
@@ -275,7 +287,8 @@ function renderGatewaysTable(){
     var fwd = "-";
     if(x.inbound_fwd && x.sms_fwd && x.inbound_fwd!==x.sms_fwd) fwd = x.inbound_fwd+" / "+x.sms_fwd;
     else if(x.inbound_fwd || x.sms_fwd) fwd = x.inbound_fwd || x.sms_fwd;
-    html += "<tr"+(selGw===String(x.ext)?" class=\"sel\"":"")+">";
+    var cls = (selGw===String(x.ext)?"sel":"")+(talking?" talking":"");
+    html += "<tr class=\""+cls.trim()+"\""+(talking?" style=\"animation-delay:"+talkDelay()+"\"":"")+">";
     html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selGw===String(x.ext)?"checked":"")+" onchange=\"pickGw('"+x.ext+"',this.checked)\"></td>";
     html += "<td style=\"text-align:center\">"+dot+"</td>";
     html += "<td>"+x.ext+"</td><td>"+x.name+"</td>";
