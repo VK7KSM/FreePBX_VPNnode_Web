@@ -93,14 +93,24 @@ function liveMap(){
     if(!cs[i].ext) continue;
     var id=String(cs[i].ext);
     m[id]=cs[i];
-    if(String(cs[i].status||"").toLowerCase().indexOf("avail")>=0) HOLD[id]={c:cs[i], until:now+30000};
+    if(isAvailStatus(cs[i].status)) HOLD[id]={c:cs[i], until:now+30000};
   }
   for(var k in HOLD){ if(!m[k] && HOLD[k] && now<HOLD[k].until) m[k]=HOLD[k].c; }
   return m;
 }
+function isAvailStatus(status){
+  return String(status||"").toLowerCase() === "avail";
+}
 function isOnline(ext, live){
   var L = live[String(ext)];
-  return !!(L && String(L.status).toLowerCase().indexOf("avail")>=0);
+  return !!(L && isAvailStatus(L.status));
+}
+function fmtRtt(L){
+  if(!L || L.rtt==null || !isFinite(Number(L.rtt))) return "-";
+  return Number(L.rtt)+" ms";
+}
+function twoLine(a,b){
+  return "<div class=\"cell2\"><div class=\"cell2a\">"+(a||"-")+"</div><div class=\"cell2b\">"+(b||"\u00a0")+"</div></div>";
 }
 function fmtDur(sec){
   sec = parseInt(sec,10)||0;
@@ -130,10 +140,10 @@ function fmtSydney(t){
 function fmtTime(t){ return fmtSydney(t); }
 function fmtSeen(t){
   var s = fmtSydney(t);
-  if(!s || s==="-") return "-";
+  if(!s || s==="-") return twoLine("-", "\u00a0");
   var p = s.split(" ");
-  if(p.length<2) return s;
-  return "<div style=\"line-height:1.25;white-space:nowrap\">"+p[0]+"</div><div style=\"font-size:.75rem;color:#94a3b8;margin-top:.15rem;white-space:nowrap\">"+p[1]+"</div>";
+  if(p.length<2) return twoLine(s, "\u00a0");
+  return twoLine(p[0], p[1]);
 }
 function cdrFor(ext){
   var all = (ST && ST.cdr) || []; var out=[];
@@ -208,19 +218,17 @@ function extRowHtml(x, live){
   var L=live[String(x.ext)];
   var online = isOnline(x.ext, live);
   var dot = online ? "<span class=\"dot dot-on\" title=\"在线\"></span>" : "<span class=\"dot dot-off\" title=\"离线\"></span>";
-  var tr = online && L.transport ? String(L.transport).toUpperCase() : "-";
-  var ip = online ? (L.ip||"") : "";
-  var loc = ip ? (GEO[ip] || "查询中") : "-";
-  var ipCell = ip ? "<div style=\"font-family:monospace;font-size:.8rem;line-height:1.25;white-space:nowrap\">"+ip+"</div><div style=\"font-size:.75rem;color:#94a3b8;margin-top:.15rem\">"+loc+"</div>" : "-";
-  var rtt = online && L.rtt!=null ? L.rtt+" ms" : "-";
+  var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
+  var ipCell = (online && L && L.ip) ? twoLine(L.ip, GEO[L.ip] || "查询中") : twoLine("-", "\u00a0");
+  var rtt = (online && L) ? fmtRtt(L) : "-";
   var last=(ST && ST.last_seen)||{};
-  var seen = last[x.ext] ? fmtSeen(last[x.ext]) : "-";
+  var seen = last[x.ext] ? fmtSeen(last[x.ext]) : twoLine("-", "\u00a0");
   var st = statsFor(x.ext);
   var html = "<tr"+(selExt===String(x.ext)?" class=\"sel\"":"")+">";
   html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selExt===String(x.ext)?"checked":"")+" onchange=\"pickExt('"+x.ext+"',this.checked)\"></td>";
   html += "<td style=\"text-align:center\">"+dot+"</td>";
   html += "<td><a class=\"extlink\" href=\"#\" onclick=\"openCdr('"+x.ext+"');return false;\">"+x.ext+"</a></td>";
-  html += "<td><a class=\"namelink\" href=\"#\" onclick=\"openCdr('"+x.ext+"');return false;\">"+x.name+"</a></td>";
+  html += "<td><a class=\"namelink\" href=\"#\" onclick=\"openCdr('"+x.ext+"');return false;\">"+(x.name||"-")+"</a></td>";
   html += "<td>"+tr+"</td><td>"+ipCell+"</td>";
   html += "<td style=\"white-space:nowrap\">"+rtt+"</td>";
   html += "<td>"+seen+"</td>";
@@ -254,14 +262,17 @@ function renderGatewaysTable(){
     var online=isOnline(x.ext, live);
     var dot = online ? "<span class=\"dot dot-on\"></span>" : "<span class=\"dot dot-off\"></span>";
     var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
-    var rtt = online && L && L.rtt!=null ? L.rtt+" ms" : "-";
+    var rtt = (online && L) ? fmtRtt(L) : "-";
     var used = groupsUsingGw(x.ext);
+    var fwd = "-";
+    if(x.inbound_fwd && x.sms_fwd && x.inbound_fwd!==x.sms_fwd) fwd = x.inbound_fwd+" / "+x.sms_fwd;
+    else if(x.inbound_fwd || x.sms_fwd) fwd = x.inbound_fwd || x.sms_fwd;
     html += "<tr"+(selGw===String(x.ext)?" class=\"sel\"":"")+">";
     html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selGw===String(x.ext)?"checked":"")+" onchange=\"pickGw('"+x.ext+"',this.checked)\"></td>";
     html += "<td style=\"text-align:center\">"+dot+"</td>";
     html += "<td>"+x.ext+"</td><td>"+x.name+"</td>";
     html += "<td>"+(x.public_number||"-")+"</td>";
-    html += "<td>呼入 "+(x.inbound_fwd||"-")+" / 短信 "+(x.sms_fwd||"-")+"</td>";
+    html += "<td>"+fwd+"</td>";
     html += "<td>"+(used.length?used.join("、"):"无")+"</td>";
     html += "<td>"+tr+"</td><td style=\"white-space:nowrap\">"+rtt+"</td></tr>";
   }
@@ -271,7 +282,8 @@ function renderGroupBoxes(){
   var box=$("groupBoxes"); if(!box) return;
   var live=liveMap();
   var html="";
-  function oneBox(gid, title, meta){
+  function oneBox(gid, title, meta, moveBtns){
+    moveBtns = moveBtns || "";
     var rows=membersOf(gid);
     var page=GP[gid]||1;
     var pages=Math.max(1, Math.ceil(rows.length/PAGE_G));
@@ -283,14 +295,15 @@ function renderGroupBoxes(){
     if(rows.length>PAGE_G){
       pager="<div style=\"display:flex;justify-content:space-between;align-items:center;margin-top:.8rem;font-size:.8rem;color:#94a3b8\"><span>第 "+page+" / "+pages+" 页，共 "+rows.length+" 个分机</span><span><button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page-1)+")\">上一页</button> <button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page+1)+")\">下一页</button></span></div>";
     }
-    var body="<table><thead><tr><th></th><th>在线</th><th>分机号</th><th>名称</th><th>传输</th><th>IP</th><th>延时</th><th>最近上线</th><th>拨打次数</th><th>总通话时长</th></tr></thead><tbody>";
+    var cols="<colgroup><col style=\"width:36px\"><col style=\"width:44px\"><col style=\"width:72px\"><col style=\"width:16%\"><col style=\"width:56px\"><col style=\"width:22%\"><col style=\"width:90px\"><col style=\"width:110px\"><col style=\"width:72px\"><col style=\"width:90px\"></colgroup>";
+    var body="<table class=\"dir-table\">"+cols+"<thead><tr><th></th><th>在线</th><th>分机号</th><th>名称</th><th>传输</th><th>IP</th><th>延时</th><th>最近上线</th><th>拨打次数</th><th>总通话时长</th></tr></thead><tbody>";
     if(!slice.length) body += "<tr><td colspan=\"10\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无分机</td></tr>";
     else for(var i=0;i<slice.length;i++) body += extRowHtml(slice[i], live);
     body += "</tbody></table>";
     html += "<div style=\"padding:1rem 1.1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b\">";
     html += "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem;gap:1rem;flex-wrap:wrap\">";
     html += "<div><h3 style=\"font-weight:700;margin:0;font-size:1rem\">"+title+"</h3><p style=\"font-size:.8rem;color:#94a3b8;margin:.35rem 0 0\">"+meta+"</p></div>";
-    if(gid!=="__none") html += "<button class=\"btn-green\" onclick=\"openExt('"+gid+"')\">+ 添加分机</button>";
+    html += moveBtns;
     html += "</div><div style=\"overflow-x:auto\">"+body+"</div>"+pager+"</div>";
   }
   for(var i=0;i<G.length;i++){
@@ -298,12 +311,26 @@ function renderGroupBoxes(){
     var mem=membersOf(g.id);
     var on=0; for(var j=0;j<mem.length;j++) if(isOnline(mem[j].ext, live)) on++;
     var out = g.gateway ? g.gateway : "无";
-    oneBox(g.id, g.name, mem.length+" 人 · "+on+" 在线 · 外呼："+out+" · "+peerLabel(g));
+    var upDis = i===0 ? " disabled" : "";
+    var downDis = i===G.length-1 ? " disabled" : "";
+    var moveBtns = "<div style=\"display:flex;gap:.4rem\">"+
+      "<button class=\"btn-icon\" title=\"上移\" onclick=\"moveGrp('"+g.id+"',-1)\""+upDis+"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"18 15 12 9 6 15\"></polyline></svg></button>"+
+      "<button class=\"btn-icon\" title=\"下移\" onclick=\"moveGrp('"+g.id+"',1)\""+downDis+"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"6 9 12 15 18 9\"></polyline></svg></button>"+
+      "</div>";
+    oneBox(g.id, g.name, mem.length+" 人 · "+on+" 在线 · 外呼："+out+" · "+peerLabel(g), moveBtns);
   }
   var none=membersOf("__none");
   var onn=0; for(var k=0;k<none.length;k++) if(isOnline(none[k].ext, live)) onn++;
-  oneBox("__none", "未分组", none.length+" 人 · "+onn+" 在线 · 外呼：无 · 仅未分组互打");
+  oneBox("__none", "未分组", none.length+" 人 · "+onn+" 在线 · 外呼：无 · 仅未分组互打", "");
   box.innerHTML = html;
+}
+function moveGrp(id, dir){
+  var i=-1;
+  for(var k=0;k<G.length;k++) if(G[k].id===id) i=k;
+  var j=i+dir;
+  if(i<0 || j<0 || j>=G.length) return;
+  var t=G[i]; G[i]=G[j]; G[j]=t;
+  saveAll();
 }
 function setGPage(gid, page){ if(page<1) page=1; GP[gid]=page; renderGroupBoxes(); }
 function pickExt(ext,on){ selExt = on ? String(ext) : (selExt===String(ext)?"":selExt); renderGroupBoxes(); }
