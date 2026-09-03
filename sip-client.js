@@ -287,10 +287,10 @@ function renderGroupBoxes(){
     if(!slice.length) body += "<tr><td colspan=\"10\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无分机</td></tr>";
     else for(var i=0;i<slice.length;i++) body += extRowHtml(slice[i], live);
     body += "</tbody></table>";
-    html += "<div class=\"card\" style=\"padding:1.5rem;border-radius:1rem\">";
-    html += "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;gap:1rem;flex-wrap:wrap\">";
-    html += "<div><h3 style=\"font-weight:700;margin:0\">"+title+"</h3><p style=\"font-size:.8rem;color:#94a3b8;margin:.35rem 0 0\">"+meta+"</p></div>";
-    html += "<button class=\"btn-green\" onclick=\"openExt('"+gid+"')\">+ 添加分机</button>";
+    html += "<div style=\"padding:1rem 1.1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b\">";
+    html += "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem;gap:1rem;flex-wrap:wrap\">";
+    html += "<div><h3 style=\"font-weight:700;margin:0;font-size:1rem\">"+title+"</h3><p style=\"font-size:.8rem;color:#94a3b8;margin:.35rem 0 0\">"+meta+"</p></div>";
+    if(gid!=="__none") html += "<button class=\"btn-green\" onclick=\"openExt('"+gid+"')\">+ 添加分机</button>";
     html += "</div><div style=\"overflow-x:auto\">"+body+"</div>"+pager+"</div>";
   }
   for(var i=0;i<G.length;i++){
