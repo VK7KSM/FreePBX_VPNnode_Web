@@ -932,6 +932,7 @@ function renderSipHtml() {
     '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem}',
     '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
     '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
+    '.btn-gray:disabled{opacity:.35;cursor:default}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     'table{width:100%;border-collapse:collapse}',
     'th{text-align:left;padding:.65rem .7rem;font-size:.8rem;color:#94a3b8;background:rgba(15,23,42,.6);white-space:nowrap}',
