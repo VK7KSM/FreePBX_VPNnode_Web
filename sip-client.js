@@ -93,17 +93,25 @@ function liveMap(){
     if(!cs[i].ext) continue;
     var id=String(cs[i].ext);
     m[id]=cs[i];
-    if(isAvailStatus(cs[i].status)) HOLD[id]={c:cs[i], until:now+30000};
+    if(contactLive(cs[i])) HOLD[id]={c:cs[i], until:now+30000};
   }
   for(var k in HOLD){ if(!m[k] && HOLD[k] && now<HOLD[k].until) m[k]=HOLD[k].c; }
   return m;
 }
+function isGwExt(ext){
+  for(var i=0;i<W.length;i++) if(String(W[i].ext)===String(ext)) return true;
+  return false;
+}
 function isAvailStatus(status){
   return String(status||"").toLowerCase() === "avail";
 }
+function contactLive(c){
+  if(!c) return false;
+  if(isGwExt(c.ext)) return !!(c.uri || c.ip || c.status);
+  return isAvailStatus(c.status);
+}
 function isOnline(ext, live){
-  var L = live[String(ext)];
-  return !!(L && isAvailStatus(L.status));
+  return contactLive(live[String(ext)]);
 }
 function fmtRtt(L){
   if(!L || L.rtt==null || !isFinite(Number(L.rtt))) return "-";
@@ -250,7 +258,7 @@ function renderGroupsTable(){
     var out = g.gateway ? (g.gateway+" "+gwName(g.gateway)) : "无";
     html += "<tr"+(selGrp===g.id?" class=\"sel\"":"")+">";
     html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selGrp===g.id?"checked":"")+" onchange=\"pickGrp('"+g.id+"',this.checked)\"></td>";
-    html += "<td>"+g.name+"</td><td>"+n+"</td><td>"+out+"</td><td>"+peerLabel(g)+"</td></tr>";
+    html += "<td></td><td>"+g.name+"</td><td>"+n+"</td><td>"+out+"</td><td>"+peerLabel(g)+"</td></tr>";
   }
   tb.innerHTML = html || "<tr><td colspan=\"5\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无通话组，请先添加</td></tr>";
 }
@@ -295,13 +303,13 @@ function renderGroupBoxes(){
     if(rows.length>PAGE_G){
       pager="<div style=\"display:flex;justify-content:space-between;align-items:center;margin-top:.8rem;font-size:.8rem;color:#94a3b8\"><span>第 "+page+" / "+pages+" 页，共 "+rows.length+" 个分机</span><span><button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page-1)+")\">上一页</button> <button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page+1)+")\">下一页</button></span></div>";
     }
-    var cols="<colgroup><col style=\"width:36px\"><col style=\"width:44px\"><col style=\"width:72px\"><col style=\"width:16%\"><col style=\"width:56px\"><col style=\"width:22%\"><col style=\"width:90px\"><col style=\"width:110px\"><col style=\"width:72px\"><col style=\"width:90px\"></colgroup>";
+    var cols="<colgroup><col class=\"c-chk\"><col class=\"c-on\"><col class=\"c-ext\"><col style=\"width:16%\"><col style=\"width:56px\"><col style=\"width:22%\"><col style=\"width:90px\"><col style=\"width:110px\"><col style=\"width:72px\"><col style=\"width:90px\"></colgroup>";
     var body="<table class=\"dir-table\">"+cols+"<thead><tr><th></th><th>在线</th><th>分机号</th><th>名称</th><th>传输</th><th>IP</th><th>延时</th><th>最近上线</th><th>拨打次数</th><th>总通话时长</th></tr></thead><tbody>";
     if(!slice.length) body += "<tr><td colspan=\"10\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无分机</td></tr>";
     else for(var i=0;i<slice.length;i++) body += extRowHtml(slice[i], live);
     body += "</tbody></table>";
-    html += "<div style=\"padding:1rem 1.1rem;border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b\">";
-    html += "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem;gap:1rem;flex-wrap:wrap\">";
+    html += "<div style=\"border-radius:.8rem;background:rgba(15,23,42,.6);border:1px solid #1e293b\">";
+    html += "<div style=\"display:flex;justify-content:space-between;align-items:center;padding:1rem .7rem .8rem;gap:1rem;flex-wrap:wrap\">";
     html += "<div><h3 style=\"font-weight:700;margin:0;font-size:1rem\">"+title+"</h3><p style=\"font-size:.8rem;color:#94a3b8;margin:.35rem 0 0\">"+meta+"</p></div>";
     html += moveBtns;
     html += "</div><div style=\"overflow-x:auto\">"+body+"</div>"+pager+"</div>";
