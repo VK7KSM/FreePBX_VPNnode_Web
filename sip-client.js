@@ -301,7 +301,9 @@ function renderGroupBoxes(){
     var slice=rows.slice(start, start+PAGE_G);
     var pager="";
     if(rows.length>PAGE_G){
-      pager="<div style=\"display:flex;justify-content:space-between;align-items:center;margin-top:.8rem;font-size:.8rem;color:#94a3b8\"><span>第 "+page+" / "+pages+" 页，共 "+rows.length+" 个分机</span><span><button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page-1)+")\">上一页</button> <button class=\"btn-gray\" onclick=\"setGPage('"+gid+"',"+(page+1)+")\">下一页</button></span></div>";
+      var prevDis = page<=1 ? " disabled" : "";
+      var nextDis = page>=pages ? " disabled" : "";
+      pager="<div style=\"display:flex;justify-content:flex-end;align-items:center;gap:.55rem;padding:.65rem .7rem 1rem;font-size:.8rem;color:#94a3b8;white-space:nowrap\"><span>第 "+page+" / "+pages+" 页，共 "+rows.length+" 个分机</span><button class=\"btn-gray\""+prevDis+" onclick=\"setGPage('"+gid+"',"+(page-1)+")\">上一页</button><button class=\"btn-gray\""+nextDis+" onclick=\"setGPage('"+gid+"',"+(page+1)+")\">下一页</button></div>";
     }
     var cols="<colgroup><col class=\"c-chk\"><col class=\"c-on\"><col class=\"c-ext\"><col style=\"width:16%\"><col style=\"width:56px\"><col style=\"width:22%\"><col style=\"width:90px\"><col style=\"width:110px\"><col style=\"width:72px\"><col style=\"width:90px\"></colgroup>";
     var body="<table class=\"dir-table\">"+cols+"<thead><tr><th></th><th>在线</th><th>分机号</th><th>名称</th><th>传输</th><th>IP</th><th>延时</th><th>最近上线</th><th>拨打次数</th><th>总通话时长</th></tr></thead><tbody>";
