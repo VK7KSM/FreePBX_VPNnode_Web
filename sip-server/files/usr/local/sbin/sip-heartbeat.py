@@ -532,19 +532,13 @@ exten => _X.,1,Goto(from-did-direct,${EXTEN},1)
 #include freepbx-pixel-sms.conf
 #include freepbx-pixel-callerid.conf
 """
-    sms_conf = """[sms-sip-user]
-exten => s,1,Set(LOCAL(raw)=${MESSAGE(from)})
- same => n,Set(LOCAL(raw)=${CUT(raw,@,1)})
- same => n,Set(LOCAL(raw)=${CUT(raw,:,2)})
- same => n,Set(GOSUB_RETVAL=${FILTER(0-9,${raw})})
- same => n,Return()
-
-[from-internal-pixel-sms]
+    sms_conf = """[from-internal-pixel-sms]
 exten => _.,1,NoOp(Outbound SMS from ${MESSAGE(from)} to ${EXTEN})
- same => n,Set(SRC=${CHANNEL(endpoint)})
- same => n,ExecIf($["${SRC}" = ""]?Gosub(sms-sip-user,s,1))
- same => n,ExecIf($["${SRC}" = ""]?Set(SRC=${GOSUB_RETVAL}))
- same => n,Verbose(0, SMS out from=${MESSAGE(from)} SRC=${SRC} exten=${EXTEN})
+ same => n,Set(FROM=${MESSAGE(from)})
+ same => n,Set(U=${CUT(FROM,@,1)})
+ same => n,Set(U=${CUT(U,:,2)})
+ same => n,Set(SRC=${FILTER(0-9,${U})})
+ same => n,Verbose(0, SMS out FROM=${FROM} SRC=${SRC} exten=${EXTEN})
  same => n,GotoIf($["${SRC}" = ""]?invalid)
  same => n,GotoIf($["${DB(SIP/sms/${SRC})}" != "1"]?invalid)
  same => n,Set(GW=${DB(SIP/extgw/${SRC})})
@@ -560,11 +554,12 @@ exten => _.,1,NoOp(Outbound SMS from ${MESSAGE(from)} to ${EXTEN})
  same => n,Hangup()
 
 [from-pixel-sms]
-exten => _.,1,NoOp(Inbound SMS from ${MESSAGE(from)})
- same => n,Set(GW=${CHANNEL(endpoint)})
- same => n,ExecIf($["${GW}" = ""]?Gosub(sms-sip-user,s,1))
- same => n,ExecIf($["${GW}" = ""]?Set(GW=${GOSUB_RETVAL}))
- same => n,Verbose(0, SMS in from=${MESSAGE(from)} GW=${GW})
+exten => _.,1,NoOp(Inbound SMS from ${MESSAGE(from)} to ${MESSAGE(to)} exten=${EXTEN})
+ same => n,Set(FROM=${MESSAGE(from)})
+ same => n,Set(U=${CUT(FROM,@,1)})
+ same => n,Set(U=${CUT(U,:,2)})
+ same => n,Set(GW=${FILTER(0-9,${U})})
+ same => n,Verbose(0, SMS in FROM=${FROM} U=${U} GW=${GW} to=${MESSAGE(to)} exten=${EXTEN})
  same => n,GotoIf($[${LEN(${GW})} < 3]?invalid)
  same => n,GotoIf($[${LEN(${GW})} > 6]?invalid)
  same => n,GotoIf($["${DB(SIP/is_gw/${GW})}" != "1"]?invalid)
@@ -581,12 +576,22 @@ exten => _.,1,NoOp(Inbound SMS from ${MESSAGE(from)})
  same => n(australia),Set(SIP_SMS_SENDER=0${GSM_SMS_SENDER:3})
  same => n,Goto(send)
  same => n(china),Set(SIP_SMS_SENDER=${GSM_SMS_SENDER:3})
- same => n(send),MessageSend(pjsip:${DST},sip:${SIP_SMS_SENDER}@sip.elfradio.net,sip:${DST}@sip.elfradio.net)
+ same => n(send),Verbose(0, SMS in send GW=${GW} DST=${DST} caller=${SIP_SMS_SENDER})
+ same => n,MessageSend(pjsip:${DST},sip:${SIP_SMS_SENDER}@sip.elfradio.net,sip:${DST}@sip.elfradio.net)
  same => n,Verbose(0, SMS in GW=${GW} DST=${DST} status=${MESSAGE_SEND_STATUS})
  same => n,Hangup()
- same => n(invalid),Verbose(0, SMS in rejected from=${MESSAGE(from)} GW=${GW} DST=${DST})
+ same => n(invalid),Verbose(0, SMS in rejected FROM=${FROM} GW=${GW} DST=${DST})
+ same => n,Hangup()
+
+[sms-parse-test]
+exten => s,1,Set(FROM=sip:300@sip.elfradio.net)
+ same => n,Set(U=${CUT(FROM,@,1)})
+ same => n,Set(U=${CUT(U,:,2)})
+ same => n,Set(GW=${FILTER(0-9,${U})})
+ same => n,Verbose(0, SMS parse test U=${U} GW=${GW})
  same => n,Hangup()
 """
+
     changed = write_if_changed(PANEL_EXT, ext_conf)
     changed |= write_if_changed(PANEL_SMS, sms_conf)
     return changed
