@@ -533,10 +533,7 @@ exten => _X.,1,Goto(from-did-direct,${EXTEN},1)
 #include freepbx-pixel-callerid.conf
 """
     sms_conf = """[sms-sip-user]
-exten => s,1,Set(LOCAL(raw)=${MESSAGE(from)})
- same => n,Set(LOCAL(after)=${CUT(raw,<,2)})
- same => n,ExecIf($["${after}" != ""]?Set(LOCAL(raw)=${after}))
- same => n,Set(LOCAL(raw)=${CUT(raw,@,1)})
+exten => s,1,Set(LOCAL(raw)=${CUT(MESSAGE(from),@,1)})
  same => n,Set(LOCAL(raw)=${CUT(raw,:,2)})
  same => n,Set(GOSUB_RETVAL=${FILTER(0-9,${raw})})
  same => n,Return()
