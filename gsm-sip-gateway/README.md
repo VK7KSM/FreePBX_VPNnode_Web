@@ -8,11 +8,13 @@
 
 | 项 | 值 |
 |---|---|
-| 版本名 | 1.4.1 |
-| versionCode | 6 |
+| 版本名 | 1.4.2 |
+| versionCode | 7 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**1.4.2 变更：** 出站短信按正文 `SMS <号码>: <内容>` 发送，不再要求 SIP From 等于 SIM 目的分机。102、106 等有短信权限的分机经 PBX 改写后都可以经 300 发 GSM 短信。To 已是 10–15 位号码的 MESSAGE 仍直发。乱正文仍拒绝。
 
 **1.4.1 变更：** PBX 送来的、Request-URI 为公网号码的呼叫，不再要求主叫必须是「SIM 呼入目的分机」。通话组里允许外呼的分机（如 104）都可以经 300 打出。直连网关、用 DTMF 拨号的旧模式仍只用 SIM 目的分机白名单。
 
@@ -22,7 +24,7 @@
 
 - **呼出：** 分机所在通话组有出口网关，且该分机「外呼」为允许。面板保存后大阪写入 `SIP/outbound`、`SIP/extgw`。网关只负责把 PBX 打过来的号码送到 GSM。
 - **呼入：** 面板网关账户的「呼入转发」才是电话落地分机；「短信转发」可指向同组另一个分机。手机上的 SIM 目的号只要非空，网关才会向 PBX 发 INVITE；真正转给谁由大阪 `SIP/gwin` / `SIP/gwsms` 决定。
-- **短信：** 同样以面板 `SIP/gwsms` 为准。1.4.1 起，PBX 发来的、收件人为公网号码的 SIP MESSAGE 也不再要求主叫必须是 SIM 目的分机。
+- **短信：** 入站以面板 `SIP/gwsms` 为准。出站正文由大阪改写成 `SMS <号码>: <内容>`。1.4.2 起网关按该正文发 GSM，不再核对 From 是否为 SIM 目的分机。
 
 不要在网关里再维护一份分机外呼名单。
 
@@ -35,13 +37,13 @@
 
 ## 安装
 
-1. 从 Releases 下载 `GSM-SIP-Gateway-1.4.1.apk`
-2. USB 安装：`adb install -r GSM-SIP-Gateway-1.4.1.apk`
+1. 从 Releases 下载 `GSM-SIP-Gateway-1.4.2.apk`
+2. USB 安装：`adb install -r GSM-SIP-Gateway-1.4.2.apk`
 3. 授予电话、短信、麦克风、拨号角色等权限
 4. 在应用里填写：服务器 `sip.elfradio.net`、端口 `5061`、开启 TLS、网关账号 300
 5. SIM1 目的分机填一个真实分机号（例如 101），保证 GSM 呼入会发 INVITE；呼入最终转到谁仍以面板为准
 
-回退到安装 1.4.1 之前的包时，使用当时从手机拉出的备份，不要用 Git 里的源码冒充已装包。
+回退时使用当时从手机拉出的备份或对应 Releases 安装包，不要用 Git 里的源码冒充已装包。
 
 ## 编译
 
