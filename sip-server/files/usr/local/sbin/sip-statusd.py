@@ -415,6 +415,28 @@ def collect_proc():
         CON.commit()
 
 
+def flush_sms_queue(contacts):
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("smsq", "/usr/local/sbin/sms-queue.py")
+        if spec is None or spec.loader is None:
+            return
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        avail = []
+        for c in contacts or []:
+            if not c:
+                continue
+            ext = str(c.get("ext") or "").strip()
+            if ext and mod.is_reachable(c.get("status")):
+                avail.append(ext)
+        if not avail:
+            return
+        mod.flush_available(avail)
+    except Exception:
+        return
+
+
 def collect_asterisk():
     cs = contacts()
     prev_cs = kv_get("contacts") or []
@@ -460,6 +482,10 @@ def collect_asterisk():
         kv_set("online_set", online_set)
         kv_set("cdr", cdr_rows())
         CON.commit()
+    try:
+        flush_sms_queue(cs)
+    except Exception:
+        pass
 
 
 def history():
