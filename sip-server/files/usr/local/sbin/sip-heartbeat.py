@@ -607,7 +607,7 @@ def apply_ast_db(desired, gw_set, groups):
             sh("asterisk -rx 'database put SIP outbound/%s 0'" % ext)
             sh("asterisk -rx 'database put SIP sms/%s 0'" % ext)
             inn = str(item.get("inbound_fwd") or "").strip()
-            smsf = str(item.get("sms_fwd") or "").strip() or inn
+            smsf = str(item.get("sms_fwd") or "").strip()
             if inn:
                 sh("asterisk -rx 'database put SIP gwin/%s %s'" % (ext, inn))
             if smsf:

@@ -19,7 +19,7 @@
 
 源码在 [`gsm-sip-gateway/`](gsm-sip-gateway/)。安装包在 [Releases](https://github.com/VK7KSM/FreePBX_VPNnode_Web/releases)，当前为 **1.4.1**（`GSM-SIP-Gateway-1.4.1.apk`）。
 
-当前生产机是 Pixel 3 XL，以账号 **300**、TLS `sip.elfradio.net:5061` 注册。外呼是否允许、走哪台网关，只看面板里的通话组和分机「外呼」开关；网关不再单独维护一份分机白名单。GSM 呼入转到哪个分机，以面板网关账户的「呼入/短信转发」为准。
+当前生产机是 Pixel 3 XL，以账号 **300**、TLS `sip.elfradio.net:5061` 注册。外呼是否允许、走哪台网关，只看面板里的通话组和分机「外呼」开关；网关不再单独维护一份分机白名单。GSM 呼入电话和短信可以转到同一通话组里的不同分机；以面板网关账户的「呼入转发」「短信转发」为准。
 
 从 1.4.1 起，104 等组内允许外呼的分机可以直接拨公网号码，经 300 打出。详细安装、编译和回退见 [网关说明](gsm-sip-gateway/README.md)。
 

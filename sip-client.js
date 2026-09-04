@@ -284,20 +284,18 @@ function renderGatewaysTable(){
     var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
     var rtt = (online && L) ? fmtRtt(L) : "-";
     var used = groupsUsingGw(x.ext);
-    var fwd = "-";
-    if(x.inbound_fwd && x.sms_fwd && x.inbound_fwd!==x.sms_fwd) fwd = x.inbound_fwd+" / "+x.sms_fwd;
-    else if(x.inbound_fwd || x.sms_fwd) fwd = x.inbound_fwd || x.sms_fwd;
     var cls = (selGw===String(x.ext)?"sel":"")+(talking?" talking":"");
     html += "<tr class=\""+cls.trim()+"\""+(talking?" style=\"animation-delay:"+talkDelay()+"\"":"")+">";
     html += "<td><input class=\"rowchk\" type=\"checkbox\" "+(selGw===String(x.ext)?"checked":"")+" onchange=\"pickGw('"+x.ext+"',this.checked)\"></td>";
     html += "<td style=\"text-align:center\">"+dot+"</td>";
     html += "<td>"+x.ext+"</td><td>"+x.name+"</td>";
     html += "<td>"+(x.public_number||"-")+"</td>";
-    html += "<td>"+fwd+"</td>";
+    html += "<td>"+(x.inbound_fwd||"-")+"</td>";
+    html += "<td>"+(x.sms_fwd||"-")+"</td>";
     html += "<td>"+(used.length?used.join("、"):"无")+"</td>";
     html += "<td>"+tr+"</td><td style=\"white-space:nowrap\">"+rtt+"</td></tr>";
   }
-  tb.innerHTML = html || "<tr><td colspan=\"9\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无网关账户</td></tr>";
+  tb.innerHTML = html || "<tr><td colspan=\"10\" style=\"text-align:center;color:#475569;padding:1.2rem\">暂无网关账户</td></tr>";
 }
 function renderGroupBoxes(){
   var box=$("groupBoxes"); if(!box) return;
@@ -370,6 +368,32 @@ function fillExtSelect(sel, cur){
   for(var i=0;i<E.length;i++) html += "<option value=\""+E[i].ext+"\">"+E[i].ext+" "+(E[i].name||"")+"</option>";
   sel.innerHTML = html;
   sel.value = cur || "";
+}
+function extRow(ext){
+  for(var i=0;i<E.length;i++) if(String(E[i].ext)===String(ext)) return E[i];
+  return null;
+}
+function groupIdOf(ext){
+  var x = extRow(ext);
+  return x ? (x.group_id || "") : "";
+}
+function fillSmsSelect(sel, inbound, cur){
+  var gid = inbound ? groupIdOf(inbound) : null;
+  var html = "<option value=\"\">（不转发）</option>";
+  for(var i=0;i<E.length;i++){
+    var x=E[i];
+    if(inbound && (x.group_id||"")!==gid) continue;
+    html += "<option value=\""+x.ext+"\">"+x.ext+" "+(x.name||"")+(x.sms?"":" （无短信权限）")+"</option>";
+  }
+  sel.innerHTML = html;
+  if(cur){
+    var ok=false;
+    for(var j=0;j<sel.options.length;j++) if(sel.options[j].value===String(cur)) ok=true;
+    sel.value = ok ? cur : "";
+  } else sel.value = "";
+}
+function onInFwdChange(){
+  fillSmsSelect($("wSms"), $("wIn").value, $("wSms").value);
 }
 function fillGwSelect(sel, cur){
   var html = "<option value=\"\">无</option>";
@@ -469,7 +493,7 @@ function delSelGrp(){
 function openGw(){
   editingGw=""; $("gwTitle").innerText="添加网关"; $("wExt").readOnly=false;
   $("wExt").value=""; $("wName").value=""; $("wPw").value=""; $("wNum").value="";
-  fillExtSelect($("wIn"), ""); fillExtSelect($("wSms"), "");
+  fillExtSelect($("wIn"), ""); fillSmsSelect($("wSms"), "", "");
   $("wUsed").innerText="无"; $("wPw").placeholder="新网关必须填写密码"; show("gwWrap");
 }
 function editSelGw(){
@@ -478,7 +502,8 @@ function editSelGw(){
   if(!x) return;
   editingGw=selGw; $("gwTitle").innerText="编辑网关 "+x.ext; $("wExt").readOnly=true;
   $("wExt").value=x.ext; $("wName").value=x.name||""; $("wPw").value=""; $("wNum").value=x.public_number||"";
-  fillExtSelect($("wIn"), x.inbound_fwd||""); fillExtSelect($("wSms"), x.sms_fwd||"");
+  fillExtSelect($("wIn"), x.inbound_fwd||"");
+  fillSmsSelect($("wSms"), x.inbound_fwd||"", x.sms_fwd||x.inbound_fwd||"");
   var used=groupsUsingGw(x.ext); $("wUsed").innerText=used.length?used.join("、"):"无";
   $("wPw").placeholder=x.has_password?"已有密码，留空则不修改":"请设置密码"; show("gwWrap");
 }
@@ -488,6 +513,13 @@ function saveGw(){
   if(!n.ext){ alert("分机号不能为空"); return; }
   if(!/^[0-9]{3,6}$/.test(n.ext)){ alert("分机号必须是 3 到 6 位数字"); return; }
   for(var i=0;i<E.length;i++) if(String(E[i].ext)===n.ext){ alert("该号码已是内网分机"); return; }
+  if(n.inbound_fwd && !extRow(n.inbound_fwd)){ alert("呼入转发目标必须是内网分机"); return; }
+  if(n.sms_fwd && !extRow(n.sms_fwd)){ alert("短信转发目标必须是内网分机"); return; }
+  if(n.inbound_fwd && n.sms_fwd && n.inbound_fwd!==n.sms_fwd && groupIdOf(n.inbound_fwd)!==groupIdOf(n.sms_fwd)){
+    alert("呼入和短信转发必须指向同一通话组的分机，这样短信回程仍走这台网关。");
+    return;
+  }
+  if(n.sms_fwd && !extRow(n.sms_fwd).sms){ alert("短信转发目标分机需要先打开短信权限"); return; }
   if(!editingGw && !pw){ alert("新网关必须设置密码"); return; }
   if(pw) n.password=pw;
   if(editingGw){
