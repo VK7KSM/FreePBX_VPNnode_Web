@@ -3,3 +3,8 @@ node_modules/
 .dev.vars
 *.token
 .DS_Store
+*.apk
+*.jks
+*.keystore
+keystore.properties
+local.properties
