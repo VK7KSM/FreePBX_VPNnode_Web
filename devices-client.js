@@ -5,6 +5,7 @@ var selFn = "adb";
 var map = null;
 var markers = {};
 var circles = {};
+var UI = {};
 
 var FN_ITEMS = [
   ["adb", "远程ADB", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -43,13 +44,30 @@ function currentDev(){
 }
 function deviceReady(){
   var d = currentDev();
-  return !!(d && d.online && d.enabled !== false);
+  return !!(d && d.enabled !== false);
 }
 function disAttr(){ return deviceReady() ? "" : " disabled"; }
-function waitHint(){
-  if(!currentDev()) return "请先在左侧选择设备。管理程序未接入时，页内操作不可用。";
-  if(!deviceReady()) return "该设备尚未接入管理程序，页内操作不可用。";
-  return "";
+function nowIso(){ return new Date().toISOString(); }
+function uiOf(){
+  var d = currentDev();
+  if(!d) return null;
+  if(!UI[d.id]){
+    UI[d.id] = {
+      loc: [],
+      alarm: [],
+      wifi: [],
+      wifiSel: "",
+      wifiLastOk: "",
+      contacts: [],
+      updates: [],
+      photos: [],
+      recs: [],
+      adb: { state: "未连接", port: "", cmd: "" },
+      talk: false,
+      live: ""
+    };
+  }
+  return UI[d.id];
 }
 
 function checkAuth(){
@@ -72,6 +90,7 @@ function loadDevices(){
   ]).then(function(arr){
     if(arr[0].devices) DEV = arr[0].devices;
     if(arr[1].models) MODELS = arr[1].models;
+    if(!currentDev() && DEV.length) selDev = DEV[0].id;
     renderList();
     renderMap();
     renderOps();
@@ -228,171 +247,330 @@ function renderOps(){
 }
 
 function fnPageHtml(){
-  var d = currentDev();
-  var name = d ? d.name : "未选择设备";
-  var ready = deviceReady();
   var dis = disAttr();
-  var hint = waitHint();
-  if(selFn==="update") return pageUpdate(d, name, dis, hint);
-  if(selFn==="wifi") return pageWifi(d, name, dis, hint);
-  if(selFn==="contacts") return pageContacts(d, name, dis, hint);
-  if(selFn==="locate") return pageLocate(d, name, dis, hint);
-  if(selFn==="alarm") return pageAlarm(d, name, dis, hint);
-  if(selFn==="lost") return pageLost(d, name, dis, hint);
+  if(selFn==="update") return pageUpdate(dis);
+  if(selFn==="wifi") return pageWifi(dis);
+  if(selFn==="contacts") return pageContacts(dis);
+  if(selFn==="locate") return pageLocate(dis);
+  if(selFn==="alarm") return pageAlarm(dis);
+  if(selFn==="lost") return pageLost(dis);
   if(selFn==="model") return pageModel();
-  return pageAdb(d, name, dis, hint, ready);
+  return pageAdb(dis);
 }
 
-function pageHead(title, desc, hint){
-  var h = "<h4>"+title+"</h4>";
-  h += '<p class="muted">'+desc+"</p>";
-  if(hint) h += '<p class="fn-wait">'+hint+"</p>";
-  return h;
-}
-
-function pageAdb(d, name, dis, hint, ready){
-  var h = pageHead("远程 ADB", "在管理员电脑 127.0.0.1 上开临时端口，用标准 adb.exe 连接。设备不开放公网 ADB。", hint);
+function pageAdb(dis){
+  var u = uiOf();
+  var st = u ? u.adb.state : "未连接";
+  var port = u && u.adb.port ? u.adb.port : "—";
+  var cmd = (u && u.adb.cmd) ? u.adb.cmd : "adb connect 127.0.0.1:<端口>";
+  var h = "<h4>远程 ADB</h4>";
   h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("会话状态", ready ? "未开始" : "不可用");
-  h += kv("本机端口", "—");
-  h += kv("过期时间", "—");
+  h += kv("会话", st);
+  h += kv("本机端口", port);
+  h += kv("连接命令", cmd);
   h += "</div>";
   h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>申请会话</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>关闭会话</button>';
+  h += '<button class="btn-green" onclick="adbStart()"'+dis+'>开启会话</button>';
+  h += '<button class="btn-gray" onclick="adbStop()"'+dis+'>关闭会话</button>';
   h += "</div>";
-  h += '<p class="ops-sec-title" style="margin-top:.85rem">本机 ADB 公钥</p>';
-  h += '<textarea class="inp" id="adbPub" placeholder="粘贴这台电脑的 adbkey.pub，不含私钥"'+dis+"></textarea>";
+  h += '<p class="ops-sec-title" style="margin-top:.85rem">授权本机 ADB 公钥</p>';
+  h += '<textarea class="inp" id="adbPub" placeholder="粘贴本机 adbkey.pub，私钥留在这台电脑"'+dis+"></textarea>";
   h += '<div class="ops-actions" style="margin-top:.5rem">';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>授权这台电脑</button>';
+  h += '<button class="btn-gray" onclick="adbAuth()"'+dis+'>写入设备信任列表</button>';
   h += "</div>";
-  h += '<p class="muted" style="margin-top:.55rem">电脑需运行 remote-adb-bridge。授权后执行 adb connect 127.0.0.1:端口。</p>';
   return h;
 }
 
-function pageUpdate(d, name, dis, hint){
+function pageUpdate(dis){
+  var u = uiOf();
+  var d = currentDev();
   var ver = d && d.app_version ? d.app_version : "未接入";
-  var st = d && d.update && d.update.state ? d.update.state : "空闲";
-  var h = pageHead("更新客户端", "把已签名的管理程序推到选中设备。失败会保留上一版并可回滚。", hint);
-  h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("当前版本", ver);
-  h += kv("发布版本", "—");
-  h += kv("更新状态", st);
-  h += "</div>";
+  var h = "<h4>更新客户端</h4>";
+  h += '<div class="ops-grid">'+kv("当前版本", ver)+"</div>";
   h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>推送到此设备</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>取消更新</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>回滚上一版</button>';
+  h += '<input id="ghRel" class="inp" placeholder="GitHub Releases 地址" style="max-width:360px"'+dis+'>';
+  h += '<button class="btn-green" onclick="updateFromGithub()"'+dis+'>从 GitHub 安装</button>';
   h += "</div>";
-  h += '<p class="muted" style="margin-top:.55rem">制品校验、健康检查和自动回滚要等更新助手上线后才能真正下发。</p>';
-  return h;
-}
-
-function pageWifi(d, name, dis, hint){
-  var h = pageHead("配置 Wi-Fi", "查询、添加、修改、删除设备上的 Wi-Fi。新配置失效时自动回滚。", hint);
-  h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("当前连接", d && d.network==="wifi" ? "Wi-Fi" : "—");
+  h += '<div class="ops-actions" style="margin-top:.45rem">';
+  h += '<input id="apkFile" type="file" accept=".apk"'+dis+'>';
+  h += '<button class="btn-green" onclick="updateFromFile()"'+dis+'>从本地文件安装</button>';
   h += "</div>";
-  h += '<p class="muted" style="margin:.7rem 0 .4rem">已保存网络</p>';
-  h += '<p class="muted">还没有从设备读到网络列表。</p>';
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<input class="inp" placeholder="SSID" style="max-width:160px"'+dis+'>';
-  h += '<input class="inp" placeholder="密码" type="password" style="max-width:160px"'+dis+'>';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>添加并下发</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>删除</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>失效回滚</button>';
-  h += "</div>";
-  return h;
-}
-
-function pageContacts(d, name, dis, hint){
-  var h = pageHead("通信录", "查询、导入、修改和删除设备通信录。", hint);
-  h += kv("目标设备", name);
-  h += '<p class="muted" style="margin:.7rem 0">还没有从设备读到联系人。</p>';
-  h += '<div class="ops-actions">';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>刷新</button>';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>添加</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>导入</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>删除</button>';
-  h += "</div>";
-  return h;
-}
-
-function pageLocate(d, name, dis, hint){
-  var loc = d && d.loc ? d.loc : null;
-  var coord = loc ? (Number(loc.lat).toFixed(5)+", "+Number(loc.lng).toFixed(5)) : "—";
-  var h = pageHead("立即定位", "请求设备立刻更新位置。室内可能没有有效坐标，可改用播放警报寻找。", hint);
-  h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("来源", loc ? locLabel(loc.source) : "—");
-  h += kv("精度", loc && loc.acc_m ? (loc.acc_m+" 米") : "—");
-  h += kv("时间", loc ? sydney(loc.at) : "—");
-  h += kv("坐标", coord);
-  h += "</div>";
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>立即更新位置</button>';
-  h += "</div>";
-  return h;
-}
-
-function pageAlarm(d, name, dis, hint){
-  var h = pageHead("播放警报", "以最大允许音量循环播放管理程序内置报警声，便于近处寻找设备。", hint);
-  h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("播放状态", "未播放");
-  h += "</div>";
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>开始播放</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>停止</button>';
-  h += "</div>";
-  return h;
-}
-
-function pageLost(d, name, dis, hint){
-  var h = pageHead("丢失模式", "定位、播放警报，并全屏显示失主文字。重启或换网后仍继续，直到管理员退出。", hint);
-  h += '<div class="ops-grid">';
-  h += kv("目标设备", name);
-  h += kv("丢失模式", "未开启");
-  h += "</div>";
-  h += '<p class="ops-sec-title" style="margin-top:.85rem">失主文字</p>';
-  h += '<textarea class="inp" placeholder="例如：此设备已丢失，请联系……"'+dis+"></textarea>";
-  h += '<div class="ops-actions" style="margin-top:.5rem">';
-  h += '<button class="btn-green" onclick="stubAct()"'+dis+'>进入丢失模式</button>';
-  h += '<button class="btn-gray" onclick="stubAct()"'+dis+'>退出丢失模式</button>';
-  h += "</div>";
-  return h;
-}
-
-function pageModel(){
-  var h = "<h4>添加型号</h4>";
-  h += '<p class="muted">型号目录给登记设备用，不依赖设备是否在线。</p>';
-  h += '<div id="modelTable">'+modelTableHtml()+"</div>";
-  h += '<div class="ops-actions" style="margin-top:.8rem">';
-  h += '<input id="mName" class="inp" placeholder="新型号名称" style="max-width:180px">';
-  h += '<input id="mNote" class="inp" placeholder="备注" style="max-width:180px">';
-  h += '<button class="btn-green" onclick="addModel()">添加</button>';
-  h += "</div>";
-  return h;
-}
-
-function modelTableHtml(){
-  var h = "<table><thead><tr><th>名称</th><th>备注</th><th></th></tr></thead><tbody>";
-  for(var i=0;i<MODELS.length;i++){
-    var m = MODELS[i];
-    h += "<tr><td>"+esc(m.name)+'</td><td class="muted">'+esc(m.note||"")+"</td>";
-    h += '<td><button class="btn-gray" onclick="editModel(\''+m.id+'\')">改</button> ';
-    h += '<button class="btn-gray" style="color:#f87171" onclick="delModel(\''+m.id+'\')">删</button></td></tr>';
+  h += '<table style="margin-top:.7rem"><thead><tr><th>时间</th><th>来源</th><th>文件/版本</th><th>结果</th></tr></thead><tbody>';
+  var rows = u ? u.updates : [];
+  if(!rows.length) h += '<tr><td colspan="4" class="muted">还没有安装记录</td></tr>';
+  else for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.src)+"</td><td>"+esc(r.name)+"</td><td>"+esc(r.result)+"</td></tr>";
   }
   h += "</tbody></table>";
   return h;
 }
 
+function pageWifi(dis){
+  var u = uiOf();
+  var list = u ? u.wifi : [];
+  var sel = u ? u.wifiSel : "";
+  var last = u ? u.wifiLastOk : "";
+  var h = "<h4>配置 Wi-Fi</h4>";
+  h += '<div class="ops-actions">';
+  h += '<button class="btn-gray" onclick="wifiScan()"'+dis+'>刷新扫描</button>';
+  if(last) h += '<span class="muted">上次成功：'+esc(last)+"</span>";
+  h += "</div>";
+  h += '<table style="margin-top:.55rem"><thead><tr><th>SSID</th><th>信号</th><th>加密</th><th></th></tr></thead><tbody>';
+  if(!list.length) h += '<tr><td colspan="4" class="muted">等待设备上报周围 Wi-Fi</td></tr>';
+  else for(var i=0;i<list.length;i++){
+    var w=list[i];
+    h += "<tr><td>"+esc(w.ssid)+"</td><td>"+esc(w.rssi)+"</td><td>"+esc(w.sec)+"</td>";
+    h += '<td><button class="btn-gray" onclick="wifiPick(\''+esc(w.ssid)+'\')"'+dis+'>选择</button></td></tr>';
+  }
+  h += "</tbody></table>";
+  h += '<div class="ops-actions" style="margin-top:.7rem">';
+  h += '<input id="wifiSsid" class="inp" placeholder="SSID" value="'+esc(sel)+'" style="max-width:200px"'+dis+'>';
+  h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+dis+'>';
+  h += '<button class="btn-green" onclick="wifiConnect()"'+dis+'>连接</button>';
+  h += "</div>";
+  return h;
+}
+
+function pageContacts(dis){
+  var u = uiOf();
+  var list = u ? u.contacts : [];
+  var h = "<h4>通信录</h4>";
+  h += '<div class="ops-actions">';
+  h += '<input id="cName" class="inp" placeholder="姓名" style="max-width:160px"'+dis+'>';
+  h += '<input id="cPhone" class="inp" placeholder="号码" style="max-width:160px"'+dis+'>';
+  h += '<button class="btn-green" onclick="contactAdd()"'+dis+'>添加</button>';
+  h += '<button class="btn-gray" onclick="contactRefresh()"'+dis+'>刷新</button>';
+  h += "</div>";
+  h += '<table style="margin-top:.55rem"><thead><tr><th>姓名</th><th>号码</th><th></th></tr></thead><tbody>';
+  if(!list.length) h += '<tr><td colspan="3" class="muted">暂无联系人</td></tr>';
+  else for(var i=0;i<list.length;i++){
+    var c=list[i];
+    h += "<tr><td>"+esc(c.name)+"</td><td>"+esc(c.phone)+"</td><td>";
+    h += '<button class="btn-gray" onclick="contactEdit('+i+')"'+dis+'>改</button> ';
+    h += '<button class="btn-gray" style="color:#f87171" onclick="contactDel('+i+')"'+dis+'>删</button>';
+    h += "</td></tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+
+function pageLocate(dis){
+  var u = uiOf();
+  var rows = u ? u.loc : [];
+  var h = '<div class="ops-actions">';
+  h += '<button class="btn-green" onclick="locNow()"'+dis+'>立即更新位置</button>';
+  h += "</div>";
+  h += '<table style="margin-top:.55rem"><thead><tr><th>时间</th><th>纬度</th><th>经度</th></tr></thead><tbody>';
+  if(!rows.length) h += '<tr><td colspan="3" class="muted">还没有定位记录</td></tr>';
+  else for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.lat)+"</td><td>"+esc(r.lng)+"</td></tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+
+function pageAlarm(dis){
+  var u = uiOf();
+  var rows = u ? u.alarm : [];
+  var h = '<div class="ops-actions">';
+  h += '<button class="btn-green" onclick="alarmPlay()"'+dis+'>播放警报声</button>';
+  h += "</div>";
+  h += '<table style="margin-top:.55rem"><thead><tr><th>时间</th><th>时长</th></tr></thead><tbody>';
+  if(!rows.length) h += '<tr><td colspan="2" class="muted">还没有播放记录</td></tr>';
+  else for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.dur)+"</td></tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+
+function pageLost(dis){
+  var u = uiOf();
+  var live = u && u.live ? u.live : "未开始";
+  var h = '<div class="lost-bar">';
+  h += '<button class="btn-gray" onclick="lostRec()"'+dis+'>远程录音</button>';
+  h += '<button class="btn-gray" onclick="lostVideo(\'front\')"'+dis+'>前置录像</button>';
+  h += '<button class="btn-gray" onclick="lostVideo(\'back\')"'+dis+'>后置录像</button>';
+  h += '<button class="btn-gray" onclick="lostPhoto(\'front\')"'+dis+'>前置拍照</button>';
+  h += '<button class="btn-gray" onclick="lostPhoto(\'back\')"'+dis+'>后置拍照</button>';
+  h += '<button class="btn-gray" onclick="lostTalk()"'+dis+'>远程对讲</button>';
+  h += "</div>";
+  h += '<div class="fn-live">'+esc(live)+"</div>";
+  h += '<div class="ops-actions" style="margin-top:.7rem">';
+  h += '<input id="lockPw" class="inp" type="password" placeholder="解锁密码" style="max-width:180px"'+dis+'>';
+  h += '<button class="btn-green" onclick="lostLock()"'+dis+'>远程锁机</button>';
+  h += '<button class="btn-gray" onclick="lostUnlock()"'+dis+'>远程解锁</button>';
+  h += "</div>";
+  h += '<p class="ops-sec-title" style="margin-top:.85rem">录音 / 录像</p>';
+  h += lostRecTable(u);
+  h += '<p class="ops-sec-title" style="margin-top:.85rem">照片</p>';
+  h += lostPhotoTable(u);
+  return h;
+}
+
+function lostRecTable(u){
+  var rows = u ? u.recs : [];
+  var h = '<table><thead><tr><th>时间</th><th>类型</th><th>状态</th></tr></thead><tbody>';
+  if(!rows.length) h += '<tr><td colspan="3" class="muted">暂无记录</td></tr>';
+  else for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.kind)+"</td><td>"+esc(r.state)+"</td></tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+function lostPhotoTable(u){
+  var rows = u ? u.photos : [];
+  var h = '<table><thead><tr><th>时间</th><th>镜头</th><th>状态</th></tr></thead><tbody>';
+  if(!rows.length) h += '<tr><td colspan="3" class="muted">暂无照片</td></tr>';
+  else for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.cam)+"</td><td>"+esc(r.state)+"</td></tr>";
+  }
+  h += "</tbody></table>";
+  return h;
+}
+
+function needDev(){
+  if(uiOf()) return true;
+  return false;
+}
+function adbStart(){
+  var u=uiOf(); if(!u) return;
+  u.adb.state="等待本机桥接器与设备出站连接";
+  u.adb.port="待桥接器分配";
+  u.adb.cmd="adb connect 127.0.0.1:<端口>";
+  renderOps();
+}
+function adbStop(){
+  var u=uiOf(); if(!u) return;
+  u.adb.state="未连接";
+  u.adb.port="—";
+  u.adb.cmd="adb connect 127.0.0.1:<端口>";
+  renderOps();
+}
+function adbAuth(){
+  var u=uiOf(); if(!u) return;
+  var pub=$("adbPub")?$("adbPub").value.trim():"";
+  if(!pub){ alert("请粘贴本机 adbkey.pub"); return; }
+  u.adb.state="公钥已提交，等待设备写入信任列表";
+  renderOps();
+}
+function pushUpdate(src, name){
+  var u=uiOf(); if(!u) return;
+  u.updates.unshift({ at: nowIso(), src: src, name: name, result: "已下发，等待安装结果" });
+  renderOps();
+}
+function updateFromGithub(){
+  var url=$("ghRel")?$("ghRel").value.trim():"";
+  if(!url){ alert("请填写 GitHub Releases 地址"); return; }
+  pushUpdate("GitHub", url);
+}
+function updateFromFile(){
+  var f=$("apkFile") && $("apkFile").files && $("apkFile").files[0];
+  if(!f){ alert("请选择本地 APK"); return; }
+  pushUpdate("本地文件", f.name);
+}
+function wifiScan(){
+  var u=uiOf(); if(!u) return;
+  renderOps();
+}
+function wifiPick(ssid){
+  var u=uiOf(); if(!u) return;
+  u.wifiSel=ssid;
+  renderOps();
+}
+function wifiConnect(){
+  var u=uiOf(); if(!u) return;
+  var ssid=$("wifiSsid")?$("wifiSsid").value.trim():"";
+  var pw=$("wifiPw")?$("wifiPw").value:"";
+  if(!ssid){ alert("请选择或填写 SSID"); return; }
+  if(!pw){ alert("请输入密码"); return; }
+  u.wifiSel=ssid;
+  renderOps();
+}
+function contactRefresh(){ renderOps(); }
+function contactAdd(){
+  var u=uiOf(); if(!u) return;
+  var name=$("cName")?$("cName").value.trim():"";
+  var phone=$("cPhone")?$("cPhone").value.trim():"";
+  if(!name||!phone){ alert("请填写姓名和号码"); return; }
+  u.contacts.push({ name:name, phone:phone });
+  renderOps();
+}
+function contactEdit(i){
+  var u=uiOf(); if(!u||!u.contacts[i]) return;
+  var name=prompt("姓名", u.contacts[i].name); if(name==null) return;
+  var phone=prompt("号码", u.contacts[i].phone); if(phone==null) return;
+  name=name.trim(); phone=phone.trim();
+  if(!name||!phone) return;
+  u.contacts[i]={ name:name, phone:phone };
+  renderOps();
+}
+function contactDel(i){
+  var u=uiOf(); if(!u) return;
+  u.contacts.splice(i,1);
+  renderOps();
+}
+function locNow(){
+  var u=uiOf(); if(!u) return;
+  var d=currentDev();
+  var lat="—", lng="—";
+  if(d && d.loc && isFinite(d.loc.lat) && isFinite(d.loc.lng)){
+    lat=Number(d.loc.lat).toFixed(6);
+    lng=Number(d.loc.lng).toFixed(6);
+  }
+  u.loc.unshift({ at: nowIso(), lat: lat, lng: lng });
+  renderOps();
+}
+function alarmPlay(){
+  var u=uiOf(); if(!u) return;
+  u.alarm.unshift({ at: nowIso(), dur: "等待设备回报" });
+  renderOps();
+}
+function lostRec(){
+  var u=uiOf(); if(!u) return;
+  u.live="录音中（实时播放待设备接入）";
+  u.recs.unshift({ at: nowIso(), kind: "录音", state: "进行中" });
+  renderOps();
+}
+function lostVideo(cam){
+  var u=uiOf(); if(!u) return;
+  var lab = cam==="front" ? "前置录像" : "后置录像";
+  u.live=lab+"中（实时画面待设备接入）";
+  u.recs.unshift({ at: nowIso(), kind: lab, state: "进行中" });
+  renderOps();
+}
+function lostPhoto(cam){
+  var u=uiOf(); if(!u) return;
+  var lab = cam==="front" ? "前置" : "后置";
+  u.photos.unshift({ at: nowIso(), cam: lab, state: "等待回传" });
+  renderOps();
+}
+function lostTalk(){
+  var u=uiOf(); if(!u) return;
+  u.talk=!u.talk;
+  u.live=u.talk ? "对讲中：外置扬声器 + 麦克风" : "对讲已停止";
+  renderOps();
+}
+function lostLock(){
+  var u=uiOf(); if(!u) return;
+  var pw=$("lockPw")?$("lockPw").value:"";
+  if(!pw){ alert("请设置解锁密码"); return; }
+  u.live="已下发锁机";
+  renderOps();
+}
+function lostUnlock(){
+  var u=uiOf(); if(!u) return;
+  u.live="已下发解锁";
+  renderOps();
+}
+
 function stubAct(){
   if(!deviceReady()) return;
-  alert("等待设备管理程序接入后才能下发。");
 }
 
 function openEdit(){
