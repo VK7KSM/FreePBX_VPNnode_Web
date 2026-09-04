@@ -24,8 +24,8 @@ import org.onetwoone.gateway.sip.ReconnectionStrategy;
 import org.onetwoone.gateway.sip.ServiceWatchdog;
 import org.onetwoone.gateway.sip.SipAccountManager;
 import org.onetwoone.gateway.sip.SipEndpointManager;
+import org.onetwoone.gateway.sip.SipSmsDispatch;
 import org.onetwoone.gateway.sip.SipUri;
-import org.onetwoone.gateway.sip.SmsCommand;
 import org.pjsip.pjsua2.*;
 
 import java.util.ArrayList;
@@ -676,35 +676,21 @@ public class PjsipSipService extends Service implements SipCallService {
     private void handleIncomingSipMessage(String from, String to, String body, int simSlot) {
         Log.d(TAG, "handleIncomingSipMessage: from=" + from + " to=" + to + " body=\"" + body + "\" SIM" + simSlot);
 
-        String sipUser = SipUri.extractUser(from);
-        String phoneNumber = extractPhoneNumber(to);
-        if ((phoneNumber == null || phoneNumber.isEmpty()) && !config.isAuthorizedSipCaller(sipUser)) {
-            Log.w(TAG, "Ignoring SIP MESSAGE from unauthorized user: " + sipUser);
+        SipSmsDispatch.Result decided = SipSmsDispatch.resolve(from, to, body);
+        if (decided == null) {
+            String sipUser = SipUri.extractUser(from);
+            if (!config.isAuthorizedSipCaller(sipUser)) {
+                Log.w(TAG, "Ignoring SIP MESSAGE from unauthorized user: " + sipUser);
+            } else {
+                Log.w(TAG, "Ignoring malformed SMS command from authorized user");
+            }
             return;
         }
 
-        String messageBody = body;
-
-        // Direct Linphone mode sends an explicit command to the gateway account.
-        if (phoneNumber == null || phoneNumber.isEmpty()) {
-            SmsCommand command = SmsCommand.parse(body);
-            if (command == null) {
-                Log.w(TAG, "Ignoring malformed SMS command from authorized user");
-                return;
-            }
-            phoneNumber = command.getDestination();
-            messageBody = command.getBody();
-        }
-
-        Log.d(TAG, "handleIncomingSipMessage: Sending GSM SMS to " + phoneNumber);
+        Log.d(TAG, "handleIncomingSipMessage: Sending GSM SMS to " + decided.phoneNumber);
         if (smsHandler != null) {
-            smsHandler.sendSms(phoneNumber, messageBody, simSlot);
+            smsHandler.sendSms(decided.phoneNumber, decided.body, simSlot);
         }
-    }
-
-    private String extractPhoneNumber(String uri) {
-        String user = SipUri.extractUser(uri);
-        return user.matches("^\\+?[0-9]{10,15}$") ? user : null;
     }
 
     // ========== Watchdog ==========
