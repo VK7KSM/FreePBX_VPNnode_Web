@@ -62,10 +62,17 @@ function uiOf(){
       updates: [],
       photos: [],
       recs: [],
-      adb: { state: "未连接", port: "", cmd: "" },
+      adb: { connected: false, lines: [], hist: [], histI: 0 },
       talk: false,
       live: ""
     };
+  }
+  var adb = UI[d.id].adb;
+  if(!adb || !Array.isArray(adb.lines)){
+    UI[d.id].adb = { connected: false, lines: [], hist: [], histI: 0 };
+  } else {
+    if(!Array.isArray(adb.hist)) adb.hist = [];
+    if(adb.histI == null) adb.histI = adb.hist.length;
   }
   return UI[d.id];
 }
@@ -244,6 +251,7 @@ function renderOps(){
   h += "</div>";
   h += '<div class="fn-page">'+fnPageHtml()+"</div>";
   box.innerHTML = h;
+  adbBind();
 }
 
 function fnPageHtml(){
@@ -260,24 +268,28 @@ function fnPageHtml(){
 
 function pageAdb(dis){
   var u = uiOf();
-  var st = u ? u.adb.state : "未连接";
-  var port = u && u.adb.port ? u.adb.port : "—";
-  var cmd = (u && u.adb.cmd) ? u.adb.cmd : "adb connect 127.0.0.1:<端口>";
-  var h = "<h4>远程 ADB</h4>";
-  h += '<div class="ops-grid">';
-  h += kv("会话", st);
-  h += kv("本机端口", port);
-  h += kv("连接命令", cmd);
+  var on = !!(u && u.adb.connected);
+  var h = '<div class="ops-actions" style="margin-bottom:.55rem">';
+  h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接</button>';
+  h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
+  h += '<span class="muted">'+(on ? "已连接" : "未连接")+"</span>";
   h += "</div>";
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<button class="btn-green" onclick="adbStart()"'+dis+'>开启会话</button>';
-  h += '<button class="btn-gray" onclick="adbStop()"'+dis+'>关闭会话</button>';
-  h += "</div>";
-  h += '<p class="ops-sec-title" style="margin-top:.85rem">授权本机 ADB 公钥</p>';
-  h += '<textarea class="inp" id="adbPub" placeholder="粘贴本机 adbkey.pub，私钥留在这台电脑"'+dis+"></textarea>";
-  h += '<div class="ops-actions" style="margin-top:.5rem">';
-  h += '<button class="btn-gray" onclick="adbAuth()"'+dis+'>写入设备信任列表</button>';
-  h += "</div>";
+  h += '<div class="adb-box">';
+  h += '<pre class="adb-term" id="adbTerm">';
+  var lines = (u && u.adb.lines) ? u.adb.lines : [];
+  if(!lines.length) h += '<span class="adb-sys">点「连接」后可输入 ADB 命令。输出会显示在这里，形式与本机终端运行 adb 相同。流量经远程配置客户端和 Cloudflare 转发，不会直连设备 ADB 端口。</span>';
+  else {
+    for(var i=0;i<lines.length;i++){
+      h += '<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+"</span>\n";
+    }
+  }
+  h += "</pre>";
+  h += '<div class="adb-row">';
+  h += '<span class="adb-prompt">adb&gt;</span>';
+  h += '<input id="adbCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="shell ls /sdcard"';
+  h += (dis || !on) ? " disabled>" : ">";
+  h += '<button class="btn-green" onclick="adbSend()"'+((dis || !on) ? " disabled" : "")+'>发送</button>';
+  h += "</div></div>";
   return h;
 }
 
@@ -438,25 +450,80 @@ function needDev(){
   if(uiOf()) return true;
   return false;
 }
-function adbStart(){
+function adbBind(){
+  var term=$("adbTerm");
+  if(term) term.scrollTop=term.scrollHeight;
+  var inp=$("adbCmd");
+  if(!inp) return;
+  inp.onkeydown=function(e){
+    if(e.key==="Enter"){ e.preventDefault(); adbSend(); return; }
+    if(e.key==="ArrowUp"){ e.preventDefault(); adbHist(-1); return; }
+    if(e.key==="ArrowDown"){ e.preventDefault(); adbHist(1); }
+  };
+  if(!inp.disabled) inp.focus();
+}
+function adbPrint(kind, text){
   var u=uiOf(); if(!u) return;
-  u.adb.state="等待本机桥接器与设备出站连接";
-  u.adb.port="待桥接器分配";
-  u.adb.cmd="adb connect 127.0.0.1:<端口>";
+  if(!u.adb.lines) u.adb.lines=[];
+  u.adb.lines.push({ k: kind, t: String(text) });
+  if(u.adb.lines.length>500) u.adb.lines=u.adb.lines.slice(-400);
+}
+function adbNorm(raw){
+  var s = String(raw||"").replace(/^\s+/, "");
+  s = s.replace(/^adb(\.exe)?(\s+|$)/i, "");
+  return s.replace(/^\s+|\s+$/g, "");
+}
+function adbHist(dir){
+  var u=uiOf(); if(!u) return;
+  var inp=$("adbCmd"); if(!inp) return;
+  var h=u.adb.hist||[];
+  if(!h.length) return;
+  var i = u.adb.histI==null ? h.length : u.adb.histI;
+  i += dir;
+  if(i<0) i=0;
+  if(i>h.length) i=h.length;
+  u.adb.histI = i;
+  inp.value = i<h.length ? h[i] : "";
+}
+function adbConnect(){
+  var u=uiOf(); if(!u) return;
+  if(u.adb.connected){
+    adbPrint("sys", "已经连接。");
+    renderOps();
+    return;
+  }
+  u.adb.connected=true;
+  adbPrint("sys", "正在通过 Cloudflare 请求会话…");
+  adbPrint("sys", "等待远程配置客户端出站接入。客户端未上线前，命令不会发到设备。");
   renderOps();
 }
-function adbStop(){
+function adbDisconnect(){
   var u=uiOf(); if(!u) return;
-  u.adb.state="未连接";
-  u.adb.port="—";
-  u.adb.cmd="adb connect 127.0.0.1:<端口>";
+  if(!u.adb.connected){
+    adbPrint("sys", "当前未连接。");
+    renderOps();
+    return;
+  }
+  u.adb.connected=false;
+  adbPrint("sys", "已断开。");
   renderOps();
 }
-function adbAuth(){
+function adbSend(){
   var u=uiOf(); if(!u) return;
-  var pub=$("adbPub")?$("adbPub").value.trim():"";
-  if(!pub){ alert("请粘贴本机 adbkey.pub"); return; }
-  u.adb.state="公钥已提交，等待设备写入信任列表";
+  var inp=$("adbCmd");
+  var raw=adbNorm(inp ? inp.value : "");
+  if(!raw) return;
+  if(inp) inp.value="";
+  if(!u.adb.hist) u.adb.hist=[];
+  if(!u.adb.hist.length || u.adb.hist[u.adb.hist.length-1]!==raw) u.adb.hist.push(raw);
+  u.adb.histI = u.adb.hist.length;
+  if(!u.adb.connected){
+    adbPrint("sys", "未连接。请先点「连接」。");
+    renderOps();
+    return;
+  }
+  adbPrint("in", "adb "+raw);
+  adbPrint("out", "远程配置客户端未接入，命令未送达设备。");
   renderOps();
 }
 function pushUpdate(src, name){
