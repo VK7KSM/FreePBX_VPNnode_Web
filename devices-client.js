@@ -154,36 +154,42 @@ function flyTo(id){
 function renderOps(){
   var box = $("devOps");
   var d = currentDev();
-  if(!d){
-    box.innerHTML = '<p class="muted">请选择左侧设备</p>';
-    return;
-  }
-  var bat = d.battery==null ? "—" : (d.battery+"%");
-  var net = d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知");
-  var src = d.loc ? locLabel(d.loc.source) : "位置未知";
+  var dis = d ? "" : " disabled";
+  var bat = !d || d.battery==null ? "—" : (d.battery+"%");
+  var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
+  var src = d && d.loc ? locLabel(d.loc.source) : "—";
+  var online = !d ? "—" : (d.online ? "在线" : (d.enabled===false ? "已停用" : "未接入"));
   var h = "";
-  h += '<div class="ops-head"><h3>'+esc(d.name)+'</h3><span class="muted">'+esc(d.model_name||modelName(d.model_id))+'</span></div>';
+  h += '<div class="ops-head"><h3>功能设置</h3>';
+  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
+  else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
+  h += "</div>";
   h += '<div class="ops-grid">';
-  h += kv("在线", d.online ? "在线" : (d.enabled===false ? "已停用" : "离线"));
+  h += kv("在线", online);
   h += kv("电量", bat);
   h += kv("网络", net);
-  h += kv("IP", d.ip || "—");
+  h += kv("IP", d && d.ip ? d.ip : "—");
   h += kv("定位", src);
-  h += kv("系统", d.os_version || "—");
-  h += kv("管理程序", d.app_version || "未接入");
-  h += kv("最后上报", sydney(d.last_seen));
+  h += kv("系统", d && d.os_version ? d.os_version : "—");
+  h += kv("管理程序", d && d.app_version ? d.app_version : (d ? "未接入" : "—"));
+  h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += "</div>";
-  h += '<div class="ops-actions">';
-  h += '<input id="opName" class="inp" value="'+esc(d.name)+'" style="max-width:220px">';
-  h += '<button class="btn-green" onclick="saveName()">保存名称</button>';
-  if(d.enabled===false) h += '<button class="btn-gray" onclick="setEnabled(true)">启用</button>';
-  else h += '<button class="btn-gray" onclick="setEnabled(false)">停用</button>';
-  h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()">解除配对</button>';
-  h += "</div>";
-  h += '<div class="ops-later"><p class="muted">后续下发</p>';
-  h += '<button class="btn-gray" disabled>远程调试</button> ';
-  h += '<button class="btn-gray" disabled>丢失模式</button> ';
-  h += '<button class="btn-gray" disabled>Wi-Fi / 通讯录</button></div>';
+  h += '<div class="ops-sec"><div class="ops-sec-title">本机</div><div class="ops-actions">';
+  h += '<input id="opName" class="inp" placeholder="设备名称" value="'+(d?esc(d.name):"")+'" style="max-width:220px"'+dis+">";
+  h += '<button class="btn-green" onclick="saveName()"'+dis+">保存名称</button>";
+  if(d && d.enabled===false) h += '<button class="btn-gray" onclick="setEnabled(true)">启用</button>';
+  else h += '<button class="btn-gray" onclick="setEnabled(false)"'+dis+">停用</button>";
+  h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()"'+dis+">解除配对</button>";
+  h += "</div></div>";
+  h += '<div class="ops-sec"><div class="ops-sec-title">远程（需管理程序，当前不可用）</div><div class="ops-actions">';
+  h += '<button class="btn-gray" disabled title="等待设备端">远程调试</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">丢失模式</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">立即定位</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">播放报警</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">Wi-Fi</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">通讯录</button>';
+  h += '<button class="btn-gray" disabled title="等待设备端">推送更新</button>';
+  h += "</div></div>";
   box.innerHTML = h;
 }
 function kv(k,v){ return '<div class="kv"><div class="k">'+k+'</div><div class="v">'+esc(v)+'</div></div>'; }
