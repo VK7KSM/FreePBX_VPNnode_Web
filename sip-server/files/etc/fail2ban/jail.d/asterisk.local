@@ -1,0 +1,10 @@
+[asterisk]
+enabled = true
+filter = asterisk
+logpath = /var/log/asterisk/messages
+maxretry = 5
+findtime = 600
+bantime = 3600
+backend = auto
+action = iptables-multiport[name=asterisk, port="5060,5061", protocol=udp]
+         iptables-multiport[name=asterisk-tcp, port="5060,5061", protocol=tcp]

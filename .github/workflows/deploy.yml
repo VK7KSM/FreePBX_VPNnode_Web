@@ -3,9 +3,14 @@ name: Deploy Cloudflare Worker
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - "gsm-sip-gateway/**"
-      - "README.md"
+    paths:
+      - "worker.js"
+      - "sip-client.js"
+      - "logo.js"
+      - "logo.png"
+      - "wrangler.toml"
+      - "wrangler.jsonc"
+      - "package.json"
   workflow_dispatch:
 
 jobs:

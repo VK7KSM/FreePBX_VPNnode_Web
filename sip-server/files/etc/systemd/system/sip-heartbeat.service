@@ -1,0 +1,6 @@
+[Unit]
+Description=SIP host heartbeat to Cloudflare panel
+After=network-online.target asterisk.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/sip-heartbeat.py

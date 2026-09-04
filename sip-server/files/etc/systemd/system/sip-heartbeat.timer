@@ -1,0 +1,9 @@
+[Unit]
+Description=SIP heartbeat every 5s
+[Timer]
+OnBootSec=8s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Unit=sip-heartbeat.service
+[Install]
+WantedBy=timers.target
