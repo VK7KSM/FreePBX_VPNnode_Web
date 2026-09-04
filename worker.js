@@ -4,6 +4,7 @@
 // =========================================================================
 
 import { LOGO_PNG_B64 } from "./logo.js";
+import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
@@ -210,8 +211,37 @@ export default {
       return json({ ok: true, stored: "osaka-local" });
     }
 
+    if (pathname === "/api/device-models" && method === "GET") {
+      return json({ ok: true, models: await loadDeviceModels(env) });
+    }
+    if (pathname === "/api/device-models" && method === "POST") {
+      return handleDeviceModelSave(env, request);
+    }
+    if (pathname === "/api/devices" && method === "GET") {
+      const devices = await loadDevicesHydrated(env);
+      return json({ ok: true, devices });
+    }
+    if (pathname === "/api/devices" && method === "POST") {
+      return handleDeviceCreate(env, request);
+    }
+    if (pathname === "/api/devices/update" && method === "POST") {
+      return handleDeviceUpdate(env, request);
+    }
+    if (pathname === "/api/devices/delete" && method === "POST") {
+      return handleDeviceDelete(env, request);
+    }
+    if (pathname === "/api/devices/pair" && method === "POST") {
+      return json({ ok: false, msg: "等待设备端，请先用手工登记" }, 400);
+    }
+
     if (pathname === "/sip" || pathname === "/sip/") {
       return new Response(renderSipHtml(), {
+        headers: { "Content-Type": "text/html; charset=utf-8" }
+      });
+    }
+
+    if (pathname === "/devices" || pathname === "/devices/") {
+      return new Response(renderDevicesHtml(), {
         headers: { "Content-Type": "text/html; charset=utf-8" }
       });
     }
@@ -449,16 +479,6 @@ function attachHistory(prev, body) {
   body.online_count = online;
 }
 
-function isPrivateIp(ip) {
-  if (!ip) return true;
-  if (ip.indexOf("10.") === 0 || ip.indexOf("192.168.") === 0 || ip.indexOf("127.") === 0) return true;
-  if (ip.indexOf("172.") === 0) {
-    const n = parseInt(ip.split(".")[1], 10);
-    return n >= 16 && n <= 31;
-  }
-  return false;
-}
-
 async function geoForStatus(env, status) {
   const geo = {};
   const contacts = (status && status.contacts) || [];
@@ -470,23 +490,263 @@ async function geoForStatus(env, status) {
       continue;
     }
     const cached = await getStore(env, "geo_" + ip);
-    if (cached) {
+    const parsed = parseGeoCache(cached);
+    if (parsed && parsed.label) {
+      geo[ip] = parsed.label;
+      continue;
+    }
+    if (typeof cached === "string" && cached) {
       geo[ip] = cached;
       continue;
     }
     try {
-      const r = await fetch("http://ip-api.com/json/" + encodeURIComponent(ip) + "?lang=zh-CN&fields=status,country,regionName,city");
-      const j = await r.json();
-      const label = (j && j.status === "success")
-        ? [j.country, j.regionName, j.city].filter(Boolean).join(" ")
-        : "未知";
-      try { await setStore(env, "geo_" + ip, label); } catch (e) {}
-      geo[ip] = label;
+      const looked = await fetchIpGeo(ip);
+      if (looked) {
+        try { await setStore(env, "geo_" + ip, looked); } catch (e) {}
+        geo[ip] = looked.label || "未知";
+      } else geo[ip] = "未知";
     } catch (e) {
       geo[ip] = "未知";
     }
   }
   return geo;
+}
+
+function newRemoteId(prefix) {
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function defaultDeviceModels() {
+  return [
+    { id: "mdl_d22", name: "D22", icon: "", note: "对讲机" },
+    { id: "mdl_h13", name: "H13", icon: "", note: "对讲机" },
+    { id: "mdl_d31", name: "D31", icon: "", note: "座机" },
+    { id: "mdl_pixel3", name: "Pixel 3", icon: "", note: "网关手机" }
+  ];
+}
+
+async function loadDeviceModels(env) {
+  const raw = await getStore(env, "remote_device_models");
+  if (Array.isArray(raw) && raw.length) return raw;
+  const models = defaultDeviceModels();
+  await setStore(env, "remote_device_models", models);
+  return models;
+}
+
+async function saveDeviceModels(env, models) {
+  await setStore(env, "remote_device_models", models);
+}
+
+async function loadDevices(env) {
+  const raw = await getStore(env, "remote_devices");
+  return Array.isArray(raw) ? raw : [];
+}
+
+async function saveDevices(env, list) {
+  await setStore(env, "remote_devices", list);
+}
+
+async function fetchIpGeo(ip) {
+  const r = await fetch("http://ip-api.com/json/" + encodeURIComponent(ip) + "?lang=zh-CN&fields=status,country,regionName,city,lat,lon");
+  const j = await r.json();
+  if (!j || j.status !== "success" || !Number.isFinite(j.lat) || !Number.isFinite(j.lon)) return null;
+  return {
+    label: [j.country, j.regionName, j.city].filter(Boolean).join(" "),
+    lat: j.lat,
+    lng: j.lon
+  };
+}
+
+async function geoForIp(env, ip) {
+  if (!ip || isPrivateIp(ip)) return null;
+  const cached = parseGeoCache(await getStore(env, "geo_" + ip));
+  if (cached) return cached;
+  try {
+    const looked = await fetchIpGeo(ip);
+    if (looked) {
+      try { await setStore(env, "geo_" + ip, looked); } catch (e) {}
+      return looked;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function publicDevice(d, modelName) {
+  return {
+    id: d.id,
+    name: d.name,
+    model_id: d.model_id,
+    model_name: modelName || "",
+    enabled: d.enabled !== false,
+    online: !!d.online,
+    last_seen: d.last_seen || null,
+    battery: d.battery == null ? null : d.battery,
+    network: d.network || "unknown",
+    ip: d.ip || "",
+    os_version: d.os_version || "",
+    app_version: d.app_version || "",
+    ready: !!d.ready,
+    loc: d.loc || null,
+    update: d.update || { state: "", target: "", detail: "" }
+  };
+}
+
+async function loadDevicesHydrated(env) {
+  const models = await loadDeviceModels(env);
+  const byId = {};
+  for (let i = 0; i < models.length; i++) byId[models[i].id] = models[i];
+  const list = await loadDevices(env);
+  let dirty = false;
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    const m = byId[d.model_id];
+    if (!d.loc || !Number.isFinite(Number(d.loc.lat))) {
+      const ipGeo = await geoForIp(env, d.ip);
+      const loc = pickLocation(d, ipGeo);
+      if (loc) {
+        d.loc = loc;
+        dirty = true;
+      }
+    }
+    out.push(publicDevice(d, m ? m.name : ""));
+  }
+  if (dirty) await saveDevices(env, list);
+  return out;
+}
+
+async function handleDeviceModelSave(env, request) {
+  try {
+    const data = await request.json();
+    const models = await loadDeviceModels(env);
+    const action = String(data.action || "upsert");
+    if (action === "delete") {
+      const id = String(data.id || "").trim();
+      if (!id) return json({ ok: false, msg: "缺少型号" }, 400);
+      const devices = await loadDevices(env);
+      for (let i = 0; i < devices.length; i++) {
+        if (devices[i].model_id === id) return json({ ok: false, msg: "仍有设备使用该型号，不能删除" }, 400);
+      }
+      const next = models.filter(function (m) { return m.id !== id; });
+      if (next.length === models.length) return json({ ok: false, msg: "未找到该型号" }, 404);
+      await saveDeviceModels(env, next);
+      return json({ ok: true, models: next });
+    }
+    const name = String(data.name || "").trim();
+    if (!name) return json({ ok: false, msg: "型号名称不能为空" }, 400);
+    let id = String(data.id || "").trim();
+    const item = {
+      id: id || newRemoteId("mdl_"),
+      name: name,
+      icon: String(data.icon || "").trim(),
+      note: String(data.note || "").trim()
+    };
+    if (id) {
+      let found = false;
+      for (let i = 0; i < models.length; i++) {
+        if (models[i].id === id) { models[i] = item; found = true; break; }
+      }
+      if (!found) models.push(item);
+    } else models.push(item);
+    await saveDeviceModels(env, models);
+    return json({ ok: true, models: models, model: item });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleDeviceCreate(env, request) {
+  try {
+    const data = await request.json();
+    const name = String(data.name || "").trim();
+    const model_id = String(data.model_id || "").trim();
+    const ip = String(data.ip || "").trim();
+    if (!name) return json({ ok: false, msg: "名称不能为空" }, 400);
+    const models = await loadDeviceModels(env);
+    let okModel = false;
+    for (let i = 0; i < models.length; i++) if (models[i].id === model_id) okModel = true;
+    if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
+    const list = await loadDevices(env);
+    const row = {
+      id: newRemoteId("dev_"),
+      name: name,
+      model_id: model_id,
+      enabled: true,
+      online: false,
+      last_seen: null,
+      battery: null,
+      network: "unknown",
+      ip: ip,
+      os_version: "",
+      app_version: "",
+      ready: false,
+      loc: null,
+      update: { state: "", target: "", detail: "" }
+    };
+    const ipGeo = await geoForIp(env, ip);
+    const loc = pickLocation(row, ipGeo);
+    if (loc) row.loc = loc;
+    list.push(row);
+    await saveDevices(env, list);
+    return json({ ok: true, device: row });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleDeviceUpdate(env, request) {
+  try {
+    const data = await request.json();
+    const id = String(data.id || "").trim();
+    if (!id) return json({ ok: false, msg: "缺少设备" }, 400);
+    const list = await loadDevices(env);
+    let found = null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== id) continue;
+      if (data.name != null) {
+        const n = String(data.name).trim();
+        if (!n) return json({ ok: false, msg: "名称不能为空" }, 400);
+        list[i].name = n;
+      }
+      if (data.enabled != null) list[i].enabled = !!data.enabled;
+      if (data.model_id != null) {
+        const mid = String(data.model_id).trim();
+        const models = await loadDeviceModels(env);
+        let okModel = false;
+        for (let j = 0; j < models.length; j++) if (models[j].id === mid) okModel = true;
+        if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
+        list[i].model_id = mid;
+      }
+      if (data.ip != null) {
+        list[i].ip = String(data.ip).trim();
+        const ipGeo = await geoForIp(env, list[i].ip);
+        list[i].loc = pickLocation(list[i], ipGeo);
+      }
+      found = list[i];
+      break;
+    }
+    if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    await saveDevices(env, list);
+    return json({ ok: true, device: found });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleDeviceDelete(env, request) {
+  try {
+    const data = await request.json();
+    if (data.confirm !== true) return json({ ok: false, msg: "删除需要确认" }, 400);
+    const id = String(data.id || "").trim();
+    if (!id) return json({ ok: false, msg: "缺少设备" }, 400);
+    const list = await loadDevices(env);
+    const next = list.filter(function (d) { return d.id !== id; });
+    if (next.length === list.length) return json({ ok: false, msg: "未找到该设备" }, 404);
+    await saveDevices(env, next);
+    return json({ ok: true });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
 }
 
 function json(data, status = 200) {
@@ -688,6 +948,7 @@ function renderHtml() {
     '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
     '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
     '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
+    '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;gap:.6rem">',
     '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',
@@ -985,6 +1246,7 @@ function renderSipHtml() {
     brandHtml(),
     '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
     '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:1rem">',
     '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin:0;white-space:nowrap">等待同步状态...<\/p>',
@@ -1110,6 +1372,129 @@ function renderSipHtml() {
     '<\/body>',
     '<\/html>'
   ].join('\n');
+}
+
+function renderDevicesHtml() {
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="zh-CN">',
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<title>elfRadio SIP/VPN Manage</title>',
+    '<link rel="icon" type="image/png" href="/logo.png">',
+    '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">',
+    '<script src="https://cdn.tailwindcss.com"><\/script>',
+    '<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"><\/script>',
+    '<style>',
+    'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0}',
+    '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
+    '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
+    '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem}',
+    '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
+    '.btn-gray:disabled{opacity:.35;cursor:default}',
+    '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
+    '.muted{color:#94a3b8;font-size:.85rem}',
+    '.dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex-shrink:0;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
+    '.dot-on{background:#22c55e}.dot-off{background:#64748b}',
+    '.layout{display:grid;grid-template-columns:220px 1fr;grid-template-rows:minmax(360px,46vh) minmax(200px,auto);gap:1rem}',
+    '@media(max-width:800px){.layout{grid-template-columns:1fr;grid-template-rows:auto 320px auto}}',
+    '#devList{overflow:auto;padding:.4rem}',
+    '.dev-row{display:flex;align-items:center;gap:.55rem;padding:.55rem .65rem;border-radius:.5rem;cursor:pointer}',
+    '.dev-row:hover{background:rgba(30,58,95,.4)}',
+    '.dev-row.sel{background:rgba(30,58,95,.7)}',
+    '.dev-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}',
+    '.tag{font-size:.7rem;color:#fbbf24;border:1px solid #fbbf24;border-radius:.3rem;padding:0 .3rem}',
+    '#devMap{height:100%;min-height:320px;border-radius:.8rem;background:#0b1220}',
+    '.leaflet-container{background:#0b1220;font:inherit}',
+    '#devOps{grid-column:1/-1;padding:1.1rem 1.2rem}',
+    '.ops-head{display:flex;align-items:baseline;gap:.8rem;margin-bottom:.8rem}',
+    '.ops-head h3{margin:0;font-size:1.1rem}',
+    '.ops-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.7rem;margin-bottom:1rem}',
+    '@media(max-width:800px){.ops-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+    '.kv{background:rgba(15,23,42,.55);border:1px solid #1e293b;border-radius:.6rem;padding:.65rem .75rem}',
+    '.kv .k{font-size:.75rem;color:#94a3b8}.kv .v{margin-top:.2rem;font-size:.9rem}',
+    '.ops-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem}',
+    '.ops-later{padding-top:.6rem;border-top:1px solid #1e293b}',
+    'table{width:100%;border-collapse:collapse}',
+    'th{text-align:left;padding:.5rem;font-size:.8rem;color:#94a3b8}',
+    'td{padding:.5rem;font-size:.85rem;border-top:1px solid #1e293b}',
+    '<\/style><\/head><body>',
+    '<div id="loginWrap" class="modal-bg">',
+    '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
+    '<div style="text-align:center;margin-bottom:1rem">',
+    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
+    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">设备管理登录<\/p>',
+    '<\/div>',
+    '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
+    '<input id="lp" type="password" value="admin888" class="inp" style="margin-bottom:1rem">',
+    '<button class="btn-blue" style="width:100%" onclick="doLogin()">登 录<\/button>',
+    '<p id="lerr" style="color:#f87171;font-size:.8rem;margin-top:.6rem;text-align:center;display:none"><\/p>',
+    '<\/div><\/div>',
+    '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
+    '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
+    '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
+    brandHtml(),
+    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
+    '<\/div>',
+    '<div><button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',
+    '<\/div><\/header>',
+    '<main style="max-width:1280px;margin:1.2rem auto;padding:0 1.5rem">',
+    '<div class="layout">',
+    '<div class="card" style="border-radius:1rem;display:flex;flex-direction:column;min-height:0">',
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:.75rem .8rem 0">',
+    '<h3 style="margin:0;font-size:.95rem">设备<\/h3>',
+    '<div style="display:flex;gap:.4rem">',
+    '<button class="btn-gray" onclick="openModels()">型号<\/button>',
+    '<button class="btn-green" onclick="openAdd()">添加设备<\/button>',
+    '<\/div><\/div>',
+    '<div id="devList"><\/div><\/div>',
+    '<div class="card" style="border-radius:1rem;overflow:hidden;min-height:0">',
+    '<div id="devMap"><\/div><\/div>',
+    '<div class="card" id="devOps" style="border-radius:1rem"><\/div>',
+    '<\/div><\/main>',
+    '<div id="addWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:460px">',
+    '<h3 style="margin:0 0 1rem;font-size:1.05rem">添加设备<\/h3>',
+    '<p class="muted" style="margin:.2rem 0 .5rem">手工登记<\/p>',
+    '<div style="display:flex;flex-direction:column;gap:.55rem">',
+    '<input id="dName" class="inp" placeholder="名称">',
+    '<select id="dModel" class="inp"><\/select>',
+    '<input id="dIp" class="inp" placeholder="公网 IP（可选，用于粗定位）">',
+    '<button class="btn-green" onclick="saveManual()">保存登记<\/button>',
+    '<p id="addErr" style="color:#f87171;font-size:.8rem;min-height:1em"><\/p>',
+    '<\/div>',
+    '<hr style="border:none;border-top:1px solid #1e293b;margin:1rem 0">',
+    '<p class="muted" style="margin:.2rem 0 .5rem">六位配对（请看机子屏幕）<\/p>',
+    '<input id="pairCode" class="inp" placeholder="六位码" style="margin-bottom:.5rem">',
+    '<button class="btn-gray" onclick="submitPair()">提交配对码<\/button>',
+    '<p id="pairErr" style="color:#fbbf24;font-size:.8rem;margin-top:.4rem"><\/p>',
+    '<div style="text-align:right;margin-top:1rem"><button class="btn-gray" onclick="closeAdd()">关闭<\/button><\/div>',
+    '<\/div><\/div>',
+    '<div id="modelWrap" class="modal-bg" style="display:none">',
+    '<div class="card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:520px">',
+    '<h3 style="margin:0 0 .8rem;font-size:1.05rem">型号管理<\/h3>',
+    '<div id="modelTable"><\/div>',
+    '<div style="display:flex;gap:.5rem;margin-top:.8rem">',
+    '<input id="mName" class="inp" placeholder="新型号名称">',
+    '<input id="mNote" class="inp" placeholder="备注">',
+    '<button class="btn-green" onclick="addModel()">添加<\/button>',
+    '<\/div>',
+    '<div style="text-align:right;margin-top:1rem"><button class="btn-gray" onclick="closeModels()">关闭<\/button><\/div>',
+    '<\/div><\/div>',
+    '<script>',
+    devicesClientJs(),
+    '<\/script>',
+    '<\/body><\/html>'
+  ].join("\n");
+}
+
+function devicesClientJs() {
+  return "var DEV = [];\nvar MODELS = [];\nvar selDev = \"\";\nvar map = null;\nvar markers = {};\nvar circles = {};\n\nfunction $(id){ return document.getElementById(id); }\nfunction show(id){ $(id).style.display = \"flex\"; }\nfunction hide(id){ $(id).style.display = \"none\"; }\nfunction sydney(iso){\n  if(!iso) return \"—\";\n  try {\n    return new Date(iso).toLocaleString(\"zh-CN\", { timeZone: \"Australia/Sydney\", hour12: false });\n  } catch(e){ return String(iso); }\n}\nfunction locLabel(src){\n  if(src===\"gps\") return \"GPS\";\n  if(src===\"wifi\") return \"Wi-Fi\";\n  if(src===\"cell\") return \"基站\";\n  if(src===\"ip\") return \"IP 大致区域\";\n  return \"未知\";\n}\nfunction modelName(id){\n  for(var i=0;i<MODELS.length;i++) if(MODELS[i].id===id) return MODELS[i].name;\n  return id || \"—\";\n}\nfunction checkAuth(){\n  if(localStorage.getItem(\"_pt\")){ hide(\"loginWrap\"); loadDevices(); }\n  else show(\"loginWrap\");\n}\nfunction doLogin(){\n  fetch(\"/api/login\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({username:$(\"lu\").value,password:$(\"lp\").value})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(d.ok){ localStorage.setItem(\"_pt\",\"1\"); hide(\"loginWrap\"); loadDevices(); }\n    else { $(\"lerr\").style.display=\"block\"; $(\"lerr\").innerText=d.msg||\"登录失败\"; }\n  }).catch(function(){ $(\"lerr\").style.display=\"block\"; $(\"lerr\").innerText=\"登录失败\"; });\n}\nfunction logout(){ localStorage.removeItem(\"_pt\"); location.href=\"/\"; }\n\nfunction loadDevices(){\n  Promise.all([\n    fetch(\"/api/devices\").then(function(r){return r.json();}),\n    fetch(\"/api/device-models\").then(function(r){return r.json();})\n  ]).then(function(arr){\n    if(arr[0].devices) DEV = arr[0].devices;\n    if(arr[1].models) MODELS = arr[1].models;\n    renderList();\n    renderMap();\n    renderOps();\n  }).catch(function(){});\n}\n\nfunction renderList(){\n  var box = $(\"devList\");\n  if(!DEV.length){\n    box.innerHTML = '<p class=\"muted\">还没有设备</p>';\n    return;\n  }\n  var h = \"\";\n  for(var i=0;i<DEV.length;i++){\n    var d = DEV[i];\n    var on = d.online && d.enabled!==false;\n    var cls = \"dev-row\" + (d.id===selDev ? \" sel\" : \"\");\n    var upd = d.update && d.update.state ? '<span class=\"tag\">升级中</span>' : \"\";\n    h += '<div class=\"'+cls+'\" onclick=\"selectDev(\\''+d.id+'\\')\">';\n    h += '<span class=\"dot '+(on?\"dot-on\":\"dot-off\")+'\"></span>';\n    h += '<span class=\"dev-name\">'+esc(d.name)+'</span>'+upd;\n    h += '</div>';\n  }\n  box.innerHTML = h;\n}\n\nfunction esc(s){\n  return String(s||\"\").replace(/[&<>\"']/g, function(c){\n    return ({ \"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",\"\\\"\":\"&quot;\",\"'\":\"&#39;\" })[c];\n  });\n}\n\nfunction selectDev(id){\n  selDev = id;\n  renderList();\n  renderOps();\n  flyTo(id);\n}\n\nfunction currentDev(){\n  for(var i=0;i<DEV.length;i++) if(DEV[i].id===selDev) return DEV[i];\n  return null;\n}\n\nfunction initMap(){\n  if(map || typeof L === \"undefined\") return;\n  map = L.map(\"devMap\", { zoomControl: true, attributionControl: true }).setView([-33.87, 151.21], 4);\n  L.tileLayer(\"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\", {\n    maxZoom: 19,\n    attribution: \"&copy; OpenStreetMap\"\n  }).addTo(map);\n}\n\nfunction markerHtml(d, selected){\n  var on = d.online && d.enabled!==false;\n  var gps = d.loc && d.loc.source===\"gps\";\n  var color = !d.enabled ? \"#64748b\" : (on ? (gps ? \"#22c55e\" : \"#38bdf8\") : \"#94a3b8\");\n  var fill = gps ? color : \"transparent\";\n  var ring = selected ? \"0 0 0 3px #93c5fd\" : \"0 0 0 2px rgba(15,23,42,.8)\";\n  return '<div style=\"width:16px;height:16px;border-radius:50%;background:'+fill+';border:3px solid '+color+';box-shadow:'+ring+'\"></div>';\n}\n\nfunction renderMap(){\n  initMap();\n  if(!map) return;\n  setTimeout(function(){ map.invalidateSize(); }, 50);\n  Object.keys(markers).forEach(function(k){ map.removeLayer(markers[k]); });\n  Object.keys(circles).forEach(function(k){ map.removeLayer(circles[k]); });\n  markers = {}; circles = {};\n  var bounds = [];\n  for(var i=0;i<DEV.length;i++){\n    var d = DEV[i];\n    if(!d.loc || !isFinite(d.loc.lat) || !isFinite(d.loc.lng)) continue;\n    var ll = [d.loc.lat, d.loc.lng];\n    bounds.push(ll);\n    var acc = Number(d.loc.acc_m) || (d.loc.source===\"gps\" ? 40 : 25000);\n    var gps = d.loc.source===\"gps\";\n    var col = d.online && d.enabled!==false ? (gps ? \"#22c55e\" : \"#38bdf8\") : \"#94a3b8\";\n    circles[d.id] = L.circle(ll, {\n      radius: acc,\n      color: col,\n      weight: gps ? 1 : 1,\n      fillColor: col,\n      fillOpacity: gps ? 0.12 : 0.15\n    }).addTo(map);\n    var ic = L.divIcon({ className: \"\", html: markerHtml(d, d.id===selDev), iconSize: [16,16], iconAnchor: [8,8] });\n    (function(id){\n      markers[id] = L.marker(ll, { icon: ic }).addTo(map).on(\"click\", function(){ selectDev(id); });\n    })(d.id);\n    var bat = d.battery==null ? \"—\" : (d.battery+\"%\");\n    markers[d.id].bindPopup(\n      \"<b>\"+esc(d.name)+\"</b><br>电量 \"+bat+\"<br>IP \"+esc(d.ip||\"—\")+\"<br>\"+locLabel(d.loc.source)+\"<br>\"+sydney(d.loc.at)\n    );\n  }\n  if(bounds.length) map.fitBounds(bounds, { padding: [40,40], maxZoom: 14 });\n}\n\nfunction flyTo(id){\n  var d = null;\n  for(var i=0;i<DEV.length;i++) if(DEV[i].id===id) d = DEV[i];\n  if(!d || !d.loc || !map) { renderMap(); return; }\n  renderMap();\n  map.flyTo([d.loc.lat, d.loc.lng], d.loc.source===\"gps\" ? 14 : 10, { duration: 0.6 });\n  if(markers[id]) markers[id].openPopup();\n}\n\nfunction renderOps(){\n  var box = $(\"devOps\");\n  var d = currentDev();\n  if(!d){\n    box.innerHTML = '<p class=\"muted\">请选择左侧设备</p>';\n    return;\n  }\n  var bat = d.battery==null ? \"—\" : (d.battery+\"%\");\n  var net = d.network===\"wifi\" ? \"Wi-Fi\" : (d.network===\"cellular\" ? \"移动数据\" : \"未知\");\n  var src = d.loc ? locLabel(d.loc.source) : \"位置未知\";\n  var h = \"\";\n  h += '<div class=\"ops-head\"><h3>'+esc(d.name)+'</h3><span class=\"muted\">'+esc(d.model_name||modelName(d.model_id))+'</span></div>';\n  h += '<div class=\"ops-grid\">';\n  h += kv(\"在线\", d.online ? \"在线\" : (d.enabled===false ? \"已停用\" : \"离线\"));\n  h += kv(\"电量\", bat);\n  h += kv(\"网络\", net);\n  h += kv(\"IP\", d.ip || \"—\");\n  h += kv(\"定位\", src);\n  h += kv(\"系统\", d.os_version || \"—\");\n  h += kv(\"管理程序\", d.app_version || \"未接入\");\n  h += kv(\"最后上报\", sydney(d.last_seen));\n  h += \"</div>\";\n  h += '<div class=\"ops-actions\">';\n  h += '<input id=\"opName\" class=\"inp\" value=\"'+esc(d.name)+'\" style=\"max-width:220px\">';\n  h += '<button class=\"btn-green\" onclick=\"saveName()\">保存名称</button>';\n  if(d.enabled===false) h += '<button class=\"btn-gray\" onclick=\"setEnabled(true)\">启用</button>';\n  else h += '<button class=\"btn-gray\" onclick=\"setEnabled(false)\">停用</button>';\n  h += '<button class=\"btn-gray\" style=\"color:#f87171\" onclick=\"delDev()\">解除配对</button>';\n  h += \"</div>\";\n  h += '<div class=\"ops-later\"><p class=\"muted\">后续下发</p>';\n  h += '<button class=\"btn-gray\" disabled>远程调试</button> ';\n  h += '<button class=\"btn-gray\" disabled>丢失模式</button> ';\n  h += '<button class=\"btn-gray\" disabled>Wi-Fi / 通讯录</button></div>';\n  box.innerHTML = h;\n}\nfunction kv(k,v){ return '<div class=\"kv\"><div class=\"k\">'+k+'</div><div class=\"v\">'+esc(v)+'</div></div>'; }\n\nfunction saveName(){\n  var d = currentDev(); if(!d) return;\n  var name = $(\"opName\").value.trim();\n  fetch(\"/api/devices/update\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({id:d.id,name:name})})\n  .then(function(r){return r.json();}).then(function(x){\n    if(!x.ok){ alert(x.msg||\"保存失败\"); return; }\n    loadDevices();\n  });\n}\nfunction setEnabled(on){\n  var d = currentDev(); if(!d) return;\n  fetch(\"/api/devices/update\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({id:d.id,enabled:on})})\n  .then(function(r){return r.json();}).then(function(){ loadDevices(); });\n}\nfunction delDev(){\n  var d = currentDev(); if(!d) return;\n  if(!confirm(\"确定解除配对「\"+d.name+\"」？此台将从列表和地图消失。\")) return;\n  fetch(\"/api/devices/delete\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({id:d.id,confirm:true})})\n  .then(function(r){return r.json();}).then(function(x){\n    if(!x.ok){ alert(x.msg||\"删除失败\"); return; }\n    selDev=\"\"; loadDevices();\n  });\n}\n\nfunction fillModelSelect(sel, val){\n  var h = \"\";\n  for(var i=0;i<MODELS.length;i++){\n    var m = MODELS[i];\n    h += '<option value=\"'+esc(m.id)+'\"'+(m.id===val?\" selected\":\"\")+'>'+esc(m.name)+'</option>';\n  }\n  sel.innerHTML = h || '<option value=\"\">请先添加型号</option>';\n}\n\nfunction openAdd(){\n  fillModelSelect($(\"dModel\"), MODELS[0] ? MODELS[0].id : \"\");\n  $(\"dName\").value=\"\"; $(\"dIp\").value=\"\"; $(\"pairCode\").value=\"\";\n  $(\"addErr\").innerText=\"\"; $(\"pairErr\").innerText=\"\";\n  show(\"addWrap\");\n}\nfunction closeAdd(){ hide(\"addWrap\"); }\n\nfunction saveManual(){\n  var body = { name:$(\"dName\").value.trim(), model_id:$(\"dModel\").value, ip:$(\"dIp\").value.trim() };\n  fetch(\"/api/devices\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify(body)})\n  .then(function(r){return r.json();}).then(function(d){\n    if(!d.ok){ $(\"addErr\").innerText=d.msg||\"保存失败\"; return; }\n    closeAdd(); selDev=d.device && d.device.id; loadDevices();\n  });\n}\nfunction submitPair(){\n  fetch(\"/api/devices/pair\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({code:$(\"pairCode\").value.trim()})})\n  .then(function(r){return r.json();}).then(function(d){\n    $(\"pairErr\").innerText=d.msg||\"等待设备端，请先用手工登记\";\n  }).catch(function(){ $(\"pairErr\").innerText=\"请求失败\"; });\n}\n\nfunction openModels(){\n  renderModelTable();\n  show(\"modelWrap\");\n}\nfunction closeModels(){ hide(\"modelWrap\"); }\nfunction renderModelTable(){\n  var h = \"<table><thead><tr><th>名称</th><th>备注</th><th></th></tr></thead><tbody>\";\n  for(var i=0;i<MODELS.length;i++){\n    var m = MODELS[i];\n    h += '<tr><td>'+esc(m.name)+'</td><td class=\"muted\">'+esc(m.note||\"\")+'</td>';\n    h += '<td><button class=\"btn-gray\" onclick=\"editModel(\\''+m.id+'\\')\">改</button> ';\n    h += '<button class=\"btn-gray\" style=\"color:#f87171\" onclick=\"delModel(\\''+m.id+'\\')\">删</button></td></tr>';\n  }\n  h += \"</tbody></table>\";\n  $(\"modelTable\").innerHTML = h;\n}\nfunction addModel(){\n  var name = $(\"mName\").value.trim();\n  var note = $(\"mNote\").value.trim();\n  fetch(\"/api/device-models\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({name:name,note:note})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(!d.ok){ alert(d.msg||\"失败\"); return; }\n    MODELS = d.models; $(\"mName\").value=\"\"; $(\"mNote\").value=\"\";\n    renderModelTable(); fillModelSelect($(\"dModel\"), $(\"dModel\").value);\n  });\n}\nfunction editModel(id){\n  var cur=null; for(var i=0;i<MODELS.length;i++) if(MODELS[i].id===id) cur=MODELS[i];\n  if(!cur) return;\n  var name = prompt(\"型号名称\", cur.name); if(name==null) return;\n  name = name.trim(); if(!name) return;\n  fetch(\"/api/device-models\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({id:id,name:name,note:cur.note||\"\",icon:cur.icon||\"\"})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(!d.ok){ alert(d.msg||\"失败\"); return; }\n    MODELS = d.models; renderModelTable(); loadDevices();\n  });\n}\nfunction delModel(id){\n  if(!confirm(\"删除该型号？\")) return;\n  fetch(\"/api/device-models\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify({action:\"delete\",id:id})})\n  .then(function(r){return r.json();}).then(function(d){\n    if(!d.ok){ alert(d.msg||\"失败\"); return; }\n    MODELS = d.models; renderModelTable();\n  });\n}\n\ncheckAuth();\nsetTimeout(function(){ if(typeof L!==\"undefined\") renderMap(); }, 200);\n";
 }
 
 function sipClientJs() {

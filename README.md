@@ -23,6 +23,10 @@
 
 从 1.4.1 起，104 等组内允许外呼的分机可以直接拨公网号码，经 300 打出。详细安装、编译和回退见 [网关说明](gsm-sip-gateway/README.md)。
 
+## 设备管理
+
+顶栏第三项。页面：`/devices`。左侧选设备，右侧地图（GPS 准点 / 无 GPS 则 IP 粗圈），下方操作当前选中设备。型号可自行增改删。第一阶段可手工登记；六位配对等安卓管理程序上线后再接通。
+
 ## SIP 服务器
 
 生产 Asterisk 的可部署备份在 [`sip-server/`](sip-server/)。新机器上复制 `secrets.example` 为 `secrets.env`，执行 `sudo bash install.sh`。分机密码、TLS 私钥和 Tunnel token 不进 Git，第一次在面板保存后由机器拉取。说明见 [服务器部署](sip-server/README.md)。
