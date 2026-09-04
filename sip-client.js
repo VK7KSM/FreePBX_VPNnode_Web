@@ -30,17 +30,34 @@ function doLogin(){
   });
 }
 function logout(){ localStorage.removeItem("_pt"); location.href="/"; }
-function loadSip(){
-  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){
+function applySipStatus(d, full){
+  if(full){
     if(d.extensions) E = d.extensions;
     if(d.groups) G = d.groups;
     if(d.gateways) W = d.gateways;
-    if(d.status){ ST = d.status; if(d.geo) GEO = d.geo; }
-    STALE = !!d.stale || !d.status;
-    SYNC = d.sync||null;
-    renderStatus();
-    renderAll();
-    renderSync();
+    if(d.geo) GEO = d.geo;
+  }
+  if(d.status) ST = d.status;
+  STALE = !!d.stale || !d.status;
+  if(d.sync){
+    SYNC = SYNC || {};
+    if(d.sync.config_rev != null) SYNC.config_rev = d.sync.config_rev;
+    if(d.sync.applied_rev != null) SYNC.applied_rev = d.sync.applied_rev;
+    if(d.sync.pending != null) SYNC.pending = d.sync.pending;
+    if(d.sync.error != null) SYNC.error = d.sync.error;
+  }
+  renderStatus();
+  renderAll();
+  if(full) renderSync();
+}
+function loadSip(){
+  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){
+    applySipStatus(d, true);
+  }).catch(function(){ STALE=true; renderStatus(); });
+}
+function loadSipLive(){
+  fetch("/api/sip/live").then(function(r){return r.json();}).then(function(d){
+    applySipStatus(d, false);
   }).catch(function(){ STALE=true; renderStatus(); });
 }
 function saveAll(done){
@@ -571,5 +588,6 @@ function drawCdr(){
   $("cdrPager").innerHTML = pg;
 }
 document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });
-setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 2000);
+setInterval(function(){ if(localStorage.getItem("_pt")) loadSipLive(); }, 2000);
+setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 60000);
 checkAuth();
