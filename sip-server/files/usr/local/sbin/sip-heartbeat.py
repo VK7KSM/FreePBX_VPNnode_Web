@@ -498,10 +498,11 @@ exten => _.,1,NoOp(PSTN outbound ${CHANNEL(endpoint)} -> ${EXTEN})
  same => n,Set(GW=${DB(SIP/extgw/${CHANNEL(endpoint)})})
  same => n,GotoIf($["${GW}" = ""]?reject)
  same => n,Dial(PJSIP/${FILTER(0-9+,${EXTEN})}@${GW},90)
+ same => n,Verbose(0, PSTN out SRC=${CHANNEL(endpoint)} GW=${GW} NUM=${FILTER(0-9+,${EXTEN})} status=${DIALSTATUS} cause=${HANGUPCAUSE})
  same => n,Hangup()
- same => n(deny),NoOp(Outbound denied for ${CHANNEL(endpoint)})
+ same => n(deny),Verbose(0, PSTN out denied SRC=${CHANNEL(endpoint)})
  same => n,Hangup()
- same => n(reject),NoOp(No gateway for ${CHANNEL(endpoint)})
+ same => n(reject),Verbose(0, PSTN out no gateway SRC=${CHANNEL(endpoint)})
  same => n,Hangup()
 
 [from-pstn]
