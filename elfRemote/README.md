@@ -3,7 +3,7 @@
 D22 / H13 / D31 / Pixel 3 的远程配置客户端。第一刀只做一件事：设备和 `v.elfradio.net/devices` 控制面通信。
 
 包名：`net.elfradio.elfremote`  
-当前版本：`0.1.0-d22xx-control-plane`  
+当前版本：`0.1.1-d22xx-control-plane`  
 试验机：D22-XX（Android 8.1）
 
 ## 这一刀做什么
@@ -65,7 +65,8 @@ elfRemote/
   control-plane.js          Worker 共用的在线判定和配对码
   control-plane.test.mjs
   app/                      Android 工程
-  art/elfradio-icon.png     启动器图标原图
+  art/elfradio-icon.png     启动器图标原图（透明 PNG）
+  tools/make_launcher_icon.py  生成圆角矩形、放大 logo 的 mipmap
 ```
 
 ## 明确不做（本刀）

@@ -3,9 +3,8 @@ main = "worker.js"
 compatibility_date = "2024-01-01"
 workers_dev = true
 
-[[rules]]
-type = "Text"
-globs = ["devices-client.js"]
+# devices-client.js 是浏览器脚本，不能当 Worker 模块执行（会碰 localStorage）。
+# 部署前运行 node embed-devices-client.mjs，由 devices-client-source.js 以字符串嵌入。
 
 [[kv_namespaces]]
 binding = "SUB_STORE_KV"

@@ -67,7 +67,8 @@ public final class ReportService extends Service {
             if (!store.paired()) enrollOrPoll();
             else report();
         } catch (Exception e) {
-            store.setLastStatus("网络失败，稍后重试");
+            android.util.Log.w("elfRemote", "tick failed", e);
+            store.setLastStatus(Protocol.formatNetError(e));
         }
         handler.post(() -> startForeground(7, buildNotification()));
     }

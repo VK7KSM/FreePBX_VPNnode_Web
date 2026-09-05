@@ -2,65 +2,93 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:gravity="center_horizontal"
+    android:background="#0B1220"
     android:orientation="vertical"
-    android:padding="20dp">
+    android:paddingLeft="10dp"
+    android:paddingTop="6dp"
+    android:paddingRight="10dp"
+    android:paddingBottom="6dp">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/app_name"
-        android:textColor="#2F6CB0"
-        android:textSize="22sp"
-        android:textStyle="bold" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#F8FAFC"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/permView"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="8dp"
+            android:layout_weight="1"
+            android:gravity="end"
+            android:textColor="#94A3B8"
+            android:textSize="11sp" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/codeView"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="28dp"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fontFamily="monospace"
         android:gravity="center"
-        android:letterSpacing="0.12"
         android:text="------"
-        android:textColor="#0F172A"
-        android:textSize="42sp"
+        android:textColor="#FACC15"
+        android:textSize="40sp"
         android:textStyle="bold" />
 
     <TextView
         android:id="@+id/statusView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
+        android:layout_marginBottom="6dp"
+        android:ellipsize="end"
         android:gravity="center"
+        android:maxLines="2"
         android:text="@string/waiting_pair"
-        android:textColor="#475569"
-        android:textSize="16sp" />
+        android:textColor="#E2E8F0"
+        android:textSize="12sp" />
 
-    <TextView
-        android:id="@+id/permView"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="18dp"
-        android:gravity="center"
-        android:textColor="#334155"
-        android:textSize="14sp" />
+        android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/permButton"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginTop="16dp"
-        android:background="#4A90D9"
-        android:text="@string/grant_perms"
-        android:textColor="#FFFFFF" />
+        <Button
+            android:id="@+id/permButton"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginRight="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/btn_bg"
+            android:defaultFocusHighlightEnabled="false"
+            android:focusable="true"
+            android:nextFocusRight="@id/reportButton"
+            android:text="@string/grant_perms"
+            android:textColor="@color/btn_text"
+            android:textSize="13sp" />
 
-    <Button
-        android:id="@+id/reportButton"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginTop="10dp"
-        android:background="#2F6CB0"
-        android:text="@string/report_now"
-        android:textColor="#FFFFFF" />
+        <Button
+            android:id="@+id/reportButton"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/btn_bg"
+            android:defaultFocusHighlightEnabled="false"
+            android:focusable="true"
+            android:focusedByDefault="true"
+            android:nextFocusLeft="@id/permButton"
+            android:text="@string/report_now"
+            android:textColor="@color/btn_text"
+            android:textSize="13sp" />
+    </LinearLayout>
 </LinearLayout>

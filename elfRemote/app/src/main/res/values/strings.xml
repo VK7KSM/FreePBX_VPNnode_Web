@@ -4,9 +4,9 @@
     <string name="waiting_pair">等待网页输入六位码</string>
     <string name="paired">已配对，正在上报</string>
     <string name="report_now">立即上报</string>
-    <string name="grant_perms">授予远程配置所需权限</string>
-    <string name="perm_ok">电池优化已忽略，可后台保活</string>
-    <string name="perm_need">需要忽略电池优化，否则息屏后会掉线</string>
+    <string name="grant_perms">电池优化</string>
+    <string name="perm_ok">电池优化已忽略</string>
+    <string name="perm_need">可稍后开电池优化，不影响显示配对码</string>
     <string name="notify_title">elfRemote</string>
     <string name="notify_waiting">等待配对</string>
     <string name="notify_online">控制面已连接</string>

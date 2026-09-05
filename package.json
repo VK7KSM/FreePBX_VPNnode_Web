@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
-    "test:elfremote": "node --test elfRemote/control-plane.test.mjs"
+    "embed:devices-client": "node embed-devices-client.mjs",
+    "test:elfremote": "node --test elfRemote/control-plane.test.mjs devices-client-source.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.127.1"

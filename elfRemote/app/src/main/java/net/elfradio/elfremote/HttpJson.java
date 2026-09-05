@@ -17,12 +17,29 @@ final class HttpJson {
     }
 
     private static String exchange(String method, String url, String json) throws Exception {
+        try {
+            return exchangeOnce(method, url, json);
+        } catch (javax.net.ssl.SSLException e) {
+            String fallback = Protocol.httpFallbackUrl(url);
+            if (fallback.length() == 0 || fallback.equals(url)) throw e;
+            try {
+                return exchangeOnce(method, fallback, json);
+            } catch (Exception e2) {
+                throw new Exception(
+                        Protocol.formatNetError(e) + "；HTTP " + Protocol.formatNetError(e2), e2);
+            }
+        }
+    }
+
+    private static String exchangeOnce(String method, String url, String json) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         try {
             c.setConnectTimeout(15000);
             c.setReadTimeout(20000);
+            c.setInstanceFollowRedirects(true);
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.APP_VERSION);
             if (json != null) {
                 byte[] body = json.getBytes("UTF-8");
                 c.setDoOutput(true);

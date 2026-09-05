@@ -12,7 +12,7 @@ import {
   tokenSha256HexLooksValid,
   PAIR_CODE_TTL_MS
 } from "./elfRemote/control-plane.js";
-import devicesClientSource from "./devices-client.js";
+import devicesClientSource from "./devices-client-source.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
