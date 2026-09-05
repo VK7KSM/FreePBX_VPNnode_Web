@@ -7,7 +7,10 @@ import {
   tokenSha256HexLooksValid,
   pairCodeRequiredMessage,
   managerAppLabel,
-  CONTROL_PLANE_ONLINE_MS
+  CONTROL_PLANE_ONLINE_MS,
+  updateStateLabel,
+  shouldOfferUpdate,
+  applyUpdateProgress
 } from "./control-plane.js";
 
 test("六位码去掉空格，拒绝非数字", () => {
@@ -46,4 +49,51 @@ test("管理程序显示名为 elfRemote", () => {
   assert.equal(managerAppLabel(""), "elfRemote");
   assert.equal(managerAppLabel("0.1.2-d22xx-control-plane"), "elfRemote 0.1.2");
   assert.equal(managerAppLabel("elfRemote"), "elfRemote");
+});
+
+test("更新阶段中文标签覆盖健康更新路径", () => {
+  assert.equal(updateStateLabel("pending"), "待通知");
+  assert.equal(updateStateLabel("claimed"), "已领取");
+  assert.equal(updateStateLabel("downloading"), "下载中");
+  assert.equal(updateStateLabel("verifying"), "校验中");
+  assert.equal(updateStateLabel("installing"), "安装中");
+  assert.equal(updateStateLabel("wait_health"), "等待健康确认");
+  assert.equal(updateStateLabel("success"), "成功");
+  assert.equal(updateStateLabel("bogus"), "");
+});
+
+test("只向未过期且尚未成功的设备提供更新任务", () => {
+  const now = Date.parse("2026-09-05T12:00:00.000Z");
+  const pending = {
+    app_version: "0.1.11-d22xx-upda",
+    update: {
+      job_id: "job1",
+      state: "pending",
+      versionName: "0.1.12-d22xx-updb",
+      expires_at: "2026-09-06T00:00:00.000Z"
+    }
+  };
+  assert.equal(shouldOfferUpdate(pending, now), true);
+  pending.app_version = "0.1.12-d22xx-updb";
+  assert.equal(shouldOfferUpdate(pending, now), false);
+  pending.app_version = "0.1.11-d22xx-upda";
+  pending.update.state = "success";
+  assert.equal(shouldOfferUpdate(pending, now), false);
+  pending.update.state = "pending";
+  pending.update.expires_at = "2026-09-05T11:00:00.000Z";
+  assert.equal(shouldOfferUpdate(pending, now), false);
+  pending.update.expires_at = now + 60000;
+  assert.equal(shouldOfferUpdate(pending, now), true);
+  pending.update.expires_at = now - 1;
+  assert.equal(shouldOfferUpdate(pending, now), false);
+});
+
+test("安装成功不能直接标为健康成功", () => {
+  const d = { update: { job_id: "job1", state: "installing" } };
+  applyUpdateProgress(d, "job1", "success", "pm ok");
+  assert.equal(d.update.state, "installing");
+  applyUpdateProgress(d, "job1", "wait_health", "installed");
+  assert.equal(d.update.state, "wait_health");
+  applyUpdateProgress(d, "job1", "success", "health ok");
+  assert.equal(d.update.state, "success");
 });

@@ -123,7 +123,7 @@ function renderList(){
     var d = DEV[i];
     var on = d.online && d.enabled!==false;
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
-    var upd = d.update && d.update.state ? '<span class="tag">升级中</span>' : "";
+    var upd = d.update && d.update.state && d.update.state !== "success" ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
     h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
@@ -335,26 +335,20 @@ function pageAdb(dis){
 }
 
 function pageUpdate(dis){
-  var u = uiOf();
   var d = currentDev();
-  var ver = d ? managerLabel(d) : "未接入";
-  var h = '<div class="ops-grid">'+kv("当前版本", ver)+"</div>";
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<input id="ghRel" class="inp" placeholder="GitHub Releases 地址" style="max-width:360px"'+dis+'>';
-  h += '<button class="btn-green" onclick="updateFromGithub()"'+dis+'>从 GitHub 安装</button>';
+  var u = d && d.update ? d.update : {};
+  var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
+  var h = '<div class="ops-grid">';
+  h += kv("当前版本", ver);
+  h += kv("目标版本", u.target || "无");
+  h += kv("阶段", u.label || u.state || "无");
+  h += kv("说明", u.detail || "");
   h += "</div>";
+  h += '<p class="muted" style="margin-top:.7rem">只显示设备回传的真实阶段。安装成功不等于健康确认。</p>';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
-  h += '<input id="apkFile" type="file" accept=".apk"'+dis+'>';
-  h += '<button class="btn-green" onclick="updateFromFile()"'+dis+'>从本地文件安装</button>';
+  h += '<input id="updVc" class="inp" placeholder="已发布 versionCode" style="max-width:180px"'+dis+'>';
+  h += '<button class="btn-green" onclick="assignUpdate()"'+dis+'>下发该版本</button>';
   h += "</div>";
-  h += '<table style="margin-top:.7rem"><thead><tr><th>时间</th><th>来源</th><th>文件/版本</th><th>结果</th></tr></thead><tbody>';
-  var rows = u ? u.updates : [];
-  if(!rows.length) h += '<tr><td colspan="4" class="muted">还没有安装记录</td></tr>';
-  else for(var i=0;i<rows.length;i++){
-    var r=rows[i];
-    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.src)+"</td><td>"+esc(r.name)+"</td><td>"+esc(r.result)+"</td></tr>";
-  }
-  h += "</tbody></table>";
   return h;
 }
 
@@ -564,21 +558,17 @@ function adbSend(){
   }
   renderOps();
 }
-function pushUpdate(src, name){
-  var u=uiOf(); if(!u) return;
-  u.updates.unshift({ at: nowIso(), src: src, name: name, result: "已记下，等待安装结果" });
-  shellLog("sys", "更新客户端（"+src+"）"+name+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
-}
-function updateFromGithub(){
-  var url=$("ghRel")?$("ghRel").value.trim():"";
-  if(!url){ alert("请填写 GitHub Releases 地址"); return; }
-  pushUpdate("GitHub", url);
-}
-function updateFromFile(){
-  var f=$("apkFile") && $("apkFile").files && $("apkFile").files[0];
-  if(!f){ alert("请选择本地 APK"); return; }
-  pushUpdate("本地文件", f.name);
+function assignUpdate(){
+  var d = currentDev();
+  if(!d) return;
+  var vc = parseInt($("updVc") && $("updVc").value, 10);
+  if(!vc){ alert("请填写已发布的 versionCode"); return; }
+  fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,versionCode:vc})})
+    .then(function(r){ return r.json(); })
+    .then(function(x){
+      if(!x.ok){ alert(x.msg || "下发失败"); return; }
+      loadDevices();
+    });
 }
 function wifiScan(){
   var u=uiOf(); if(!u) return;

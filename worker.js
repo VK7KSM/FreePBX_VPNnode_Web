@@ -11,7 +11,10 @@ import {
   makePairCode,
   tokenSha256HexLooksValid,
   pairCodeRequiredMessage,
-  PAIR_CODE_TTL_MS
+  PAIR_CODE_TTL_MS,
+  shouldOfferUpdate,
+  applyUpdateProgress,
+  updateStateLabel
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 
@@ -273,6 +276,21 @@ export default {
     }
     if (pathname === "/api/devices/report" && method === "POST") {
       return handleDeviceReport(env, request);
+    }
+    if (pathname === "/api/elfremote/releases" && method === "POST") {
+      return handleElfReleasePublish(env, request);
+    }
+    if (pathname === "/api/elfremote/releases" && method === "GET") {
+      return handleElfReleaseList(env);
+    }
+    if (pathname === "/api/elfremote/assign" && method === "POST") {
+      return handleElfAssign(env, request);
+    }
+    if (pathname === "/api/elfremote/update-progress" && method === "POST") {
+      return handleElfUpdateProgress(env, request);
+    }
+    if (pathname.startsWith("/api/elfremote/apk/") && method === "GET") {
+      return handleElfApk(env, pathname);
     }
     if (pathname === "/api/devices/pair" && method === "POST") {
       return handleDevicePair(env, request);
@@ -656,7 +674,19 @@ function publicDevice(d, modelName) {
     app_version: d.app_version || "",
     ready: !!d.ready,
     loc: d.loc || null,
-    update: d.update || { state: "", target: "", detail: "" }
+    update: publicUpdate(d.update)
+  };
+}
+
+function publicUpdate(u) {
+  if (!u) return { state: "", target: "", detail: "", label: "" };
+  return {
+    state: u.state || "",
+    target: u.versionName || "",
+    versionCode: u.versionCode || 0,
+    job_id: u.job_id || "",
+    detail: u.detail || "",
+    label: updateStateLabel(u.state || "")
   };
 }
 
@@ -966,10 +996,209 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     await saveDevices(env, list);
-    return json({ ok: true });
+    const body = { ok: true };
+    if (shouldOfferUpdate(found, Date.now()) && found.update) {
+      body.update = {
+        job_id: found.update.job_id,
+        manifest_raw: found.update.manifest_raw,
+        signature: found.update.signature
+      };
+    }
+    return json(body);
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
+}
+
+const UPDATE_PUB_PEM = "-----BEGIN PUBLIC KEY-----\n"
+  + "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuHuRa52XY+MxbuXi5azn\n"
+  + "9/MoJZEHiGi80WsQOr3ODkaqaLgdd9UBxjkj0dirBmTMGP3yNkm9LUjKxCAyhcd6\n"
+  + "RlRe6I6PuFMx6eYOfGfYDu/VTtkCrAYiOJOnnynJfHF8Rul93mLyTA19Vx5S7FWW\n"
+  + "JtWN43p0VRVU3YOuat97yWJS4xH2RAzNYz+fLK8GTHSYGdaedF6yiETAH9HB7TLs\n"
+  + "c6v0ajptxVD/pU5q1zAWjllpTpcfcN97ma2Bpd82PohOTukFFhzkRO9ZJL5t2zpO\n"
+  + "Aev2EdkUUH+FvzsMHDwg8po9Yb3tdw0OfDH5hhk7+Q+GUDV/A8sgANTIRa31Yajc\n"
+  + "5QIDAQAB\n"
+  + "-----END PUBLIC KEY-----";
+
+function pemSpki(pem) {
+  const b64 = String(pem).replace(/-----.*?-----/g, "").replace(/\s/g, "");
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8.buffer;
+}
+
+function hexToU8(hex) {
+  const h = String(hex || "");
+  const u8 = new Uint8Array(h.length / 2);
+  for (let i = 0; i < u8.length; i++) u8[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return u8;
+}
+
+async function verifyUpdateSig(manifestRaw, sigHex) {
+  if (!manifestRaw || !/^[0-9a-fA-F]+$/.test(String(sigHex || "")) || String(sigHex).length % 2) {
+    return false;
+  }
+  try {
+    const key = await crypto.subtle.importKey(
+      "spki",
+      pemSpki(UPDATE_PUB_PEM),
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    return crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      hexToU8(sigHex),
+      new TextEncoder().encode(manifestRaw)
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
+async function handleElfReleasePublish(env, request) {
+  try {
+    const data = await request.json();
+    const raw = String(data.manifest_raw || "");
+    const sig = String(data.signature || "");
+    const apkB64 = String(data.apk_b64 || "");
+    if (!raw || !sig || !apkB64) return json({ ok: false, msg: "缺少清单或制品" }, 400);
+    if (!(await verifyUpdateSig(raw, sig))) return json({ ok: false, msg: "清单签名无效" }, 400);
+    let m;
+    try { m = JSON.parse(raw); } catch (e) { return json({ ok: false, msg: "清单不是 JSON" }, 400); }
+    const vc = Number(m.versionCode || 0);
+    if (vc <= 0 || m.package !== "net.elfradio.elfremote") {
+      return json({ ok: false, msg: "清单字段无效" }, 400);
+    }
+    const rel = {
+      versionCode: vc,
+      versionName: String(m.versionName || ""),
+      sha256: String(m.sha256 || ""),
+      size: Number(m.size || 0),
+      certSha256: String(m.certSha256 || ""),
+      manifest_raw: raw,
+      signature: sig,
+      apk_b64: apkB64,
+      expires_at: m.expires_at || null,
+      job_id: String(m.job_id || "")
+    };
+    await setStore(env, "elfremote_rel_" + vc, rel);
+    const list = (await getStore(env, "elfremote_releases")) || [];
+    if (list.indexOf(vc) < 0) list.push(vc);
+    await setStore(env, "elfremote_releases", list);
+    if (rel.job_id) await setStore(env, "elfremote_job_" + rel.job_id, vc);
+    if (m.device_id) {
+      await assignReleaseToDevice(env, String(m.device_id), rel);
+    }
+    return json({ ok: true, versionCode: vc, versionName: rel.versionName });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleElfReleaseList(env) {
+  const ids = (await getStore(env, "elfremote_releases")) || [];
+  const out = [];
+  for (let i = 0; i < ids.length; i++) {
+    const rel = await getStore(env, "elfremote_rel_" + ids[i]);
+    if (!rel) continue;
+    out.push({
+      versionCode: rel.versionCode,
+      versionName: rel.versionName,
+      sha256: rel.sha256,
+      size: rel.size
+    });
+  }
+  return json({ ok: true, releases: out });
+}
+
+async function handleElfAssign(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const vc = Number(data.versionCode || 0);
+    if (!deviceId || vc <= 0) return json({ ok: false, msg: "缺少设备或版本" }, 400);
+    const rel = await getStore(env, "elfremote_rel_" + vc);
+    if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
+    const d = await assignReleaseToDevice(env, deviceId, rel);
+    if (!d) return json({ ok: false, msg: "未找到该设备" }, 404);
+    return json({ ok: true, update: publicUpdate(d.update) });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function assignReleaseToDevice(env, deviceId, rel) {
+  const list = await loadDevices(env);
+  let found = null;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].id !== deviceId) continue;
+    list[i].update = {
+      job_id: rel.job_id,
+      state: "pending",
+      versionCode: rel.versionCode,
+      versionName: rel.versionName,
+      manifest_raw: rel.manifest_raw,
+      signature: rel.signature,
+      expires_at: rel.expires_at,
+      detail: ""
+    };
+    found = list[i];
+    break;
+  }
+  if (!found) return null;
+  await saveDevices(env, list);
+  return found;
+}
+
+async function handleElfUpdateProgress(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const jobId = String(data.job_id || "").trim();
+    const state = String(data.state || "").trim();
+    if (!deviceId || !token || !jobId || !state) {
+      return json({ ok: false, msg: "缺少进度字段" }, 400);
+    }
+    const tokenSha = await sha256Hex(token);
+    const list = await loadDevices(env);
+    let found = null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      if (list[i].token_sha256 && list[i].token_sha256 !== tokenSha) {
+        return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      applyUpdateProgress(list[i], jobId, state, data.detail);
+      found = list[i];
+      break;
+    }
+    if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    await saveDevices(env, list);
+    return json({ ok: true, update: publicUpdate(found.update) });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleElfApk(env, pathname) {
+  const jobId = decodeURIComponent(pathname.slice("/api/elfremote/apk/".length));
+  if (!jobId) return json({ ok: false, msg: "缺少任务" }, 400);
+  const vc = await getStore(env, "elfremote_job_" + jobId);
+  if (!vc) return json({ ok: false, msg: "未知任务" }, 404);
+  const rel = await getStore(env, "elfremote_rel_" + vc);
+  if (!rel || !rel.apk_b64) return json({ ok: false, msg: "制品缺失" }, 404);
+  const bin = atob(rel.apk_b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Response(u8, {
+    headers: {
+      "Content-Type": "application/vnd.android.package-archive",
+      "Cache-Control": "no-store"
+    }
+  });
 }
 
 function json(data, status = 200) {
