@@ -51,7 +51,7 @@ export function pickLocation(report, ipGeo) {
     return {
       lat: Number(ipGeo.lat),
       lng: Number(ipGeo.lng),
-      acc_m: accOr(ipGeo.acc_m, 25000),
+      acc_m: accOr(ipGeo.acc_m, 2000),
       source: "ip",
       at: ipGeo.at || null
     };

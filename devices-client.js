@@ -154,13 +154,30 @@ function initMap(){
   }).addTo(map);
 }
 
-function markerHtml(d, selected){
+function deviceColor(id, online){
+  var pal = ["#38bdf8","#a78bfa","#f472b6","#34d399","#fbbf24","#fb7185","#22d3ee","#818cf8"];
+  var h = 0, s = String(id||"");
+  for(var i=0;i<s.length;i++) h = ((h<<5)-h)+s.charCodeAt(i);
+  var c = pal[Math.abs(h)%pal.length];
+  return online ? c : "#64748b";
+}
+function battHtml(pct){
+  var p = pct==null || !isFinite(Number(pct)) ? -1 : Math.max(0, Math.min(100, Math.round(Number(pct))));
+  var fill = p<0 ? 0 : p;
+  var col = p<0 ? "#64748b" : (p<=20 ? "#f87171" : (p<=50 ? "#fbbf24" : "#4ade80"));
+  var title = p<0 ? "电量未知" : ("电量 "+p+"%");
+  return '<span class="mbatt" title="'+title+'"><span class="mbatt-b"><span class="mbatt-l" style="width:'+fill+'%;background:'+col+'"></span></span><span class="mbatt-n"></span></span>';
+}
+function pinHtml(d, selected){
   var on = d.online && d.enabled!==false;
-  var gps = d.loc && d.loc.source==="gps";
-  var color = !d.enabled ? "#64748b" : (on ? (gps ? "#22c55e" : "#38bdf8") : "#94a3b8");
-  var fill = gps ? color : "transparent";
-  var ring = selected ? "0 0 0 3px #93c5fd" : "0 0 0 2px rgba(15,23,42,.8)";
-  return '<div style="width:16px;height:16px;border-radius:50%;background:'+fill+';border:3px solid '+color+';box-shadow:'+ring+'"></div>';
+  var col = deviceColor(d.id, on);
+  var seen = sydney(d.last_seen);
+  return '<div class="dpin'+(selected?" pin-on":"")+'">'+
+    '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 2px #0f172a,0 0 0 3px '+col+'"></div>'+
+    '<div class="dpin-card">'+
+      '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery)+'</div>'+
+      '<div class="dpin-time">'+esc(seen)+'</div>'+
+    '</div></div>';
 }
 
 function renderMap(){
@@ -178,34 +195,37 @@ function renderMap(){
     var ll = [d.loc.lat, d.loc.lng];
     var gps = d.loc.source==="gps";
     var acc = Number(d.loc.acc_m);
-    if(!(acc>0)) acc = gps ? 40 : 35000;
-    if(!gps && acc<20000) acc = 35000;
-    var col = d.online && d.enabled!==false ? (gps ? "#22c55e" : "#38bdf8") : "#94a3b8";
+    if(gps){
+      if(!(acc>0) || acc>300) acc = 50;
+    } else {
+      acc = 2000;
+    }
+    var col = deviceColor(d.id, d.online && d.enabled!==false);
     var circ = L.circle(ll, {
       radius: acc,
       color: col,
       weight: gps ? 1 : 2,
       fillColor: col,
-      fillOpacity: gps ? 0.12 : 0.22
+      fillOpacity: gps ? 0.16 : 0.2
     }).addTo(map);
     circles[d.id] = circ;
     var tb = circ.getBounds();
     bounds.push(tb.getSouthWest());
     bounds.push(tb.getNorthEast());
     if(!gps) hasIpArea = true;
-    var bat = d.battery==null ? "—" : (d.battery+"%");
-    var pop = "<b>"+esc(d.name)+"</b><br>电量 "+bat+"<br>IP "+esc(d.ip||"—")+"<br>"+locLabel(d.loc.source)+"<br>"+sydney(d.loc.at);
-    (function(id){
+    (function(id, dev){
       circ.on("click", function(){ selectDev(id); });
-      circ.bindPopup(pop);
-      if(gps){
-        var ic = L.divIcon({ className: "", html: markerHtml(d, d.id===selDev), iconSize: [16,16], iconAnchor: [8,8] });
-        markers[id] = L.marker(ll, { icon: ic }).addTo(map).on("click", function(){ selectDev(id); });
-        markers[id].bindPopup(pop);
-      }
-    })(d.id);
+      var ic = L.divIcon({
+        className: "dpin-wrap",
+        html: pinHtml(dev, id===selDev),
+        iconSize: [170, 42],
+        iconAnchor: [8, 14]
+      });
+      markers[id] = L.marker(ll, { icon: ic, zIndexOffset: id===selDev ? 600 : 200 })
+        .addTo(map).on("click", function(){ selectDev(id); });
+    })(d.id, d);
   }
-  if(bounds.length) map.fitBounds(bounds, { padding: [28,28], maxZoom: hasIpArea ? 11 : 15 });
+  if(bounds.length) map.fitBounds(bounds, { padding: [36,36], maxZoom: hasIpArea ? 14 : 16 });
 }
 
 function flyTo(id){
@@ -214,11 +234,9 @@ function flyTo(id){
   if(!d || !d.loc || !map) { renderMap(); return; }
   renderMap();
   if(d.loc.source==="gps"){
-    map.flyTo([d.loc.lat, d.loc.lng], 15, { duration: 0.6 });
-    if(markers[id]) markers[id].openPopup();
+    map.flyTo([d.loc.lat, d.loc.lng], 16, { duration: 0.5 });
   } else if(circles[id]){
-    map.fitBounds(circles[id].getBounds(), { padding: [28,28], maxZoom: 11 });
-    circles[id].openPopup();
+    map.fitBounds(circles[id].getBounds(), { padding: [36,36], maxZoom: 14 });
   }
 }
 
@@ -292,8 +310,7 @@ function fnPageHtml(){
 function pageAdb(dis){
   var u = uiOf();
   var on = !!(u && u.adb.connected);
-  var h = "<h4>远程 Shell</h4>";
-  h += '<div class="ops-actions" style="margin-bottom:.55rem">';
+  var h = '<div class="ops-actions" style="margin-bottom:.55rem">';
   h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
   h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
   h += '<span class="muted">'+(on ? "ADB 会话已开" : "ADB 未接入，指令仍写入日志")+"</span>";
@@ -321,8 +338,7 @@ function pageUpdate(dis){
   var u = uiOf();
   var d = currentDev();
   var ver = d ? managerLabel(d) : "未接入";
-  var h = "<h4>更新客户端</h4>";
-  h += '<div class="ops-grid">'+kv("当前版本", ver)+"</div>";
+  var h = '<div class="ops-grid">'+kv("当前版本", ver)+"</div>";
   h += '<div class="ops-actions" style="margin-top:.7rem">';
   h += '<input id="ghRel" class="inp" placeholder="GitHub Releases 地址" style="max-width:360px"'+dis+'>';
   h += '<button class="btn-green" onclick="updateFromGithub()"'+dis+'>从 GitHub 安装</button>';
@@ -347,8 +363,7 @@ function pageWifi(dis){
   var list = u ? u.wifi : [];
   var sel = u ? u.wifiSel : "";
   var last = u ? u.wifiLastOk : "";
-  var h = "<h4>配置 Wi-Fi</h4>";
-  h += '<div class="ops-actions">';
+  var h = '<div class="ops-actions">';
   h += '<button class="btn-gray" onclick="wifiScan()"'+dis+'>刷新扫描</button>';
   if(last) h += '<span class="muted">上次成功：'+esc(last)+"</span>";
   h += "</div>";
@@ -371,8 +386,7 @@ function pageWifi(dis){
 function pageContacts(dis){
   var u = uiOf();
   var list = u ? u.contacts : [];
-  var h = "<h4>通信录</h4>";
-  h += '<div class="ops-actions">';
+  var h = '<div class="ops-actions">';
   h += '<input id="cName" class="inp" placeholder="姓名" style="max-width:160px"'+dis+'>';
   h += '<input id="cPhone" class="inp" placeholder="号码" style="max-width:160px"'+dis+'>';
   h += '<button class="btn-green" onclick="contactAdd()"'+dis+'>添加</button>';
@@ -484,7 +498,6 @@ function adbBind(){
     if(e.key==="ArrowUp"){ e.preventDefault(); adbHist(-1); return; }
     if(e.key==="ArrowDown"){ e.preventDefault(); adbHist(1); }
   };
-  if(!inp.disabled) inp.focus();
 }
 function adbPrint(kind, text){
   var u=uiOf(); if(!u) return;

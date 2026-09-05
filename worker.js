@@ -622,7 +622,7 @@ async function fetchIpGeo(ip) {
     label: [j.country, j.regionName, j.city].filter(Boolean).join(" "),
     lat: j.lat,
     lng: j.lon,
-    acc_m: 35000
+    acc_m: 2000
   };
 }
 
@@ -1674,6 +1674,17 @@ function renderDevicesHtml() {
     '.adb-cmd{font:13px ui-monospace,SFMono-Regular,Consolas,monospace;background:transparent;border:0;padding:.2rem 0;flex:1;min-width:0;box-shadow:none}',
     '.adb-cmd:focus{outline:none;border:0}',
     '.adb-row .btn-green{padding:.28rem .7rem;font-size:.78rem}',
+    '.leaflet-div-icon.dpin-wrap{background:transparent;border:0}',
+    '.dpin{display:flex;align-items:center;gap:5px;pointer-events:none}',
+    '.dpin-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}',
+    '.dpin-card{background:rgba(15,23,42,.92);border:1px solid rgba(148,163,184,.4);border-radius:.35rem;padding:.12rem .4rem .14rem;color:#e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none}',
+    '.dpin-name{font-size:11px;font-weight:700;display:flex;align-items:center;gap:.28rem;line-height:1.2}',
+    '.dpin-time{font-size:10px;color:#94a3b8;line-height:1.2}',
+    '.pin-on .dpin-card{border-color:#93c5fd}',
+    '.mbatt{display:inline-flex;align-items:center;flex-shrink:0}',
+    '.mbatt-b{width:15px;height:8px;border:1px solid #cbd5e1;border-radius:1px;padding:1px;box-sizing:border-box;background:#0f172a}',
+    '.mbatt-l{display:block;height:100%;border-radius:1px}',
+    '.mbatt-n{width:2px;height:4px;background:#cbd5e1;border-radius:0 1px 1px 0;margin-left:1px}',
     'table{width:100%;border-collapse:collapse}',
     'th{text-align:left;padding:.5rem;font-size:.8rem;color:#94a3b8}',
     'td{padding:.5rem;font-size:.85rem;border-top:1px solid #1e293b}',
