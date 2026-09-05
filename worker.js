@@ -24,13 +24,7 @@ const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
 const DEFAULT_TOKEN = "d31";
 
-async function getStore(env, key) {
-  if (env && env.SUB_STORE_KV) {
-    const val = await env.SUB_STORE_KV.get(key);
-    if (val !== null) {
-      try { return JSON.parse(val); } catch(e) { return val; }
-    }
-  }
+function storeDefaults(key) {
   const defaults = {
     admin_user: DEFAULT_USER,
     admin_pass: DEFAULT_PASS,
@@ -41,7 +35,54 @@ async function getStore(env, key) {
   return defaults[key] !== undefined ? defaults[key] : null;
 }
 
+function parseStoreVal(val) {
+  if (val == null) return null;
+  try { return JSON.parse(val); } catch (e) { return val; }
+}
+
+function elfDoStub(env) {
+  if (!env || !env.ELF_DO) return null;
+  return env.ELF_DO.get(env.ELF_DO.idFromName("main"));
+}
+
+async function getStore(env, key) {
+  const stub = elfDoStub(env);
+  if (stub) {
+    const res = await stub.fetch("https://elf-store/" + encodeURIComponent(key));
+    if (res.ok) {
+      const parsed = await res.json();
+      if (parsed !== null) return parsed;
+    }
+  }
+  if (env && env.SUB_STORE_KV) {
+    const val = await env.SUB_STORE_KV.get(key);
+    if (val !== null) {
+      const parsed = parseStoreVal(val);
+      if (stub) {
+        try {
+          await stub.fetch("https://elf-store/" + encodeURIComponent(key), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed)
+          });
+        } catch (e) { /* hydrate optional */ }
+      }
+      return parsed;
+    }
+  }
+  return storeDefaults(key);
+}
+
 async function setStore(env, key, value) {
+  const stub = elfDoStub(env);
+  if (stub) {
+    await stub.fetch("https://elf-store/" + encodeURIComponent(key), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value)
+    });
+    return;
+  }
   if (env && env.SUB_STORE_KV) {
     await env.SUB_STORE_KV.put(key, typeof value === "object" ? JSON.stringify(value) : String(value));
   }
@@ -68,6 +109,30 @@ function contactFingerprint(contacts) {
   }
   parts.sort();
   return parts.join(",");
+}
+
+export class ElfStore {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+  async fetch(request) {
+    const url = new URL(request.url);
+    const key = decodeURIComponent(url.pathname.slice(1));
+    if (request.method === "GET") {
+      const v = await this.ctx.storage.get(key);
+      return new Response(JSON.stringify(v === undefined ? null : v), {
+        headers: { "Content-Type": "application/json; charset=utf-8" }
+      });
+    }
+    if (request.method === "PUT") {
+      const v = await request.json();
+      await this.ctx.storage.put(key, v);
+      return new Response("{\"ok\":true}", {
+        headers: { "Content-Type": "application/json; charset=utf-8" }
+      });
+    }
+    return new Response("{\"ok\":false}", { status: 405 });
+  }
 }
 
 export default {
@@ -1012,7 +1077,7 @@ async function handleDeviceReport(env, request) {
   }
 }
 
-// 4.6：wait_health 可进入 rollback / recovered，标签在 control-plane.js。
+// 4.6：设备状态写入 Durable Object，避免 KV 日限额卡住回滚验收。
 const UPDATE_PUB_PEM = "-----BEGIN PUBLIC KEY-----\n"
   + "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuHuRa52XY+MxbuXi5azn\n"
   + "9/MoJZEHiGi80WsQOr3ODkaqaLgdd9UBxjkj0dirBmTMGP3yNkm9LUjKxCAyhcd6\n"

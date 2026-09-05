@@ -1,6 +1,6 @@
 name = "freepbx-vpnnode-web"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
 workers_dev = true
 
 # devices-client.js 是浏览器脚本，不能当 Worker 模块执行（会碰 localStorage）。
@@ -9,3 +9,12 @@ workers_dev = true
 [[kv_namespaces]]
 binding = "SUB_STORE_KV"
 id = "833409e1f96d4ef28334811dfec66b52"
+
+# Device/update state in Durable Object storage so KV daily puts do not stall lab.
+[[durable_objects.bindings]]
+name = "ELF_DO"
+class_name = "ElfStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ElfStore"]
