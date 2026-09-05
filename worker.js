@@ -5,6 +5,7 @@
 
 import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
+// control-plane.js is imported below; keep this file on the deploy path filter.
 import {
   isControlPlaneOnline,
   normalizePairCode,
