@@ -1677,7 +1677,7 @@ function renderDevicesHtml() {
     '.leaflet-div-icon.dpin-wrap{background:transparent;border:0}',
     '.dpin{display:flex;align-items:center;gap:5px;pointer-events:none}',
     '.dpin-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}',
-    '.dpin-card{background:rgba(15,23,42,.92);border:1px solid rgba(148,163,184,.4);border-radius:.35rem;padding:.12rem .4rem .14rem;color:#e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none}',
+    '.dpin-card{background:rgba(15,23,42,.48);border:1px solid rgba(226,232,240,.28);border-radius:.35rem;padding:.12rem .4rem .14rem;color:#f8fafc;box-shadow:0 2px 8px rgba(0,0,0,.22);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);pointer-events:none}',
     '.dpin-name{font-size:11px;font-weight:700;display:flex;align-items:center;gap:.28rem;line-height:1.2}',
     '.dpin-time{font-size:10px;color:#94a3b8;line-height:1.2}',
     '.pin-on .dpin-card{border-color:#93c5fd}',
