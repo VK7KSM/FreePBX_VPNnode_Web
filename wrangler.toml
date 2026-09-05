@@ -10,11 +10,9 @@ workers_dev = true
 binding = "SUB_STORE_KV"
 id = "833409e1f96d4ef28334811dfec66b52"
 
-# Device/update state in Durable Object storage so KV daily puts do not stall lab.
-[[durable_objects.bindings]]
-name = "ELF_DO"
-class_name = "ElfStore"
+[durable_objects]
+bindings = [{ name = "ELF_DO", class_name = "ElfStore" }]
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["ElfStore"]
+new_classes = ["ElfStore"]

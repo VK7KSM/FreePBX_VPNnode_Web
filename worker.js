@@ -1179,7 +1179,7 @@ async function handleElfReleaseList(env) {
       size: rel.size
     });
   }
-  return json({ ok: true, releases: out });
+  return json({ ok: true, releases: out, store: env.ELF_DO ? "do" : "kv" });
 }
 
 async function handleElfAssign(env, request) {
