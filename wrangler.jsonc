@@ -15,6 +15,6 @@
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_classes": ["ElfStore"] }
+    { "tag": "v1", "new_sqlite_classes": ["ElfStore"] }
   ]
 }
