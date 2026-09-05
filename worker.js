@@ -1010,6 +1010,7 @@ async function handleDeviceReport(env, request) {
   }
 }
 
+// 4.6：wait_health 可进入 rollback / recovered，标签在 control-plane.js。
 const UPDATE_PUB_PEM = "-----BEGIN PUBLIC KEY-----\n"
   + "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuHuRa52XY+MxbuXi5azn\n"
   + "9/MoJZEHiGi80WsQOr3ODkaqaLgdd9UBxjkj0dirBmTMGP3yNkm9LUjKxCAyhcd6\n"

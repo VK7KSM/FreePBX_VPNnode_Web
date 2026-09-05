@@ -44,7 +44,9 @@ export const UPDATE_STATE_LABELS = {
   verifying: "校验中",
   installing: "安装中",
   wait_health: "等待健康确认",
-  success: "成功"
+  success: "成功",
+  rollback: "回滚中",
+  recovered: "已恢复"
 };
 
 const UPDATE_ADVANCE = {
@@ -63,13 +65,15 @@ export function updateStateLabel(state) {
 export function canAdvanceUpdate(from, to) {
   if (!from || !to) return false;
   if (from === to) return true;
+  if (from === "wait_health" && (to === "success" || to === "rollback")) return true;
+  if (from === "rollback" && to === "recovered") return true;
   return UPDATE_ADVANCE[from] === to;
 }
 
 export function shouldOfferUpdate(device, nowMs) {
   if (!device || !device.update || !device.update.job_id) return false;
   const u = device.update;
-  if (u.state === "success") return false;
+  if (u.state === "success" || u.state === "recovered") return false;
   if (u.expires_at) {
     let t = Number(u.expires_at);
     if (!Number.isFinite(t)) t = Date.parse(u.expires_at);

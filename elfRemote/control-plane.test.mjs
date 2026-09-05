@@ -97,3 +97,15 @@ test("安装成功不能直接标为健康成功", () => {
   applyUpdateProgress(d, "job1", "success", "health ok");
   assert.equal(d.update.state, "success");
 });
+
+test("健康超时走回滚再标已恢复", () => {
+  assert.equal(updateStateLabel("rollback"), "回滚中");
+  assert.equal(updateStateLabel("recovered"), "已恢复");
+  const d = { update: { job_id: "job1", state: "wait_health" } };
+  applyUpdateProgress(d, "job1", "recovered", "skip");
+  assert.equal(d.update.state, "wait_health");
+  applyUpdateProgress(d, "job1", "rollback", "timeout");
+  assert.equal(d.update.state, "rollback");
+  applyUpdateProgress(d, "job1", "recovered", "last-good");
+  assert.equal(d.update.state, "recovered");
+});
