@@ -10,6 +10,7 @@ import {
   normalizePairCode,
   makePairCode,
   tokenSha256HexLooksValid,
+  pairCodeRequiredMessage,
   PAIR_CODE_TTL_MS
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
@@ -725,37 +726,8 @@ async function handleDeviceModelSave(env, request) {
 async function handleDeviceCreate(env, request) {
   try {
     const data = await request.json();
-    const name = String(data.name || "").trim();
-    const model_id = String(data.model_id || "").trim();
-    const ip = String(data.ip || "").trim();
-    if (!name) return json({ ok: false, msg: "名称不能为空" }, 400);
-    const models = await loadDeviceModels(env);
-    let okModel = false;
-    for (let i = 0; i < models.length; i++) if (models[i].id === model_id) okModel = true;
-    if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
-    const list = await loadDevices(env);
-    const row = {
-      id: newRemoteId("dev_"),
-      name: name,
-      model_id: model_id,
-      enabled: true,
-      online: false,
-      last_seen: null,
-      battery: null,
-      network: "unknown",
-      ip: ip,
-      os_version: "",
-      app_version: "",
-      ready: false,
-      loc: null,
-      update: { state: "", target: "", detail: "" }
-    };
-    const ipGeo = await geoForIp(env, ip);
-    const loc = pickLocation(row, ipGeo);
-    if (loc) row.loc = loc;
-    list.push(row);
-    await saveDevices(env, list);
-    return json({ ok: true, device: row });
+    const msg = pairCodeRequiredMessage(data && data.code) || "请到配对入口提交六位码，不能手工建档";
+    return json({ ok: false, msg: msg }, 400);
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
@@ -923,6 +895,7 @@ async function handleDevicePair(env, request) {
       if (existing) return json({ ok: true, device: publicDevice(existing, ""), msg: "已经配对" });
     }
     const list = await loadDevices(env);
+    const ip = String(data.ip || "").trim();
     const device = {
       id: newRemoteId("dev_"),
       name: name,
@@ -932,7 +905,7 @@ async function handleDevicePair(env, request) {
       last_seen: null,
       battery: null,
       network: "unknown",
-      ip: "",
+      ip: ip,
       os_version: row.os_version || "",
       app_version: row.app_version || "",
       ready: false,
@@ -940,6 +913,9 @@ async function handleDevicePair(env, request) {
       update: { state: "", target: "", detail: "" },
       token_sha256: row.token_sha256
     };
+    const ipGeo = await geoForIp(env, ip);
+    const loc = pickLocation(device, ipGeo);
+    if (loc) device.loc = loc;
     list.push(device);
     await saveDevices(env, list);
     row.paired = true;
@@ -1632,9 +1608,13 @@ function renderDevicesHtml() {
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
     '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem}',
     '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
+    '.btn-green:disabled{background:#334155;color:#94a3b8;opacity:.7;cursor:default}',
     '.btn-add{padding:.25rem .65rem;font-size:.8rem}',
     '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
     '.btn-gray:disabled{opacity:.35;cursor:default}',
+    '.btn-close{position:absolute;top:.75rem;right:.85rem;background:transparent;border:none;color:#f87171;cursor:pointer;font-weight:700;font-size:.85rem;padding:.15rem .3rem}',
+    '.btn-close:hover{color:#fecaca}',
+    '.modal-card{position:relative}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     '.muted{color:#94a3b8;font-size:.85rem}',
     '.dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex-shrink:0;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
@@ -1724,22 +1704,20 @@ function renderDevicesHtml() {
     '<\/div>',
     '<\/div><\/main>',
     '<div id="addWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:460px">',
-    '<h3 style="margin:0 0 1rem;font-size:1.05rem">添加设备<\/h3>',
-    '<p class="muted" style="margin:.2rem 0 .5rem">手工登记<\/p>',
+    '<div class="card modal-card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:460px">',
+    '<button type="button" class="btn-close" onclick="closeAdd()">关闭<\/button>',
+    '<h3 style="margin:0 2.2rem 1rem 0;font-size:1.05rem">添加设备<\/h3>',
     '<div style="display:flex;flex-direction:column;gap:.55rem">',
     '<input id="dName" class="inp" placeholder="名称">',
     '<select id="dModel" class="inp"><\/select>',
     '<input id="dIp" class="inp" placeholder="公网 IP（可选，用于粗定位）">',
-    '<button class="btn-green" onclick="saveManual()">保存登记<\/button>',
+    '<p class="muted" style="margin:.35rem 0 0">六位配对（请看机子屏幕）<\/p>',
+    '<input id="pairCode" class="inp" placeholder="六位码" maxlength="8">',
+    '<button id="btnPair" class="btn-green" disabled onclick="submitPair()">提交配对码<\/button>',
+    '<p id="pairErr" style="color:#fbbf24;font-size:.8rem;min-height:1em"><\/p>',
     '<p id="addErr" style="color:#f87171;font-size:.8rem;min-height:1em"><\/p>',
+    '<button id="btnSave" class="btn-green" disabled onclick="saveManual()">保存登记<\/button>',
     '<\/div>',
-    '<hr style="border:none;border-top:1px solid #1e293b;margin:1rem 0">',
-    '<p class="muted" style="margin:.2rem 0 .5rem">六位配对（请看机子屏幕）<\/p>',
-    '<input id="pairCode" class="inp" placeholder="六位码" style="margin-bottom:.5rem">',
-    '<button class="btn-gray" onclick="submitPair()">提交配对码<\/button>',
-    '<p id="pairErr" style="color:#fbbf24;font-size:.8rem;margin-top:.4rem"><\/p>',
-    '<div style="text-align:right;margin-top:1rem"><button class="btn-gray" onclick="closeAdd()">关闭<\/button><\/div>',
     '<\/div><\/div>',
     '<div id="editWrap" class="modal-bg" style="display:none">',
     '<div class="card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:420px">',

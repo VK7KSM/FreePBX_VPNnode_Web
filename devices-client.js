@@ -8,7 +8,7 @@ var circles = {};
 var UI = {};
 
 var FN_ITEMS = [
-  ["adb", "远程ADB", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
+  ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
   ["wifi", "配置Wi-Fi", '<path d="M5 12.5a9 9 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
@@ -220,7 +220,7 @@ function renderOps(){
   var bat = !d || d.battery==null ? "—" : (d.battery+"%");
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
-  var online = !d ? "—" : (d.online ? "控制面在线" : (d.enabled===false ? "已停用" : "控制面离线"));
+  var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "会话已开" : "未接入");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
   if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
@@ -232,7 +232,6 @@ function renderOps(){
   h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
   h += '<div class="ops-grid">';
-  h += kv("在线", online);
   h += kv("电量", bat);
   h += kv("网络", net);
   h += kv("IP", d && d.ip ? d.ip : "—");
@@ -240,7 +239,7 @@ function renderOps(){
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += kv("管理程序", d && d.app_version ? d.app_version : (d ? "未接入" : "—"));
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
-  h += kv("远程ADB", "未接入");
+  h += kv("远程Shell", shell);
   h += "</div>";
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
@@ -270,15 +269,16 @@ function fnPageHtml(){
 function pageAdb(dis){
   var u = uiOf();
   var on = !!(u && u.adb.connected);
-  var h = '<div class="ops-actions" style="margin-bottom:.55rem">';
-  h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接</button>';
+  var h = "<h4>远程 Shell</h4>";
+  h += '<div class="ops-actions" style="margin-bottom:.55rem">';
+  h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
   h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
-  h += '<span class="muted">'+(on ? "已连接" : "未连接")+"</span>";
+  h += '<span class="muted">'+(on ? "ADB 会话已开" : "ADB 未接入，指令仍写入日志")+"</span>";
   h += "</div>";
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
   var lines = (u && u.adb.lines) ? u.adb.lines : [];
-  if(!lines.length) h += '<span class="adb-sys">点「连接」后可输入 ADB 命令。输出会显示在这里，形式与本机终端运行 adb 相同。流量经远程配置客户端和 Cloudflare 转发，不会直连设备 ADB 端口。</span>';
+  if(!lines.length) h += '<span class="adb-sys">这里记录设备管理发出的每条指令。ADB 未接入时也可以输入，结果会标明尚未送到设备。</span>';
   else {
     for(var i=0;i<lines.length;i++){
       h += '<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+"</span>\n";
@@ -286,10 +286,10 @@ function pageAdb(dis){
   }
   h += "</pre>";
   h += '<div class="adb-row">';
-  h += '<span class="adb-prompt">adb&gt;</span>';
-  h += '<input id="adbCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="shell ls /sdcard"';
-  h += (dis || !on) ? " disabled>" : ">";
-  h += '<button class="btn-green" onclick="adbSend()"'+((dis || !on) ? " disabled" : "")+'>发送</button>';
+  h += '<span class="adb-prompt">shell&gt;</span>';
+  h += '<input id="adbCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="pm list packages"';
+  h += dis ? " disabled>" : ">";
+  h += '<button class="btn-green" onclick="adbSend()"'+dis+'>发送</button>';
   h += "</div></div>";
   return h;
 }
@@ -469,6 +469,9 @@ function adbPrint(kind, text){
   u.adb.lines.push({ k: kind, t: String(text) });
   if(u.adb.lines.length>500) u.adb.lines=u.adb.lines.slice(-400);
 }
+function shellLog(kind, text){
+  adbPrint(kind, "["+sydney(nowIso())+"] "+text);
+}
 function adbNorm(raw){
   var s = String(raw||"").replace(/^\s+/, "");
   s = s.replace(/^adb(\.exe)?(\s+|$)/i, "");
@@ -494,8 +497,7 @@ function adbConnect(){
     return;
   }
   u.adb.connected=true;
-  adbPrint("sys", "正在通过 Cloudflare 请求会话…");
-  adbPrint("sys", "等待远程配置客户端出站接入。客户端未上线前，命令不会发到设备。");
+  shellLog("sys", "已打开网页侧 ADB 会话标记。互联网 ADB 隧道尚未接入，命令仍不会到达设备。");
   renderOps();
 }
 function adbDisconnect(){
@@ -518,18 +520,18 @@ function adbSend(){
   if(!u.adb.hist) u.adb.hist=[];
   if(!u.adb.hist.length || u.adb.hist[u.adb.hist.length-1]!==raw) u.adb.hist.push(raw);
   u.adb.histI = u.adb.hist.length;
+  adbPrint("in", (u.adb.connected ? "adb " : "shell ")+raw);
   if(!u.adb.connected){
-    adbPrint("sys", "未连接。请先点「连接」。");
-    renderOps();
-    return;
+    adbPrint("sys", "已记下。ADB 未接入，命令未送到设备。");
+  } else {
+    adbPrint("out", "远程配置客户端未接入，命令未送达设备。");
   }
-  adbPrint("in", "adb "+raw);
-  adbPrint("out", "远程配置客户端未接入，命令未送达设备。");
   renderOps();
 }
 function pushUpdate(src, name){
   var u=uiOf(); if(!u) return;
-  u.updates.unshift({ at: nowIso(), src: src, name: name, result: "已下发，等待安装结果" });
+  u.updates.unshift({ at: nowIso(), src: src, name: name, result: "已记下，等待安装结果" });
+  shellLog("sys", "更新客户端（"+src+"）"+name+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function updateFromGithub(){
@@ -544,6 +546,7 @@ function updateFromFile(){
 }
 function wifiScan(){
   var u=uiOf(); if(!u) return;
+  shellLog("sys", "刷新 Wi-Fi 扫描 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function wifiPick(ssid){
@@ -558,6 +561,8 @@ function wifiConnect(){
   if(!ssid){ alert("请选择或填写 SSID"); return; }
   if(!pw){ alert("请输入密码"); return; }
   u.wifiSel=ssid;
+  u.wifiLastOk = ssid;
+  shellLog("sys", "连接 Wi-Fi "+ssid+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function contactRefresh(){ renderOps(); }
@@ -567,6 +572,7 @@ function contactAdd(){
   var phone=$("cPhone")?$("cPhone").value.trim():"";
   if(!name||!phone){ alert("请填写姓名和号码"); return; }
   u.contacts.push({ name:name, phone:phone });
+  shellLog("sys", "添加通信录 "+name+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function contactEdit(i){
@@ -576,11 +582,13 @@ function contactEdit(i){
   name=name.trim(); phone=phone.trim();
   if(!name||!phone) return;
   u.contacts[i]={ name:name, phone:phone };
+  shellLog("sys", "修改通信录 "+name+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function contactDel(i){
   var u=uiOf(); if(!u) return;
   u.contacts.splice(i,1);
+  shellLog("sys", "删除通信录 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function locNow(){
@@ -592,17 +600,20 @@ function locNow(){
     lng=Number(d.loc.lng).toFixed(6);
   }
   u.loc.unshift({ at: nowIso(), lat: lat, lng: lng });
+  shellLog("sys", "立即定位 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function alarmPlay(){
   var u=uiOf(); if(!u) return;
   u.alarm.unshift({ at: nowIso(), dur: "等待设备回报" });
+  shellLog("sys", "播放警报 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostRec(){
   var u=uiOf(); if(!u) return;
   u.live="录音中（实时播放待设备接入）";
   u.recs.unshift({ at: nowIso(), kind: "录音", state: "进行中" });
+  shellLog("sys", "远程录音 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostVideo(cam){
@@ -610,18 +621,21 @@ function lostVideo(cam){
   var lab = cam==="front" ? "前置录像" : "后置录像";
   u.live=lab+"中（实时画面待设备接入）";
   u.recs.unshift({ at: nowIso(), kind: lab, state: "进行中" });
+  shellLog("sys", lab+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostPhoto(cam){
   var u=uiOf(); if(!u) return;
   var lab = cam==="front" ? "前置" : "后置";
   u.photos.unshift({ at: nowIso(), cam: lab, state: "等待回传" });
+  shellLog("sys", lab+"拍照 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostTalk(){
   var u=uiOf(); if(!u) return;
   u.talk=!u.talk;
   u.live=u.talk ? "对讲中：外置扬声器 + 麦克风" : "对讲已停止";
+  shellLog("sys", u.live+" → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostLock(){
@@ -629,11 +643,13 @@ function lostLock(){
   var pw=$("lockPw")?$("lockPw").value:"";
   if(!pw){ alert("请设置解锁密码"); return; }
   u.live="已下发锁机";
+  shellLog("sys", "远程锁机 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 function lostUnlock(){
   var u=uiOf(); if(!u) return;
   u.live="已下发解锁";
+  shellLog("sys", "远程解锁 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
 
@@ -683,27 +699,45 @@ function fillModelSelect(sel, val){
   sel.innerHTML = h || '<option value="">请先添加型号</option>';
 }
 
+function pairCodeOk(){
+  return /^\d{6}$/.test(String($("pairCode") ? $("pairCode").value : "").replace(/\s+/g, ""));
+}
+function syncAddButtons(){
+  var ok = pairCodeOk();
+  ["btnPair", "btnSave"].forEach(function(id){
+    var b = $(id);
+    if(!b) return;
+    b.disabled = !ok;
+  });
+}
 function openAdd(){
   fillModelSelect($("dModel"), MODELS[0] ? MODELS[0].id : "");
   $("dName").value=""; $("dIp").value=""; $("pairCode").value="";
   $("addErr").innerText=""; $("pairErr").innerText="";
   show("addWrap");
+  var inp = $("pairCode");
+  if(inp && !inp._pairBound){
+    inp._pairBound = true;
+    inp.addEventListener("input", syncAddButtons);
+    inp.addEventListener("keyup", syncAddButtons);
+    inp.addEventListener("paste", function(){ setTimeout(syncAddButtons, 0); });
+  }
+  syncAddButtons();
 }
 function closeAdd(){ hide("addWrap"); }
 
-function saveManual(){
-  var body = { name:$("dName").value.trim(), model_id:$("dModel").value, ip:$("dIp").value.trim() };
-  fetch("/api/devices",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
-  .then(function(r){return r.json();}).then(function(d){
-    if(!d.ok){ $("addErr").innerText=d.msg||"保存失败"; return; }
-    closeAdd(); selDev=d.device && d.device.id; loadDevices();
-  });
-}
+function saveManual(){ submitPair(); }
 function submitPair(){
+  if(!pairCodeOk()){
+    $("pairErr").innerText = "请填写六位数字配对码";
+    syncAddButtons();
+    return;
+  }
   var body = {
     code: $("pairCode").value.trim(),
     name: $("dName").value.trim() || "D22-XX",
-    model_id: $("dModel").value || "mdl_d22"
+    model_id: $("dModel").value || "mdl_d22",
+    ip: $("dIp").value.trim()
   };
   fetch("/api/devices/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
   .then(function(r){return r.json();}).then(function(d){

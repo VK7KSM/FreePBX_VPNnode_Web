@@ -24,3 +24,7 @@ export function makePairCode(bytes) {
 export function tokenSha256HexLooksValid(hex) {
   return /^[a-f0-9]{64}$/.test(String(hex || "").toLowerCase());
 }
+
+export function pairCodeRequiredMessage(code) {
+  return normalizePairCode(code) ? "" : "请用六位配对码添加设备";
+}

@@ -5,6 +5,7 @@ import {
   normalizePairCode,
   makePairCode,
   tokenSha256HexLooksValid,
+  pairCodeRequiredMessage,
   CONTROL_PLANE_ONLINE_MS
 } from "./control-plane.js";
 
@@ -32,4 +33,10 @@ test("设备令牌哈希必须是 64 位十六进制", () => {
   assert.equal(tokenSha256HexLooksValid("a".repeat(64)), true);
   assert.equal(tokenSha256HexLooksValid("A".repeat(64)), true);
   assert.equal(tokenSha256HexLooksValid("ab"), false);
+});
+
+test("无六位码不得手工建档", () => {
+  assert.equal(pairCodeRequiredMessage(""), "请用六位配对码添加设备");
+  assert.equal(pairCodeRequiredMessage("12345"), "请用六位配对码添加设备");
+  assert.equal(pairCodeRequiredMessage("123456"), "");
 });
