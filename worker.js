@@ -621,7 +621,8 @@ async function fetchIpGeo(ip) {
   return {
     label: [j.country, j.regionName, j.city].filter(Boolean).join(" "),
     lat: j.lat,
-    lng: j.lon
+    lng: j.lon,
+    acc_m: 35000
   };
 }
 
@@ -953,6 +954,13 @@ async function handleDeviceReport(env, request) {
       if (data.ready != null) list[i].ready = !!data.ready;
       const ip = request.headers.get("CF-Connecting-IP") || "";
       if (ip && !isPrivateIp(ip)) list[i].ip = ip;
+      const ipGeo = await geoForIp(env, list[i].ip);
+      const loc = pickLocation(data, ipGeo);
+      if (loc) {
+        if (loc.source === "gps" || !list[i].loc || list[i].loc.source !== "gps") {
+          list[i].loc = loc;
+        }
+      }
       found = list[i];
       break;
     }
@@ -1612,9 +1620,12 @@ function renderDevicesHtml() {
     '.btn-add{padding:.25rem .65rem;font-size:.8rem}',
     '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
     '.btn-gray:disabled{opacity:.35;cursor:default}',
-    '.btn-close{position:absolute;top:.75rem;right:.85rem;background:transparent;border:none;color:#f87171;cursor:pointer;font-weight:700;font-size:.85rem;padding:.15rem .3rem}',
-    '.btn-close:hover{color:#fecaca}',
+    '.btn-close{position:absolute;top:.5rem;right:.5rem;width:1.7rem;height:1.7rem;border-radius:.4rem;background:#7f1d1d;border:1px solid #b91c1c;color:#fecaca;cursor:pointer;font-size:1.15rem;line-height:1;padding:0;display:flex;align-items:center;justify-content:center}',
+    '.btn-close:hover{background:#991b1b;color:#fff}',
     '.modal-card{position:relative}',
+    '.add-row{display:flex;gap:.45rem;align-items:center}',
+    '.add-row .w2{flex:2;min-width:0}',
+    '.add-row .w1{flex:1;min-width:0}',
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     '.muted{color:#94a3b8;font-size:.85rem}',
     '.dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex-shrink:0;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
@@ -1704,20 +1715,19 @@ function renderDevicesHtml() {
     '<\/div>',
     '<\/div><\/main>',
     '<div id="addWrap" class="modal-bg" style="display:none">',
-    '<div class="card modal-card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:460px">',
-    '<button type="button" class="btn-close" onclick="closeAdd()">关闭<\/button>',
-    '<h3 style="margin:0 2.2rem 1rem 0;font-size:1.05rem">添加设备<\/h3>',
-    '<div style="display:flex;flex-direction:column;gap:.55rem">',
-    '<input id="dName" class="inp" placeholder="名称">',
-    '<select id="dModel" class="inp"><\/select>',
-    '<input id="dIp" class="inp" placeholder="公网 IP（可选，用于粗定位）">',
-    '<p class="muted" style="margin:.35rem 0 0">六位配对（请看机子屏幕）<\/p>',
-    '<input id="pairCode" class="inp" placeholder="六位码" maxlength="8">',
-    '<button id="btnPair" class="btn-green" disabled onclick="submitPair()">提交配对码<\/button>',
-    '<p id="pairErr" style="color:#fbbf24;font-size:.8rem;min-height:1em"><\/p>',
-    '<p id="addErr" style="color:#f87171;font-size:.8rem;min-height:1em"><\/p>',
-    '<button id="btnSave" class="btn-green" disabled onclick="saveManual()">保存登记<\/button>',
+    '<div class="card modal-card" style="padding:.9rem 1rem 1rem;border-radius:1rem;width:100%;max-width:400px">',
+    '<button type="button" class="btn-close" onclick="closeAdd()" title="关闭" aria-label="关闭">&times;<\/button>',
+    '<h3 style="margin:0 2rem .7rem 0;font-size:1rem">添加设备<\/h3>',
+    '<div class="add-row">',
+    '<input id="dName" class="inp w2" placeholder="名称">',
+    '<select id="dModel" class="inp w1"><\/select>',
     '<\/div>',
+    '<div class="add-row" style="margin-top:.45rem">',
+    '<input id="pairCode" class="inp w1" placeholder="六位码" maxlength="6" inputmode="numeric">',
+    '<button id="btnPair" class="btn-green w1" disabled onclick="submitPair()">验证配对码<\/button>',
+    '<\/div>',
+    '<p id="pairErr" style="color:#fbbf24;font-size:.78rem;min-height:1em;margin:.35rem 0 0"><\/p>',
+    '<button id="btnSave" class="btn-green" disabled onclick="saveManual()" style="width:100%;margin-top:.35rem">保存登记<\/button>',
     '<\/div><\/div>',
     '<div id="editWrap" class="modal-bg" style="display:none">',
     '<div class="card" style="padding:1.4rem;border-radius:1rem;width:100%;max-width:420px">',

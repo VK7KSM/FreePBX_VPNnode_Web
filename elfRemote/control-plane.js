@@ -28,3 +28,11 @@ export function tokenSha256HexLooksValid(hex) {
 export function pairCodeRequiredMessage(code) {
   return normalizePairCode(code) ? "" : "请用六位配对码添加设备";
 }
+
+export function managerAppLabel(appVersion) {
+  const raw = String(appVersion || "").trim();
+  if (!raw || /^elfremote$/i.test(raw)) return "elfRemote";
+  const v = raw.split("-")[0].trim();
+  if (!v || /^elfremote$/i.test(v)) return "elfRemote";
+  return "elfRemote " + v;
+}

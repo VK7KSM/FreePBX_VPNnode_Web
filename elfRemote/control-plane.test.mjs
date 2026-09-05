@@ -6,6 +6,7 @@ import {
   makePairCode,
   tokenSha256HexLooksValid,
   pairCodeRequiredMessage,
+  managerAppLabel,
   CONTROL_PLANE_ONLINE_MS
 } from "./control-plane.js";
 
@@ -39,4 +40,10 @@ test("无六位码不得手工建档", () => {
   assert.equal(pairCodeRequiredMessage(""), "请用六位配对码添加设备");
   assert.equal(pairCodeRequiredMessage("12345"), "请用六位配对码添加设备");
   assert.equal(pairCodeRequiredMessage("123456"), "");
+});
+
+test("管理程序显示名为 elfRemote", () => {
+  assert.equal(managerAppLabel(""), "elfRemote");
+  assert.equal(managerAppLabel("0.1.2-d22xx-control-plane"), "elfRemote 0.1.2");
+  assert.equal(managerAppLabel("elfRemote"), "elfRemote");
 });

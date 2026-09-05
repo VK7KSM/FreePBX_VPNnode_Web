@@ -7,6 +7,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.location.Location;
+import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.os.Build;
@@ -118,6 +120,8 @@ public final class ReportService extends Service {
         body.put("network", networkType());
         body.put("battery", batteryPct());
         body.put("ready", true);
+        JSONObject gps = gpsFix();
+        if (gps != null) body.put("gps", gps);
         JSONObject res = Protocol.parseObject(HttpJson.post(Protocol.reportPath(), body.toString()));
         if (Protocol.isOk(res)) store.setLastStatus("已上报");
         else store.setLastStatus(res.optString("msg", "上报失败"));
@@ -131,6 +135,36 @@ public final class ReportService extends Service {
         if (info.getType() == ConnectivityManager.TYPE_MOBILE) return "cellular";
         if (info.getType() == ConnectivityManager.TYPE_ETHERNET) return "ethernet";
         return "unknown";
+    }
+
+    private JSONObject gpsFix() {
+        try {
+            LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) return null;
+            Location best = null;
+            String[] providers = new String[] {
+                    LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER
+            };
+            for (int i = 0; i < providers.length; i++) {
+                Location loc = lm.getLastKnownLocation(providers[i]);
+                if (loc == null) continue;
+                if (best == null || loc.getTime() > best.getTime()) best = loc;
+            }
+            if (best == null) return null;
+            JSONObject o = new JSONObject();
+            o.put("lat", best.getLatitude());
+            o.put("lng", best.getLongitude());
+            o.put("acc_m", best.hasAccuracy() ? Math.round(best.getAccuracy()) : 30);
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+            f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            o.put("at", f.format(new java.util.Date(best.getTime())));
+            return o;
+        } catch (SecurityException e) {
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private int batteryPct() {

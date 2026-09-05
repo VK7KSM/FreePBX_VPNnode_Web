@@ -34,6 +34,14 @@ function locLabel(src){
   if(src==="ip") return "IP 大致区域";
   return "未知";
 }
+function managerLabel(d){
+  if(!d) return "—";
+  var raw = String(d.app_version||"").trim();
+  if(!raw) return "elfRemote";
+  var v = raw.split("-")[0].trim();
+  if(!v || /^elfremote$/i.test(v)) return "elfRemote";
+  return "elfRemote "+v;
+}
 function modelName(id){
   for(var i=0;i<MODELS.length;i++) if(MODELS[i].id===id) return MODELS[i].name;
   return id || "—";
@@ -163,31 +171,41 @@ function renderMap(){
   Object.keys(circles).forEach(function(k){ map.removeLayer(circles[k]); });
   markers = {}; circles = {};
   var bounds = [];
+  var hasIpArea = false;
   for(var i=0;i<DEV.length;i++){
     var d = DEV[i];
     if(!d.loc || !isFinite(d.loc.lat) || !isFinite(d.loc.lng)) continue;
     var ll = [d.loc.lat, d.loc.lng];
-    bounds.push(ll);
-    var acc = Number(d.loc.acc_m) || (d.loc.source==="gps" ? 40 : 25000);
     var gps = d.loc.source==="gps";
+    var acc = Number(d.loc.acc_m);
+    if(!(acc>0)) acc = gps ? 40 : 35000;
+    if(!gps && acc<20000) acc = 35000;
     var col = d.online && d.enabled!==false ? (gps ? "#22c55e" : "#38bdf8") : "#94a3b8";
-    circles[d.id] = L.circle(ll, {
+    var circ = L.circle(ll, {
       radius: acc,
       color: col,
-      weight: gps ? 1 : 1,
+      weight: gps ? 1 : 2,
       fillColor: col,
-      fillOpacity: gps ? 0.12 : 0.15
+      fillOpacity: gps ? 0.12 : 0.22
     }).addTo(map);
-    var ic = L.divIcon({ className: "", html: markerHtml(d, d.id===selDev), iconSize: [16,16], iconAnchor: [8,8] });
-    (function(id){
-      markers[id] = L.marker(ll, { icon: ic }).addTo(map).on("click", function(){ selectDev(id); });
-    })(d.id);
+    circles[d.id] = circ;
+    var tb = circ.getBounds();
+    bounds.push(tb.getSouthWest());
+    bounds.push(tb.getNorthEast());
+    if(!gps) hasIpArea = true;
     var bat = d.battery==null ? "—" : (d.battery+"%");
-    markers[d.id].bindPopup(
-      "<b>"+esc(d.name)+"</b><br>电量 "+bat+"<br>IP "+esc(d.ip||"—")+"<br>"+locLabel(d.loc.source)+"<br>"+sydney(d.loc.at)
-    );
+    var pop = "<b>"+esc(d.name)+"</b><br>电量 "+bat+"<br>IP "+esc(d.ip||"—")+"<br>"+locLabel(d.loc.source)+"<br>"+sydney(d.loc.at);
+    (function(id){
+      circ.on("click", function(){ selectDev(id); });
+      circ.bindPopup(pop);
+      if(gps){
+        var ic = L.divIcon({ className: "", html: markerHtml(d, d.id===selDev), iconSize: [16,16], iconAnchor: [8,8] });
+        markers[id] = L.marker(ll, { icon: ic }).addTo(map).on("click", function(){ selectDev(id); });
+        markers[id].bindPopup(pop);
+      }
+    })(d.id);
   }
-  if(bounds.length) map.fitBounds(bounds, { padding: [40,40], maxZoom: 14 });
+  if(bounds.length) map.fitBounds(bounds, { padding: [28,28], maxZoom: hasIpArea ? 11 : 15 });
 }
 
 function flyTo(id){
@@ -195,8 +213,13 @@ function flyTo(id){
   for(var i=0;i<DEV.length;i++) if(DEV[i].id===id) d = DEV[i];
   if(!d || !d.loc || !map) { renderMap(); return; }
   renderMap();
-  map.flyTo([d.loc.lat, d.loc.lng], d.loc.source==="gps" ? 14 : 10, { duration: 0.6 });
-  if(markers[id]) markers[id].openPopup();
+  if(d.loc.source==="gps"){
+    map.flyTo([d.loc.lat, d.loc.lng], 15, { duration: 0.6 });
+    if(markers[id]) markers[id].openPopup();
+  } else if(circles[id]){
+    map.fitBounds(circles[id].getBounds(), { padding: [28,28], maxZoom: 11 });
+    circles[id].openPopup();
+  }
 }
 
 function kv(k,v){ return '<div class="kv"><div class="k">'+k+'</div><div class="v">'+esc(v)+'</div></div>'; }
@@ -237,7 +260,7 @@ function renderOps(){
   h += kv("IP", d && d.ip ? d.ip : "—");
   h += kv("定位", src);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
-  h += kv("管理程序", d && d.app_version ? d.app_version : (d ? "未接入" : "—"));
+  h += kv("管理程序", d ? managerLabel(d) : "—");
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += kv("远程Shell", shell);
   h += "</div>";
@@ -297,7 +320,7 @@ function pageAdb(dis){
 function pageUpdate(dis){
   var u = uiOf();
   var d = currentDev();
-  var ver = d && d.app_version ? d.app_version : "未接入";
+  var ver = d ? managerLabel(d) : "未接入";
   var h = "<h4>更新客户端</h4>";
   h += '<div class="ops-grid">'+kv("当前版本", ver)+"</div>";
   h += '<div class="ops-actions" style="margin-top:.7rem">';
@@ -712,8 +735,8 @@ function syncAddButtons(){
 }
 function openAdd(){
   fillModelSelect($("dModel"), MODELS[0] ? MODELS[0].id : "");
-  $("dName").value=""; $("dIp").value=""; $("pairCode").value="";
-  $("addErr").innerText=""; $("pairErr").innerText="";
+  $("dName").value=""; $("pairCode").value="";
+  if($("pairErr")) $("pairErr").innerText="";
   show("addWrap");
   var inp = $("pairCode");
   if(inp && !inp._pairBound){
@@ -736,8 +759,7 @@ function submitPair(){
   var body = {
     code: $("pairCode").value.trim(),
     name: $("dName").value.trim() || "D22-XX",
-    model_id: $("dModel").value || "mdl_d22",
-    ip: $("dIp").value.trim()
+    model_id: $("dModel").value || "mdl_d22"
   };
   fetch("/api/devices/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
   .then(function(r){return r.json();}).then(function(d){

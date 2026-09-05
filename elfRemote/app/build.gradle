@@ -9,8 +9,8 @@ android {
         applicationId "net.elfradio.elfremote"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 3
-        versionName "0.1.2-d22xx-control-plane"
+        versionCode 4
+        versionName "0.1.3-d22xx-control-plane"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
 
