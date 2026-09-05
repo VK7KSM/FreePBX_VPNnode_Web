@@ -100,7 +100,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -113,7 +113,8 @@ export const REPAIR_STATE_LABELS = {
 };
 
 export const REPAIR_TYPE_LABELS = {
-  pull_logs: "拉取日志"
+  pull_logs: "拉取日志",
+  heal_network: "强制自愈"
 };
 
 const REPAIR_ADVANCE = {
@@ -208,7 +209,10 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
       sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : "",
       bytes: Math.max(0, Number(result.bytes) || 0),
       truncated: !!result.truncated,
-      text: String(result.text || "").slice(0, 2048)
+      text: String(result.text || "").slice(0, 2048),
+      stage: String(result.stage || "").slice(0, 16),
+      action: String(result.action || "").slice(0, 40),
+      reason: String(result.reason || "").slice(0, 80)
     };
   }
   return device;
@@ -231,7 +235,10 @@ export function publicRepair(task) {
       sha256: r.sha256 || "",
       bytes: r.bytes || 0,
       truncated: !!r.truncated,
-      text: r.text || ""
+      text: r.text || "",
+      stage: r.stage || "",
+      action: r.action || "",
+      reason: r.reason || ""
     } : null
   };
 }

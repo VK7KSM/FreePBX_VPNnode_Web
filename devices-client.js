@@ -362,16 +362,18 @@ function pageRepair(dis){
   h += kv("类型", t.type_label || t.type || "无");
   h += kv("阶段", t.label || t.state || "无");
   h += kv("说明", t.detail || "");
+  h += kv("自愈阶段", r.stage || "");
   h += kv("制品哈希", r.sha256 || "");
   h += kv("字节", r.bytes ? String(r.bytes) : "");
   h += kv("截断", r.truncated ? "是" : (r.sha256 ? "否" : ""));
   h += "</div>";
-  h += '<p class="muted" style="margin-top:.7rem">本刀只验收拉取日志。设备走控制面领取并回传摘要，不经过 ADB。</p>';
+  h += '<p class="muted" style="margin-top:.7rem">本刀验收拉取日志和强制自愈。设备走控制面领取并回传结果，不经过 ADB。</p>';
   if(r.text){
     h += '<pre class="adb-term" style="margin-top:.55rem;max-height:220px">'+esc(r.text)+"</pre>";
   }
   h += '<div class="ops-actions" style="margin-top:.45rem">';
   h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
+  h += '<button class="btn-green" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
   h += "</div>";
   return h;
 }

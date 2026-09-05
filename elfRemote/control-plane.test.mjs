@@ -142,12 +142,14 @@ test("健康超时走回滚再标已恢复", () => {
   assert.equal(d.update.state, "recovered");
 });
 
-test("本刀修机白名单只有拉取日志", () => {
+test("本刀修机白名单为拉取日志和强制自愈", () => {
   assert.equal(isAllowedRepairType("pull_logs"), true);
+  assert.equal(isAllowedRepairType("heal_network"), true);
   assert.equal(isAllowedRepairType("install_apk"), false);
   assert.equal(isAllowedRepairType("reboot"), false);
   assert.equal(isAllowedRepairType("shell"), false);
   assert.equal(repairTypeLabel("pull_logs"), "拉取日志");
+  assert.equal(repairTypeLabel("heal_network"), "强制自愈");
   assert.equal(repairTypeLabel("reboot"), "");
   assert.equal(repairStateLabel("pending"), "待领取");
   assert.equal(repairStateLabel("claimed"), "已领取");
