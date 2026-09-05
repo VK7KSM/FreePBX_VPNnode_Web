@@ -18,6 +18,7 @@ import org.json.JSONObject;
 
 public final class ReportService extends Service {
     static final String ACTION_REPORT_NOW = "net.elfradio.elfremote.REPORT_NOW";
+    static final String ACTION_RENEW = "net.elfradio.elfremote.RENEW";
     private static final String CHANNEL = "elfremote";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private PairingStore store;
@@ -45,7 +46,12 @@ public final class ReportService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_REPORT_NOW.equals(intent.getAction())) {
+        if (intent != null && ACTION_RENEW.equals(intent.getAction())) {
+            store.clearEnroll();
+            store.setLastStatus("正在重新获取配对码");
+        }
+        if (intent != null && (ACTION_REPORT_NOW.equals(intent.getAction())
+                || ACTION_RENEW.equals(intent.getAction()))) {
             new Thread(this::tick, "elfremote-now").start();
         }
         return START_STICKY;
@@ -85,8 +91,11 @@ public final class ReportService extends Service {
                 store.setLastStatus(res.optString("msg", "申请配对码失败"));
                 return;
             }
-            store.saveEnroll(res.getString("code"), res.getString("enroll_id"));
-            store.setLastStatus(getString(R.string.waiting_pair));
+            store.saveEnroll(
+                    res.getString("code"),
+                    res.getString("enroll_id"),
+                    Protocol.parseIsoMillis(res.optString("expires_at", "")));
+            store.setLastStatus(getString(R.string.how_to_pair));
             return;
         }
         JSONObject res = Protocol.parseObject(HttpJson.get(
@@ -96,7 +105,7 @@ public final class ReportService extends Service {
             store.setLastStatus(getString(R.string.paired));
             report();
         } else {
-            store.setLastStatus(getString(R.string.waiting_pair));
+            store.setLastStatus(getString(R.string.how_to_pair));
         }
     }
 

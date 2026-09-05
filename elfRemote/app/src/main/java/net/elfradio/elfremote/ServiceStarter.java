@@ -16,6 +16,10 @@ final class ServiceStarter {
         start(ctx, ReportService.ACTION_REPORT_NOW);
     }
 
+    static void renew(Context ctx) {
+        start(ctx, ReportService.ACTION_RENEW);
+    }
+
     static void start(Context ctx, String action) {
         Intent i = new Intent(ctx, ReportService.class);
         if (action != null) i.setAction(action);

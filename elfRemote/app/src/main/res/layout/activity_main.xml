@@ -4,91 +4,100 @@
     android:layout_height="match_parent"
     android:background="#0B1220"
     android:orientation="vertical"
-    android:paddingLeft="10dp"
-    android:paddingTop="6dp"
-    android:paddingRight="10dp"
-    android:paddingBottom="6dp">
+    android:paddingLeft="12dp"
+    android:paddingTop="8dp"
+    android:paddingRight="12dp"
+    android:paddingBottom="8dp">
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/titleView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textColor="#F8FAFC"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/permView"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginLeft="8dp"
-            android:layout_weight="1"
-            android:gravity="end"
-            android:textColor="#94A3B8"
-            android:textSize="11sp" />
-    </LinearLayout>
+        android:gravity="center"
+        android:text="@string/title_pair"
+        android:textColor="#F8FAFC"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
     <TextView
         android:id="@+id/codeView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:layout_marginTop="6dp"
         android:layout_weight="1"
+        android:background="@drawable/code_bg"
+        android:defaultFocusHighlightEnabled="false"
+        android:focusable="true"
+        android:focusedByDefault="true"
         android:fontFamily="monospace"
         android:gravity="center"
-        android:text="------"
+        android:nextFocusDown="@id/renewButton"
+        android:text="---  ---"
         android:textColor="#FACC15"
-        android:textSize="40sp"
+        android:textSize="42sp"
         android:textStyle="bold" />
 
     <TextView
         android:id="@+id/statusView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
-        android:ellipsize="end"
+        android:layout_marginTop="4dp"
         android:gravity="center"
-        android:maxLines="2"
-        android:text="@string/waiting_pair"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="3"
+        android:text="@string/how_to_pair"
         android:textColor="#E2E8F0"
-        android:textSize="12sp" />
+        android:textSize="14sp" />
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/permView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="6dp"
+        android:gravity="center"
+        android:textColor="#94A3B8"
+        android:textSize="12sp" />
 
-        <Button
-            android:id="@+id/permButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_marginRight="6dp"
-            android:layout_weight="1"
-            android:background="@drawable/btn_bg"
-            android:defaultFocusHighlightEnabled="false"
-            android:focusable="true"
-            android:nextFocusRight="@id/reportButton"
-            android:text="@string/grant_perms"
-            android:textColor="@color/btn_text"
-            android:textSize="13sp" />
+    <Button
+        android:id="@+id/renewButton"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/btn_bg"
+        android:defaultFocusHighlightEnabled="false"
+        android:focusable="true"
+        android:nextFocusUp="@id/codeView"
+        android:nextFocusDown="@id/permButton"
+        android:text="@string/renew_code"
+        android:textColor="@color/btn_text"
+        android:textSize="14sp" />
 
-        <Button
-            android:id="@+id/reportButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:background="@drawable/btn_bg"
-            android:defaultFocusHighlightEnabled="false"
-            android:focusable="true"
-            android:focusedByDefault="true"
-            android:nextFocusLeft="@id/permButton"
-            android:text="@string/report_now"
-            android:textColor="@color/btn_text"
-            android:textSize="13sp" />
-    </LinearLayout>
+    <Button
+        android:id="@+id/permButton"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/btn_bg"
+        android:defaultFocusHighlightEnabled="false"
+        android:focusable="true"
+        android:nextFocusUp="@id/renewButton"
+        android:nextFocusDown="@id/reportButton"
+        android:text="@string/grant_perms"
+        android:textColor="@color/btn_text"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <Button
+        android:id="@+id/reportButton"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="@drawable/btn_bg"
+        android:defaultFocusHighlightEnabled="false"
+        android:focusable="true"
+        android:nextFocusUp="@id/permButton"
+        android:text="@string/report_now"
+        android:textColor="@color/btn_text"
+        android:textSize="14sp"
+        android:visibility="gone" />
 </LinearLayout>

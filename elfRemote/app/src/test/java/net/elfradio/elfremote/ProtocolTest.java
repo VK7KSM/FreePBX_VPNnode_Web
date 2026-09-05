@@ -68,4 +68,28 @@ public class ProtocolTest {
         assertEquals("http://example.com/x", Protocol.httpFallbackUrl("http://example.com/x"));
         assertEquals("", Protocol.httpFallbackUrl(null));
     }
+
+    @Test
+    public void formatPairCodeGroupsSixDigits() {
+        assertEquals("------", Protocol.formatPairCode(""));
+        assertEquals("------", Protocol.formatPairCode(null));
+        assertEquals("435  719", Protocol.formatPairCode("435719"));
+        assertEquals("已配对", Protocol.formatPairCode("已配对"));
+    }
+
+    @Test
+    public void remainingHintUsesWholeMinutes() {
+        long now = 1_000_000L;
+        assertEquals("配对码已过期，请重新获取", Protocol.remainingHint(now - 1, now));
+        assertEquals("有效约 1 分钟", Protocol.remainingHint(now + 1000, now));
+        assertEquals("有效约 60 分钟", Protocol.remainingHint(now + 60 * 60 * 1000L, now));
+        assertEquals("", Protocol.remainingHint(0, now));
+    }
+
+    @Test
+    public void parseIsoMillisReadsUtc() {
+        long t = Protocol.parseIsoMillis("2026-09-05T04:07:05.882Z");
+        assertTrue(t > 0);
+        assertEquals(Protocol.parseIsoMillis("2026-09-05T04:07:05Z") / 1000, t / 1000);
+    }
 }
