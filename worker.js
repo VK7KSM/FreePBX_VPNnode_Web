@@ -1077,7 +1077,7 @@ async function handleDeviceReport(env, request) {
   }
 }
 
-// 4.6：设备状态写入 Durable Object，避免 KV 日限额卡住回滚验收。
+// 4.7：校验失败进入 rejected，不得安装。
 const UPDATE_PUB_PEM = "-----BEGIN PUBLIC KEY-----\n"
   + "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuHuRa52XY+MxbuXi5azn\n"
   + "9/MoJZEHiGi80WsQOr3ODkaqaLgdd9UBxjkj0dirBmTMGP3yNkm9LUjKxCAyhcd6\n"

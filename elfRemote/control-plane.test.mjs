@@ -98,6 +98,15 @@ test("安装成功不能直接标为健康成功", () => {
   assert.equal(d.update.state, "success");
 });
 
+test("校验失败应拒绝且不得安装", () => {
+  assert.equal(updateStateLabel("rejected"), "已拒绝");
+  const d = { update: { job_id: "job1", state: "verifying" } };
+  applyUpdateProgress(d, "job1", "rejected", "hash-mismatch");
+  assert.equal(d.update.state, "rejected");
+  applyUpdateProgress(d, "job1", "installing", "no");
+  assert.equal(d.update.state, "rejected");
+});
+
 test("安装中被杀后允许直接进入回滚", () => {
   const d = { update: { job_id: "job1", state: "installing" } };
   applyUpdateProgress(d, "job1", "rollback", "health-timeout");
