@@ -6,6 +6,7 @@
 import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
+// 2026-09-05: inflight stages may jump to rollback if installer is killed.
 import {
   isControlPlaneOnline,
   normalizePairCode,

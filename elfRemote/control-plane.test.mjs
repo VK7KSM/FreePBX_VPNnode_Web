@@ -106,6 +106,14 @@ test("安装中被杀后允许直接进入回滚", () => {
   assert.equal(d.update.state, "recovered");
 });
 
+test("校验中丢失后续进度时仍可回滚", () => {
+  const d = { update: { job_id: "job1", state: "verifying" } };
+  applyUpdateProgress(d, "job1", "rollback", "health-timeout");
+  assert.equal(d.update.state, "rollback");
+  applyUpdateProgress(d, "job1", "recovered", "last-good");
+  assert.equal(d.update.state, "recovered");
+});
+
 test("健康超时走回滚再标已恢复", () => {
   assert.equal(updateStateLabel("rollback"), "回滚中");
   assert.equal(updateStateLabel("recovered"), "已恢复");

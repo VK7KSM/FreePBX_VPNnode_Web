@@ -65,8 +65,12 @@ export function updateStateLabel(state) {
 export function canAdvanceUpdate(from, to) {
   if (!from || !to) return false;
   if (from === to) return true;
-  if (from === "installing" && (to === "wait_health" || to === "rollback")) return true;
-  if (from === "wait_health" && (to === "success" || to === "rollback")) return true;
+  if (from === "installing" && to === "wait_health") return true;
+  if (to === "rollback" && (from === "claimed" || from === "downloading"
+      || from === "verifying" || from === "installing" || from === "wait_health")) {
+    return true;
+  }
+  if (from === "wait_health" && to === "success") return true;
   if (from === "rollback" && to === "recovered") return true;
   return UPDATE_ADVANCE[from] === to;
 }
