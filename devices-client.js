@@ -10,6 +10,7 @@ var UI = {};
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
+  ["repair", "类型化修机", '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>'],
   ["wifi", "配置Wi-Fi", '<path d="M5 12.5a9 9 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
   ["locate", "立即定位", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
@@ -298,6 +299,7 @@ function renderOps(){
 function fnPageHtml(){
   var dis = disAttr();
   if(selFn==="update") return pageUpdate(dis);
+  if(selFn==="repair") return pageRepair(dis);
   if(selFn==="wifi") return pageWifi(dis);
   if(selFn==="contacts") return pageContacts(dis);
   if(selFn==="locate") return pageLocate(dis);
@@ -348,6 +350,28 @@ function pageUpdate(dis){
   h += '<div class="ops-actions" style="margin-top:.45rem">';
   h += '<input id="updVc" class="inp" placeholder="已发布 versionCode" style="max-width:180px"'+dis+'>';
   h += '<button class="btn-green" onclick="assignUpdate()"'+dis+'>下发该版本</button>';
+  h += "</div>";
+  return h;
+}
+
+function pageRepair(dis){
+  var d = currentDev();
+  var t = d && d.task ? d.task : {};
+  var r = t.result || {};
+  var h = '<div class="ops-grid">';
+  h += kv("类型", t.type_label || t.type || "无");
+  h += kv("阶段", t.label || t.state || "无");
+  h += kv("说明", t.detail || "");
+  h += kv("制品哈希", r.sha256 || "");
+  h += kv("字节", r.bytes ? String(r.bytes) : "");
+  h += kv("截断", r.truncated ? "是" : (r.sha256 ? "否" : ""));
+  h += "</div>";
+  h += '<p class="muted" style="margin-top:.7rem">本刀只验收拉取日志。设备走控制面领取并回传摘要，不经过 ADB。</p>';
+  if(r.text){
+    h += '<pre class="adb-term" style="margin-top:.55rem;max-height:220px">'+esc(r.text)+"</pre>";
+  }
+  h += '<div class="ops-actions" style="margin-top:.45rem">';
+  h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
   h += "</div>";
   return h;
 }
@@ -564,6 +588,16 @@ function assignUpdate(){
   var vc = parseInt($("updVc") && $("updVc").value, 10);
   if(!vc){ alert("请填写已发布的 versionCode"); return; }
   fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,versionCode:vc})})
+    .then(function(r){ return r.json(); })
+    .then(function(x){
+      if(!x.ok){ alert(x.msg || "下发失败"); return; }
+      loadDevices();
+    });
+}
+function enqueueRepair(type){
+  var d = currentDev();
+  if(!d) return;
+  fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }

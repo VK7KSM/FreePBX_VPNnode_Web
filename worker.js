@@ -7,6 +7,7 @@ import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
+// 2026-09-06: typed repair envelope + pull_logs.
 import {
   isControlPlaneOnline,
   normalizePairCode,
@@ -16,7 +17,13 @@ import {
   PAIR_CODE_TTL_MS,
   shouldOfferUpdate,
   applyUpdateProgress,
-  updateStateLabel
+  updateStateLabel,
+  enqueueRepairTask,
+  shouldOfferRepair,
+  applyRepairProgress,
+  publicRepair,
+  repairOfferPayload,
+  repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 
@@ -355,6 +362,12 @@ export default {
     }
     if (pathname === "/api/elfremote/update-progress" && method === "POST") {
       return handleElfUpdateProgress(env, request);
+    }
+    if (pathname === "/api/elfremote/task" && method === "POST") {
+      return handleElfEnqueueTask(env, request);
+    }
+    if (pathname === "/api/elfremote/task-progress" && method === "POST") {
+      return handleElfTaskProgress(env, request);
     }
     if (pathname.startsWith("/api/elfremote/apk/") && method === "GET") {
       return handleElfApk(env, pathname);
@@ -741,7 +754,8 @@ function publicDevice(d, modelName) {
     app_version: d.app_version || "",
     ready: !!d.ready,
     loc: d.loc || null,
-    update: publicUpdate(d.update)
+    update: publicUpdate(d.update),
+    task: publicRepair(d.task)
   };
 }
 
@@ -1062,14 +1076,23 @@ async function handleDeviceReport(env, request) {
       break;
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    const now = Date.now();
+    if (found.task && repairExpired(found.task, now)
+        && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
+      found.task.state = "expired";
+      found.task.detail = "expired";
+    }
     await saveDevices(env, list);
     const body = { ok: true };
-    if (shouldOfferUpdate(found, Date.now()) && found.update) {
+    if (shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,
         manifest_raw: found.update.manifest_raw,
         signature: found.update.signature
       };
+    }
+    if (shouldOfferRepair(found, now) && found.task) {
+      body.task = repairOfferPayload(found.task);
     }
     return json(body);
   } catch (e) {
@@ -1246,6 +1269,70 @@ async function handleElfUpdateProgress(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     await saveDevices(env, list);
     return json({ ok: true, update: publicUpdate(found.update) });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleElfEnqueueTask(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    if (!deviceId) return json({ ok: false, msg: "缺少设备" }, 400);
+    const list = await loadDevices(env);
+    let found = null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      found = list[i];
+      break;
+    }
+    if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    const queued = enqueueRepairTask(found, {
+      type: data.type,
+      params: data.params,
+      id: data.id,
+      idempotency_key: data.idempotency_key,
+      expires_at: data.expires_at
+    }, Date.now());
+    if (!queued.ok) {
+      const msg = queued.reason === "unknown-type" ? "未开通该任务类型"
+        : queued.reason === "inflight" ? "已有任务进行中"
+        : queued.reason === "expired" ? "任务已过期"
+        : "无法入队";
+      return json({ ok: false, msg, reason: queued.reason }, 400);
+    }
+    await saveDevices(env, list);
+    return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleElfTaskProgress(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const taskId = String(data.task_id || "").trim();
+    const state = String(data.state || "").trim();
+    if (!deviceId || !token || !taskId || !state) {
+      return json({ ok: false, msg: "缺少进度字段" }, 400);
+    }
+    const tokenSha = await sha256Hex(token);
+    const list = await loadDevices(env);
+    let found = null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      if (list[i].token_sha256 && list[i].token_sha256 !== tokenSha) {
+        return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      applyRepairProgress(list[i], taskId, state, data.detail, data.result);
+      found = list[i];
+      break;
+    }
+    if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    await saveDevices(env, list);
+    return json({ ok: true, task: publicRepair(found.task) });
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }

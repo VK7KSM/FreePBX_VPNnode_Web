@@ -10,7 +10,14 @@ import {
   CONTROL_PLANE_ONLINE_MS,
   updateStateLabel,
   shouldOfferUpdate,
-  applyUpdateProgress
+  applyUpdateProgress,
+  isAllowedRepairType,
+  repairStateLabel,
+  repairTypeLabel,
+  makeRepairTask,
+  enqueueRepairTask,
+  shouldOfferRepair,
+  applyRepairProgress
 } from "./control-plane.js";
 
 test("六位码去掉空格，拒绝非数字", () => {
@@ -133,4 +140,97 @@ test("健康超时走回滚再标已恢复", () => {
   assert.equal(d.update.state, "rollback");
   applyUpdateProgress(d, "job1", "recovered", "last-good");
   assert.equal(d.update.state, "recovered");
+});
+
+test("本刀修机白名单只有拉取日志", () => {
+  assert.equal(isAllowedRepairType("pull_logs"), true);
+  assert.equal(isAllowedRepairType("install_apk"), false);
+  assert.equal(isAllowedRepairType("reboot"), false);
+  assert.equal(isAllowedRepairType("shell"), false);
+  assert.equal(repairTypeLabel("pull_logs"), "拉取日志");
+  assert.equal(repairTypeLabel("reboot"), "");
+  assert.equal(repairStateLabel("pending"), "待领取");
+  assert.equal(repairStateLabel("claimed"), "已领取");
+  assert.equal(repairStateLabel("running"), "执行中");
+  assert.equal(repairStateLabel("success"), "成功");
+  assert.equal(repairStateLabel("failed"), "失败");
+  assert.equal(repairStateLabel("expired"), "已过期");
+  assert.equal(repairStateLabel("rejected"), "已拒绝");
+  assert.equal(repairStateLabel("bogus"), "");
+});
+
+test("未过期的拉取日志任务才会发给设备", () => {
+  const now = 1_000_000;
+  const d = { task: makeRepairTask({ type: "pull_logs", id: "t1" }, now) };
+  assert.equal(d.task.state, "pending");
+  assert.equal(shouldOfferRepair(d, now), true);
+  d.task.state = "success";
+  assert.equal(shouldOfferRepair(d, now), false);
+  d.task.state = "pending";
+  d.task.expires_at = now;
+  assert.equal(shouldOfferRepair(d, now), false);
+  d.task.expires_at = now + 1;
+  d.task.state = "claimed";
+  assert.equal(shouldOfferRepair(d, now), true);
+  d.task.state = "running";
+  assert.equal(shouldOfferRepair(d, now), true);
+});
+
+test("未知类型不得入队，进行中不得插队", () => {
+  const now = 1_000_000;
+  const d = {};
+  const bad = enqueueRepairTask(d, { type: "reboot" }, now);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, "unknown-type");
+  assert.equal(d.task, undefined);
+  const first = enqueueRepairTask(d, { type: "pull_logs", id: "t1", idempotency_key: "k1" }, now);
+  assert.equal(first.ok, true);
+  assert.equal(first.duplicate, false);
+  assert.equal(d.task.id, "t1");
+  const blocked = enqueueRepairTask(d, { type: "pull_logs", id: "t2", idempotency_key: "k2" }, now);
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, "inflight");
+  assert.equal(d.task.id, "t1");
+  const dup = enqueueRepairTask(d, { type: "pull_logs", id: "t9", idempotency_key: "k1" }, now);
+  assert.equal(dup.ok, true);
+  assert.equal(dup.duplicate, true);
+  assert.equal(d.task.id, "t1");
+});
+
+test("修机阶段必须领取后执行，成功要带制品哈希", () => {
+  const now = 1_000_000;
+  const d = {};
+  enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
+  applyRepairProgress(d, "t1", "success", "skip", { sha256: "a".repeat(64), bytes: 12 });
+  assert.equal(d.task.state, "pending");
+  applyRepairProgress(d, "t1", "claimed", "claimed");
+  assert.equal(d.task.state, "claimed");
+  applyRepairProgress(d, "t1", "running", "pull_logs");
+  assert.equal(d.task.state, "running");
+  applyRepairProgress(d, "t1", "success", "packed", {
+    sha256: "ab".repeat(32),
+    bytes: 80,
+    truncated: false,
+    text: "app_version=0.1.39"
+  });
+  assert.equal(d.task.state, "success");
+  assert.equal(d.task.result.sha256, "ab".repeat(32));
+  assert.equal(d.task.result.bytes, 80);
+  assert.equal(d.task.result.truncated, false);
+  assert.equal(d.task.result.text, "app_version=0.1.39");
+});
+
+test("过期或未知任务可拒绝，不得从成功倒退", () => {
+  const now = 1_000_000;
+  const d = {};
+  enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
+  applyRepairProgress(d, "t1", "rejected", "unknown-type");
+  assert.equal(d.task.state, "rejected");
+  applyRepairProgress(d, "t1", "claimed", "no");
+  assert.equal(d.task.state, "rejected");
+  const d2 = {};
+  enqueueRepairTask(d2, { type: "pull_logs", id: "t2" }, now);
+  applyRepairProgress(d2, "t2", "claimed", "claimed");
+  applyRepairProgress(d2, "t2", "expired", "expired");
+  assert.equal(d2.task.state, "expired");
 });
