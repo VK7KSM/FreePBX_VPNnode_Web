@@ -3,7 +3,8 @@
   "version": "2.5.0",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test:elfremote": "node --test elfRemote/control-plane.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.127.1"

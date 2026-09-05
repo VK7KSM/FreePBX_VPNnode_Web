@@ -220,7 +220,7 @@ function renderOps(){
   var bat = !d || d.battery==null ? "—" : (d.battery+"%");
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
-  var online = !d ? "—" : (d.online ? "在线" : (d.enabled===false ? "已停用" : "未接入"));
+  var online = !d ? "—" : (d.online ? "控制面在线" : (d.enabled===false ? "已停用" : "控制面离线"));
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
   if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
@@ -240,6 +240,7 @@ function renderOps(){
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += kv("管理程序", d && d.app_version ? d.app_version : (d ? "未接入" : "—"));
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
+  h += kv("远程ADB", "未接入");
   h += "</div>";
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
@@ -699,9 +700,17 @@ function saveManual(){
   });
 }
 function submitPair(){
-  fetch("/api/devices/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:$("pairCode").value.trim()})})
+  var body = {
+    code: $("pairCode").value.trim(),
+    name: $("dName").value.trim() || "D22-XX",
+    model_id: $("dModel").value || "mdl_d22"
+  };
+  fetch("/api/devices/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
   .then(function(r){return r.json();}).then(function(d){
-    $("pairErr").innerText=d.msg||"等待设备端，请先用手工登记";
+    if(!d.ok){ $("pairErr").innerText=d.msg||"配对失败"; return; }
+    closeAdd();
+    selDev = d.device && d.device.id;
+    loadDevices();
   }).catch(function(){ $("pairErr").innerText="请求失败"; });
 }
 
@@ -736,3 +745,4 @@ function delModel(id){
 
 checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
+setInterval(function(){ if(localStorage.getItem("_pt")) loadDevices(); }, 10000);

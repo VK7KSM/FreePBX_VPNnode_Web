@@ -1,0 +1,40 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "net.elfradio.elfremote"
+    compileSdkVersion 34
+    buildToolsVersion "34.0.0"
+
+    defaultConfig {
+        applicationId "net.elfradio.elfremote"
+        minSdkVersion 23
+        targetSdkVersion 27
+        versionCode 1
+        versionName "0.1.0-d22xx-control-plane"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}

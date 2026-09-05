@@ -5,6 +5,14 @@
 
 import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
+import {
+  isControlPlaneOnline,
+  normalizePairCode,
+  makePairCode,
+  tokenSha256HexLooksValid,
+  PAIR_CODE_TTL_MS
+} from "./elfRemote/control-plane.js";
+import devicesClientSource from "./devices-client.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_PASS = "admin888";
@@ -256,8 +264,22 @@ export default {
     if (pathname === "/api/devices/delete" && method === "POST") {
       return handleDeviceDelete(env, request);
     }
+    if (pathname === "/api/devices/enroll" && method === "POST") {
+      return handleDeviceEnroll(env, request);
+    }
+    if (pathname === "/api/devices/enroll-status" && method === "GET") {
+      return handleDeviceEnrollStatus(env, url);
+    }
+    if (pathname === "/api/devices/report" && method === "POST") {
+      return handleDeviceReport(env, request);
+    }
     if (pathname === "/api/devices/pair" && method === "POST") {
-      return json({ ok: false, msg: "等待设备端，请先用手工登记" }, 400);
+      return handleDevicePair(env, request);
+    }
+    if (pathname === "/devices-client.js") {
+      return new Response(devicesClientSource, {
+        headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }
+      });
     }
 
     if (pathname === "/sip" || pathname === "/sip/") {
@@ -623,7 +645,7 @@ function publicDevice(d, modelName) {
     model_id: d.model_id,
     model_name: modelName || "",
     enabled: d.enabled !== false,
-    online: !!d.online,
+    online: isControlPlaneOnline(d.last_seen, Date.now()),
     last_seen: d.last_seen || null,
     battery: d.battery == null ? null : d.battery,
     network: d.network || "unknown",
@@ -788,6 +810,178 @@ async function handleDeviceDelete(env, request) {
     const next = list.filter(function (d) { return d.id !== id; });
     if (next.length === list.length) return json({ ok: false, msg: "未找到该设备" }, 404);
     await saveDevices(env, next);
+    return json({ ok: true });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text || "")));
+  const bytes = new Uint8Array(buf);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
+  return out;
+}
+
+async function loadEnrolls(env) {
+  const raw = await getStore(env, "remote_enrolls");
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+async function saveEnrolls(env, map) {
+  await setStore(env, "remote_enrolls", map);
+}
+
+function purgeEnrolls(map, now) {
+  const out = {};
+  const keys = Object.keys(map || {});
+  for (let i = 0; i < keys.length; i++) {
+    const row = map[keys[i]];
+    if (!row || !row.expires_at) continue;
+    if (Date.parse(row.expires_at) > now) out[keys[i]] = row;
+  }
+  return out;
+}
+
+async function handleDeviceEnroll(env, request) {
+  try {
+    const data = await request.json();
+    const tokenSha = String(data.token_sha256 || "").toLowerCase();
+    if (!tokenSha256HexLooksValid(tokenSha)) {
+      return json({ ok: false, msg: "设备令牌哈希无效" }, 400);
+    }
+    const now = Date.now();
+    const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+    let code = "";
+    for (let i = 0; i < 12; i++) {
+      const bytes = crypto.getRandomValues(new Uint8Array(3));
+      const candidate = makePairCode(bytes);
+      if (!enrolls[candidate]) { code = candidate; break; }
+    }
+    if (!code) return json({ ok: false, msg: "配对码繁忙，请稍后" }, 503);
+    const enrollId = newRemoteId("enr_");
+    enrolls[code] = {
+      enroll_id: enrollId,
+      token_sha256: tokenSha,
+      app_version: String(data.app_version || "").slice(0, 80),
+      os_version: String(data.os_version || "").slice(0, 80),
+      model_hint: String(data.model_hint || "").slice(0, 32),
+      created_at: new Date(now).toISOString(),
+      expires_at: new Date(now + PAIR_CODE_TTL_MS).toISOString(),
+      paired: false,
+      device_id: ""
+    };
+    await saveEnrolls(env, enrolls);
+    return json({
+      ok: true,
+      code: code,
+      enroll_id: enrollId,
+      expires_at: enrolls[code].expires_at
+    });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleDeviceEnrollStatus(env, url) {
+  const code = normalizePairCode(url.searchParams.get("code"));
+  const enrollId = String(url.searchParams.get("enroll_id") || "").trim();
+  if (!code || !enrollId) return json({ ok: false, msg: "缺少配对码" }, 400);
+  const now = Date.now();
+  const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+  const row = enrolls[code];
+  if (!row || row.enroll_id !== enrollId) {
+    return json({ ok: true, paired: false });
+  }
+  return json({
+    ok: true,
+    paired: !!row.paired,
+    device_id: row.paired ? row.device_id : "",
+    expires_at: row.expires_at
+  });
+}
+
+async function handleDevicePair(env, request) {
+  try {
+    const data = await request.json();
+    const code = normalizePairCode(data.code);
+    if (!code) return json({ ok: false, msg: "请输入六位数字配对码" }, 400);
+    const name = String(data.name || "").trim() || "D22-XX";
+    const model_id = String(data.model_id || "mdl_d22").trim();
+    const models = await loadDeviceModels(env);
+    let okModel = false;
+    for (let i = 0; i < models.length; i++) if (models[i].id === model_id) okModel = true;
+    if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
+    const now = Date.now();
+    const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+    const row = enrolls[code];
+    if (!row) return json({ ok: false, msg: "配对码无效或已过期" }, 400);
+    if (row.paired && row.device_id) {
+      const list = await loadDevices(env);
+      const existing = list.filter(function (d) { return d.id === row.device_id; })[0];
+      if (existing) return json({ ok: true, device: publicDevice(existing, ""), msg: "已经配对" });
+    }
+    const list = await loadDevices(env);
+    const device = {
+      id: newRemoteId("dev_"),
+      name: name,
+      model_id: model_id,
+      enabled: true,
+      online: false,
+      last_seen: null,
+      battery: null,
+      network: "unknown",
+      ip: "",
+      os_version: row.os_version || "",
+      app_version: row.app_version || "",
+      ready: false,
+      loc: null,
+      update: { state: "", target: "", detail: "" },
+      token_sha256: row.token_sha256
+    };
+    list.push(device);
+    await saveDevices(env, list);
+    row.paired = true;
+    row.device_id = device.id;
+    enrolls[code] = row;
+    await saveEnrolls(env, enrolls);
+    return json({ ok: true, device: publicDevice(device, "") });
+  } catch (e) {
+    return json({ ok: false, msg: e.message }, 400);
+  }
+}
+
+async function handleDeviceReport(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    if (!deviceId || !token) return json({ ok: false, msg: "缺少设备凭证" }, 400);
+    const tokenSha = await sha256Hex(token);
+    const list = await loadDevices(env);
+    let found = null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      if (list[i].token_sha256 && list[i].token_sha256 !== tokenSha) {
+        return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      list[i].last_seen = new Date().toISOString();
+      list[i].online = true;
+      if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
+      if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);
+      if (data.network != null) list[i].network = String(data.network).slice(0, 32);
+      if (data.battery != null && Number.isFinite(Number(data.battery))) {
+        list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
+      }
+      if (data.ready != null) list[i].ready = !!data.ready;
+      const ip = request.headers.get("CF-Connecting-IP") || "";
+      if (ip && !isPrivateIp(ip)) list[i].ip = ip;
+      found = list[i];
+      break;
+    }
+    if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    await saveDevices(env, list);
     return json({ ok: true });
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
@@ -1558,9 +1752,7 @@ function renderDevicesHtml() {
     '<\/div>',
     '<div style="text-align:right;margin-top:.8rem"><button class="btn-gray" onclick="closeEdit()">关闭<\/button><\/div>',
     '<\/div><\/div>',
-    '<script>',
-    devicesClientJs(),
-    '<\/script>',
+    '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'
   ].join("\n");
 }
