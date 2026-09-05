@@ -37,6 +37,7 @@ public final class MainActivity extends Activity {
         permButton.setOnClickListener(v -> PermissionGate.requestIgnoreBattery(this));
         report.requestFocus();
         ServiceStarter.start(this);
+        render();
     }
 
     @Override

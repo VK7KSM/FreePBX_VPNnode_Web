@@ -8,3 +8,5 @@ node_modules/
 *.keystore
 keystore.properties
 local.properties
+elfRemote/captures/
+elfRemote/app/build/
