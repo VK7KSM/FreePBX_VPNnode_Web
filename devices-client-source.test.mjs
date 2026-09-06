@@ -11,15 +11,20 @@ test("devices-client-source 必须与 devices-client.js 逐字一致", () => {
   assert.equal(source, raw);
 });
 
-test("修机页属于 elfRemote，不用自造产品名", () => {
+test("远程Shell 含快捷任务，顶栏保留更新客户端，没有修机项", () => {
   const root = path.dirname(fileURLToPath(import.meta.url));
   const raw = fs.readFileSync(path.join(root, "devices-client.js"), "utf8");
-  assert.match(raw, /\["repair", "修机"/);
+  assert.match(raw, /\["adb", "远程Shell"/);
+  assert.match(raw, /\["update", "更新客户端"/);
+  assert.equal(raw.includes('["repair"'), false);
   assert.equal(raw.includes("类型化修机"), false);
-  assert.match(raw, /kv\("elfRemote"/);
+  assert.equal(/function pageRepair\(/.test(raw), false);
+  assert.match(raw, /id="adbCmd"/);
+  assert.match(raw, /enqueueRepair/);
   assert.match(raw, /pull_logs/);
   assert.match(raw, /heal_network/);
-  assert.match(raw, /reboot/);
-  assert.match(raw, /install_apk/);
-  assert.match(raw, /enqueueRepair/);
+  assert.match(raw, /restart_adbd/);
+  assert.equal(raw.includes("enqueueRepairApk"), false);
+  assert.match(raw, /assignUpdate/);
+  assert.match(raw, /kv\("elfRemote"/);
 });

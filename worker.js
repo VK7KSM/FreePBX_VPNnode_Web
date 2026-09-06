@@ -7,7 +7,7 @@ import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
-// 2026-09-06: elfRemote repair UI name; D22 lab only.
+// 2026-09-06: merge repair shortcuts into 远程Shell; keep 更新客户端.
 import {
   isControlPlaneOnline,
   normalizePairCode,
