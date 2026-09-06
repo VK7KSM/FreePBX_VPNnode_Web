@@ -142,15 +142,16 @@ test("健康超时走回滚再标已恢复", () => {
   assert.equal(d.update.state, "recovered");
 });
 
-test("本刀修机白名单为拉取日志和强制自愈", () => {
+test("本刀修机白名单为拉取日志、强制自愈和受控重启", () => {
   assert.equal(isAllowedRepairType("pull_logs"), true);
   assert.equal(isAllowedRepairType("heal_network"), true);
+  assert.equal(isAllowedRepairType("reboot"), true);
   assert.equal(isAllowedRepairType("install_apk"), false);
-  assert.equal(isAllowedRepairType("reboot"), false);
   assert.equal(isAllowedRepairType("shell"), false);
   assert.equal(repairTypeLabel("pull_logs"), "拉取日志");
   assert.equal(repairTypeLabel("heal_network"), "强制自愈");
-  assert.equal(repairTypeLabel("reboot"), "");
+  assert.equal(repairTypeLabel("reboot"), "受控重启");
+  assert.equal(repairTypeLabel("install_apk"), "");
   assert.equal(repairStateLabel("pending"), "待领取");
   assert.equal(repairStateLabel("claimed"), "已领取");
   assert.equal(repairStateLabel("running"), "执行中");
@@ -181,7 +182,7 @@ test("未过期的拉取日志任务才会发给设备", () => {
 test("未知类型不得入队，进行中不得插队", () => {
   const now = 1_000_000;
   const d = {};
-  const bad = enqueueRepairTask(d, { type: "reboot" }, now);
+  const bad = enqueueRepairTask(d, { type: "shell" }, now);
   assert.equal(bad.ok, false);
   assert.equal(bad.reason, "unknown-type");
   assert.equal(d.task, undefined);
