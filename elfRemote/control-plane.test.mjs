@@ -148,11 +148,13 @@ test("本刀修机白名单为拉取日志、强制自愈和受控重启", () =>
   assert.equal(isAllowedRepairType("heal_network"), true);
   assert.equal(isAllowedRepairType("reboot"), true);
   assert.equal(isAllowedRepairType("install_apk"), true);
+  assert.equal(isAllowedRepairType("restart_adbd"), true);
   assert.equal(isAllowedRepairType("shell"), false);
   assert.equal(repairTypeLabel("pull_logs"), "拉取日志");
   assert.equal(repairTypeLabel("heal_network"), "强制自愈");
   assert.equal(repairTypeLabel("reboot"), "受控重启");
   assert.equal(repairTypeLabel("install_apk"), "覆盖安装");
+  assert.equal(repairTypeLabel("restart_adbd"), "重启本机adbd");
   assert.equal(repairStateLabel("pending"), "待领取");
   assert.equal(repairStateLabel("claimed"), "已领取");
   assert.equal(repairStateLabel("running"), "执行中");

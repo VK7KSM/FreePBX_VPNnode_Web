@@ -375,6 +375,7 @@ function pageRepair(dis){
   h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
+  h += '<button class="btn-green" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
   h += '<input id="apkVc" class="inp" placeholder="已发布 versionCode" style="max-width:180px"'+dis+'>';
   h += '<button class="btn-green" onclick="enqueueRepairApk()"'+dis+'>覆盖安装</button>';
   h += "</div>";

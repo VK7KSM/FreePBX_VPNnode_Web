@@ -100,7 +100,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -116,7 +116,8 @@ export const REPAIR_TYPE_LABELS = {
   pull_logs: "拉取日志",
   heal_network: "强制自愈",
   reboot: "受控重启",
-  install_apk: "覆盖安装"
+  install_apk: "覆盖安装",
+  restart_adbd: "重启本机adbd"
 };
 
 export function installParamsFromRelease(rel, baseUrl) {
