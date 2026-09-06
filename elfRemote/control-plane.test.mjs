@@ -17,7 +17,8 @@ import {
   makeRepairTask,
   enqueueRepairTask,
   shouldOfferRepair,
-  applyRepairProgress
+  applyRepairProgress,
+  installParamsFromRelease
 } from "./control-plane.js";
 
 test("六位码去掉空格，拒绝非数字", () => {
@@ -146,12 +147,12 @@ test("本刀修机白名单为拉取日志、强制自愈和受控重启", () =>
   assert.equal(isAllowedRepairType("pull_logs"), true);
   assert.equal(isAllowedRepairType("heal_network"), true);
   assert.equal(isAllowedRepairType("reboot"), true);
-  assert.equal(isAllowedRepairType("install_apk"), false);
+  assert.equal(isAllowedRepairType("install_apk"), true);
   assert.equal(isAllowedRepairType("shell"), false);
   assert.equal(repairTypeLabel("pull_logs"), "拉取日志");
   assert.equal(repairTypeLabel("heal_network"), "强制自愈");
   assert.equal(repairTypeLabel("reboot"), "受控重启");
-  assert.equal(repairTypeLabel("install_apk"), "");
+  assert.equal(repairTypeLabel("install_apk"), "覆盖安装");
   assert.equal(repairStateLabel("pending"), "待领取");
   assert.equal(repairStateLabel("claimed"), "已领取");
   assert.equal(repairStateLabel("running"), "执行中");
@@ -221,6 +222,27 @@ test("修机阶段必须领取后执行，成功要带制品哈希", () => {
   assert.equal(d.task.result.bytes, 80);
   assert.equal(d.task.result.truncated, false);
   assert.equal(d.task.result.text, "app_version=0.1.39");
+});
+
+test("覆盖安装参数必须来自已发布清单", () => {
+  const rel = {
+    job_id: "job1",
+    versionCode: 44,
+    versionName: "0.1.43-d22xx-instala",
+    manifest_raw: JSON.stringify({
+      package: "net.elfradio.elfremote",
+      versionCode: 44,
+      versionName: "0.1.43-d22xx-instala",
+      sha256: "ab".repeat(32),
+      size: 99,
+      job_id: "job1"
+    })
+  };
+  const p = installParamsFromRelease(rel, "https://v.elfradio.net");
+  assert.equal(p.versionName, "0.1.43-d22xx-instala");
+  assert.equal(p.url, "https://v.elfradio.net/api/elfremote/apk/job1");
+  assert.equal(p.sha256, "ab".repeat(32));
+  assert.equal(installParamsFromRelease(null, "https://v.elfradio.net"), null);
 });
 
 test("过期或未知任务可拒绝，不得从成功倒退", () => {

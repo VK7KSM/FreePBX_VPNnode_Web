@@ -7,7 +7,7 @@ import { LOGO_PNG_B64 } from "./logo.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
-// 2026-09-06: typed repair envelope + pull_logs + heal_network + reboot.
+// 2026-09-06: typed repair envelope + pull_logs + heal_network + reboot + install_apk.
 import {
   isControlPlaneOnline,
   normalizePairCode,
@@ -23,6 +23,7 @@ import {
   applyRepairProgress,
   publicRepair,
   repairOfferPayload,
+  installParamsFromRelease,
   repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
@@ -1287,9 +1288,18 @@ async function handleElfEnqueueTask(env, request) {
       break;
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    let params = data.params;
+    if (String(data.type || "") === "install_apk") {
+      const vc = Number((data.params && data.params.versionCode) || data.versionCode || 0);
+      if (vc <= 0) return json({ ok: false, msg: "缺少 versionCode" }, 400);
+      const rel = await getStore(env, "elfremote_rel_" + vc);
+      if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
+      params = installParamsFromRelease(rel, "https://v.elfradio.net");
+      if (!params) return json({ ok: false, msg: "清单不完整" }, 400);
+    }
     const queued = enqueueRepairTask(found, {
       type: data.type,
-      params: data.params,
+      params,
       id: data.id,
       idempotency_key: data.idempotency_key,
       expires_at: data.expires_at

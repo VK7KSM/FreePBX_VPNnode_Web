@@ -18,6 +18,6 @@ test("修机页本刀只开放拉取日志", () => {
   assert.match(raw, /pull_logs/);
   assert.match(raw, /heal_network/);
   assert.match(raw, /reboot/);
+  assert.match(raw, /install_apk/);
   assert.match(raw, /enqueueRepair/);
-  assert.equal(/enqueueRepair\([^)]*install_apk/.test(raw), false);
 });

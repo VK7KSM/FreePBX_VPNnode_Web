@@ -375,6 +375,8 @@ function pageRepair(dis){
   h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
+  h += '<input id="apkVc" class="inp" placeholder="已发布 versionCode" style="max-width:180px"'+dis+'>';
+  h += '<button class="btn-green" onclick="enqueueRepairApk()"'+dis+'>覆盖安装</button>';
   h += "</div>";
   return h;
 }
@@ -601,6 +603,18 @@ function enqueueRepair(type){
   var d = currentDev();
   if(!d) return;
   fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type})})
+    .then(function(r){ return r.json(); })
+    .then(function(x){
+      if(!x.ok){ alert(x.msg || "下发失败"); return; }
+      loadDevices();
+    });
+}
+function enqueueRepairApk(){
+  var d = currentDev();
+  if(!d) return;
+  var vc = parseInt($("apkVc") && $("apkVc").value, 10);
+  if(!vc){ alert("请填写已发布的 versionCode"); return; }
+  fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:"install_apk",params:{versionCode:vc}})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }

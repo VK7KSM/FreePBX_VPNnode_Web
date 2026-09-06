@@ -100,7 +100,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -115,8 +115,32 @@ export const REPAIR_STATE_LABELS = {
 export const REPAIR_TYPE_LABELS = {
   pull_logs: "拉取日志",
   heal_network: "强制自愈",
-  reboot: "受控重启"
+  reboot: "受控重启",
+  install_apk: "覆盖安装"
 };
+
+export function installParamsFromRelease(rel, baseUrl) {
+  if (!rel || !rel.manifest_raw) return null;
+  let m;
+  try { m = JSON.parse(rel.manifest_raw); } catch (e) { return null; }
+  const sha = String(m.sha256 || "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha)) return null;
+  const name = String(rel.versionName || m.versionName || "");
+  const job = String(rel.job_id || m.job_id || "");
+  const url = String(baseUrl || "https://v.elfradio.net").replace(/\/$/, "")
+    + "/api/elfremote/apk/" + job;
+  if (!name || !job) return null;
+  return {
+    versionCode: Number(rel.versionCode || m.versionCode || 0),
+    versionName: name,
+    url,
+    sha256: sha,
+    size: Number(m.size || 0),
+    package: String(m.package || "net.elfradio.elfremote"),
+    certSha256: String(m.certSha256 || "").toLowerCase(),
+    job_id: job
+  };
+}
 
 const REPAIR_ADVANCE = {
   pending: ["claimed", "rejected", "expired", "failed"],
