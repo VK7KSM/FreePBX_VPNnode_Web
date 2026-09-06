@@ -123,7 +123,9 @@ function renderList(){
     var d = DEV[i];
     var on = d.online && d.enabled!==false;
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
-    var upd = d.update && d.update.state && d.update.state !== "success" ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
+    var us = d.update && d.update.state ? String(d.update.state) : "";
+    var inflight = us && us!=="success" && us!=="recovered" && us!=="rejected";
+    var upd = inflight ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
     h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
@@ -313,18 +315,13 @@ function pageAdb(dis){
   var r = t.result || {};
   var u = uiOf();
   var on = !!(u && u.adb.connected);
-  var h = '<div class="ops-grid">';
-  h += kv("类型", t.type_label || t.type || "无");
-  h += kv("阶段", t.label || t.state || "无");
-  h += kv("说明", t.detail || "");
-  h += kv("制品哈希", r.sha256 || "");
-  h += kv("字节", r.bytes ? String(r.bytes) : "");
-  h += "</div>";
-  h += '<div class="ops-actions" style="margin:.55rem 0">';
+  var st = t.label || t.state || "";
+  var h = '<div class="ops-actions" style="margin:.55rem 0">';
   h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
   h += '<button class="btn-green" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
+  if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
   h += "</div>";
   if(r.text){
     h += '<pre class="adb-term" style="margin-bottom:.55rem;max-height:180px">'+esc(r.text)+"</pre>";
