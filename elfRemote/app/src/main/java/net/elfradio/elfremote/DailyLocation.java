@@ -54,6 +54,15 @@ final class DailyLocation {
             reason = "schedule_unavailable"; then.run(); return;
         }
         completion = then;
+        try {
+            if (manager == null) { finish("provider_unavailable"); return; }
+            if (!enabled(LocationManager.GPS_PROVIDER) && !enabled(LocationManager.NETWORK_PROVIDER)) {
+                finish("location_disabled"); return;
+            }
+        } catch (Exception error) {
+            RuntimeLog.error("daily_location_provider_check_failed", error);
+            finish("provider_unavailable"); return;
+        }
         if (!granted) {
             PermissionGate.initializeLocation(context, worker, () -> {
                 if (completion == null) return;
