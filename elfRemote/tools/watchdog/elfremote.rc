@@ -1,0 +1,11 @@
+# Standalone init unit for elfRemote. Do not merge into other device keepers.
+service elfremote_wd /system/bin/sh /data/local/elfremote/watchdog.sh --foreground
+    class late_start
+    user root
+    group root
+    seclabel u:r:magisk:s0
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start elfremote_wd

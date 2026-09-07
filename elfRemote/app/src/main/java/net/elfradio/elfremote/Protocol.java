@@ -4,7 +4,17 @@ import org.json.JSONObject;
 
 final class Protocol {
     static final String BASE_URL = "https://v.elfradio.net";
-    static final String APP_VERSION = "0.1.3-d22xx-control-plane";
+    static String appVersion() {
+        return BuildConfig.VERSION_NAME;
+    }
+
+    static String updateProgressPath() {
+        return BASE_URL + "/api/elfremote/update-progress";
+    }
+
+    static String taskProgressPath() {
+        return BASE_URL + "/api/elfremote/task-progress";
+    }
 
     static String enrollPath() {
         return BASE_URL + "/api/devices/enroll";

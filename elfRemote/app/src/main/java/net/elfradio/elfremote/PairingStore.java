@@ -66,6 +66,15 @@ final class PairingStore {
         prefs.edit().putString("last_status", status == null ? "" : status).apply();
     }
 
+    String netSnap() { return prefs.getString("net_snap", ""); }
+    void saveNetSnap(String snap) {
+        prefs.edit().putString("net_snap", snap == null ? "" : snap).apply();
+    }
+    String healBlob() { return prefs.getString("heal_blob", ""); }
+    void saveHealBlob(String blob) {
+        prefs.edit().putString("heal_blob", blob == null ? "" : blob).apply();
+    }
+
     static String sha256Hex(String s) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");

@@ -14,6 +14,13 @@ public class ProtocolTest {
     }
 
     @Test
+    public void taskProgressPathUsesProductionHost() {
+        assertEquals(
+                "https://v.elfradio.net/api/elfremote/task-progress",
+                Protocol.taskProgressPath());
+    }
+
+    @Test
     public void parseOkFlag() throws Exception {
         assertTrue(Protocol.isOk(new JSONObject("{\"ok\":true}")));
         assertFalse(Protocol.isOk(new JSONObject("{\"ok\":false}")));

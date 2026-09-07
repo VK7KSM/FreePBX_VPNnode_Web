@@ -29,4 +29,6 @@ test("远程Shell 含快捷任务，顶栏保留更新客户端，没有修机�
   assert.match(raw, /kv\("elfRemote"/);
   assert.equal(raw.includes('kv("制品哈希"'), false);
   assert.equal(raw.includes('kv("类型"'), false);
+  assert.match(raw, /id="taskOut"/);
+  assert.equal(/if\s*\(\s*r\.text\s*\)/.test(raw), false);
 });

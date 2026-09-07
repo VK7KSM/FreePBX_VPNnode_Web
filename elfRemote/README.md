@@ -3,7 +3,7 @@
 D22 / H13 / D31 / Pixel 3 的远程配置客户端。第一刀只做一件事：设备和 `v.elfradio.net/devices` 控制面通信。
 
 包名：`net.elfradio.elfremote`  
-当前版本：`0.1.3-d22xx-control-plane`  
+当前版本：`0.1.11-d22xx-upda`（`versionCode` 12）  
 试验机：D22-XX（Android 8.1）
 
 ## 这一刀做什么
@@ -57,6 +57,18 @@ gradlew.bat assembleDebug
 
 若心跳发不出，检查 AFWall+ 是否放行 `net.elfradio.elfremote`。
 
+## 独立守护（0.1.4）
+
+主程序被强制停止后，必须由 **elfRemote 自己的** 低负载守护拉起 `ReportService`，不得并入 D22 上保护对讲/电话的 `codex_*` 脚本。
+
+- 脚本：`/data/local/elfremote/watchdog.sh`（约 20 秒看一次 pid，只起前台服务，不起界面）
+- Magisk 晚启动（若存在）：`/data/adb/service.d/elfremote_watchdog.sh`
+- 独立 init：`/system/etc/init/elfremote.rc`（服务名 `elfremote_wd`）
+- 空闲目标：守护 RSS ≤ 4 MiB，主程序 RSS ≤ 64 MiB，不得抢前台、不得拖垮对讲
+- 保活只拉 `ReportService`，不启动配对页；通知不可点进界面，避免盖住 Zello
+
+取得永久 root 后，主程序会自行部署上述文件。实验室也可用 `tools/d22_lab_elfremote.ps1`。
+
 ## 目录
 
 ```text
@@ -67,8 +79,10 @@ elfRemote/
   app/                      Android 工程
   art/elfradio-icon.png     启动器图标原图（透明 PNG）
   tools/make_launcher_icon.py  生成圆角矩形、放大 logo 的 mipmap
+  tools/watchdog/              独立守护脚本与实验室观察脚本
+  tools/d22_lab_elfremote.ps1  D22 USB 实验室部署/验收
 ```
 
 ## 明确不做（本刀）
 
-更新助手、Mihomo、网络自愈全阶梯、D31 配置总线、远程 ADB 隧道、丢失模式。
+更新助手、Mihomo、D31 配置总线、远程 ADB 隧道、丢失模式。

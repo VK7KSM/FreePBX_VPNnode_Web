@@ -16,6 +16,31 @@ final class HttpJson {
         return exchange("GET", url, null);
     }
 
+    static void download(String url, java.io.File dest) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new java.net.URL(url).openConnection();
+        try {
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(60000);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestMethod("GET");
+            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
+            int code = c.getResponseCode();
+            if (code >= 400) throw new Exception("download HTTP " + code);
+            java.io.InputStream in = c.getInputStream();
+            java.io.FileOutputStream out = new java.io.FileOutputStream(dest);
+            try {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+            } finally {
+                out.close();
+                in.close();
+            }
+        } finally {
+            c.disconnect();
+        }
+    }
+
     private static String exchange(String method, String url, String json) throws Exception {
         try {
             return exchangeOnce(method, url, json);
@@ -39,7 +64,7 @@ final class HttpJson {
             c.setInstanceFollowRedirects(true);
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
-            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.APP_VERSION);
+            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
             if (json != null) {
                 byte[] body = json.getBytes("UTF-8");
                 c.setDoOutput(true);

@@ -9,8 +9,8 @@ android {
         applicationId "net.elfradio.elfremote"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 4
-        versionName "0.1.3-d22xx-control-plane"
+        versionCode project.hasProperty("elfVerCode") ? Integer.parseInt("$elfVerCode") : 12
+        versionName project.hasProperty("elfVerName") ? "$elfVerName" : "0.1.11-d22xx-upda"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
 
@@ -21,6 +21,10 @@ android {
         release {
             minifyEnabled false
         }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     compileOptions {

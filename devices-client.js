@@ -323,9 +323,7 @@ function pageAdb(dis){
   h += '<button class="btn-green" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
   if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
   h += "</div>";
-  if(r.text){
-    h += '<pre class="adb-term" style="margin-bottom:.55rem;max-height:180px">'+esc(r.text)+"</pre>";
-  }
+  h += '<pre class="adb-term" id="taskOut" style="margin-bottom:.55rem;min-height:120px;max-height:180px">'+esc(r.text||"")+"</pre>";
   h += '<div class="ops-actions" style="margin-bottom:.55rem">';
   h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
   h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
