@@ -7,6 +7,9 @@ test("小时报告空窗仅标记等待，不能宣称 MQTT 已确认在线或�
   assert.equal(contactState(seen,at+60000,true).state,"recent_contact");
   assert.equal(contactState(seen,at+180000,true).state,"awaiting_report");
   assert.equal(contactState(seen,at+3600000,true).state,"awaiting_report");
+  assert.equal(contactState(seen,at+900000,true,"wifi").state,"awaiting_report");
+  assert.equal(contactState(seen,at+900001,true,"wifi").state,"report_overdue");
+  assert.equal(contactState(seen,at+3600001,true,"cellular").state,"report_overdue");
   assert.equal(contactState(seen,at+4500001,true).state,"report_overdue");
   assert.equal(contactState(seen,at+180000,false).state,"report_overdue");
 });

@@ -32,6 +32,7 @@ function locLabel(src){
   if(src==="gps") return "GPS";
   if(src==="wifi") return "Wi-Fi";
   if(src==="cell") return "基站";
+  if(src==="network") return "Wi-Fi / 基站";
   if(src==="ip") return "IP 大致区域";
   return "未知";
 }
@@ -130,7 +131,6 @@ function renderList(){
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
     h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
-    if(d.contact_state === "awaiting_report") h += '<span class="tag">等待定时报送</span>';
     if(d.contact_state === "report_overdue") h += '<span class="tag">报告超时</span>';
     h += '</div>';
   }
@@ -146,8 +146,8 @@ function selectUnpaired(index){
   if(!pending) return;
   openAdd();
   $("dName").value = pending.name;
-  $("pairCode").value = pending.code || "";
-  if(!pending.code) $("pairErr").innerText = "设备暂未连接，等待重新上报配对码";
+  $("pairCode").value = "";
+  $("pairErr").innerText = pending.pairable ? "请输入设备端显示的六位配对码" : "等待设备重新注册后，输入设备端配对码";
   syncAddButtons();
 }
 
@@ -749,7 +749,7 @@ function setEnabled(on){
 }
 function delDev(){
   var d = currentDev(); if(!d) return;
-  if(!confirm("确定解除配对「"+d.name+"」？此台将从列表和地图消失。")) return;
+  if(!confirm("确定解除配对「"+d.name+"」？此台将返回未配对列表。")) return;
   fetch("/api/devices/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:d.id,confirm:true})})
   .then(function(r){return r.json();}).then(function(x){
     if(!x.ok){ alert(x.msg||"删除失败"); return; }

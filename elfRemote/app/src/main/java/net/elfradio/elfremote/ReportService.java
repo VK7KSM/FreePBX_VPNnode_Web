@@ -146,7 +146,7 @@ public final class ReportService extends Service {
             else reportCurrent();
             reportFailures = 0;
         } catch (Exception e) {
-            reportFailures = Math.min(10, reportFailures + 1);
+            reportFailures = store.paired() ? Math.min(10, reportFailures + 1) : 0;
             RuntimeLog.error("report_failed", e);
             android.util.Log.w("elfRemote", "tick failed", e);
             store.setLastStatus(Protocol.formatNetError(e));
@@ -196,7 +196,11 @@ public final class ReportService extends Service {
         if (Protocol.isOk(res) && res.optBoolean("paired", false)) {
             store.savePaired(res.getString("device_id"));
             store.setLastStatus(getString(R.string.paired));
-            reportCurrent();
+            if (dailyLocation != null) dailyLocation.beforePeriodicReport(() -> {
+                try { reportCurrent(); }
+                catch (Exception error) { RuntimeLog.error("first_paired_report_failed", error); }
+            });
+            else reportCurrent();
         } else {
             store.setLastStatus(getString(R.string.how_to_pair));
         }
@@ -270,7 +274,17 @@ public final class ReportService extends Service {
     }
 
     private void flushStatus(StatusOutbox outbox, String priorityRequest) throws Exception {
-        int sent = new StatusReporter(outbox, json -> HttpJson.post(Protocol.reportPath(), json), notice -> {
+        int sent = new StatusReporter(outbox, json -> {
+            String reply = HttpJson.post(Protocol.reportPath(), json);
+            if (new JSONObject(reply).optBoolean("pairing_required", false)) {
+                store.clearEnroll();
+                if (push != null) push.ensure();
+                RuntimeLog.event("pairing_revoked_register_again");
+                if (worker != null) { worker.removeCallbacks(loop); worker.postDelayed(loop, 1000L); }
+                throw new java.io.IOException("pairing required");
+            }
+            return reply;
+        }, notice -> {
             if (worker != null) worker.post(() -> {
                 try { receiveStatusRequest(notice, () -> {}); }
                 catch (Exception error) { RuntimeLog.error("push_fallback_failed", error); }
@@ -873,8 +887,9 @@ public final class ReportService extends Service {
             for (int i = 0; i < providers.length; i++) {
                 if (!lm.isProviderEnabled(providers[i])) continue;
                 Location loc = lm.getLastKnownLocation(providers[i]);
-                if (loc == null) continue;
-                if (best == null || loc.getTime() > best.getTime()) best = loc;
+                if (loc == null || !DailyLocation.recent(loc.getElapsedRealtimeNanos(), android.os.SystemClock.elapsedRealtimeNanos())) continue;
+                if (best == null) best = loc;
+                if (LocationManager.GPS_PROVIDER.equals(loc.getProvider())) { best = loc; break; }
             }
             if (best == null) return null;
             JSONObject o = new JSONObject();

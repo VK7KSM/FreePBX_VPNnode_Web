@@ -411,7 +411,7 @@ const app = {
       const unpaired = Object.entries(await loadEnrolls(env))
         .filter(([, row]) => row && !row.paired && !registered.some(d => d.token_sha256 === row.token_sha256))
         .map(([code, row]) => ({ name: row.device_name || row.model_hint || "未命名设备",
-          code: Date.parse(row.expires_at) > Date.now() ? code : "",
+          pairable: Date.parse(row.expires_at) > Date.now(),
           app_version: row.app_version, last_seen: row.last_seen || row.created_at,
           model_hint: row.model_hint, expires_at: row.expires_at }));
       return json({ ok: true, devices, unpaired });
@@ -835,14 +835,14 @@ async function geoForIp(env, ip) {
 }
 
 function publicDevice(d, modelName) {
-  const contact = contactState(d.last_seen, Date.now(), d.status_only === true);
+  const contact = contactState(d.last_seen, Date.now(), d.status_only === true, d.network);
   return {
     id: d.id,
     name: d.name,
     model_id: d.model_id,
     model_name: modelName || "",
     enabled: d.enabled !== false,
-    online: isControlPlaneOnline(d.last_seen, Date.now()),
+    online: contact.state === "recent_contact" || contact.state === "awaiting_report",
     last_seen: d.last_seen || null,
     contact_state: contact.state,
     report_due_at: contact.report_due_at,
@@ -983,6 +983,15 @@ async function handleDeviceDelete(env, request) {
     const list = await loadDevices(env);
     const next = list.filter(function (d) { return d.id !== id; });
     if (next.length === list.length) return json({ ok: false, msg: "未找到该设备" }, 404);
+    const removed = list.find(d => d.id === id);
+    const enrolls = await loadEnrolls(env);
+    const original = Object.values(enrolls).find(row => row.token_sha256 === removed.token_sha256);
+    enrolls["unpaired_" + id] = { token_sha256: removed.token_sha256,
+      device_name: removed.device_name || original?.device_name || removed.model_id || "未命名设备",
+      app_version: removed.app_version, os_version: removed.os_version,
+      model_hint: original?.model_hint || "", paired: false, device_id: "",
+      expires_at: new Date(0).toISOString(), last_seen: removed.last_seen };
+    await saveEnrolls(env, enrolls);
     await saveDevices(env, next);
     return json({ ok: true });
   } catch (e) {
@@ -1029,7 +1038,7 @@ async function handleDeviceEnroll(env, request) {
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
     for (const [oldCode, row] of Object.entries(enrolls)) {
       if (row.token_sha256 !== tokenSha) continue;
-      if (Date.parse(row.expires_at) > now) {
+      if (!row.paired && Date.parse(row.expires_at) > now) {
         row.device_name = String(data.device_name || row.device_name || data.model_hint || "未命名设备").slice(0, 80);
         row.last_seen = new Date(now).toISOString();
         await saveEnrolls(env, enrolls);
@@ -1116,6 +1125,7 @@ async function handleDevicePair(env, request) {
     const device = {
       id: newRemoteId("dev_"),
       name: name || row.device_name || row.model_hint || "未命名设备",
+      device_name: row.device_name || row.model_hint || "未命名设备",
       model_id: model_id,
       enabled: true,
       online: false,
@@ -1154,7 +1164,7 @@ async function handleDeviceReport(env, request) {
     const tokenSha = await sha256Hex(token);
     const list = await loadDevices(env);
     const matched = list.find(d => d.id === deviceId);
-    if (!matched) return json({ ok: false, msg: "未找到该设备" }, 404);
+    if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
     const reportLocation = pickLocation(data, await geoForIp(env, observedIp));

@@ -10,8 +10,8 @@ import android.os.Handler;
 import android.os.SystemClock;
 
 final class DailyLocation {
-    static final long INTERVAL_MS = 3600000L;
-    static final long TIMEOUT_MS = 30000L;
+    static final long INTERVAL_MS = 900000L;
+    static final long TIMEOUT_MS = 60000L;
     private final LocationManager manager;
     private final Context context;
     private final SharedPreferences prefs;
@@ -81,7 +81,8 @@ final class DailyLocation {
             for (String provider : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
                 if (!enabled(provider)) continue;
                 Location saved = manager.getLastKnownLocation(provider);
-                if (saved != null && recent(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
+                if (saved != null && (!gps || LocationManager.GPS_PROVIDER.equals(provider))
+                        && recent(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
                     finish("recent_cache"); return;
                 }
             }
@@ -102,7 +103,7 @@ final class DailyLocation {
             if (gps) manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0, listener, worker.getLooper());
             if (network) manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0, listener, worker.getLooper());
             reason = "sampling";
-            RuntimeLog.event("daily_location_start");
+            RuntimeLog.event("daily_location_start gps=" + gps + " network=" + network);
         } catch (SecurityException denied) { finish("permission_denied"); }
         catch (Exception error) { RuntimeLog.error("daily_location_failed", error); finish("provider_unavailable"); }
     }
