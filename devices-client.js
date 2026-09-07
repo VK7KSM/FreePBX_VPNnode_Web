@@ -86,17 +86,16 @@ function uiOf(){
 }
 
 function checkAuth(){
-  if(localStorage.getItem("_pt")){ hide("loginWrap"); loadDevices(); }
-  else show("loginWrap");
+  adminSession.check(loadDevices);
 }
 function doLogin(){
   fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("lu").value,password:$("lp").value})})
   .then(function(r){return r.json();}).then(function(d){
-    if(d.ok){ localStorage.setItem("_pt","1"); hide("loginWrap"); loadDevices(); }
+    if(d.ok){ adminSession.accept(); hide("loginWrap"); loadDevices(); }
     else { $("lerr").style.display="block"; $("lerr").innerText=d.msg||"登录失败"; }
   }).catch(function(){ $("lerr").style.display="block"; $("lerr").innerText="登录失败"; });
 }
-function logout(){ localStorage.removeItem("_pt"); location.href="/"; }
+function logout(){ return adminSession.logout(); }
 
 function loadDevices(){
   Promise.all([
@@ -828,4 +827,4 @@ function delModel(id){
 
 checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
-setInterval(function(){ if(localStorage.getItem("_pt")) loadDevices(); }, 10000);
+setInterval(function(){ if(adminSession.authenticated) loadDevices(); }, 10000);

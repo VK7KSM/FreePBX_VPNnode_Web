@@ -6,6 +6,9 @@ on:
     paths:
       - "worker.js"
       - "sip-client.js"
+      - "sip-client-source.js"
+      - "admin-auth.js"
+      - "admin-session.js"
       - "logo.js"
       - "logo.png"
       - "wrangler.toml"

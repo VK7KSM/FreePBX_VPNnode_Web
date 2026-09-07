@@ -27,15 +27,16 @@ import {
   repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
+import sipClientSource from "./sip-client-source.js";
+import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
+import { adminSessionSource } from "./admin-session.js";
 
 const DEFAULT_USER = "admin";
-const DEFAULT_PASS = "admin888";
 const DEFAULT_TOKEN = "d31";
 
 function storeDefaults(key) {
   const defaults = {
     admin_user: DEFAULT_USER,
-    admin_pass: DEFAULT_PASS,
     sub_token: DEFAULT_TOKEN,
     cf_preferred_ip: "104.16.80.80",
     nodes: []
@@ -120,11 +121,15 @@ function contactFingerprint(contacts) {
 }
 
 export class ElfStore {
-  constructor(ctx) {
+  constructor(ctx, env) {
     this.ctx = ctx;
+    this.env = env;
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/__auth/")) {
+      return this.ctx.blockConcurrencyWhile(() => handleAdminAuth(this.ctx.storage, this.env, request));
+    }
     const key = decodeURIComponent(url.pathname.slice(1));
     if (request.method === "GET") {
       const v = await this.ctx.storage.get(key);
@@ -149,6 +154,20 @@ export default {
     const pathname = url.pathname;
     const method = request.method;
 
+    if (pathname === "/admin-session.js") {
+      return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
+    }
+    if (pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
+      if (!trustedOrigin(request)) return authJson({ ok: false, msg: "请求来源不匹配" }, 403);
+      const action = { "/api/login": "login", "/api/logout": "logout", "/api/session": "session" }[pathname];
+      if (action) {
+        if (method !== (action === "session" ? "GET" : "POST")) return authJson({ ok: false }, 405);
+        return adminRpc(env, request, action);
+      }
+      const session = await adminRpc(env, request, "session");
+      if (!session.ok) return session;
+    }
+
     if (pathname === "/logo.png" || pathname === "/favicon.ico") {
       return logoResponse();
     }
@@ -159,20 +178,6 @@ export default {
     }
 
     // API 路由
-    if (pathname === "/api/login" && method === "POST") {
-      try {
-        const { username, password } = await request.json();
-        const dbUser = (await getStore(env, "admin_user")) || DEFAULT_USER;
-        const dbPass = (await getStore(env, "admin_pass")) || DEFAULT_PASS;
-        if (username === dbUser && password === dbPass) {
-          return json({ ok: true });
-        }
-        return json({ ok: false, msg: "账号或密码错误" }, 401);
-      } catch(e) {
-        return json({ ok: false, msg: e.message }, 400);
-      }
-    }
-
     if (pathname === "/api/data" && method === "GET") {
       const nodes = (await getStore(env, "nodes")) || [];
       const sub_token = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
@@ -184,11 +189,15 @@ export default {
     if (pathname === "/api/save" && method === "POST") {
       try {
         const data = await request.json();
+        let passwordResult;
+        if (data.new_password) {
+          passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
+          if (!passwordResult.ok) return passwordResult;
+        }
         if (Array.isArray(data.nodes)) await setStore(env, "nodes", data.nodes);
         if (data.sub_token) await setStore(env, "sub_token", data.sub_token);
         if (data.cf_ip !== undefined) await setStore(env, "cf_preferred_ip", data.cf_ip);
-        if (data.new_password) await setStore(env, "admin_pass", data.new_password);
-        return json({ ok: true });
+        return passwordResult || json({ ok: true });
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
       }
@@ -1677,6 +1686,7 @@ function renderHtml() {
     '<\/div>',
 
     // 核心 JavaScript - 全部用普通函数和 DOM API，零模板字符串
+    '<script src="/admin-session.js"><\/script>',
     '<script>',
     'var D = {nodes:[], sub_token:"d31", cf_ip:"", admin_user:""};',
     'var editIdx = -1;',
@@ -1686,9 +1696,7 @@ function renderHtml() {
     'function hide(id){$(id).style.display="none"}',
 
     'function checkAuth(){',
-    '  var t = localStorage.getItem("_pt");',
-    '  if(t){ hide("loginWrap"); loadData(); }',
-    '  else { show("loginWrap"); }',
+    '  adminSession.check(loadData);',
     '}',
 
     'function doLogin(){',
@@ -1697,13 +1705,13 @@ function renderHtml() {
     '  fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})})',
     '  .then(function(r){return r.json();})',
     '  .then(function(d){',
-    '    if(d.ok){ localStorage.setItem("_pt","1"); hide("loginWrap"); loadData(); }',
+    '    if(d.ok){ adminSession.accept(); hide("loginWrap"); loadData(); }',
     '    else{ $("lerr").innerText = d.msg||"登录失败"; $("lerr").style.display="block"; }',
     '  })',
     '  .catch(function(e){ $("lerr").innerText="网络错误:"+e.message; $("lerr").style.display="block"; });',
     '}',
 
-    'function logout(){ localStorage.removeItem("_pt"); hide("loginWrap"); show("loginWrap"); location.reload(); }',
+    'function logout(){ return adminSession.logout(); }',
 
     'function loadData(){',
     '  fetch("/api/data").then(function(r){return r.json();}).then(function(d){',
@@ -1763,12 +1771,11 @@ function renderHtml() {
     '  var payload = { cf_ip:$("sCfIp").value, sub_token:$("sToken").value||"d31" };',
     '  if($("sPass").value) payload.new_password = $("sPass").value;',
     '  D.cf_ip = payload.cf_ip; D.sub_token = payload.sub_token;',
-    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});',
+    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){ if(!d.ok) throw new Error(d.msg||"保存失败"); if(d.credentials_changed) adminSession.expire(); alert("设置已保存"); }).catch(function(e){ alert(e.message); });',
     '  $("clashUrl").value = location.origin+"/sub/"+D.sub_token;',
     '  $("v2rayUrl").value = location.origin+"/sub/"+D.sub_token+"?type=v2ray";',
     '  closeSettings();',
     '  renderNodes();',
-    '  alert("设置已保存");',
     '}',
 
     'function copyMihomo(){ var u=$("clashUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
@@ -1984,8 +1991,9 @@ function renderSipHtml() {
     '<div id="cdrPager" style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;font-size:.85rem;color:#94a3b8"><\/div>',
     '<\/div><\/div>',
 
+    '<script src="/admin-session.js"><\/script>',
     '<script>',
-    sipClientJs(),
+    sipClientSource,
     '<\/script>',
     '<\/body>',
     '<\/html>'
@@ -2145,6 +2153,7 @@ function renderDevicesHtml() {
     '<\/div>',
     '<div style="text-align:right;margin-top:.8rem"><button class="btn-gray" onclick="closeEdit()">关闭<\/button><\/div>',
     '<\/div><\/div>',
+    '<script src="/admin-session.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'
   ].join("\n");

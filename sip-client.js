@@ -21,15 +21,15 @@ var editingGrp = "";
 function $(id){ return document.getElementById(id); }
 function show(id){ $(id).style.display = "flex"; }
 function hide(id){ $(id).style.display = "none"; }
-function checkAuth(){ if(localStorage.getItem("_pt")){ hide("loginWrap"); loadSip(); } else show("loginWrap"); }
+function checkAuth(){ adminSession.check(loadSip); }
 function doLogin(){
   fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("lu").value,password:$("lp").value})})
   .then(function(r){return r.json();}).then(function(d){
-    if(d.ok){ localStorage.setItem("_pt","1"); hide("loginWrap"); loadSip(); }
+    if(d.ok){ adminSession.accept(); hide("loginWrap"); loadSip(); }
     else { $("lerr").innerText=d.msg||"失败"; $("lerr").style.display="block"; }
   });
 }
-function logout(){ localStorage.removeItem("_pt"); location.href="/"; }
+function logout(){ return adminSession.logout(); }
 function applySipStatus(d, full){
   if(full){
     if(d.extensions) E = d.extensions;
@@ -588,6 +588,6 @@ function drawCdr(){
   $("cdrPager").innerHTML = pg;
 }
 document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });
-setInterval(function(){ if(localStorage.getItem("_pt")) loadSipLive(); }, 2000);
-setInterval(function(){ if(localStorage.getItem("_pt")) loadSip(); }, 60000);
+setInterval(function(){ if(adminSession.authenticated) loadSipLive(); }, 2000);
+setInterval(function(){ if(adminSession.authenticated) loadSip(); }, 60000);
 checkAuth();
