@@ -1,4 +1,5 @@
-export function installAdminSession() {
+// 浏览器源码保持为字符串，避免 Worker 打包器向函数注入外部辅助调用。
+export const adminSessionSource = String.raw`(function installAdminSession() {
   var nativeFetch = window.fetch.bind(window);
   var state = { authenticated: false };
   function expire() {
@@ -33,5 +34,4 @@ export function installAdminSession() {
     }).catch(function() { alert("退出未完成，请重试"); });
   };
   window.adminSession = state;
-}
-export const adminSessionSource = "(" + installAdminSession.toString() + ")();";
+})();`;

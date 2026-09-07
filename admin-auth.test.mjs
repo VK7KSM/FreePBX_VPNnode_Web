@@ -7,6 +7,19 @@ import { fixture, request, login } from "./test-support.mjs";
 import { handleAdminAuth, isMachineRoute } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import sipSource from "./sip-client-source.js";
+import { build } from "esbuild";
+
+test("打包后的会话脚本可在浏览器独立执行", async () => {
+  const result = await build({ entryPoints: ["admin-session.js"], bundle: true, write: false, format: "iife", globalName: "sessionModule", keepNames: true });
+  const bundled = {};
+  vm.runInNewContext(result.outputFiles[0].text, bundled);
+  const context = { fetch: async () => new Response('{"ok":true}'), localStorage: { removeItem() {} } };
+  context.window = context;
+  vm.runInNewContext(bundled.sessionModule.adminSessionSource, context);
+  assert.equal(typeof context.adminSession.check, "function");
+  context.adminSession.accept();
+  assert.equal(context.adminSession.authenticated, true);
+});
 
 test("管理路由匿名与伪造标记均不能绕过登录，未知 API 默认保护", async () => {
   const f = fixture();
