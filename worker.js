@@ -2280,6 +2280,7 @@ function renderDevicesHtml() {
     '<button id="refreshDevices" class="btn-gray" onclick="refreshAllDevices()" title="刷新设备列表并拉取所有设备信息" aria-label="刷新"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg><\/button>',
     '<button class="btn-green btn-add" onclick="openAdd()">添加设备<\/button>',
     '<\/div>',
+    '<div style="padding:0 .5rem;display:grid;gap:6px"><input class="inp" aria-label="搜索设备" placeholder="搜索设备" oninput="setListFilter(\'text\',this.value)" style="width:100%;min-width:0;box-sizing:border-box"><div style="display:flex;gap:6px"><select id="deviceModelFilter" class="inp" aria-label="型号筛选" onchange="setListFilter(\'model\',this.value)" style="width:50%;min-width:0"><option value="">全部型号</option></select><select class="inp" aria-label="状态筛选" onchange="setListFilter(\'state\',this.value)" style="width:50%;min-width:0"><option value="">全部状态</option><option value="online">在线</option><option value="offline">离线</option><option value="unpaired">未配对</option><option value="disabled">已停用</option></select></div><span id="deviceLoadError" role="alert" style="font-size:12px;color:#fca5a5"></span></div>',
     '<div id="devList"><\/div><\/div>',
     '<div class="card" style="border-radius:1rem;overflow:hidden;min-height:0">',
     '<div id="devMap"><\/div><\/div>',

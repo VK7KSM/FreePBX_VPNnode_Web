@@ -11,6 +11,8 @@ var STATUS = {};
 var mapFitted = false;
 var markerGroups = [];
 var historyMarker = null;
+var deviceLoad = null;
+var LIST_FILTER = {text:"",model:"",state:""};
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -104,10 +106,15 @@ function doLogin(){
 function logout(){ return adminSession.logout(); }
 
 function loadDevices(){
-  return Promise.all([
-    fetch("/api/devices").then(function(r){return r.json();}),
-    fetch("/api/device-models").then(function(r){return r.json();})
+  if(deviceLoad) return deviceLoad;
+  function read(url){return fetch(url).then(function(r){if(!r.ok) throw new Error('刷新失败（'+r.status+'）');return r.json();});}
+  deviceLoad = Promise.all([
+    read("/api/devices"), read("/api/device-models")
   ]).then(function(arr){
+    if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
+    var previousId=selDev;
+    var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
+    var trafficOpen=!!$("devOps").querySelector('details[open]');
     if(arr[0].devices) DEV = arr[0].devices;
     UNPAIRED = arr[0].unpaired || [];
     if(arr[1].models) MODELS = arr[1].models;
@@ -115,8 +122,34 @@ function loadDevices(){
     renderList();
     renderMap();
     var editing = $("devOps").contains(document.activeElement) && document.activeElement.matches("input,textarea,select,[contenteditable=true]");
-    if(!editing) renderOps();
-  }).catch(function(){});
+    if(!editing){
+      renderOps();
+      if(previousId===selDev){
+        savedInputs.forEach(function(saved){var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
+        var details=$("devOps").querySelector('details');if(details) details.open=trafficOpen;
+      }
+    }
+    renderFilters();
+    if($("deviceLoadError")) $("deviceLoadError").textContent='';
+    return true;
+  }).catch(function(error){
+    if($("deviceLoadError")) $("deviceLoadError").textContent=error.message||'刷新失败，保留上次数据';
+    return false;
+  }).finally(function(){deviceLoad=null;});
+  return deviceLoad;
+}
+
+function matchesDevice(d){
+  return (!LIST_FILTER.text || String(d.name||'').toLowerCase().includes(LIST_FILTER.text.toLowerCase())) &&
+    (!LIST_FILTER.model || d.model_id===LIST_FILTER.model) &&
+    (!LIST_FILTER.state || (LIST_FILTER.state==='unpaired' ? d.paired===false : LIST_FILTER.state==='disabled' ? d.enabled===false : LIST_FILTER.state==='online' ? d.online && d.enabled!==false : !d.online && d.enabled!==false));
+}
+function setListFilter(field,value){LIST_FILTER[field]=value;renderList();}
+function renderFilters(){
+  var box=$("deviceModelFilter");if(!box || document.activeElement===box) return;
+  var h='<option value="">全部型号</option>';
+  MODELS.forEach(function(m){h+='<option value="'+esc(m.id)+'">'+esc(m.name)+'</option>';});
+  box.innerHTML=h;box.value=LIST_FILTER.model;
 }
 
 function renderList(){
@@ -128,6 +161,7 @@ function renderList(){
   var h = "";
   for(var i=0;i<DEV.length;i++){
     var d = DEV[i];
+    if(!matchesDevice(d)) continue;
     var on = d.online && d.enabled!==false;
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
     var us = d.update && d.update.state ? String(d.update.state) : "";
@@ -145,7 +179,7 @@ function renderList(){
     var pending = UNPAIRED[j];
     h += '<div class="dev-row" onclick="selectUnpaired('+j+')"><span class="dot dot-off"></span><span class="dev-name">'+esc(pending.name)+'</span><span class="tag">未配对</span></div>';
   }
-  box.innerHTML = h;
+  box.innerHTML = h || '<p class="muted">没有符合条件的设备</p>';
 }
 
 function selectUnpaired(index){
@@ -180,7 +214,7 @@ async function refreshAllDevices(){
   var button=$("refreshDevices");
   button.disabled=true;
   try {
-    await loadDevices();
+    if(!await loadDevices()) return;
     await Promise.allSettled(DEV.map(function(d){return requestDeviceStatus(d.id);}));
     await loadDevices();
   } finally {button.disabled=false;}
@@ -749,9 +783,7 @@ function enqueueRepair(type){
     });
 }
 function wifiScan(){
-  var u=uiOf(); if(!u) return;
-  shellLog("sys", "刷新 Wi-Fi 扫描 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('Wi-Fi 扫描');
 }
 function wifiPick(ssid){
   var u=uiOf(); if(!u) return;
@@ -759,41 +791,18 @@ function wifiPick(ssid){
   renderOps();
 }
 function wifiConnect(){
-  var u=uiOf(); if(!u) return;
-  var ssid=$("wifiSsid")?$("wifiSsid").value.trim():"";
-  var pw=$("wifiPw")?$("wifiPw").value:"";
-  if(!ssid){ alert("请选择或填写 SSID"); return; }
-  if(!pw){ alert("请输入密码"); return; }
-  u.wifiSel=ssid;
-  u.wifiLastOk = ssid;
-  shellLog("sys", "连接 Wi-Fi "+ssid+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('Wi-Fi 配置');
 }
-function contactRefresh(){ renderOps(); }
+function unavailableAction(name){alert(name+'尚未接通，未发送到设备');}
+function contactRefresh(){ unavailableAction('读取通信录'); }
 function contactAdd(){
-  var u=uiOf(); if(!u) return;
-  var name=$("cName")?$("cName").value.trim():"";
-  var phone=$("cPhone")?$("cPhone").value.trim():"";
-  if(!name||!phone){ alert("请填写姓名和号码"); return; }
-  u.contacts.push({ name:name, phone:phone });
-  shellLog("sys", "添加通信录 "+name+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('添加通信录');
 }
 function contactEdit(i){
-  var u=uiOf(); if(!u||!u.contacts[i]) return;
-  var name=prompt("姓名", u.contacts[i].name); if(name==null) return;
-  var phone=prompt("号码", u.contacts[i].phone); if(phone==null) return;
-  name=name.trim(); phone=phone.trim();
-  if(!name||!phone) return;
-  u.contacts[i]={ name:name, phone:phone };
-  shellLog("sys", "修改通信录 "+name+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('修改通信录');
 }
 function contactDel(i){
-  var u=uiOf(); if(!u) return;
-  u.contacts.splice(i,1);
-  shellLog("sys", "删除通信录 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('删除通信录');
 }
 async function locNow(){
   var id=selDev;if(!currentDev()) return;
@@ -803,53 +812,25 @@ async function locNow(){
   else{historyState().error=STATUS[id]||'已有拉取请求正在执行';renderOps();}
 }
 function alarmPlay(){
-  var u=uiOf(); if(!u) return;
-  u.alarm.unshift({ at: nowIso(), dur: "等待设备回报" });
-  shellLog("sys", "播放警报 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('播放警报');
 }
 function lostRec(){
-  var u=uiOf(); if(!u) return;
-  u.live="录音中（实时播放待设备接入）";
-  u.recs.unshift({ at: nowIso(), kind: "录音", state: "进行中" });
-  shellLog("sys", "远程录音 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程录音');
 }
 function lostVideo(cam){
-  var u=uiOf(); if(!u) return;
-  var lab = cam==="front" ? "前置录像" : "后置录像";
-  u.live=lab+"中（实时画面待设备接入）";
-  u.recs.unshift({ at: nowIso(), kind: lab, state: "进行中" });
-  shellLog("sys", lab+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程录像');
 }
 function lostPhoto(cam){
-  var u=uiOf(); if(!u) return;
-  var lab = cam==="front" ? "前置" : "后置";
-  u.photos.unshift({ at: nowIso(), cam: lab, state: "等待回传" });
-  shellLog("sys", lab+"拍照 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程拍照');
 }
 function lostTalk(){
-  var u=uiOf(); if(!u) return;
-  u.talk=!u.talk;
-  u.live=u.talk ? "对讲中：外置扬声器 + 麦克风" : "对讲已停止";
-  shellLog("sys", u.live+" → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程对讲');
 }
 function lostLock(){
-  var u=uiOf(); if(!u) return;
-  var pw=$("lockPw")?$("lockPw").value:"";
-  if(!pw){ alert("请设置解锁密码"); return; }
-  u.live="已下发锁机";
-  shellLog("sys", "远程锁机 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程锁机');
 }
 function lostUnlock(){
-  var u=uiOf(); if(!u) return;
-  u.live="已下发解锁";
-  shellLog("sys", "远程解锁 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+  unavailableAction('远程解锁');
 }
 
 function stubAct(){
@@ -986,4 +967,9 @@ function delModel(id){
 
 checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
-setInterval(function(){ if(adminSession.authenticated) loadDevices(); }, 10000);
+var lastPollAt=0;
+setInterval(function(){
+  if(adminSession.authenticated && Date.now()-lastPollAt >= (document.hidden?60000:10000)){
+    lastPollAt=Date.now();loadDevices();
+  }
+}, 10000);

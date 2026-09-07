@@ -6,6 +6,21 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 
+test("设备组合筛选不改变原列表，未接通能力不制造成功记录", () => {
+  const alerts=[];
+  const context=vm.createContext({alert:value=>alerts.push(value),adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  const d={id:'a',name:'D22-XX',model_id:'d22',online:true,paired:false};
+  context.DEV=[d];context.selDev='a';
+  context.LIST_FILTER={text:'xx',model:'d22',state:'unpaired'};
+  assert.equal(context.matchesDevice(d),true);
+  context.LIST_FILTER.state='offline';assert.equal(context.matchesDevice(d),false);
+  const before=JSON.stringify(context.uiOf());
+  for(const name of ['wifiConnect','contactAdd','contactDel','alarmPlay','lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
+  assert.equal(JSON.stringify(context.uiOf()),before);
+  assert.equal(alerts.length,10);
+});
+
 test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {
   let resolveResponse, requested;
   const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},
