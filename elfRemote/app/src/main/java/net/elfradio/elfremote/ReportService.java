@@ -31,6 +31,7 @@ public final class ReportService extends Service {
     private boolean loopStarted;
     private String lastNotifyText = "";
     private int reportFailures;
+    private PushConnection push;
 
     private final Runnable loop = new Runnable() {
         @Override
@@ -39,7 +40,11 @@ public final class ReportService extends Service {
             long delay = store.paired()
                     ? WatchdogPolicy.pairedReportIntervalMs()
                     : WatchdogPolicy.unpairedReportIntervalMs();
-            if (BuildConfig.STATUS_ONLY) delay = StatusReporter.retryDelay(delay, reportFailures);
+            if (BuildConfig.STATUS_ONLY && store.paired()) {
+                delay = push != null && push.connected() ? 3600000L : 900000L;
+                if (statusOutbox().entries().length > 0) delay = 60000L;
+            }
+            if (BuildConfig.STATUS_ONLY && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
             RuntimeLog.event("next_report delay_ms=" + delay);
             if (worker != null) worker.postDelayed(this, delay);
         }
@@ -58,6 +63,7 @@ public final class ReportService extends Service {
             workerThread.start();
             worker = new Handler(workerThread.getLooper());
         }
+        if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (!loopStarted) {
             loopStarted = true;
             worker.post(loop);
@@ -81,7 +87,10 @@ public final class ReportService extends Service {
         }
         if (intent != null && (ACTION_REPORT_NOW.equals(intent.getAction())
                 || ACTION_RENEW.equals(intent.getAction()))) {
-            if (worker != null) worker.post(this::tick);
+            if (worker != null) worker.post(() -> {
+                if (push != null) { push.ensure(); push.networkHint(); }
+                tick();
+            });
         }
         return START_STICKY;
     }
@@ -95,8 +104,9 @@ public final class ReportService extends Service {
     public void onDestroy() {
         RuntimeLog.event("service_stop");
         if (worker != null) worker.removeCallbacks(loop);
+        if (worker != null && push != null) worker.post(push::close);
         if (workerThread != null) {
-            workerThread.quit();
+            workerThread.quitSafely();
             workerThread = null;
             worker = null;
         }
@@ -116,6 +126,7 @@ public final class ReportService extends Service {
 
     private void tick() {
         try {
+            if (push != null) push.ensure();
             if (!store.paired()) enrollOrPoll();
             else reportCurrent();
             reportFailures = 0;
@@ -176,10 +187,11 @@ public final class ReportService extends Service {
         else report();
     }
 
-    private void reportStatus() throws Exception {
+    private JSONObject statusBody(String requestId) throws Exception {
         JSONObject body = new JSONObject();
         body.put("device_id", store.deviceId());
         body.put("report_id", java.util.UUID.randomUUID().toString());
+        if (requestId != null) body.put("status_request_id", requestId);
         long now = System.currentTimeMillis();
         java.text.SimpleDateFormat time = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
         time.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
@@ -193,11 +205,56 @@ public final class ReportService extends Service {
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
         else body.put("location_reason", "no_cached_location");
-        java.io.File directory = new java.io.File(getFilesDir(), "status-outbox/" + PairingStore.sha256Hex(store.deviceId()));
-        StatusOutbox outbox = new StatusOutbox(directory, 512);
-        outbox.add(body);
+        return body;
+    }
+
+    private StatusOutbox statusOutbox() {
+        java.io.File directory = new java.io.File(getFilesDir(), "status-outbox/" + PairingStore.sha256Hex(Protocol.BASE_URL + ":" + store.deviceId()));
+        return new StatusOutbox(directory, 512);
+    }
+
+    private void receiveStatusRequest(JSONObject notice, Runnable acknowledge) throws Exception {
+        if (push == null || !PushPolicy.shouldQueue(notice, push.lastVersion(), System.currentTimeMillis())) {
+            RuntimeLog.event("push_notice_ignored"); acknowledge.run(); return;
+        }
+        StatusOutbox outbox = statusOutbox();
+        String requestId = notice.getString("request_id");
+        if (!outbox.containsRequest(requestId)) outbox.add(statusBody(requestId));
+        push.recordQueued(notice);
+        RuntimeLog.event("push_notice_queued version=" + notice.getLong("version"));
+        acknowledge.run();
+        try {
+            flushStatus(outbox, requestId);
+            if (outbox.entries().length > 0 && worker != null) {
+                worker.removeCallbacks(loop);
+                worker.postDelayed(loop, 60000L);
+            }
+        }
+        catch (Exception error) {
+            RuntimeLog.error("push_report_pending", error);
+            reportFailures = Math.min(10, reportFailures + 1);
+            if (worker != null) {
+                worker.removeCallbacks(loop);
+                worker.postDelayed(loop, StatusReporter.retryDelay(60000L, reportFailures));
+            }
+        }
+    }
+
+    private void reportStatus() throws Exception {
+        if (push != null) push.ensure();
+        StatusOutbox outbox = statusOutbox();
+        outbox.add(statusBody(null));
         RuntimeLog.event("status_queued network=" + networkType() + " count=" + outbox.entries().length + " log_failed=" + RuntimeLog.failed());
-        int sent = new StatusReporter(outbox, json -> HttpJson.post(Protocol.reportPath(), json)).flush(store.token());
+        flushStatus(outbox, null);
+    }
+
+    private void flushStatus(StatusOutbox outbox, String priorityRequest) throws Exception {
+        int sent = new StatusReporter(outbox, json -> HttpJson.post(Protocol.reportPath(), json), notice -> {
+            if (worker != null) worker.post(() -> {
+                try { receiveStatusRequest(notice, () -> {}); }
+                catch (Exception error) { RuntimeLog.error("push_fallback_failed", error); }
+            });
+        }).flush(store.token(), priorityRequest);
         store.setLastStatus(sent > 0 ? "已上报" : "等待上报");
     }
 

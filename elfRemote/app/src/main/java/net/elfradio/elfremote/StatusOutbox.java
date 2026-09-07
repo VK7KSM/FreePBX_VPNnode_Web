@@ -53,4 +53,9 @@ final class StatusOutbox {
             return new JSONObject(new String(out.toByteArray(), StandardCharsets.UTF_8));
         }
     }
+
+    synchronized boolean containsRequest(String requestId) throws Exception {
+        for (File file : entries()) if (requestId.equals(read(file).optString("status_request_id"))) return true;
+        return false;
+    }
 }

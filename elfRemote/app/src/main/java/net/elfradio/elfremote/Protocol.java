@@ -3,7 +3,9 @@ package net.elfradio.elfremote;
 import org.json.JSONObject;
 
 final class Protocol {
-    static final String BASE_URL = "https://v.elfradio.net";
+    static final String BASE_URL = BuildConfig.CONTROL_URL;
+    static String pushConfigPath() { return BASE_URL + "/api/devices/push-config"; }
+    static String pushSyncPath() { return BASE_URL + "/api/devices/push-sync"; }
     static String appVersion() {
         return BuildConfig.VERSION_NAME;
     }

@@ -13,6 +13,12 @@ android {
         versionName project.hasProperty("elfVerName") ? "$elfVerName" : "0.1.11-d22xx-upda"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         buildConfigField "boolean", "STATUS_ONLY", project.hasProperty("elfStatusOnly") ? Boolean.parseBoolean("$elfStatusOnly").toString() : "true"
+        def controlUrl = project.findProperty("elfControlUrl") ?: "https://v.elfradio.net"
+        def endpoint = new URI(controlUrl)
+        if (endpoint.scheme != "https" || !endpoint.host || endpoint.userInfo || endpoint.query || endpoint.fragment || (endpoint.path && endpoint.path != "/")) {
+            throw new GradleException("控制面必须使用不含凭据和路径的 HTTPS 地址")
+        }
+        buildConfigField "String", "CONTROL_URL", groovy.json.JsonOutput.toJson(controlUrl.replaceAll('/$', ''))
     }
 
     buildTypes {
@@ -40,6 +46,7 @@ android {
 }
 
 dependencies {
+    implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
 }

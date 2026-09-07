@@ -11,7 +11,8 @@ final class PairingStore {
     private final SharedPreferences prefs;
 
     PairingStore(Context context) {
-        prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String name = Protocol.BASE_URL.equals("https://v.elfradio.net") ? PREFS : PREFS + "-lab-" + sha256Hex(Protocol.BASE_URL);
+        prefs = context.getSharedPreferences(name, Context.MODE_PRIVATE);
     }
 
     synchronized String token() {

@@ -97,6 +97,32 @@ public class StatusLoggingTest {
         assertEquals(0,outbox.entries().length);
     }
 
+    @Test public void requestedStatusDoesNotWaitBehindOfflineBacklog() throws Exception {
+        StatusOutbox outbox = new StatusOutbox(temporary.newFolder(), 20);
+        for (int i = 0; i < 10; i++) outbox.add(sample("old-" + i, 100 + i));
+        outbox.add(sample("urgent", 999).put("status_request_id", "request-current"));
+        assertTrue(outbox.containsRequest("request-current"));
+        List<String> sent = new ArrayList<>();
+        new StatusReporter(outbox, body -> {
+            String id = new JSONObject(body).getString("report_id");
+            sent.add(id);
+            return new JSONObject().put("ok", true).put("report_id", id).toString();
+        }).flush("fixture-token", "request-current");
+        assertEquals(java.util.Arrays.asList("urgent", "old-0"), sent);
+        assertEquals(9, outbox.entries().length);
+        assertFalse(outbox.containsRequest("request-current"));
+    }
+
+    @Test public void reportReplyCanOfferMissedNotificationAfterSuccessfulAck() throws Exception {
+        StatusOutbox outbox = new StatusOutbox(temporary.newFolder(), 10);
+        outbox.add(sample("report", 1));
+        List<JSONObject> notices = new ArrayList<>();
+        new StatusReporter(outbox, body -> new JSONObject().put("ok", true).put("report_id", "report")
+                .put("status_request", new JSONObject().put("request_id", "missed")).toString(), notices::add).flush("token");
+        assertEquals(0, outbox.entries().length);
+        assertEquals("missed", notices.get(0).getString("request_id"));
+    }
+
     @Test public void httpFailsBeforeAnyNetworkOrFileWrite() throws Exception {
         try { HttpJson.get("http://127.0.0.1:1/test"); fail(); }
         catch(IOException expected) { assertTrue(expected.getMessage().contains("HTTPS")); }

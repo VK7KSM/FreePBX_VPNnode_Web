@@ -6,14 +6,34 @@ import java.io.IOException;
 
 final class StatusReporter {
     interface Transport { String post(String body) throws Exception; }
+    interface Pending { void receive(JSONObject notification) throws Exception; }
     private final StatusOutbox outbox;
     private final Transport transport;
+    private final Pending pending;
 
-    StatusReporter(StatusOutbox outbox, Transport transport) { this.outbox = outbox; this.transport = transport; }
+    StatusReporter(StatusOutbox outbox, Transport transport) { this(outbox, transport, notice -> {}); }
+    StatusReporter(StatusOutbox outbox, Transport transport, Pending pending) {
+        this.outbox = outbox; this.transport = transport; this.pending = pending;
+    }
 
     int flush(String token) throws Exception {
+        return flush(token, null);
+    }
+
+    int flush(String token, String priorityRequest) throws Exception {
         int sent = 0;
-        for (File file : outbox.entries()) {
+        File[] entries = outbox.entries();
+        if (priorityRequest != null) {
+            for (int i = 0; i < entries.length; i++) {
+                if (priorityRequest.equals(outbox.read(entries[i]).optString("status_request_id"))) {
+                    File urgent = entries[i];
+                    System.arraycopy(entries, 0, entries, 1, i);
+                    entries[0] = urgent;
+                    break;
+                }
+            }
+        }
+        for (File file : entries) {
             if (sent == 2) break;
             JSONObject body = outbox.read(file);
             body.remove("queued_at_ms");
@@ -26,6 +46,8 @@ final class StatusReporter {
             // 此路径只消费状态回执，任何 update/task 字段都不进入执行器。
             if (!file.delete()) throw new IOException("status acknowledgment persistence failed");
             RuntimeLog.event("status_ack");
+            JSONObject notice = reply.optJSONObject("status_request");
+            if (notice != null) pending.receive(notice);
             sent++;
         }
         return sent;
