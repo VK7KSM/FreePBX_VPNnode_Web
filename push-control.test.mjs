@@ -27,6 +27,20 @@ function setup() {
 const deviceBody = { device_id: "fixture-device", token };
 const call = (f, path, body, cookie) => worker.fetch(request(path, "POST", body, cookie), f.env);
 
+test("通知领取回执认证并匹配编号版本，幂等且不冒充完整报告", async () => {
+  const f=setup(), cookie=await login(f);
+  const prepared=await (await call(f,'/api/devices/request-status',deviceBody,cookie)).json();
+  const receipt={...deviceBody,received_request_id:prepared.request.request_id,received_version:prepared.request.version};
+  assert.equal((await call(f,'/api/devices/push-sync',{...receipt,token:'bad'})).status,401);
+  await call(f,'/api/devices/push-sync',{...receipt,received_version:receipt.received_version+1});
+  assert.equal(f.data.get('push/request/fixture-device').received_at,undefined);
+  await call(f,'/api/devices/push-sync',receipt);
+  const first=f.data.get('push/request/fixture-device');
+  assert.ok(first.received_at);assert.equal(first.state,'pending');
+  await call(f,'/api/devices/push-sync',receipt);
+  assert.equal(f.data.get('push/request/fixture-device').received_at,first.received_at);
+});
+
 test("真实运行时 fetch 保留全局接收者，不能使用脱离对象的调用", async () => {
   const previous = globalThis.fetch;
   globalThis.fetch = async function (url) {

@@ -43,7 +43,12 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
     if (action === "config" || action === "sync") {
       if (typeof data.token !== "string" || !data.token || await digest(data.token) !== device.token_sha256) fail(401, "设备凭证无效");
       if (action === "config") return authJson({ ok: true, username: await mqttUsername(id) });
-      return authJson({ ok: true, status_request: statusNotification(await pendingStatus(storage, id, now)) });
+      const current = await pendingStatus(storage, id, now);
+      if (current?.state === "pending" && data.received_request_id === current.request_id && data.received_version === current.version && !current.received_at) {
+        current.received_at = new Date(now).toISOString();
+        await storage.put(key(id), current);
+      }
+      return authJson({ ok: true, status_request: statusNotification(current) });
     }
     if (action === "read") return authJson({ ok: true, request: await pendingStatus(storage, id, now) });
     if (action === "prepare") {

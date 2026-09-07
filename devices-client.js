@@ -8,6 +8,7 @@ var markers = {};
 var circles = {};
 var UI = {};
 var STATUS = {};
+var REQUEST_TIMING = {};
 var mapFitted = false;
 var markerGroups = [];
 var historyMarker = null;
@@ -191,6 +192,8 @@ function selectUnpaired(index){
 async function requestDeviceStatus(id){
   if(STATUS[id]==="拉取中") return;
   STATUS[id]="拉取中"; renderList();
+  var started=performance.now();
+  REQUEST_TIMING[id]={};
   try {
     var result = await (await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})})).json();
     if(!result.ok) throw new Error(result.msg || "请求失败");
@@ -199,7 +202,11 @@ async function requestDeviceStatus(id){
       await new Promise(function(resolve){setTimeout(resolve,2000);});
       var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
       if(!state.ok) throw new Error(state.msg || "查询失败");
+      if(state.request && state.request.request_id===requestId && state.request.received_at && REQUEST_TIMING[id].receivedMs==null){
+        REQUEST_TIMING[id].receivedMs=Math.round(performance.now()-started);
+      }
       if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
+        REQUEST_TIMING[id].completedMs=Math.round(performance.now()-started);
         STATUS[id]=""; await loadDevices(); return true;
       }
       if(state.request && state.request.state==="expired") break;
@@ -409,6 +416,10 @@ function renderOps(){
   h += kv("远程Shell", shell);
   h += "</div>";
   if(d) h += trafficHtml(d.traffic);
+  if(d && REQUEST_TIMING[d.id]){
+    var timing=REQUEST_TIMING[d.id];
+    h+='<p class="muted" style="font-size:12px">本次拉取 · 领取回执 '+(timing.receivedMs==null?'待确认':(timing.receivedMs/1000).toFixed(1)+'s')+' · 完整报告 '+(timing.completedMs==null?'等待中':(timing.completedMs/1000).toFixed(1)+'s')+'</p>';
+  }
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
     var it = FN_ITEMS[i];

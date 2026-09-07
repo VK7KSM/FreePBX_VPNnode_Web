@@ -258,13 +258,33 @@ public final class ReportService extends Service {
         return new StatusOutbox(directory, 512);
     }
 
+    private long samplingRequestVersion;
+
     private void receiveStatusRequest(JSONObject notice, Runnable acknowledge) throws Exception {
+        if (push == null || !PushPolicy.shouldQueue(notice, push.lastVersion(), System.currentTimeMillis())) {
+            RuntimeLog.event("push_notice_ignored"); acknowledge.run(); return;
+        }
+        long version = notice.getLong("version");
+        if (samplingRequestVersion == version) return;
+        samplingRequestVersion = version;
+        RuntimeLog.event("push_notice_received version=" + version);
+        try {
+            JSONObject receipt = new JSONObject().put("device_id", store.deviceId()).put("token", store.token())
+                    .put("received_request_id", notice.getString("request_id")).put("received_version", version);
+            JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushSyncPath(), receipt.toString()));
+            if (!reply.optBoolean("ok")) throw new java.io.IOException("receipt rejected");
+            RuntimeLog.event("push_receipt_saved version=" + version);
+        } catch (Exception error) { RuntimeLog.error("push_receipt_failed", error); }
         if (dailyLocation != null) {
             dailyLocation.beforePeriodicReport(() -> {
                 try { queueStatusRequest(notice, acknowledge); }
                 catch (Exception error) { RuntimeLog.error("requested_report_failed", error); }
+                finally { if (samplingRequestVersion == version) samplingRequestVersion = 0; }
             });
-        } else queueStatusRequest(notice, acknowledge);
+        } else {
+            try { queueStatusRequest(notice, acknowledge); }
+            finally { samplingRequestVersion = 0; }
+        }
     }
 
     private void queueStatusRequest(JSONObject notice, Runnable acknowledge) throws Exception {
