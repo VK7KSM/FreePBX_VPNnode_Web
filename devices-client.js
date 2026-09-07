@@ -153,6 +153,24 @@ function renderFilters(){
   box.innerHTML=h;box.value=LIST_FILTER.model;
 }
 
+function deviceListStatus(d){
+  if(d.enabled===false) return "已停用";
+  var update=d.update;
+  if(update && update.state && !["success","recovered","rejected"].includes(update.state)) return update.label || "升级中";
+  var task=d.task;
+  if(task && ["pending","claimed","running"].includes(task.state)) return (task.type_label || "任务")+" · "+(task.label || "执行中");
+  return STATUS[d.id] || (d.contact_state==="report_overdue" ? "报告超时" : "等待上报信息");
+}
+function requestListedDeviceStatus(id){
+  var d=DEV.find(function(device){return device.id===id;});
+  if(!d || deviceListStatus(d)!=="等待上报信息") return false;
+  return requestDeviceStatus(id);
+}
+var STATUS_SEEN={};
+function reconcileReportStatus(d){
+  if(["拉取失败","拉取超时"].includes(STATUS[d.id]) && d.last_seen && d.last_seen!==STATUS_SEEN[d.id]) STATUS[d.id]="";
+}
+
 function renderList(){
   var box = $("devList");
   if(!DEV.length && !UNPAIRED.length){
@@ -165,15 +183,13 @@ function renderList(){
     if(!matchesDevice(d)) continue;
     var on = d.online && d.enabled!==false;
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
-    var us = d.update && d.update.state ? String(d.update.state) : "";
-    var inflight = us && us!=="success" && us!=="recovered" && us!=="rejected";
-    var upd = inflight ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
+    reconcileReportStatus(d);
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
-    h += '<span class="dev-identity"><span class="dev-name'+(d.paired===false?' unpaired-name':'')+'"'+(d.paired===false?' title="未配对"':'')+'>'+esc(d.name)+'</span>'+upd;
+    h += '<span class="dev-identity"><span class="dev-name'+(d.paired===false?' unpaired-name':'')+'"'+(d.paired===false?' title="未配对"':'')+'>'+esc(d.name)+'</span>';
     h += '</span>';
-    var status = STATUS[d.id] || (d.contact_state === "report_overdue" ? "报告超时" : "等待上报信息");
-    h += '<span class="report-status" role="button" tabindex="0" title="拉取设备信息" aria-disabled="'+(STATUS[d.id]==="拉取中")+'" onclick="event.stopPropagation();requestDeviceStatus(\''+d.id+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();event.stopPropagation();requestDeviceStatus(\''+d.id+'\')}">'+esc(status)+'</span>';
+    var status = deviceListStatus(d), clickable=status==="等待上报信息";
+    h += '<span class="report-status" role="'+(clickable?'button':'status')+'" tabindex="'+(clickable?'0':'-1')+'" title="'+esc(clickable?'拉取设备信息':status)+'" aria-disabled="'+(!clickable)+'" onclick="event.stopPropagation();requestListedDeviceStatus(\''+d.id+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();event.stopPropagation();requestListedDeviceStatus(\''+d.id+'\')}">'+esc(status)+'</span>';
     h += '</div>';
   }
   for(var j=0;j<UNPAIRED.length;j++){
@@ -190,7 +206,9 @@ function selectUnpaired(index){
 }
 
 async function requestDeviceStatus(id){
-  if(STATUS[id]==="拉取中") return;
+  if(["拉取中","等待设备领取","等待完整上报"].includes(STATUS[id])) return false;
+  var device=DEV.find(function(d){return d.id===id;});
+  STATUS_SEEN[id]=device && device.last_seen;
   STATUS[id]="拉取中"; renderList();
   var started=performance.now();
   REQUEST_TIMING[id]={};
@@ -198,12 +216,14 @@ async function requestDeviceStatus(id){
     var result = await (await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})})).json();
     if(!result.ok) throw new Error(result.msg || "请求失败");
     var requestId = result.request && result.request.request_id;
+    STATUS[id]="等待设备领取"; renderList();
     for(var attempt=0;attempt<150;attempt++){
       await new Promise(function(resolve){setTimeout(resolve,2000);});
       var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
       if(!state.ok) throw new Error(state.msg || "查询失败");
       if(state.request && state.request.request_id===requestId && state.request.received_at && REQUEST_TIMING[id].receivedMs==null){
         REQUEST_TIMING[id].receivedMs=Math.round(performance.now()-started);
+        STATUS[id]="等待完整上报"; renderList();
       }
       if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
         REQUEST_TIMING[id].completedMs=Math.round(performance.now()-started);

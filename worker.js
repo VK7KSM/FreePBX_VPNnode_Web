@@ -2254,6 +2254,7 @@ function renderDevicesHtml() {
     '.dev-row:hover{background:rgba(30,58,95,.4)}',
     '.dev-row{min-height:34px;padding:4px .45rem}.dev-identity .dev-name{line-height:18px}.dev-identity .unpaired-name{display:inline-flex;align-items:center;justify-content:center;flex:none;height:20px;line-height:18px;border:1px dashed #8b7949;color:#b9c2cc;border-radius:3px;padding:0 3px;box-sizing:border-box}.report-status{border:1px solid #fbbf24;border-radius:4px;padding:0 3px}.report-status[aria-disabled=true]{border-color:#94a3b8}.kv .v{overflow-wrap:anywhere}',
     '.dev-row.sel{background:rgba(30,58,95,.7)}',
+    '.report-status[aria-disabled=true]{cursor:default}.report-status[aria-disabled=true]:hover{text-decoration:none}.report-status{max-width:108px;white-space:normal;text-align:center;overflow-wrap:anywhere}',
     '.dev-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}',
     '.tag{font-size:.7rem;color:#fbbf24;border:1px solid #fbbf24;border-radius:.3rem;padding:0 .3rem}',
     '#devMap{height:100%;min-height:320px;border-radius:.8rem;background:#0b1220}',

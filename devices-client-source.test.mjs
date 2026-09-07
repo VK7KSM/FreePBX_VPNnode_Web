@@ -6,6 +6,32 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 
+test("列表状态只显示一处，只有等待上报可触发拉取，自动报告清除旧错误",async()=>{
+  const box={innerHTML:''};
+  const context=vm.createContext({document:{getElementById:()=>box},adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  const d={id:'a',name:'测试机',last_seen:'one',update:{state:'wait_health',label:'等待健康确认'}};
+  context.DEV=[d];let calls=0;context.requestDeviceStatus=()=>{calls++;return true;};
+  context.renderList();
+  assert.equal((box.innerHTML.match(/等待健康确认<\/span>/g)||[]).length,1);
+  assert.doesNotMatch(box.innerHTML,/等待上报信息/);
+  assert.match(box.innerHTML,/role="status" tabindex="-1"/);
+  assert.equal(context.requestListedDeviceStatus('a'),false);
+  d.update.state='success';
+  assert.equal(context.deviceListStatus(d),'等待上报信息');
+  await context.requestListedDeviceStatus('a');assert.equal(calls,1);
+  for(const state of ['等待设备领取','等待完整上报','拉取超时','拉取失败']){
+    context.STATUS.a=state;assert.equal(context.requestListedDeviceStatus('a'),false);
+  }
+  context.STATUS_SEEN.a='one';context.reconcileReportStatus(d);assert.equal(context.STATUS.a,'拉取失败');
+  d.last_seen='two';context.reconcileReportStatus(d);assert.equal(context.deviceListStatus(d),'等待上报信息');
+  d.task={state:'running',type_label:'拉取日志',label:'执行中'};
+  assert.equal(context.requestListedDeviceStatus('a'),false);
+  d.task=null;d.contact_state='report_overdue';assert.equal(context.requestListedDeviceStatus('a'),false);
+  d.contact_state='recent_contact';d.enabled=false;assert.equal(context.requestListedDeviceStatus('a'),false);
+  assert.equal(calls,1);
+});
+
 test("设备组合筛选不改变原列表，未接通能力不制造成功记录", () => {
   const alerts=[];
   const context=vm.createContext({alert:value=>alerts.push(value),adminSession:{check(){}},setTimeout(){},setInterval(){}});
