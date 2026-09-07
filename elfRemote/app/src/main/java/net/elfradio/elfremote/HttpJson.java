@@ -17,15 +17,15 @@ final class HttpJson {
     }
 
     static void download(String url, java.io.File dest) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new java.net.URL(url).openConnection();
+        HttpURLConnection c = (HttpURLConnection) Protocol.requireHttpsUrl(url).openConnection();
         try {
             c.setConnectTimeout(20000);
             c.setReadTimeout(60000);
-            c.setInstanceFollowRedirects(true);
+            c.setInstanceFollowRedirects(false);
             c.setRequestMethod("GET");
             c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
             int code = c.getResponseCode();
-            if (code >= 400) throw new Exception("download HTTP " + code);
+            if (code < 200 || code >= 300) throw new Exception("download HTTP " + code);
             java.io.InputStream in = c.getInputStream();
             java.io.FileOutputStream out = new java.io.FileOutputStream(dest);
             try {
@@ -44,24 +44,19 @@ final class HttpJson {
     private static String exchange(String method, String url, String json) throws Exception {
         try {
             return exchangeOnce(method, url, json);
-        } catch (javax.net.ssl.SSLException e) {
-            String fallback = Protocol.httpFallbackUrl(url);
-            if (fallback.length() == 0 || fallback.equals(url)) throw e;
-            try {
-                return exchangeOnce(method, fallback, json);
-            } catch (Exception e2) {
-                throw new Exception(
-                        Protocol.formatNetError(e) + "；HTTP " + Protocol.formatNetError(e2), e2);
-            }
+        } catch (Exception e) {
+            RuntimeLog.error("https_failed", e);
+            throw e;
         }
     }
 
     private static String exchangeOnce(String method, String url, String json) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection c = (HttpURLConnection) Protocol.requireHttpsUrl(url).openConnection();
+        RuntimeLog.event("https_start method=" + method);
         try {
             c.setConnectTimeout(15000);
             c.setReadTimeout(20000);
-            c.setInstanceFollowRedirects(true);
+            c.setInstanceFollowRedirects(false);
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
@@ -73,13 +68,19 @@ final class HttpJson {
                 os.write(body);
                 os.close();
             }
-            InputStream in = c.getResponseCode() >= 400 ? c.getErrorStream() : c.getInputStream();
+            int code = c.getResponseCode();
+            if (code >= 300 && code < 400) throw new java.io.IOException("redirect refused");
+            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             if (in == null) return "{}";
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[2048];
             int n;
-            while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+            while ((n = in.read(buf)) >= 0) {
+                if (bos.size() + n > 1024 * 1024) throw new java.io.IOException("response too large");
+                bos.write(buf, 0, n);
+            }
             in.close();
+            RuntimeLog.event("https_complete code=" + code + " response_bytes=" + bos.size());
             return new String(bos.toByteArray(), Charset.forName("UTF-8"));
         } finally {
             c.disconnect();

@@ -16,18 +16,18 @@ function finitePoint(p) {
 
 function accOr(v, fallback) {
   const n = Number(v);
-  return n > 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 export function pickLocation(report, ipGeo) {
   const r = report || {};
   if (finitePoint(r.gps)) {
-    const acc = accOr(r.gps.acc_m, 30);
+    const acc = accOr(r.gps.acc_m, null);
     return {
       lat: Number(r.gps.lat),
       lng: Number(r.gps.lng),
       acc_m: acc,
-      source: "gps",
+      source: r.gps.provider === "network" ? "network" : "gps",
       at: r.gps.at || null
     };
   }

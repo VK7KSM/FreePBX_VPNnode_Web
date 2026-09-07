@@ -68,12 +68,14 @@ public class ProtocolTest {
     }
 
     @Test
-    public void httpFallbackRewritesHttpsOnly() {
+    public void httpsEndpointKeepsEncryption() throws Exception {
         assertEquals(
-                "http://v.elfradio.net/api/devices/enroll",
-                Protocol.httpFallbackUrl("https://v.elfradio.net/api/devices/enroll"));
-        assertEquals("http://example.com/x", Protocol.httpFallbackUrl("http://example.com/x"));
-        assertEquals("", Protocol.httpFallbackUrl(null));
+                "https://v.elfradio.net/api/devices/enroll",
+                Protocol.requireHttpsUrl("https://v.elfradio.net/api/devices/enroll").toString());
+        for (String bad : new String[] {"http://example.com/x", "https://user:pass@example.com/x", "https://example.com/x#fragment"}) {
+            try { Protocol.requireHttpsUrl(bad); org.junit.Assert.fail("must reject"); }
+            catch (java.io.IOException expected) { }
+        }
     }
 
     @Test

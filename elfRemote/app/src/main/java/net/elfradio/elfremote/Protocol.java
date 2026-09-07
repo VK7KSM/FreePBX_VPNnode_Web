@@ -28,9 +28,12 @@ final class Protocol {
         return BASE_URL + "/api/devices/report";
     }
 
-    static String httpFallbackUrl(String url) {
-        if (url == null) return "";
-        if (url.startsWith("https://")) return "http://" + url.substring("https://".length());
+    static java.net.URL requireHttpsUrl(String value) throws Exception {
+        java.net.URL url = new java.net.URL(value);
+        if (!"https".equalsIgnoreCase(url.getProtocol()) || url.getHost().length() == 0
+                || url.getUserInfo() != null || url.getRef() != null) {
+            throw new java.io.IOException("HTTPS endpoint required");
+        }
         return url;
     }
 

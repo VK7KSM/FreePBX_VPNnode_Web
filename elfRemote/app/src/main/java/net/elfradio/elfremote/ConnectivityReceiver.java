@@ -12,6 +12,7 @@ public final class ConnectivityReceiver extends BroadcastReceiver {
         long now = System.currentTimeMillis();
         if (now - lastMs < 5000L) return;
         lastMs = now;
+        RuntimeLog.event("connectivity_changed");
         ServiceStarter.startNow(context);
     }
 }

@@ -30,6 +30,7 @@ public final class ReportService extends Service {
     private NetworkHealer healer;
     private boolean loopStarted;
     private String lastNotifyText = "";
+    private int reportFailures;
 
     private final Runnable loop = new Runnable() {
         @Override
@@ -38,6 +39,8 @@ public final class ReportService extends Service {
             long delay = store.paired()
                     ? WatchdogPolicy.pairedReportIntervalMs()
                     : WatchdogPolicy.unpairedReportIntervalMs();
+            if (BuildConfig.STATUS_ONLY) delay = StatusReporter.retryDelay(delay, reportFailures);
+            RuntimeLog.event("next_report delay_ms=" + delay);
             if (worker != null) worker.postDelayed(this, delay);
         }
     };
@@ -46,7 +49,8 @@ public final class ReportService extends Service {
     public void onCreate() {
         super.onCreate();
         store = new PairingStore(this);
-        healer = new NetworkHealer(this, store);
+        if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
+        RuntimeLog.event("service_start status_only=" + BuildConfig.STATUS_ONLY);
         startForeground(7, buildNotification());
         lastNotifyText = notifyText();
         if (workerThread == null) {
@@ -58,7 +62,7 @@ public final class ReportService extends Service {
             loopStarted = true;
             worker.post(loop);
         }
-        WatchdogInstaller.ensure(this);
+        if (!BuildConfig.STATUS_ONLY) WatchdogInstaller.ensure(this);
     }
 
     @Override
@@ -67,7 +71,7 @@ public final class ReportService extends Service {
             store.clearEnroll();
             store.setLastStatus("正在重新获取配对码");
         }
-        if (intent != null && ACTION_LAB_DNS.equals(intent.getAction())) {
+        if (!BuildConfig.STATUS_ONLY && intent != null && ACTION_LAB_DNS.equals(intent.getAction())) {
             if (worker != null) {
                 final String dns = intent.getStringExtra("dns");
                 final String ipv4 = intent.getStringExtra("ipv4");
@@ -89,6 +93,7 @@ public final class ReportService extends Service {
 
     @Override
     public void onDestroy() {
+        RuntimeLog.event("service_stop");
         if (worker != null) worker.removeCallbacks(loop);
         if (workerThread != null) {
             workerThread.quit();
@@ -112,8 +117,11 @@ public final class ReportService extends Service {
     private void tick() {
         try {
             if (!store.paired()) enrollOrPoll();
-            else report();
+            else reportCurrent();
+            reportFailures = 0;
         } catch (Exception e) {
+            reportFailures = Math.min(10, reportFailures + 1);
+            RuntimeLog.error("report_failed", e);
             android.util.Log.w("elfRemote", "tick failed", e);
             store.setLastStatus(Protocol.formatNetError(e));
         }
@@ -157,10 +165,40 @@ public final class ReportService extends Service {
         if (Protocol.isOk(res) && res.optBoolean("paired", false)) {
             store.savePaired(res.getString("device_id"));
             store.setLastStatus(getString(R.string.paired));
-            report();
+            reportCurrent();
         } else {
             store.setLastStatus(getString(R.string.how_to_pair));
         }
+    }
+
+    private void reportCurrent() throws Exception {
+        if (BuildConfig.STATUS_ONLY) reportStatus();
+        else report();
+    }
+
+    private void reportStatus() throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("device_id", store.deviceId());
+        body.put("report_id", java.util.UUID.randomUUID().toString());
+        long now = System.currentTimeMillis();
+        java.text.SimpleDateFormat time = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+        time.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        body.put("reported_at", time.format(new java.util.Date(now)));
+        body.put("queued_at_ms", now);
+        body.put("app_version", Protocol.appVersion());
+        body.put("os_version", "Android " + Build.VERSION.RELEASE);
+        body.put("network", networkType());
+        body.put("battery", batteryPct());
+        body.put("ready", true);
+        JSONObject location = gpsFix();
+        if (location != null) body.put("gps", location);
+        else body.put("location_reason", "no_cached_location");
+        java.io.File directory = new java.io.File(getFilesDir(), "status-outbox/" + PairingStore.sha256Hex(store.deviceId()));
+        StatusOutbox outbox = new StatusOutbox(directory, 512);
+        outbox.add(body);
+        RuntimeLog.event("status_queued network=" + networkType() + " count=" + outbox.entries().length + " log_failed=" + RuntimeLog.failed());
+        int sent = new StatusReporter(outbox, json -> HttpJson.post(Protocol.reportPath(), json)).flush(store.token());
+        store.setLastStatus(sent > 0 ? "已上报" : "等待上报");
     }
 
     private void report() throws Exception {
@@ -754,6 +792,7 @@ public final class ReportService extends Service {
                     LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER
             };
             for (int i = 0; i < providers.length; i++) {
+                if (!lm.isProviderEnabled(providers[i])) continue;
                 Location loc = lm.getLastKnownLocation(providers[i]);
                 if (loc == null) continue;
                 if (best == null || loc.getTime() > best.getTime()) best = loc;
@@ -762,7 +801,8 @@ public final class ReportService extends Service {
             JSONObject o = new JSONObject();
             o.put("lat", best.getLatitude());
             o.put("lng", best.getLongitude());
-            o.put("acc_m", best.hasAccuracy() ? Math.round(best.getAccuracy()) : 30);
+            o.put("acc_m", best.hasAccuracy() ? Math.round(best.getAccuracy()) : JSONObject.NULL);
+            o.put("provider", best.getProvider());
             java.text.SimpleDateFormat f = new java.text.SimpleDateFormat(
                     "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
             f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
