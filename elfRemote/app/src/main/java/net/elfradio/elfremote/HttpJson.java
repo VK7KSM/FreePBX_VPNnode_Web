@@ -17,6 +17,11 @@ final class HttpJson {
     }
 
     static void download(String url, java.io.File dest) throws Exception {
+        download(url, dest, 64L * 1024 * 1024);
+    }
+
+    static void download(String url, java.io.File dest, long maximumBytes) throws Exception {
+        if (maximumBytes <= 0 || maximumBytes > 64L * 1024 * 1024) throw new java.io.IOException("download size invalid");
         HttpURLConnection c = (HttpURLConnection) Protocol.requireHttpsUrl(url).openConnection();
         try {
             c.setConnectTimeout(20000);
@@ -26,12 +31,19 @@ final class HttpJson {
             c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
             int code = c.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("download HTTP " + code);
+            if (c.getContentLength() > maximumBytes) throw new java.io.IOException("download too large");
             java.io.InputStream in = c.getInputStream();
             java.io.FileOutputStream out = new java.io.FileOutputStream(dest);
             try {
                 byte[] buf = new byte[4096];
                 int n;
-                while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+                long total = 0;
+                while ((n = in.read(buf)) >= 0) {
+                    total += n;
+                    if (total > maximumBytes) throw new java.io.IOException("download too large");
+                    out.write(buf, 0, n);
+                }
+                out.getFD().sync();
             } finally {
                 out.close();
                 in.close();

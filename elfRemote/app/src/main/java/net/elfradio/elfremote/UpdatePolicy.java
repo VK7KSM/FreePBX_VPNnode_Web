@@ -90,6 +90,24 @@ final class UpdatePolicy {
         return sha256.equals(sha256Hex(apk));
     }
 
+    static boolean archiveMatches(JSONObject manifest, String packageName, int code, String name, String cert) {
+        return manifest != null && PKG.equals(packageName)
+                && code == manifest.optInt("versionCode", -1)
+                && name != null && name.equals(manifest.optString("versionName"))
+                && sha256HexLooksValid(cert) && cert.equals(manifest.optString("certSha256"));
+    }
+
+    static String systemInstallCommand(String path) {
+        if (!"/data/local/elfremote/pending.apk".equals(path) && !LAST_GOOD_APK.equals(path))
+            throw new IllegalArgumentException("install path invalid");
+        String target="/system/app/ElfRemote/ElfRemote.apk";
+        return "set -e; mount -o remount,rw /system; trap 'mount -o remount,ro /system' EXIT; "
+                + "cp '"+path+"' "+target+".new; chown 0:0 "+target+".new; chmod 0644 "+target+".new; "
+                + "restorecon "+target+".new; cmp '"+path+"' "+target+".new; sync; "
+                + "mv "+target+".new "+target+"; restorecon "+target+"; sync; "
+                + "mount -o remount,ro /system; trap - EXIT; echo SYS_OK";
+    }
+
     static boolean alreadyOnTarget(String haveName, int haveCode, String wantName, int wantCode) {
         return haveCode == wantCode && wantName != null && wantName.equals(haveName);
     }

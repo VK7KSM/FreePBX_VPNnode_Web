@@ -33,6 +33,13 @@ public final class UpdateTool {
     }
 
     static int run(String[] args) throws Exception {
+        if (args != null && args.length == 2 && "inspect".equals(args[0])) {
+            PackageInfo archive = systemContext().getPackageManager().getPackageArchiveInfo(args[1], PackageManager.GET_SIGNATURES);
+            if (archive == null || archive.signatures == null || archive.signatures.length != 1) throw new java.io.IOException("invalid APK archive");
+            System.out.println(new JSONObject().put("package", archive.packageName).put("versionCode", archive.versionCode)
+                    .put("versionName", archive.versionName).put("certSha256", UpdatePolicy.sha256Hex(archive.signatures[0].toByteArray())));
+            return 0;
+        }
         if (args == null || args.length < 2 || !"run".equals(args[0])) {
             System.err.println("usage: run job.json");
             return 2;
@@ -91,7 +98,7 @@ public final class UpdateTool {
         progress(UpdatePolicy.ST_CLAIMED, "");
         progress(UpdatePolicy.ST_DOWNLOADING, "");
         File apk = new File(DIR, "pending.apk");
-        HttpJson.download(m.getString("url"), apk);
+        HttpJson.download(m.getString("url"), apk, m.getInt("size"));
         byte[] bytes = readBytes(apk);
         progress(UpdatePolicy.ST_VERIFYING, "");
         if (!UpdatePolicy.apkMatches(bytes, m.getInt("size"), m.getString("sha256"))) {
@@ -103,6 +110,14 @@ public final class UpdateTool {
         if (!m.getString("certSha256").equals(liveCert)) {
             writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName);
             progress(UpdatePolicy.ST_REJECTED, "cert-mismatch");
+            return 0;
+        }
+        PackageInfo archive = ctx.getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), PackageManager.GET_SIGNATURES);
+        String archiveCert = archive != null && archive.signatures != null && archive.signatures.length == 1
+                ? UpdatePolicy.sha256Hex(archive.signatures[0].toByteArray()) : "";
+        if (archive == null || !UpdatePolicy.archiveMatches(m, archive.packageName, archive.versionCode, archive.versionName, archiveCert)) {
+            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName);
+            progress(UpdatePolicy.ST_REJECTED, "apk-metadata-mismatch");
             return 0;
         }
         progress(UpdatePolicy.ST_INSTALLING, "");
@@ -142,16 +157,13 @@ public final class UpdateTool {
         String pmOut = exec(UpdatePolicy.pmInstallArgv(path));
         if (pmOut != null && pmOut.contains("Success")) return true;
         String sys = exec("sh", "-c",
-                "mount -o remount,rw /system; "
-                        + "cp '" + path + "' /system/app/ElfRemote/ElfRemote.apk; "
-                        + "chmod 0644 /system/app/ElfRemote/ElfRemote.apk; "
-                        + "mount -o remount,ro /system; echo SYS_OK");
+                UpdatePolicy.systemInstallCommand(path));
         if (sys == null || !sys.contains("SYS_OK")) return false;
         exec("reboot");
         return true;
     }
 
-    private static void backupLastGood() {
+    private static void backupLastGood() throws Exception {
         String src = "/system/app/ElfRemote/ElfRemote.apk";
         String pathOut = exec("pm", "path", UpdatePolicy.PKG);
         if (pathOut != null) {
@@ -163,8 +175,12 @@ public final class UpdateTool {
                 if (p.length() > 0) src = p;
             }
         }
-        exec("sh", "-c", "cp '" + src + "' " + UpdatePolicy.LAST_GOOD_APK
-                + " && chmod 0644 " + UpdatePolicy.LAST_GOOD_APK);
+        if (!src.startsWith("/") || src.contains("'") || src.contains("\n") || src.contains("\r")) throw new java.io.IOException("backup source invalid");
+        String copied = exec("sh", "-c", "set -e; cp '" + src + "' " + UpdatePolicy.LAST_GOOD_APK + ".new"
+                + "; chmod 0660 " + UpdatePolicy.LAST_GOOD_APK + ".new"
+                + "; cmp '" + src + "' " + UpdatePolicy.LAST_GOOD_APK + ".new"
+                + "; sync; mv " + UpdatePolicy.LAST_GOOD_APK + ".new " + UpdatePolicy.LAST_GOOD_APK + "; sync; echo BACKUP_OK");
+        if (copied == null || !copied.contains("BACKUP_OK")) throw new java.io.IOException("backup failed");
     }
 
     private static boolean waitHealth(int wantCode) {
@@ -239,19 +255,22 @@ public final class UpdateTool {
         o.put("versionCode", code);
         o.put("versionName", name);
         File f = new File(DIR, "update.state");
-        FileOutputStream out = new FileOutputStream(f);
+        android.util.AtomicFile atomic = new android.util.AtomicFile(f);
+        FileOutputStream out = null;
         try {
+            out = atomic.startWrite();
             out.write(o.toString().getBytes("UTF-8"));
-        } finally {
-            out.close();
+            atomic.finishWrite(out);
+        } catch (Exception error) {
+            if (out != null) atomic.failWrite(out);
+            throw error;
         }
     }
 
     private static String readState() {
         try {
             File f = new File(DIR, "update.state");
-            if (!f.isFile()) return "";
-            return new JSONObject(readFile(f)).optString("state", "");
+            return new JSONObject(new String(new android.util.AtomicFile(f).readFully(), "UTF-8")).optString("state", "");
         } catch (Exception e) {
             return "";
         }
@@ -260,8 +279,7 @@ public final class UpdateTool {
     private static String readStateJobId() {
         try {
             File f = new File(DIR, "update.state");
-            if (!f.isFile()) return "";
-            return new JSONObject(readFile(f)).optString("job_id", "");
+            return new JSONObject(new String(new android.util.AtomicFile(f).readFully(), "UTF-8")).optString("job_id", "");
         } catch (Exception e) {
             return "";
         }

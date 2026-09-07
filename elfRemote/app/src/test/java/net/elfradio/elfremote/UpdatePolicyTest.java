@@ -11,6 +11,23 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class UpdatePolicyTest {
+    @Test(expected=IllegalArgumentException.class)
+    public void systemInstallerRejectsUncontrolledPaths() {
+        UpdatePolicy.systemInstallCommand("/tmp/untrusted'; echo SYS_OK");
+    }
+
+    @Test
+    public void signedManifestCannotSubstituteForActualArchiveMetadata() throws Exception {
+        JSONObject m=goodManifest(68,"0.1.67");
+        String cert=m.getString("certSha256");
+        assertTrue(UpdatePolicy.archiveMatches(m,UpdatePolicy.PKG,68,"0.1.67",cert));
+        assertFalse(UpdatePolicy.archiveMatches(m,"other.package",68,"0.1.67",cert));
+        assertFalse(UpdatePolicy.archiveMatches(m,UpdatePolicy.PKG,67,"0.1.67",cert));
+        assertFalse(UpdatePolicy.archiveMatches(m,UpdatePolicy.PKG,68,"different",cert));
+        assertFalse(UpdatePolicy.archiveMatches(m,UpdatePolicy.PKG,68,"0.1.67",""));
+        assertFalse(UpdatePolicy.archiveMatches(m,UpdatePolicy.PKG,68,"0.1.67",UpdatePolicy.sha256Hex(new byte[]{1})));
+    }
+
     @Test
     public void parseManifestRequiresPackageHashAndVersion() throws Exception {
         assertEquals(null, UpdatePolicy.parseManifest(null));
