@@ -6,18 +6,17 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 
-test("不同缩放下近邻标记保持可点选间距，不改真实位置", () => {
+test("同地点按实际距离分组，显示锚点与缩放无关，不改真实坐标", () => {
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
   vm.runInContext(source,context);
-  for(const scale of [0.01,1,100]) {
-    const points=[{id:"a",x:100,y:100},{id:"b",x:100+scale,y:100+scale},{id:"c",x:100,y:100}];
-    const before=JSON.stringify(points);
-    const placed=context.markerScreenPositions(points);
-    assert.equal(JSON.stringify(points),before);
-    for(let i=0;i<placed.length;i++) for(let j=i+1;j<placed.length;j++) {
-      assert.ok(Math.abs(placed[i].x-placed[j].x)>=180 || Math.abs(placed[i].y-placed[j].y)>=20);
-    }
-  }
+  const devices=[{id:"a",loc:{source:"gps",lat:0,lng:0}},{id:"b",loc:{source:"gps",lat:8,lng:0}},
+    {id:"c",loc:{source:"ip",lat:0,lng:0}},{id:"d",loc:{source:"gps",lat:40,lng:0}}];
+  const before=JSON.stringify(devices);
+  const groups=context.markerLocationGroups(devices,(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]));
+  assert.equal(groups.length,3);
+  assert.equal(groups[0].devices.map(d=>d.id).join(","),"a,b");
+  assert.equal(JSON.stringify(devices),before);
+  assert.equal(JSON.stringify(context.markerLocationGroups(devices.slice().reverse(),(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]))),JSON.stringify(groups));
 });
 
 test("devices-client-source 必须与 devices-client.js 逐字一致", () => {

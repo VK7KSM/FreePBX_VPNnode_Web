@@ -9,6 +9,7 @@ var circles = {};
 var UI = {};
 var STATUS = {};
 var mapFitted = false;
+var markerGroups = [];
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -203,7 +204,7 @@ function initMap(){
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
-  map.on("zoomend moveend", layoutMapMarkers);
+  map.on("zoom move", layoutMapMarkers);
 }
 
 function deviceColor(id, online){
@@ -240,6 +241,7 @@ function renderMap(){
   markers = {}; circles = {};
   var bounds = [];
   var hasIpArea = false;
+  markerGroups = markerLocationGroups(DEV.filter(function(d){return d.online && d.loc;}), function(a,b){return map.distance(a,b);});
   for(var i=0;i<DEV.length;i++){
     var d = DEV[i];
     if(!d.online || !d.loc || !isFinite(d.loc.lat) || !isFinite(d.loc.lng)) continue;
@@ -280,29 +282,32 @@ function renderMap(){
   layoutMapMarkers();
 }
 
-function markerScreenPositions(points){
-  var placed = [];
-  points.slice().sort(function(a,b){return a.id.localeCompare(b.id);}).forEach(function(point){
-    var y = point.y;
-    while(placed.some(function(other){return Math.abs(other.x-point.x)<180 && Math.abs(other.y-y)<20;})) {
-      y = Math.max.apply(null, placed.filter(function(other){return Math.abs(other.x-point.x)<180 && Math.abs(other.y-y)<20;}).map(function(other){return other.y+20;}));
-    }
-    placed.push({id:point.id,x:point.x,y:y,dy:y-point.y});
-  });
-  return placed;
-}
-
 function layoutMapMarkers(){
   if(!map) return;
-  var positions=markerScreenPositions(Object.keys(markers).map(function(id){
-    var point=map.latLngToContainerPoint(markers[id].getLatLng());
-    return {id:id,x:point.x,y:point.y};
-  }));
-  positions.forEach(function(point){
-    var element=markers[point.id].getElement();
-    var pin=element && element.querySelector(".dpin");
-    if(pin) pin.style.transform="translateY("+point.dy+"px)";
+  markerGroups.forEach(function(group){
+    var origin=map.latLngToContainerPoint(group.anchor);
+    group.devices.forEach(function(d,index){
+      if(!markers[d.id]) return;
+      var point=L.point(origin.x,origin.y+(index-(group.devices.length-1)/2)*12);
+      markers[d.id].setLatLng(map.containerPointToLatLng(point));
+    });
   });
+}
+
+function markerLocationGroups(devices, distance){
+  var groups = [];
+  devices.slice().sort(function(a,b){return a.id.localeCompare(b.id);}).forEach(function(device){
+    var loc=device.loc;
+    if(loc.lat==null || loc.lng==null || !isFinite(loc.lat) || !isFinite(loc.lng)) return;
+    var point=[Number(loc.lat),Number(loc.lng)];
+    var group=groups.find(function(candidate){return candidate.devices.every(function(other){
+      if(other.loc.source!==loc.source) return false;
+      return distance(point,[Number(other.loc.lat),Number(other.loc.lng)]) <= (loc.source==="gps" ? 25 : 1);
+    });});
+    if(!group){group={anchor:point,devices:[]};groups.push(group);}
+    group.devices.push(device);
+  });
+  return groups;
 }
 
 function flyTo(id){
