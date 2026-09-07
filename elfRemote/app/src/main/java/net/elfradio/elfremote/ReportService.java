@@ -271,6 +271,7 @@ public final class ReportService extends Service {
         body.put("ready", true);
         body.put("managed_log_tasks", true);
         body.put("managed_heal_tasks", true);
+        body.put("managed_reboot_tasks", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
@@ -357,7 +358,8 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
-                    || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -486,6 +488,10 @@ public final class ReportService extends Service {
                 return;
             }
         } catch (Exception error) { RuntimeLog.error("task_receipt_retry_pending", error); return; }
+        if (offer.optBoolean("managed_reboot_v1") && RepairPolicy.TYPE_REBOOT.equals(offer.optString("type"))) {
+            runManagedReboot(offer);
+            return;
+        }
         String lastId = readLastTaskId();
         String phase = readTaskPhase();
         if (RepairPolicy.alreadyDone(lastId, phase, id)) return;
@@ -668,6 +674,39 @@ public final class ReportService extends Service {
         }
     }
 
+    private void runManagedReboot(JSONObject offer) {
+        String id = offer.optString("id");
+        String path = new java.io.File(getFilesDir(), "reboot-intent.json").getPath();
+        try {
+            String boot = readBootId();
+            if (boot.isEmpty()) throw new java.io.IOException("boot identity unavailable");
+            String raw = readTaskState(path);
+            JSONObject previous = raw.isEmpty() ? null : new JSONObject(raw);
+            if (previous != null && id.equals(previous.optString("task_id"))) {
+                if (!store.deviceId().equals(previous.optString("device_id"))) throw new java.io.IOException("reboot identity mismatch");
+                if (!boot.equals(previous.getString("boot"))) {
+                    postTask(id, RepairPolicy.ST_SUCCESS, "reboot-confirmed",
+                            new JSONObject().put("stage", "reboot").put("action", "confirmed"));
+                    RuntimeLog.event("task_reboot_confirmed");
+                } else RuntimeLog.event("task_reboot_waiting_same_boot");
+                return;
+            }
+            String reason = RepairPolicy.rejectReason(offer, System.currentTimeMillis());
+            if (!reason.isEmpty()) { postTask(id, RepairPolicy.ST_REJECTED, reason, null); return; }
+            if (new java.io.File("/data/local/elfremote/heal.cmd").exists()) {
+                postTask(id, RepairPolicy.ST_FAILED, "root-command-busy", null); return;
+            }
+            postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
+            postTask(id, RepairPolicy.ST_RUNNING, "reboot", null);
+            writeSmall(path, new JSONObject().put("task_id", id).put("device_id", store.deviceId()).put("boot", boot).toString());
+            long deadline = offer.optLong("expires_at");
+            armHealCmd(RepairPolicy.expiringRebootCommand(deadline));
+            RuntimeLog.event("task_reboot_armed");
+        } catch (Exception error) {
+            RuntimeLog.error("task_reboot_pending", error);
+        }
+    }
+
     private void armReboot() throws Exception {
         armHealCmd(RepairPolicy.rebootCommand());
     }
@@ -678,6 +717,7 @@ public final class ReportService extends Service {
         java.io.FileOutputStream out = new java.io.FileOutputStream(tmp);
         try {
             out.write((cmd + "\n").getBytes("UTF-8"));
+            out.getFD().sync();
         } finally {
             out.close();
         }

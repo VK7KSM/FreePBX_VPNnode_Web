@@ -100,3 +100,21 @@ test('新自愈能力不影响旧客户端且停用设备不能领取',async()=>
   const disabled=f.data.get('remote_devices');disabled[0].enabled=false;f.data.set('remote_devices',disabled);
   assert.equal((await report(true)).managed_task,undefined);
 });
+
+test('受控重启只提供给明确声明能力的客户端且过期后不再提供',async()=>{
+  const f=setup(),cookie=await login(f);
+  const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
+  const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'reboot'},cookie),f.env);
+  assert.equal((await enqueue()).status,409);
+  let sequence=0;
+  const report=async capable => (await worker.fetch(request('/api/devices/report','POST',{
+    device_id:'device',token:'fixture-token',status_only:true,managed_reboot_tasks:capable,
+    report_id:'reboot-report-'+(++sequence),sampled_at:new Date(Date.now()+sequence*1000).toISOString()
+  }),f.env)).json();
+  await report(true); assert.equal((await enqueue()).status,200);
+  assert.equal((await report(false)).managed_task,undefined);
+  assert.equal((await report(true)).managed_task.managed_reboot_v1,true);
+  const expired=f.data.get('remote_devices');expired[0].task.expires_at=1;f.data.set('remote_devices',expired);
+  assert.equal((await report(true)).managed_task,undefined);
+  assert.equal(f.data.get('remote_devices')[0].task.state,'expired');
+});

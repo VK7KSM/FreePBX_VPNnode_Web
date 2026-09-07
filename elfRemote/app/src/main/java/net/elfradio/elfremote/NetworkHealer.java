@@ -414,18 +414,7 @@ final class NetworkHealer {
     }
 
     private void logLine(String line) {
-        String row = System.currentTimeMillis() + " " + line + "\n";
         Log.i(TAG, "heal " + line);
-        try {
-            File f = new File(ctx.getFilesDir(), "heal.log");
-            FileOutputStream out = new FileOutputStream(f, true);
-            try {
-                out.write(row.getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
-        } catch (Exception e) {
-            /* ignore */
-        }
+        RuntimeLog.event("heal " + line);
     }
 }

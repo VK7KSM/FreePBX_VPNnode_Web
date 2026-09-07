@@ -1234,6 +1234,7 @@ async function handleDeviceReport(env, request) {
       list[i].status_only = data.status_only === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
+      list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
@@ -1252,7 +1253,7 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
@@ -1458,6 +1459,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.status_only === true && report.managed_heal_tasks === true
       && device.task?.managed_heal_v1 === true && device.task.type === "heal_network" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_heal_v1:true};
+  if (device.enabled !== false && report.status_only === true && report.managed_reboot_tasks === true
+      && device.task?.managed_reboot_v1 === true && device.task.type === "reboot" && shouldOfferRepair(device, now))
+    body.managed_task = {...repairOfferPayload(device.task), managed_reboot_v1:true};
 }
 
 async function handleElfEnqueueTask(env, request) {
@@ -1475,7 +1479,8 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(found.status_only && !((data.type==="pull_logs" && found.managed_log_tasks===true)
-        || (data.type==="heal_network" && found.managed_heal_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+        || (data.type==="heal_network" && found.managed_heal_tasks===true)
+        || (data.type==="reboot" && found.managed_reboot_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
     if (String(data.type || "") === "install_apk") {
@@ -1502,6 +1507,7 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="heal_network") found.task.managed_heal_v1=true;
+    if(!queued.duplicate && found.status_only && data.type==="reboot") found.task.managed_reboot_v1=true;
     await saveDevices(env, list);
     return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });
   } catch (e) {

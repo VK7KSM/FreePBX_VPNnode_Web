@@ -94,6 +94,11 @@ final class RepairPolicy {
         return "reboot";
     }
 
+    static String expiringRebootCommand(long deadline) {
+        if (deadline <= 0) throw new IllegalArgumentException("reboot deadline missing");
+        return "set -e; test $(date +%s) -lt " + (deadline / 1000L) + "; sync; reboot";
+    }
+
     static String adbdCommand() {
         return "setprop service.adb.tcp.port 5555"
                 + " && stop adbd && start adbd"
