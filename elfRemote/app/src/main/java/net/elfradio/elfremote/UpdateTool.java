@@ -46,31 +46,32 @@ public final class UpdateTool {
             return 2;
         }
         String rawJob = readFile(new File(args[1]));
-        JSONObject job = new JSONObject(rawJob);
+        JSONObject job;
+        try { job = new JSONObject(rawJob); }
+        catch (org.json.JSONException malformed) { return rejectQueuedJob("bad-job"); }
         managedUpdate = job.optBoolean("managed_update_v1");
-        String manRaw = job.getString("manifest_raw");
-        String sig = job.getString("signature");
+        String manRaw = job.optString("manifest_raw", "");
+        String sig = job.optString("signature", "");
         deviceId = job.optString("device_id", "");
         token = job.optString("token", "");
         byte[] payload = manRaw.getBytes("UTF-8");
         if (!UpdatePolicy.verifySignature(UpdatePolicy.PUBLIC_KEY_PEM, payload, sig)) {
-            progress(UpdatePolicy.ST_CLAIMED, "bad-signature");
-            return 4;
+            return rejectQueuedJob("bad-signature");
         }
         JSONObject m = UpdatePolicy.parseManifest(manRaw);
         if (m == null) {
-            progress(UpdatePolicy.ST_CLAIMED, "bad-manifest");
-            return 5;
+            return rejectQueuedJob("bad-manifest");
         }
         jobId = m.getString("job_id");
         if (m.has("device_id") && !deviceId.equals(m.optString("device_id"))) {
+            writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"), "wrong-device");
             progress(UpdatePolicy.ST_REJECTED, "wrong-device"); return 0;
         }
         boolean resuming = jobId.equals(readStateJobId()) && (UpdatePolicy.ST_INSTALLING.equals(readState())
                 || UpdatePolicy.ST_WAIT_HEALTH.equals(readState()) || UpdatePolicy.ST_ROLLBACK.equals(readState())
                 || UpdatePolicy.ST_RECOVERED.equals(readState()) || UpdatePolicy.ST_SUCCESS.equals(readState()));
         if (UpdatePolicy.expired(m, System.currentTimeMillis()) && !resuming) {
-            writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"));
+            writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"), "expired");
             progress(UpdatePolicy.ST_REJECTED, "expired"); return 0;
         }
         writeUpdaterIdentity();
@@ -118,13 +119,13 @@ public final class UpdateTool {
         byte[] bytes = readBytes(apk);
         progress(UpdatePolicy.ST_VERIFYING, "");
         if (!UpdatePolicy.apkMatches(bytes, m.getInt("size"), m.getString("sha256"))) {
-            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName);
+            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName, "hash-mismatch");
             progress(UpdatePolicy.ST_REJECTED, "hash-mismatch");
             return 0;
         }
         String liveCert = certSha256(ctx);
         if (!m.getString("certSha256").equals(liveCert)) {
-            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName);
+            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName, "cert-mismatch");
             progress(UpdatePolicy.ST_REJECTED, "cert-mismatch");
             return 0;
         }
@@ -132,7 +133,7 @@ public final class UpdateTool {
         String archiveCert = archive != null && archive.signatures != null && archive.signatures.length == 1
                 ? UpdatePolicy.sha256Hex(archive.signatures[0].toByteArray()) : "";
         if (archive == null || !UpdatePolicy.archiveMatches(m, archive.packageName, archive.versionCode, archive.versionName, archiveCert)) {
-            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName);
+            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName, "apk-metadata-mismatch");
             progress(UpdatePolicy.ST_REJECTED, "apk-metadata-mismatch");
             return 0;
         }
@@ -278,12 +279,26 @@ public final class UpdateTool {
     }
 
     private static void writeState(String state, int code, String name) throws Exception {
+        writeState(state, code, name, "");
+    }
+
+    private static int rejectQueuedJob(String detail) throws Exception {
+        JSONObject previous = readStateObject();
+        if (!UpdatePolicy.ST_CLAIMED.equals(previous.optString("state"))) return 0;
+        jobId = previous.getString("job_id");
+        managedUpdate = previous.optBoolean("managed_update_v1");
+        writeState(UpdatePolicy.ST_REJECTED, previous.optInt("versionCode"), previous.optString("versionName"), detail);
+        return 0;
+    }
+
+    private static void writeState(String state, int code, String name, String detail) throws Exception {
         JSONObject o = new JSONObject();
         o.put("job_id", jobId);
         o.put("managed_update_v1", managedUpdate);
         o.put("state", state);
         o.put("versionCode", code);
         o.put("versionName", name);
+        o.put("detail", detail);
         File f = new File(DIR, "update.state");
         android.util.AtomicFile atomic = new android.util.AtomicFile(f);
         FileOutputStream out = null;

@@ -24,7 +24,6 @@ import {
   applyRepairProgress,
   publicRepair,
   repairOfferPayload,
-  installParamsFromRelease,
   repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
@@ -1491,19 +1490,19 @@ async function handleElfEnqueueTask(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
+    if (String(data.type || "") === "install_apk") {
+      const vc = Number(data.params?.versionCode || data.versionCode || 0);
+      if (!Number.isInteger(vc) || vc <= 0) return json({ok:false,msg:"缺少有效 versionCode"},400);
+      const release = await getStore(env, "elfremote_rel_" + vc);
+      if (!release) return json({ok:false,msg:"未发布该版本"},404);
+      const assigned = await assignReleaseToDevice(env, deviceId, release);
+      return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
+    }
     if(found.status_only && !((data.type==="pull_logs" && found.managed_log_tasks===true)
         || (data.type==="heal_network" && found.managed_heal_tasks===true)
         || (data.type==="reboot" && found.managed_reboot_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
-    if (String(data.type || "") === "install_apk") {
-      const vc = Number((data.params && data.params.versionCode) || data.versionCode || 0);
-      if (vc <= 0) return json({ ok: false, msg: "缺少 versionCode" }, 400);
-      const rel = await getStore(env, "elfremote_rel_" + vc);
-      if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
-      params = installParamsFromRelease(rel, "https://v.elfradio.net");
-      if (!params) return json({ ok: false, msg: "清单不完整" }, 400);
-    }
     const queued = enqueueRepairTask(found, {
       type: data.type,
       params,

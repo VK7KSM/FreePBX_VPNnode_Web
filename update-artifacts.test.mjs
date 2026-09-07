@@ -46,3 +46,17 @@ test('更新分配校验设备能力与签名清单目标，重复分配不重�
   assert.equal((await assign()).status,200);
   assert.equal(f.data.get('remote_devices')[0].update.state,'success');
 });
+
+test('覆盖安装复用签名更新及回滚流程，不新建旧修复安装任务',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true}]});
+  const cookie=await login(f);
+  const rel={job_id:'install-one',manifest_raw:JSON.stringify({device_id:'device'}),expires_at:Date.now()+60000,versionCode:101,versionName:'fixture'};
+  f.data.set('elfremote_rel_101',rel);
+  const response=await worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'install_apk',versionCode:101},cookie),f.env);
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).kind,'update');
+  const device=f.data.get('remote_devices')[0];
+  assert.equal(device.update.job_id,'install-one');
+  assert.equal(device.update.managed_update_v1,true);
+  assert.equal(device.task,undefined);
+});

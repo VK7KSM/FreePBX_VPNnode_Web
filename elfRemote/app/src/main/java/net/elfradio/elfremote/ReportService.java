@@ -945,7 +945,8 @@ public final class ReportService extends Service {
             JSONObject st = new JSONObject(raw);
             if (BuildConfig.STATUS_ONLY && !st.optBoolean("managed_update_v1")) return;
             String disk = st.optString("state", "");
-            if (UpdatePolicy.ST_SUCCESS.equals(disk) || UpdatePolicy.ST_RECOVERED.equals(disk)) {
+            if (UpdatePolicy.ST_SUCCESS.equals(disk) || UpdatePolicy.ST_RECOVERED.equals(disk)
+                    || UpdatePolicy.ST_REJECTED.equals(disk)) {
                 acknowledgeUpdateCompletion(st);
                 return;
             }
@@ -980,8 +981,10 @@ public final class ReportService extends Service {
             if (job.equals(previous.optString("job_id")) && terminal.equals(previous.optString("state"))) return;
         }
         JSONObject body = new JSONObject().put("device_id", store.deviceId()).put("token", store.token())
-                .put("job_id", job).put("detail", UpdatePolicy.ST_SUCCESS.equals(terminal) ? "health-ok" : "last-good");
-        body.put("state", UpdatePolicy.ST_SUCCESS.equals(terminal) ? UpdatePolicy.ST_WAIT_HEALTH : UpdatePolicy.ST_ROLLBACK);
+                .put("job_id", job).put("detail", UpdatePolicy.ST_REJECTED.equals(terminal) ? state.optString("detail", "invalid-update")
+                        : UpdatePolicy.ST_SUCCESS.equals(terminal) ? "health-ok" : "last-good");
+        body.put("state", UpdatePolicy.ST_REJECTED.equals(terminal) ? UpdatePolicy.ST_CLAIMED
+                : UpdatePolicy.ST_SUCCESS.equals(terminal) ? UpdatePolicy.ST_WAIT_HEALTH : UpdatePolicy.ST_ROLLBACK);
         HttpJson.post(Protocol.updateProgressPath(), body.toString());
         body.put("state", terminal);
         JSONObject reply = new JSONObject(HttpJson.post(Protocol.updateProgressPath(), body.toString()));
