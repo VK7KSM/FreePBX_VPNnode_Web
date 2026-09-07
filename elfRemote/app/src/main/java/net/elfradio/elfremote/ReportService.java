@@ -33,10 +33,16 @@ public final class ReportService extends Service {
     private int reportFailures;
     private PushConnection push;
     private TrafficMeter traffic;
+    private DailyLocation dailyLocation;
 
     private final Runnable loop = new Runnable() {
         @Override
         public void run() {
+            if (dailyLocation != null && store.paired()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
+            else reportAndSchedule();
+        }
+
+        private void reportAndSchedule() {
             tick();
             long delay = store.paired()
                     ? WatchdogPolicy.pairedReportIntervalMs()
@@ -47,7 +53,10 @@ public final class ReportService extends Service {
             }
             if (BuildConfig.STATUS_ONLY && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
             RuntimeLog.event("next_report delay_ms=" + delay);
-            if (worker != null) worker.postDelayed(this, delay);
+            if (worker != null) {
+                worker.removeCallbacks(this);
+                worker.postDelayed(this, delay);
+            }
         }
     };
 
@@ -66,6 +75,7 @@ public final class ReportService extends Service {
             worker = new Handler(workerThread.getLooper());
         }
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
+        if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
         if (!loopStarted) {
             loopStarted = true;
             if (BuildConfig.STATUS_ONLY) worker.post(() -> traffic.sample());
@@ -108,6 +118,7 @@ public final class ReportService extends Service {
         RuntimeLog.event("service_stop");
         if (worker != null) worker.removeCallbacks(loop);
         if (worker != null && push != null) worker.post(push::close);
+        if (worker != null && dailyLocation != null) worker.post(dailyLocation::close);
         if (workerThread != null) {
             workerThread.quitSafely();
             workerThread = null;
@@ -209,7 +220,7 @@ public final class ReportService extends Service {
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
-        else body.put("location_reason", "no_cached_location");
+        else body.put("location_reason", dailyLocation == null ? "no_cached_location" : dailyLocation.reason());
         return body;
     }
 
