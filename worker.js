@@ -2192,7 +2192,7 @@ function renderDevicesHtml() {
     '.layout{display:grid;grid-template-columns:220px minmax(0,1fr);grid-template-rows:minmax(300px,40vh) auto;gap:1rem}.layout>*{min-width:0}',
     '@media(max-width:800px){.layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 320px auto}header{overflow-x:auto}.fn-menu{flex-wrap:wrap!important}.fn-btn{flex:1 1 120px!important}.modal-card{max-width:calc(100vw - 24px)}.dev-name{min-width:0}.tag{flex-shrink:0}}',
     '#devList{overflow:auto;padding:.4rem}',
-    '.dev-row{display:flex;align-items:center;gap:.55rem;padding:.55rem .65rem;border-radius:.5rem;cursor:pointer}',
+    '.dev-row{display:grid;grid-template-columns:12px minmax(0,1fr) auto;align-items:center;gap:.35rem;padding:.55rem .65rem;border-radius:.5rem;cursor:pointer}.dev-row>button{grid-column:2/-1;justify-self:end;font-size:.7rem;padding:.2rem .4rem;white-space:nowrap}.dev-row>.tag{white-space:nowrap}',
     '.dev-row:hover{background:rgba(30,58,95,.4)}',
     '.dev-row.sel{background:rgba(30,58,95,.7)}',
     '.dev-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}',

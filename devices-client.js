@@ -112,7 +112,8 @@ function loadDevices(){
     if(!currentDev() && DEV.length) selDev = DEV[0].id;
     renderList();
     renderMap();
-    if(!$("devOps").contains(document.activeElement)) renderOps();
+    var editing = $("devOps").contains(document.activeElement) && document.activeElement.matches("input,textarea,select,[contenteditable=true]");
+    if(!editing) renderOps();
   }).catch(function(){});
 }
 
