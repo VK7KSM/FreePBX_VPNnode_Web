@@ -110,7 +110,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -127,7 +127,8 @@ export const REPAIR_TYPE_LABELS = {
   heal_network: "强制自愈",
   reboot: "受控重启",
   install_apk: "覆盖安装",
-  restart_adbd: "重启本机adbd"
+  restart_adbd: "重启本机adbd",
+  scan_wifi: "扫描 Wi-Fi"
 };
 
 export function installParamsFromRelease(rel, baseUrl) {
@@ -237,8 +238,10 @@ export function canAdvanceRepair(from, to) {
 export function applyRepairProgress(device, taskId, state, detail, result) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
+  const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
+  if (scan) device.wifi_scan = scan;
   if (result && typeof result === "object") {
     const sha = String(result.sha256 || "").toLowerCase();
     device.task.result = {
@@ -253,6 +256,18 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
     };
   }
   return device;
+}
+
+export function normalizeWifiScan(value) {
+  if (!value || !Number.isSafeInteger(value.sampled_at_ms) || value.sampled_at_ms <= 0
+      || !Array.isArray(value.networks) || value.networks.length > 30) throw new Error("Wi-Fi 扫描结果无效");
+  const networks = value.networks.map(entry => {
+    if (!entry || typeof entry.ssid !== "string" || !entry.ssid.length || new TextEncoder().encode(entry.ssid).length > 32
+        || !Number.isInteger(entry.rssi) || entry.rssi < -127 || entry.rssi > 0
+        || !["Open","WEP","WPA/WPA2","WPA3","Enterprise","OWE","Unknown"].includes(entry.sec)) throw new Error("Wi-Fi 扫描条目无效");
+    return {ssid:entry.ssid,rssi:entry.rssi,sec:entry.sec};
+  });
+  return {sampled_at_ms:value.sampled_at_ms,networks};
 }
 
 export function publicRepair(task) {

@@ -101,7 +101,7 @@ test('新自愈能力不影响旧客户端且停用设备不能领取',async()=>
   assert.equal((await report(true)).managed_task,undefined);
 });
 
-for (const [type, capability, marker] of [['reboot','managed_reboot_tasks','managed_reboot_v1'],['restart_adbd','managed_adbd_tasks','managed_adbd_v1']]) {
+for (const [type, capability, marker] of [['reboot','managed_reboot_tasks','managed_reboot_v1'],['restart_adbd','managed_adbd_tasks','managed_adbd_v1'],['scan_wifi','managed_wifi_scan_tasks','managed_wifi_scan_v1']]) {
 test(type+' 只提供给明确声明能力的客户端且过期后不再提供',async()=>{
   const f=setup(),cookie=await login(f);
   const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);

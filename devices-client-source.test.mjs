@@ -6,6 +6,21 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 
+test("Wi-Fi 扫描使用真实任务，名称只作为文本且选择保持原文",()=>{
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  const ssid="fixture');alert(1);//<x>";
+  context.DEV=[{id:'a',wifi_scan:{sampled_at_ms:1000,networks:[{ssid,rssi:-40,sec:'WPA3'}]}}];
+  context.selDev='a';context.renderOps=()=>{};
+  const html=context.pageWifi('');
+  assert.match(html,/onclick="wifiPickIndex\(0\)"/);
+  assert.doesNotMatch(html,/<x>/);
+  assert.doesNotMatch(html,/onclick="wifiPick\(/);
+  context.wifiPickIndex(0);assert.equal(context.uiOf().wifiSel,ssid);
+  let requested='';context.enqueueRepair=type=>{requested=type;};
+  context.wifiScan();assert.equal(requested,'scan_wifi');
+});
+
 test("列表状态只显示一处，只有等待上报可触发拉取，自动报告清除旧错误",async()=>{
   const box={innerHTML:''};
   const context=vm.createContext({document:{getElementById:()=>box},adminSession:{check(){}},setTimeout(){},setInterval(){}});

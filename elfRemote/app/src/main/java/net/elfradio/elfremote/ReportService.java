@@ -286,6 +286,7 @@ public final class ReportService extends Service {
         body.put("managed_heal_tasks", true);
         body.put("managed_reboot_tasks", true);
         body.put("managed_adbd_tasks", true);
+        body.put("managed_wifi_scan_tasks", true);
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
@@ -387,7 +388,8 @@ public final class ReportService extends Service {
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
-                    || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_wifi_scan_v1") && "scan_wifi".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -583,6 +585,13 @@ public final class ReportService extends Service {
             String type = offer.optString("type", "");
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
+            if (RepairPolicy.TYPE_SCAN_WIFI.equals(type)) {
+                JSONObject scan = WifiScanner.scan(this);
+                postTask(id, RepairPolicy.ST_SUCCESS, "wifi-scan-complete",
+                        new JSONObject().put("stage", "wifi").put("action", "scanned").put("wifi_scan", scan));
+                RuntimeLog.event("wifi_scan_complete count=" + scan.getJSONArray("networks").length());
+                return;
+            }
             if (RepairPolicy.TYPE_REBOOT.equals(type)) {
                 writeLastTaskId(id);
                 writeTaskPhase(RepairPolicy.PHASE_RUNNING);

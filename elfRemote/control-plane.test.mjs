@@ -21,6 +21,20 @@ import {
   installParamsFromRelease
 } from "./control-plane.js";
 
+test("扫描结果持久保留且无效结果不推进成功状态", () => {
+  const device = {task:{id:"scan",type:"scan_wifi",state:"running"}};
+  assert.throws(()=>applyRepairProgress(device,"scan","success","",{wifi_scan:{sampled_at_ms:1,networks:[{ssid:"x",rssi:5,sec:"Open"}]}}));
+  assert.equal(device.task.state,"running");
+  const scan={sampled_at_ms:1000,networks:[{ssid:"fixture'network",rssi:-45,sec:"WPA3",bssid:"excluded"}]};
+  applyRepairProgress(device,"scan","success","",{wifi_scan:scan});
+  assert.equal(device.task.state,"success");
+  assert.equal(device.wifi_scan.networks[0].ssid,"fixture'network");
+  assert.equal(device.wifi_scan.networks[0].bssid,undefined);
+  device.task={id:"next",type:"pull_logs",state:"running"};
+  applyRepairProgress(device,"next","success","",{});
+  assert.equal(device.wifi_scan.sampled_at_ms,1000);
+});
+
 test("六位码去掉空格，拒绝非数字", () => {
   assert.equal(normalizePairCode(" 123456 "), "123456");
   assert.equal(normalizePairCode("12345"), "");

@@ -11,6 +11,7 @@ final class RepairPolicy {
     static final String TYPE_REBOOT = "reboot";
     static final String TYPE_INSTALL_APK = "install_apk";
     static final String TYPE_RESTART_ADBD = "restart_adbd";
+    static final String TYPE_SCAN_WIFI = "scan_wifi";
     static final String PHASE_RUNNING = "running";
     static final String PHASE_INSTALLING = "installing";
     static final String PHASE_DONE = "done";
@@ -49,7 +50,8 @@ final class RepairPolicy {
                 || TYPE_HEAL_NETWORK.equals(type)
                 || TYPE_REBOOT.equals(type)
                 || TYPE_INSTALL_APK.equals(type)
-                || TYPE_RESTART_ADBD.equals(type);
+                || TYPE_RESTART_ADBD.equals(type)
+                || TYPE_SCAN_WIFI.equals(type);
     }
 
     static String rejectReason(JSONObject task, long nowMs) {
@@ -171,6 +173,7 @@ final class RepairPolicy {
         if (TYPE_REBOOT.equals(type)) return "受控重启";
         if (TYPE_INSTALL_APK.equals(type)) return "覆盖安装";
         if (TYPE_RESTART_ADBD.equals(type)) return "重启本机adbd";
+        if (TYPE_SCAN_WIFI.equals(type)) return "扫描 Wi-Fi";
         return "";
     }
 
