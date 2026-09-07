@@ -33,6 +33,7 @@ import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } fr
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
+import { saveReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 
 const DEFAULT_USER = "admin";
@@ -1349,7 +1350,7 @@ async function handleElfReleasePublish(env, request) {
       certSha256: String(m.certSha256 || ""),
       manifest_raw: raw,
       signature: sig,
-      apk_b64: apkB64,
+      apk_key: await saveReleaseApk(env, m, apkB64),
       expires_at: m.expires_at || null,
       job_id: String(m.job_id || "")
     };
@@ -1560,7 +1561,13 @@ async function handleElfApk(env, pathname) {
   const vc = await getStore(env, "elfremote_job_" + jobId);
   if (!vc) return json({ ok: false, msg: "未知任务" }, 404);
   const rel = await getStore(env, "elfremote_rel_" + vc);
-  if (!rel || !rel.apk_b64) return json({ ok: false, msg: "制品缺失" }, 404);
+  if (!rel) return json({ ok: false, msg: "制品缺失" }, 404);
+  if (rel.apk_key) {
+    const object = await env.ELF_ARTIFACTS?.get(rel.apk_key);
+    if (!object) return json({ok:false,msg:"制品暂不可用"},503);
+    return new Response(object.body,{headers:{"Content-Type":"application/vnd.android.package-archive","Cache-Control":"no-store"}});
+  }
+  if (!rel.apk_b64) return json({ ok: false, msg: "制品缺失" }, 404);
   const bin = atob(rel.apk_b64);
   const u8 = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);

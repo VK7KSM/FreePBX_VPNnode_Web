@@ -13,6 +13,7 @@ on:
       - "traffic.js"
       - "push-control.js"
       - "task-artifacts.js"
+      - "update-artifacts.js"
       - "logo.js"
       - "logo.png"
       - "wrangler.toml"
