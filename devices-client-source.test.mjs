@@ -4,6 +4,21 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import source from "./devices-client-source.js";
+import vm from "node:vm";
+
+test("不同缩放下近邻标记保持可点选间距，不改真实位置", () => {
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  for(const scale of [0.01,1,100]) {
+    const points=[{id:"a",x:100,y:100},{id:"b",x:100+scale,y:100+scale},{id:"c",x:100,y:100}];
+    const before=JSON.stringify(points);
+    const placed=context.markerScreenPositions(points);
+    assert.equal(JSON.stringify(points),before);
+    for(let i=0;i<placed.length;i++) for(let j=i+1;j<placed.length;j++) {
+      assert.ok(Math.abs(placed[i].x-placed[j].x)>=180 || Math.abs(placed[i].y-placed[j].y)>=20);
+    }
+  }
+});
 
 test("devices-client-source 必须与 devices-client.js 逐字一致", () => {
   const root = path.dirname(fileURLToPath(import.meta.url));

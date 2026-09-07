@@ -33,7 +33,7 @@ test("临时身份可报告和推送，配对及解除保持身份，超时仅�
   assert.equal(renewed.device_id,registered.device_id);
   assert.notEqual(renewed.code,registered.code);
   const stored=f.data.get("remote_devices");
-  stored[0].last_seen=new Date(Date.now()-901000).toISOString();
+  stored[0].last_seen=new Date(Date.now()-991000).toISOString();
   f.data.set("remote_devices",stored);
   assert.equal((await call("/api/devices")).devices.length,0);
   stored[0].paired=true; f.data.set("remote_devices",stored);

@@ -5,8 +5,9 @@ export function contactState(lastSeen, nowMs, statusOnly = false, network = "cel
   const at = lastSeen ? Date.parse(lastSeen) : NaN;
   if (!Number.isFinite(at) || at > nowMs) return { state: "unknown", report_due_at: null };
   const window = statusOnly ? (network === "wifi" || network === "ethernet" ? 15 : 60) * 60 * 1000 : CONTROL_PLANE_ONLINE_MS;
+  // 到期后客户端可能先采样 GPS（最多 60 秒），另留 30 秒传输余量。
   return { state: nowMs - at <= CONTROL_PLANE_ONLINE_MS ? "recent_contact"
-    : nowMs - at <= window ? "awaiting_report" : "report_overdue",
+    : nowMs - at <= window + (statusOnly ? 90000 : 0) ? "awaiting_report" : "report_overdue",
     report_due_at: new Date(at + window).toISOString() };
 }
 

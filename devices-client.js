@@ -203,13 +203,13 @@ function initMap(){
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
+  map.on("zoomend moveend", layoutMapMarkers);
 }
 
 function deviceColor(id, online){
   var pal = ["#38bdf8","#a78bfa","#f472b6","#34d399","#fbbf24","#fb7185","#22d3ee","#818cf8"];
-  var h = 0, s = String(id||"");
-  for(var i=0;i<s.length;i++) h = ((h<<5)-h)+s.charCodeAt(i);
-  var c = pal[Math.abs(h)%pal.length];
+  var index = DEV.map(function(d){return d.id;}).sort().indexOf(id);
+  var c = pal[Math.max(0,index)%pal.length];
   return online ? c : "#64748b";
 }
 function battHtml(pct){
@@ -249,7 +249,7 @@ function renderMap(){
     if(gps){
       if(!(acc>0) || acc>300) acc = 50;
     } else {
-      acc = 2000;
+      if(!(acc>0)) acc = 2000;
     }
     var col = deviceColor(d.id, d.online && d.enabled!==false);
     var circ = L.circle(ll, {
@@ -265,20 +265,44 @@ function renderMap(){
     bounds.push(tb.getNorthEast());
     if(!gps) hasIpArea = true;
     (function(id, dev){
-      var siblings=DEV.filter(function(other){return other.online && other.loc && Number(other.loc.lat)===Number(dev.loc.lat) && Number(other.loc.lng)===Number(dev.loc.lng);}).sort(function(a,b){return a.id.localeCompare(b.id);});
-      var offset=siblings.findIndex(function(other){return other.id===id;});
       circ.on("click", function(){ selectDev(id); });
       var ic = L.divIcon({
         className: "dpin-wrap",
         html: pinHtml(dev, id===selDev),
         iconSize: [170, 32],
-        iconAnchor: [4, 14 - (offset-(siblings.length-1)/2)*10]
+        iconAnchor: [4, 14]
       });
       markers[id] = L.marker(ll, { icon: ic, zIndexOffset: id===selDev ? 600 : 200 })
         .addTo(map).on("click", function(){ selectDev(id); });
     })(d.id, d);
   }
   if(bounds.length && !mapFitted) { map.fitBounds(bounds, { padding: [100,100], maxZoom: hasIpArea ? 14 : 16 }); mapFitted=true; }
+  layoutMapMarkers();
+}
+
+function markerScreenPositions(points){
+  var placed = [];
+  points.slice().sort(function(a,b){return a.id.localeCompare(b.id);}).forEach(function(point){
+    var y = point.y;
+    while(placed.some(function(other){return Math.abs(other.x-point.x)<180 && Math.abs(other.y-y)<20;})) {
+      y = Math.max.apply(null, placed.filter(function(other){return Math.abs(other.x-point.x)<180 && Math.abs(other.y-y)<20;}).map(function(other){return other.y+20;}));
+    }
+    placed.push({id:point.id,x:point.x,y:y,dy:y-point.y});
+  });
+  return placed;
+}
+
+function layoutMapMarkers(){
+  if(!map) return;
+  var positions=markerScreenPositions(Object.keys(markers).map(function(id){
+    var point=map.latLngToContainerPoint(markers[id].getLatLng());
+    return {id:id,x:point.x,y:point.y};
+  }));
+  positions.forEach(function(point){
+    var element=markers[point.id].getElement();
+    var pin=element && element.querySelector(".dpin");
+    if(pin) pin.style.transform="translateY("+point.dy+"px)";
+  });
 }
 
 function flyTo(id){
@@ -315,7 +339,10 @@ function renderOps(){
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
   if(d && d.loc && d.loc.source==="gps" && d.loc.lat!=null && d.loc.lng!=null && isFinite(Number(d.loc.lat)) && isFinite(Number(d.loc.lng))) {
-    src += " · 纬度 " + Number(d.loc.lat).toFixed(6) + " · 经度 " + Number(d.loc.lng).toFixed(6);
+    src = "GPS · " + Number(d.loc.lat).toFixed(6) + " · " + Number(d.loc.lng).toFixed(6);
+  } else if(d && d.loc) {
+    src = ({ip:"IP",wifi:"Wi-Fi",cell:"Cell",network:"Wi-Fi / Cell"})[d.loc.source] || locLabel(d.loc.source);
+    if(Number(d.loc.acc_m)>0) src += " · " + Math.round(Number(d.loc.acc_m)) + "m";
   }
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "会话已开" : "未接入");
   var h = "";
