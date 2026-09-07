@@ -133,10 +133,11 @@ function renderList(){
     var upd = inflight ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
-    h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
+    h += '<span class="dev-identity"><span class="dev-name">'+esc(d.name)+'</span>'+upd;
     if(d.paired === false) h += '<span class="tag">未配对</span>';
-    h += '<button class="btn-gray" title="拉取设备信息" onclick="event.stopPropagation();requestDeviceStatus(\''+d.id+'\')"'+(STATUS[d.id]==="拉取中"?' disabled':'')+'>'+esc(STATUS[d.id] || "等待定时报送")+'</button>';
-    if(d.contact_state === "report_overdue") h += '<span class="tag">报告超时</span>';
+    h += '</span>';
+    var status = STATUS[d.id] || (d.contact_state === "report_overdue" ? "报告超时" : "等待上报信息");
+    h += '<span class="report-status" role="button" tabindex="0" title="拉取设备信息" aria-disabled="'+(STATUS[d.id]==="拉取中")+'" onclick="event.stopPropagation();requestDeviceStatus(\''+d.id+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();event.stopPropagation();requestDeviceStatus(\''+d.id+'\')}">'+esc(status)+'</span>';
     h += '</div>';
   }
   for(var j=0;j<UNPAIRED.length;j++){
@@ -164,7 +165,7 @@ async function requestDeviceStatus(id){
       var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
       if(!state.ok) throw new Error(state.msg || "查询失败");
       if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
-        STATUS[id]="已刷新"; await loadDevices(); return;
+        STATUS[id]=""; await loadDevices(); return;
       }
       if(state.request && state.request.state==="expired") break;
     }
@@ -224,7 +225,7 @@ function pinHtml(d, selected){
   var col = deviceColor(d.id, on);
   var seen = sydney(d.last_seen);
   return '<div class="dpin'+(selected?" pin-on":"")+'">'+
-    '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 2px #0f172a,0 0 0 3px '+col+'"></div>'+
+    '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 1px #0f172a,0 0 0 2px '+col+'"></div>'+
     '<div class="dpin-card">'+
       '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery)+'</div>'+
       '<div class="dpin-time">'+esc(seen)+'</div>'+
@@ -271,8 +272,8 @@ function renderMap(){
       var ic = L.divIcon({
         className: "dpin-wrap",
         html: pinHtml(dev, id===selDev),
-        iconSize: [170, 42],
-        iconAnchor: [8, 14 - (offset-(siblings.length-1)/2)*48]
+        iconSize: [170, 32],
+        iconAnchor: [4, 14 - (offset-(siblings.length-1)/2)*10]
       });
       markers[id] = L.marker(ll, { icon: ic, zIndexOffset: id===selDev ? 600 : 200 })
         .addTo(map).on("click", function(){ selectDev(id); });
