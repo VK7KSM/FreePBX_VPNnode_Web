@@ -1,4 +1,4 @@
-param([ValidateRange(1,100)][int]$Samples = 5)
+param([ValidateRange(1,100)][int]$Samples = 5, [switch]$IncludeTraffic)
 $ErrorActionPreference='Stop'
 $target=Get-Content '.wrangler/d22-preview-device.json' -Raw|ConvertFrom-Json
 $origin='https://elfremote-push-preview.kangarooo-network.workers.dev'
@@ -20,7 +20,14 @@ try{
             $state=(Invoke-RestMethod ($origin+'/api/devices/status-request?device_id='+[uri]::EscapeDataString($target.device_id)) -WebSession $session -Headers $headers).request
         }while($state.state -eq 'pending' -and $watch.Elapsed.TotalSeconds -lt 15)
         $watch.Stop()
-        $results.Add([pscustomobject]@{sample=$i;elapsed_ms=$watch.ElapsedMilliseconds;state=$state.state;published=$request.request.published;completed_at=$state.completed_at})
+        $row=[ordered]@{sample=$i;elapsed_ms=$watch.ElapsedMilliseconds;state=$state.state;published=$request.request.published;completed_at=$state.completed_at}
+        if($IncludeTraffic){
+            $devices=(Invoke-RestMethod ($origin+'/api/devices') -WebSession $session -Headers $headers).devices
+            $device=$devices|Where-Object { $_.id -eq $target.device_id }|Select-Object -First 1
+            $row.traffic=$device.traffic
+        }
+        $results.Add([pscustomobject]$row)
+        if($IncludeTraffic -and !$row.traffic.available){throw '设备流量采样不可用'}
         if($state.request_id -ne $request.request.request_id -or $state.state -ne 'completed'){throw '设备请求未在窗口内完成，保留失败样本'}
     }
 }finally{
