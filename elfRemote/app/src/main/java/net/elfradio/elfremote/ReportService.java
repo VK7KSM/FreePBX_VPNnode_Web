@@ -34,6 +34,8 @@ public final class ReportService extends Service {
     private PushConnection push;
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
+    private ConnectivityManager connectivity;
+    private ConnectivityManager.NetworkCallback networkCallback;
 
     private final Runnable loop = new Runnable() {
         @Override
@@ -78,6 +80,22 @@ public final class ReportService extends Service {
         }
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
+        if (BuildConfig.STATUS_ONLY) {
+            connectivity = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                private void changed() {
+                    Handler target = worker;
+                    if (target != null) target.post(() -> { if (push != null) push.networkHint(); });
+                }
+                @Override public void onAvailable(android.net.Network network) { changed(); }
+                @Override public void onLost(android.net.Network network) { changed(); }
+            };
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 24) connectivity.registerDefaultNetworkCallback(networkCallback);
+                else connectivity.registerNetworkCallback(new android.net.NetworkRequest.Builder()
+                        .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), networkCallback);
+            } catch (Exception error) { RuntimeLog.error("network_callback_failed", error); }
+        }
         if (!loopStarted) {
             loopStarted = true;
             if (BuildConfig.STATUS_ONLY) worker.post(() -> traffic.sample());
@@ -118,6 +136,10 @@ public final class ReportService extends Service {
     @Override
     public void onDestroy() {
         RuntimeLog.event("service_stop");
+        if (connectivity != null && networkCallback != null) {
+            try { connectivity.unregisterNetworkCallback(networkCallback); }
+            catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
+        }
         if (worker != null) worker.removeCallbacks(loop);
         if (worker != null && push != null) worker.post(push::close);
         if (worker != null && dailyLocation != null) worker.post(dailyLocation::close);
