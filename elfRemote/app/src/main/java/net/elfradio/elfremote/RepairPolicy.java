@@ -30,6 +30,8 @@ final class RepairPolicy {
     static final String[] LOG_PATHS = {
             "/data/local/tmp/elfremote_wd.log",
             "/data/local/tmp/elfremote_wd.stats",
+            "/data/local/elfremote/watchdog.log",
+            "/data/local/elfremote/watchdog.stats",
             "/data/local/elfremote/update.state",
             "/data/local/elfremote/update.out",
             "/data/local/elfremote/health.ok"

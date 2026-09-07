@@ -41,9 +41,8 @@ ls -l /system/etc/init/elfremote.rc 2>/dev/null
 echo CODEX_HASH
 sha256sum /system/etc/init/codex_d22.rc /system/etc/codex/codex_zello_kiosk_d22.sh /system/etc/codex/codex_call_ui_guard_d22.sh /system/etc/codex/codex_d22_wake_keys.sh 2>/dev/null
 echo STATS
-cat /data/local/tmp/elfremote_wd.stats 2>/dev/null
+cat /data/local/elfremote/watchdog.stats 2>/dev/null
 echo LOG_TAIL
-tail -n 20 /data/local/tmp/elfremote_wd.log 2>/dev/null
+tail -n 20 /data/local/elfremote/watchdog.log 2>/dev/null
 echo FOCUS
 dumpsys window windows 2>/dev/null | grep mCurrentFocus | head -n 1
-

@@ -7,8 +7,8 @@ COMP=net.elfradio.elfremote/.ReportService
 DIR=/data/local/elfremote
 LOCK=/data/local/elfremote/lock.d
 PIDF=/data/local/elfremote/watchdog.pid
-LOG=/data/local/tmp/elfremote_wd.log
-STATS=/data/local/tmp/elfremote_wd.stats
+LOG=/data/local/elfremote/watchdog.log
+STATS=/data/local/elfremote/watchdog.stats
 SLEEP=20
 STATS_EVERY=15
 LOG_MAX=24576
@@ -27,8 +27,17 @@ if [ -z "$ELFREMOTE_WD_DAEMON" ]; then
   exit 0
 fi
 
-mkdir -p "$DIR"
-chmod 0777 "$DIR" 2>/dev/null || true
+APP_UID=$(stat -c %u /data/user/0/net.elfradio.elfremote) || exit 1
+case "$APP_UID" in ''|*[!0-9]*) exit 1;; esac
+[ "$APP_UID" -ge 10000 ] || exit 1
+[ ! -L "$DIR" ] || exit 1
+mkdir -p "$DIR" || exit 1
+chown 0:0 "$DIR" && chmod 0700 "$DIR" || exit 1
+[ -z "$(find "$DIR" -type l -print)" ] || exit 1
+chown -R 0:"$APP_UID" "$DIR" || exit 1
+find "$DIR" -type f -exec chmod 0660 {} \; || exit 1
+find "$DIR" -type d -exec chmod 2770 {} \; || exit 1
+umask 007
 if ! mkdir "$LOCK" 2>/dev/null; then
   old=$(cat "$PIDF" 2>/dev/null)
   if [ -n "$old" ] && [ -d /proc/$old ]; then
@@ -101,7 +110,7 @@ run_heal() {
   log "heal run"
   /system/bin/sh "$DIR/heal.running" > "$DIR/heal.out" 2>&1
   echo $? > "$DIR/heal.rc.tmp"
-  chmod 0666 "$DIR/heal.out" "$DIR/heal.rc.tmp" 2>/dev/null || true
+  chmod 0660 "$DIR/heal.out" "$DIR/heal.rc.tmp" 2>/dev/null || true
   mv "$DIR/heal.rc.tmp" "$DIR/heal.rc"
   rm -f "$DIR/heal.running"
 }
@@ -120,11 +129,11 @@ run_update() {
     [ -n "$p" ] && [ -f "$p" ] && src="$p"
     cp "$src" "$DIR/updater.apk" 2>/dev/null || true
   fi
-  chmod 0666 "$DIR/updater.apk" "$DIR/update.job.json" 2>/dev/null || true
+  chmod 0660 "$DIR/updater.apk" "$DIR/update.job.json" 2>/dev/null || true
   /system/bin/sh "$DIR/update.running" > "$DIR/update.out" 2>&1
   upd_rc=$?
   echo $upd_rc > "$DIR/update.rc.tmp"
-  chmod 0666 "$DIR/update.out" "$DIR/update.rc.tmp" "$DIR/update.state" 2>/dev/null || true
+  chmod 0660 "$DIR/update.out" "$DIR/update.rc.tmp" "$DIR/update.state" 2>/dev/null || true
   mv "$DIR/update.rc.tmp" "$DIR/update.rc"
   if [ $upd_rc -ne 0 ]; then
     log "update retry rc=$upd_rc"

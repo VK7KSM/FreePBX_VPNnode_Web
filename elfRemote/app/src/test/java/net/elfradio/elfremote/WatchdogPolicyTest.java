@@ -12,6 +12,18 @@ import static org.junit.Assert.assertTrue;
 
 public class WatchdogPolicyTest {
     @Test
+    public void taskDirectoryIsLimitedToRootAndApplicationGroup() {
+        String script=WatchdogPolicy.script();
+        assertFalse(script.contains("0777"));
+        assertFalse(script.contains("0666"));
+        assertTrue(script.contains("chmod 2770"));
+        assertTrue(script.contains("umask 007"));
+        assertTrue(script.contains("[ ! -L \"$DIR\" ] || exit 1"));
+        assertTrue(WatchdogPolicy.LOG.startsWith(WatchdogPolicy.DIR+"/"));
+        assertTrue(WatchdogPolicy.applyCommands("/tmp/staged").contains(WatchdogPolicy.secureDirectoryCommands()));
+    }
+
+    @Test
     public void scriptNeverTouchesD22CodexOrTalkApps() {
         String script = WatchdogPolicy.script();
         assertIndependent(script);

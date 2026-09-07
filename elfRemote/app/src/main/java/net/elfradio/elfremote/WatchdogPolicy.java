@@ -15,8 +15,8 @@ final class WatchdogPolicy {
     static final String INIT_RC_PATH = "/system/etc/init/elfremote.rc";
     static final String LOCK_DIR = "/data/local/elfremote/lock.d";
     static final String PID_FILE = "/data/local/elfremote/watchdog.pid";
-    static final String LOG = "/data/local/tmp/elfremote_wd.log";
-    static final String STATS = "/data/local/tmp/elfremote_wd.stats";
+    static final String LOG = DIR + "/watchdog.log";
+    static final String STATS = DIR + "/watchdog.stats";
     static final int SLEEP_SEC = 20;
     static final int STATS_EVERY_LOOPS = 15;
     static final int LOG_MAX_BYTES = 24 * 1024;
@@ -67,8 +67,7 @@ final class WatchdogPolicy {
                 + "  exit 0\n"
                 + "fi\n"
                 + "\n"
-                + "mkdir -p \"$DIR\"\n"
-                + "chmod 0777 \"$DIR\" 2>/dev/null || true\n"
+                + secureDirectoryCommands()
                 + "if ! mkdir \"$LOCK\" 2>/dev/null; then\n"
                 + "  old=$(cat \"$PIDF\" 2>/dev/null)\n"
                 + "  if [ -n \"$old\" ] && [ -d /proc/$old ]; then\n"
@@ -141,7 +140,7 @@ final class WatchdogPolicy {
                 + "  log \"heal run\"\n"
                 + "  /system/bin/sh \"$DIR/heal.running\" > \"$DIR/heal.out\" 2>&1\n"
                 + "  echo $? > \"$DIR/heal.rc.tmp\"\n"
-                + "  chmod 0666 \"$DIR/heal.out\" \"$DIR/heal.rc.tmp\" 2>/dev/null || true\n"
+                + "  chmod 0660 \"$DIR/heal.out\" \"$DIR/heal.rc.tmp\" 2>/dev/null || true\n"
                 + "  mv \"$DIR/heal.rc.tmp\" \"$DIR/heal.rc\"\n"
                 + "  rm -f \"$DIR/heal.running\"\n"
                 + "}\n"
@@ -160,11 +159,11 @@ final class WatchdogPolicy {
                 + "    [ -n \"$p\" ] && [ -f \"$p\" ] && src=\"$p\"\n"
                 + "    cp \"$src\" \"$DIR/updater.apk\" 2>/dev/null || true\n"
                 + "  fi\n"
-                + "  chmod 0666 \"$DIR/updater.apk\" \"$DIR/update.job.json\" 2>/dev/null || true\n"
+                + "  chmod 0660 \"$DIR/updater.apk\" \"$DIR/update.job.json\" 2>/dev/null || true\n"
                 + "  /system/bin/sh \"$DIR/update.running\" > \"$DIR/update.out\" 2>&1\n"
                 + "  upd_rc=$?\n"
                 + "  echo $upd_rc > \"$DIR/update.rc.tmp\"\n"
-                + "  chmod 0666 \"$DIR/update.out\" \"$DIR/update.rc.tmp\" \"$DIR/update.state\" 2>/dev/null || true\n"
+                + "  chmod 0660 \"$DIR/update.out\" \"$DIR/update.rc.tmp\" \"$DIR/update.state\" 2>/dev/null || true\n"
                 + "  mv \"$DIR/update.rc.tmp\" \"$DIR/update.rc\"\n"
                 + "  if [ $upd_rc -ne 0 ]; then\n"
                 + "    log \"update retry rc=$upd_rc\"\n"
@@ -225,7 +224,8 @@ final class WatchdogPolicy {
                 + "#!/system/bin/sh\n"
                 + "export PATH=/system/bin:/system/xbin:/sbin:/vendor/bin:$PATH\n"
                 + "STAGED=\"" + stagedDir + "\"\n"
-                + "mkdir -p " + DIR + " /data/local/tmp\n"
+                + "DIR=" + DIR + "\n"
+                + secureDirectoryCommands()
                 + "copy_if_changed() {\n"
                 + "  src=\"$1\"; dst=\"$2\"; mode=\"$3\"\n"
                 + "  if [ -f \"$dst\" ] && cmp -s \"$src\" \"$dst\" 2>/dev/null; then\n"
@@ -267,6 +267,20 @@ final class WatchdogPolicy {
                 + "  /system/bin/sh " + SCRIPT_PATH + " >/dev/null 2>&1\n"
                 + "fi\n"
                 + "exit 0\n";
+    }
+
+    static String secureDirectoryCommands() {
+        return "APP_UID=$(stat -c %u /data/user/0/" + PKG + ") || exit 1\n"
+                + "case \"$APP_UID\" in ''|*[!0-9]*) exit 1;; esac\n"
+                + "[ \"$APP_UID\" -ge 10000 ] || exit 1\n"
+                + "[ ! -L \"$DIR\" ] || exit 1\n"
+                + "mkdir -p \"$DIR\" || exit 1\n"
+                + "chown 0:0 \"$DIR\" && chmod 0700 \"$DIR\" || exit 1\n"
+                + "[ -z \"$(find \"$DIR\" -type l -print)\" ] || exit 1\n"
+                + "chown -R 0:\"$APP_UID\" \"$DIR\" || exit 1\n"
+                + "find \"$DIR\" -type f -exec chmod 0660 {} \\; || exit 1\n"
+                + "find \"$DIR\" -type d -exec chmod 2770 {} \\; || exit 1\n"
+                + "umask 007\n";
     }
 
     static void stage(File dir) throws IOException {
