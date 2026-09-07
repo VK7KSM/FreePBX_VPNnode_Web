@@ -1,13 +1,16 @@
-param([ValidateRange(1,100)][int]$Samples = 5, [switch]$IncludeTraffic)
+param([ValidateRange(1,100)][int]$Samples = 5, [switch]$IncludeTraffic,
+    [ValidateSet('XX','JJ','BB')][string]$Device = 'XX')
 $ErrorActionPreference='Stop'
-$target=Get-Content '.wrangler/d22-preview-device.json' -Raw|ConvertFrom-Json
+$targetFile=if($Device -eq 'XX'){'.wrangler/d22-preview-device.json'}else{'.wrangler/d22-'+$Device.ToLowerInvariant()+'-preview-device.json'}
+$target=Get-Content $targetFile -Raw|ConvertFrom-Json
 $origin='https://elfremote-push-preview.kangarooo-network.workers.dev'
 if($target.origin -ne $origin -or !$target.device_id){throw '缺少已核对的 D22 预览配对信息'}
 $admin=Get-Content '.wrangler/push-preview-admin.json' -Raw|ConvertFrom-Json
 $session=[Microsoft.PowerShell.Commands.WebRequestSession]::new()
 $headers=@{'User-Agent'='elfRemote-preview-test/1.0'}
 $results=[Collections.Generic.List[object]]::new()
-$directory='elfRemote/captures/2026-09-07/'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-d22-push-samples'
+$suffix=if($Device -eq 'XX'){'-d22-push-samples'}else{'-d22-'+$Device.ToLowerInvariant()+'-push-samples'}
+$directory='elfRemote/captures/2026-09-07/'+(Get-Date -Format 'yyyyMMdd-HHmmss')+$suffix
 New-Item -ItemType Directory -Path $directory -Force|Out-Null
 Invoke-RestMethod ($origin+'/api/login') -Method Post -ContentType 'application/json' -Body ($admin|ConvertTo-Json -Compress) -WebSession $session -Headers $headers|Out-Null
 try{
@@ -23,8 +26,8 @@ try{
         $row=[ordered]@{sample=$i;elapsed_ms=$watch.ElapsedMilliseconds;state=$state.state;published=$request.request.published;completed_at=$state.completed_at}
         if($IncludeTraffic){
             $devices=(Invoke-RestMethod ($origin+'/api/devices') -WebSession $session -Headers $headers).devices
-            $device=$devices|Where-Object { $_.id -eq $target.device_id }|Select-Object -First 1
-            $row.traffic=$device.traffic
+            $selectedDevice=$devices|Where-Object { $_.id -eq $target.device_id }|Select-Object -First 1
+            $row.traffic=$selectedDevice.traffic
         }
         $results.Add([pscustomobject]$row)
         if($IncludeTraffic -and !$row.traffic.available){throw '设备流量采样不可用'}
