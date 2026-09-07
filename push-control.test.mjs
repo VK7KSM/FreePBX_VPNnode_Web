@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import worker from "./worker.js";
 import { fixture, login, request } from "./test-support.mjs";
+import { brokerCall } from "./push-control.js";
 
 const token = "fixture-device-token";
 function setup() {
@@ -15,7 +16,7 @@ function setup() {
     const body = JSON.parse(init.body);
     f.calls.push({ url: String(url), body });
     assert.equal(init.headers.Authorization, "Bearer fixture-api-token");
-    assert.equal(init.redirect, "error");
+    assert.equal(init.redirect, "manual");
     if (String(url).endsWith("credentials")) return Response.json({ ok: true, connection: {
       username: body.username, password: "fixture-mqtt-password", tls: true, host: "mqtt.example.test" } });
     assert.ok(f.data.get("push/request/fixture-device"), "发布前请求必须已持久化");
@@ -25,6 +26,28 @@ function setup() {
 }
 const deviceBody = { device_id: "fixture-device", token };
 const call = (f, path, body, cookie) => worker.fetch(request(path, "POST", body, cookie), f.env);
+
+test("真实运行时 fetch 保留全局接收者，不能使用脱离对象的调用", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async function (url) {
+    assert.equal(this, globalThis);
+    assert.equal(url, "https://broker.example.test/v1/publish");
+    return Response.json({ ok: true });
+  };
+  try { await brokerCall({ MQTT_API_URL: "https://broker.example.test", MQTT_API_TOKEN: "fixture" }, "/v1/publish", {}); }
+  finally { globalThis.fetch = previous; }
+});
+
+test("发布入口重定向被拒绝，不向新地址发送服务凭据", async () => {
+  let calls = 0;
+  await assert.rejects(brokerCall({ MQTT_API_URL: "https://broker.example.test", MQTT_API_TOKEN: "fixture",
+    MQTT_FETCH: async (url, options) => {
+      calls++;
+      assert.equal(options.redirect, "manual");
+      return new Response(null, { status: 302, headers: { Location: "https://other.example.test" } });
+    } }, "/v1/credentials", {}));
+  assert.equal(calls, 1);
+});
 
 test("设备获取自己的连接配置，不需要浏览器会话，错误凭据无副作用", async () => {
   const f = setup();

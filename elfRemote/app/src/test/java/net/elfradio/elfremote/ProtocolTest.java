@@ -9,14 +9,15 @@ import static org.junit.Assert.assertTrue;
 
 public class ProtocolTest {
     @Test
-    public void enrollPathUsesProductionHost() {
-        assertEquals("https://v.elfradio.net/api/devices/enroll", Protocol.enrollPath());
+    public void enrollPathUsesConfiguredHttpsHost() {
+        assertTrue(BuildConfig.CONTROL_URL.startsWith("https://"));
+        assertEquals(BuildConfig.CONTROL_URL + "/api/devices/enroll", Protocol.enrollPath());
     }
 
     @Test
-    public void taskProgressPathUsesProductionHost() {
+    public void taskProgressPathUsesSameConfiguredHost() {
         assertEquals(
-                "https://v.elfradio.net/api/elfremote/task-progress",
+                BuildConfig.CONTROL_URL + "/api/elfremote/task-progress",
                 Protocol.taskProgressPath());
     }
 

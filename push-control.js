@@ -81,11 +81,16 @@ export async function brokerCall(env, path, body) {
   if (!env.MQTT_API_URL || !env.MQTT_API_TOKEN) throw new Error("推送入口未配置");
   const endpoint = new URL(env.MQTT_API_URL);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("推送入口无效");
-  const response = await (env.MQTT_FETCH || fetch)(new URL(path, endpoint), {
+  const options = {
     method: "POST", headers: { "Authorization": "Bearer " + env.MQTT_API_TOKEN, "Content-Type": "application/json", "User-Agent": "elfRemote-worker/1.0" },
-    body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(15000)
-  });
-  if (!response.ok) throw new Error("推送服务暂不可用");
+    body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(15000)
+  };
+  const url = new URL(path, endpoint).toString();
+  const response = env.MQTT_FETCH ? await env.MQTT_FETCH(url, options) : await globalThis.fetch(url, options);
+  if (!response.ok) {
+    console.warn("mqtt_api_http_status", response.status);
+    throw new Error("推送服务暂不可用");
+  }
   const value = await response.json();
   if (value.ok !== true) throw new Error("推送服务返回无效");
   return value;
@@ -121,7 +126,10 @@ export async function pushHttp(env, request, stub) {
       const stillPaired = await rpc("config");
       if (!stillPaired.ok) return stillPaired;
       return authJson({ ok: true, connection: reply.connection });
-    } catch { return authJson({ ok: false, msg: "推送配置暂不可用" }, 503); }
+    } catch (error) {
+      console.warn("mqtt_config_failure", error?.name || "Error", error?.stack?.split("\n").slice(1, 3).join("\n"));
+      return authJson({ ok: false, msg: "推送配置暂不可用" }, 503);
+    }
   }
   if (!result.should_publish) return authJson({ ok: true, request: result.request }, 202);
   let accepted = false;

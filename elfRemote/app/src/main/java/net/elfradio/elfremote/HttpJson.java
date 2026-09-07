@@ -60,6 +60,7 @@ final class HttpJson {
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
+            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
             if (json != null) {
                 byte[] body = json.getBytes("UTF-8");
                 c.setDoOutput(true);

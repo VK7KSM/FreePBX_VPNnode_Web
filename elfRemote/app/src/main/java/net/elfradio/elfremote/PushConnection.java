@@ -23,6 +23,7 @@ final class PushConnection {
     private String topic = "";
     private boolean connecting, subscribed, closed;
     private int failures;
+    private String network = "";
     private final Runnable retry = this::connect;
 
     PushConnection(Context context, Handler worker, PairingStore pairing, Receiver receiver) {
@@ -50,7 +51,21 @@ final class PushConnection {
         if (!prefs.edit().putLong("queued_version", value.getLong("version")).commit()) throw new IOException("push receipt persistence failed");
     }
     boolean connected() { return subscribed && client != null && client.isConnected(); }
-    void networkHint() { if (!closed && prefs != null && !connecting && !connected()) connect(); }
+    private String activeNetwork() {
+        android.net.ConnectivityManager manager = (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        android.net.Network active = manager == null ? null : manager.getActiveNetwork();
+        return active == null ? "" : active.toString();
+    }
+    void networkHint() {
+        if (closed || prefs == null) return;
+        String current = activeNetwork();
+        if (!network.equals(current)) {
+            disposeClient();
+            network = current;
+            RuntimeLog.event("mqtt_network_changed");
+        }
+        if (!current.isEmpty() && !connecting && !connected()) connect();
+    }
 
     private JSONObject identityBody() throws Exception {
         return new JSONObject().put("device_id", pairing.deviceId()).put("token", pairing.token());
@@ -61,6 +76,8 @@ final class PushConnection {
         worker.removeCallbacks(retry);
         connecting = true;
         try {
+            network = activeNetwork();
+            if (network.isEmpty()) throw new IOException("network unavailable");
             String saved = prefs.getString("connection", "");
             JSONObject config;
             if (saved.isEmpty()) {
