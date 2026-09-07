@@ -97,7 +97,7 @@ export async function brokerCall(env, path, body) {
 }
 
 export function isPushHttp(path) {
-  return ["/api/devices/push-config", "/api/devices/push-sync", "/api/devices/request-status", "/api/devices/status-request"].includes(path);
+  return ["/api/devices/push-config", "/api/devices/push-sync", "/api/devices/request-status", "/api/devices/status-request", "/api/devices/delete"].includes(path);
 }
 export async function pushHttp(env, request, stub) {
   const url = new URL(request.url);
@@ -113,6 +113,22 @@ export async function pushHttp(env, request, stub) {
   const rpc = (action, body = data) => stub.fetch("https://elf-store/__push/" + action, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
   });
+  if (url.pathname === "/api/devices/delete") {
+    let notice;
+    if (data.confirm === true && data.id) {
+      const prepared = await rpc("prepare", { device_id: data.id });
+      if (prepared.ok) notice = await prepared.json();
+    }
+    const removed = await stub.fetch(new Request(request.url, {
+      method: "POST", headers: request.headers, body: JSON.stringify(data)
+    }));
+    if (removed.ok && notice) {
+      // 配对删除提交之后才唤醒；设备上报会得到重新配对指令。
+      try { await brokerCall(env, "/v1/publish", { username: notice.username, notification: statusNotification(notice.request) }); }
+      catch { /* 离线时由下一次设备报告发现解除配对。 */ }
+    }
+    return removed;
+  }
   const action = { "/api/devices/push-config": "config", "/api/devices/push-sync": "sync",
     "/api/devices/request-status": "prepare", "/api/devices/status-request": "read" }[url.pathname];
   const prepared = await rpc(action);
