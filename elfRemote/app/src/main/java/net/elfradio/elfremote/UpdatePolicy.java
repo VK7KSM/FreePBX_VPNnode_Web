@@ -105,7 +105,8 @@ final class UpdatePolicy {
                 + "cp '"+path+"' "+target+".new; chown 0:0 "+target+".new; chmod 0644 "+target+".new; "
                 + "restorecon "+target+".new; cmp '"+path+"' "+target+".new; sync; "
                 + "mv "+target+".new "+target+"; restorecon "+target+"; sync; "
-                + "mount -o remount,ro /system; trap - EXIT; echo SYS_OK";
+                + "if mount -o remount,ro /system; then echo SYS_READONLY; else echo SYS_READONLY_PENDING_REBOOT; fi; "
+                + "trap - EXIT; echo SYS_OK";
     }
 
     static boolean alreadyOnTarget(String haveName, int haveCode, String wantName, int wantCode) {

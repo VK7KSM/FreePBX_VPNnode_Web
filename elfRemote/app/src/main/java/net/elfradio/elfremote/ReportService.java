@@ -961,6 +961,9 @@ public final class ReportService extends Service {
             h.watchdogAlive = processIdentityMatches("/data/local/elfremote/watchdog.pid", "/data/local/elfremote/watchdog.sh");
             h.updaterAlive = processIdentityMatches("/data/local/elfremote/updater.ok", "net.elfradio.elfremote.UpdateTool");
             if (!UpdatePolicy.healthy(h, wantName, want)) {
+                RuntimeLog.event("update_health_wait version=" + h.versionCode
+                        + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk
+                        + " watchdog=" + h.watchdogAlive + " updater=" + h.updaterAlive);
                 if (worker != null) worker.postDelayed(healthCheck, 5000L);
                 return;
             }

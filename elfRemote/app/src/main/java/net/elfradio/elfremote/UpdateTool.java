@@ -182,8 +182,10 @@ public final class UpdateTool {
     private static boolean installApk(String path) {
         String pmOut = exec(UpdatePolicy.pmInstallArgv(path));
         if (pmOut != null && pmOut.contains("Success")) return true;
+        System.out.println("package installer: " + pmOut);
         String sys = exec("sh", "-c",
                 UpdatePolicy.systemInstallCommand(path));
+        System.out.println("system installer: " + sys);
         if (sys == null || !sys.contains("SYS_OK")) return false;
         exec("reboot");
         return true;
