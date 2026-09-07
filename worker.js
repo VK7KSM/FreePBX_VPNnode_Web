@@ -32,6 +32,7 @@ import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
+import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 
 const DEFAULT_USER = "admin";
@@ -233,6 +234,8 @@ const app = {
       try { return json(await queryLocationHistory(env.__storage, url)); }
       catch (error) { return json({ ok: false, msg: error.message }, 400); }
     }
+
+    if (pathname === "/api/elfremote/task-log" && method === "GET") return downloadTaskLog(env,url);
 
     if (pathname === "/logo.png" || pathname === "/favicon.ico") {
       return logoResponse();
@@ -1225,6 +1228,7 @@ async function handleDeviceReport(env, request) {
       if (fresh) {
       list[i].last_reported_at = history.record.timeline_at;
       list[i].status_only = data.status_only === true;
+      list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
@@ -1243,7 +1247,7 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if (!data.status_only && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_log_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
@@ -1251,6 +1255,8 @@ async function handleDeviceReport(env, request) {
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
+    if (found.enabled !== false && data.status_only === true && data.managed_log_tasks === true && found.task?.managed_log_v1 === true
+        && found.task.type === "pull_logs" && shouldOfferRepair(found, now)) body.managed_task = {...repairOfferPayload(found.task),managed_log_v1:true};
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,
@@ -1454,6 +1460,9 @@ async function handleElfEnqueueTask(env, request) {
       break;
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
+    if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
+    if(found.status_only && (data.type!=="pull_logs" || found.managed_log_tasks!==true)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
     if (String(data.type || "") === "install_apk") {
       const vc = Number((data.params && data.params.versionCode) || data.versionCode || 0);
@@ -1477,6 +1486,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
+    if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
     await saveDevices(env, list);
     return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });
   } catch (e) {
@@ -1499,8 +1509,16 @@ async function handleElfTaskProgress(env, request) {
     let found = null;
     for (let i = 0; i < list.length; i++) {
       if (list[i].id !== deviceId) continue;
-      if (list[i].token_sha256 && list[i].token_sha256 !== tokenSha) {
+      if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      if (data.result && typeof data.result === "object") {
+        delete data.result.artifact;
+        if (data.result.log_text !== undefined) {
+          if (list[i].task?.id!==taskId || list[i].task?.type!=="pull_logs" || state!=="success"
+              || !["running","success"].includes(list[i].task.state)) return json({ok:false,msg:"日志任务状态不匹配"},409);
+          data.result.artifact=await saveTaskLog(env,deviceId,taskId,data.result);
+        }
       }
       applyRepairProgress(list[i], taskId, state, data.detail, data.result);
       found = list[i];
@@ -1510,6 +1528,7 @@ async function handleElfTaskProgress(env, request) {
     await saveDevices(env, list);
     return json({ ok: true, task: publicRepair(found.task) });
   } catch (e) {
+    if (e instanceof Response) return e;
     return json({ ok: false, msg: e.message }, 400);
   }
 }

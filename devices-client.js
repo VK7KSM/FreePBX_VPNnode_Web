@@ -460,6 +460,7 @@ function pageAdb(dis){
   if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
   h += "</div>";
   h += '<pre class="adb-term" id="taskOut" style="margin-bottom:.55rem;min-height:120px;max-height:180px">'+esc(r.text||"")+"</pre>";
+  if(d && r.artifact) h+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+Math.ceil(r.artifact.bytes/1024)+' KiB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
   h += '<div class="ops-actions" style="margin-bottom:.55rem">';
   h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
   h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
@@ -791,6 +792,7 @@ function enqueueRepair(type){
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }
       loadDevices();
+      requestDeviceStatus(d.id);
     });
 }
 function wifiScan(){

@@ -12,6 +12,7 @@ on:
       - "location-history.js"
       - "traffic.js"
       - "push-control.js"
+      - "task-artifacts.js"
       - "logo.js"
       - "logo.png"
       - "wrangler.toml"

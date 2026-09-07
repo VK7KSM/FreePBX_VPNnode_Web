@@ -269,6 +269,7 @@ public final class ReportService extends Service {
         body.put("device_name", defaultDeviceName());
         body.put("battery", batteryPct());
         body.put("ready", true);
+        body.put("managed_log_tasks", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
@@ -352,6 +353,11 @@ public final class ReportService extends Service {
         int sent = new StatusReporter(outbox, json -> {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
+            JSONObject managed = response.optJSONObject("managed_task");
+            if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
+                    && managed != null && managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type"))) {
+                worker.post(() -> maybeRunTask(managed));
+            }
             if (response.optBoolean("ok") && response.has("paired")) {
                 boolean revoked = store.paired() && !response.optBoolean("paired");
                 store.saveRegistration(store.deviceId(), response.optBoolean("paired"));
@@ -467,6 +473,13 @@ public final class ReportService extends Service {
         if (offer == null) return;
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
+        try {
+            JSONObject saved = taskReceipts().read(id);
+            if (saved != null) {
+                postTask(id, saved.getString("state"), saved.optString("detail"), saved.optJSONObject("result"));
+                return;
+            }
+        } catch (Exception error) { RuntimeLog.error("task_receipt_retry_pending", error); return; }
         String lastId = readLastTaskId();
         String phase = readTaskPhase();
         if (RepairPolicy.alreadyDone(lastId, phase, id)) return;
@@ -609,17 +622,25 @@ public final class ReportService extends Service {
                 return;
             }
             java.util.LinkedHashMap<String, String> files = new java.util.LinkedHashMap<String, String>();
+            boolean incomplete = false;
             String[] paths = RepairPolicy.LOG_PATHS;
             for (int i = 0; i < paths.length; i++) {
-                addLogFile(files, new java.io.File(paths[i]));
+                incomplete |= addLogFile(files, new java.io.File(paths[i]));
             }
-            addLogFile(files, new java.io.File(getFilesDir(), "heal.log"));
+            incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "heal.log"));
+            java.io.File[] runtime = new java.io.File(getFilesDir(), "runtime-log").listFiles((dir,name) -> name.matches("runtime-[0-9]+\\.log"));
+            if (runtime == null) incomplete = true;
+            else {
+                java.util.Arrays.sort(runtime);
+                for (java.io.File file : runtime) incomplete |= addLogFile(files, file);
+            }
             RepairPolicy.Pack pack = RepairPolicy.packLogs(files, readLogcat(), Protocol.appVersion());
             org.json.JSONObject result = new org.json.JSONObject();
             result.put("sha256", pack.sha256);
             result.put("bytes", pack.size);
-            result.put("truncated", pack.truncated);
-            result.put("text", pack.text);
+            result.put("truncated", pack.truncated || incomplete);
+            result.put("text", pack.text.substring(0, Math.min(2048, pack.text.length())));
+            result.put("log_text", pack.text);
             postTask(id, RepairPolicy.ST_SUCCESS, "packed", result);
             writeLastTaskId(id);
             writeTaskPhase(RepairPolicy.PHASE_DONE);
@@ -692,13 +713,7 @@ public final class ReportService extends Service {
     }
 
     private String readWantName() {
-        try {
-            java.io.File f = new java.io.File(RepairPolicy.WANT_FILE);
-            if (!f.isFile()) return "";
-            return readSmall(f).trim();
-        } catch (Exception e) {
-            return "";
-        }
+        return readTaskState(RepairPolicy.WANT_FILE);
     }
 
     private static byte[] readAll(java.io.File f) throws Exception {
@@ -714,20 +729,28 @@ public final class ReportService extends Service {
         }
     }
 
+    private TaskReceipts taskReceipts() {
+        return new TaskReceipts(new java.io.File(getFilesDir(), "task-receipts/" + PairingStore.sha256Hex(Protocol.BASE_URL + ":" + store.deviceId())));
+    }
+
     private void postTask(String taskId, String state, String detail, org.json.JSONObject result)
             throws Exception {
         org.json.JSONObject body = new org.json.JSONObject();
         body.put("device_id", store.deviceId());
-        body.put("token", store.token());
         body.put("task_id", taskId);
         body.put("state", state);
         body.put("detail", detail == null ? "" : detail);
         if (result != null) body.put("result", result);
+        if (TaskReceipts.terminal(state)) taskReceipts().save(body);
+        body.put("token", store.token());
         String payload = body.toString();
         Exception last = null;
         for (int i = 0; i < 3; i++) {
             try {
-                HttpJson.post(Protocol.taskProgressPath(), payload);
+                JSONObject reply = new JSONObject(HttpJson.post(Protocol.taskProgressPath(), payload));
+                JSONObject task = reply.optJSONObject("task");
+                if (!reply.optBoolean("ok") || task == null || !taskId.equals(task.optString("id")) || !state.equals(task.optString("state")))
+                    throw new java.io.IOException("task acknowledgment missing");
                 return;
             } catch (Exception e) {
                 last = e;
@@ -737,37 +760,15 @@ public final class ReportService extends Service {
     }
 
     private String readLastTaskId() {
-        try {
-            java.io.File f = new java.io.File(RepairPolicy.LAST_TASK_FILE);
-            if (!f.isFile()) return "";
-            return readSmall(f).trim();
-        } catch (Exception e) {
-            return "";
-        }
+        return readTaskState(RepairPolicy.LAST_TASK_FILE);
     }
 
     private void writeLastTaskId(String id) {
-        try {
-            java.io.File f = new java.io.File(RepairPolicy.LAST_TASK_FILE);
-            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
-            try {
-                out.write((id + "\n").getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
-        } catch (Exception e) {
-            android.util.Log.w("elfRemote", "task.last " + e.getMessage());
-        }
+        writeSmall(RepairPolicy.LAST_TASK_FILE, id);
     }
 
     private String readTaskPhase() {
-        try {
-            java.io.File f = new java.io.File(RepairPolicy.PHASE_FILE);
-            if (!f.isFile()) return "";
-            return readSmall(f).trim();
-        } catch (Exception e) {
-            return "";
-        }
+        return readTaskState(RepairPolicy.PHASE_FILE);
     }
 
     private void writeTaskPhase(String phase) {
@@ -775,12 +776,18 @@ public final class ReportService extends Service {
     }
 
     private String readArmedBoot() {
+        return readTaskState(RepairPolicy.BOOT_FILE);
+    }
+
+    private static String readTaskState(String path) {
         try {
-            java.io.File f = new java.io.File(RepairPolicy.BOOT_FILE);
-            if (!f.isFile()) return "";
-            return readSmall(f).trim();
+            java.io.File f = new java.io.File(path);
+            if (!f.exists() && !new java.io.File(path + ".bak").exists()) return "";
+            byte[] value = new android.util.AtomicFile(f).readFully();
+            if (value.length > 2048) throw new java.io.IOException("task state too large");
+            return new String(value, "UTF-8").trim();
         } catch (Exception e) {
-            return "";
+            throw new IllegalStateException("task state unreadable", e);
         }
     }
 
@@ -800,15 +807,15 @@ public final class ReportService extends Service {
     }
 
     private static void writeSmall(String path, String text) {
+        android.util.AtomicFile file = new android.util.AtomicFile(new java.io.File(path));
+        java.io.FileOutputStream out = null;
         try {
-            java.io.FileOutputStream out = new java.io.FileOutputStream(new java.io.File(path));
-            try {
-                out.write(((text == null ? "" : text) + "\n").getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
+            out = file.startWrite();
+            out.write(((text == null ? "" : text) + "\n").getBytes("UTF-8"));
+            file.finishWrite(out);
         } catch (Exception e) {
-            android.util.Log.w("elfRemote", "write " + path + " " + e.getMessage());
+            if (out != null) file.failWrite(out);
+            throw new IllegalStateException("task state persistence failed", e);
         }
     }
 
@@ -832,10 +839,21 @@ public final class ReportService extends Service {
         }
     }
 
-    private static void addLogFile(java.util.Map<String, String> files, java.io.File f) {
-        if (f == null || !f.exists()) return;
-        String body = readSmallCapped(f, 2048);
-        files.put(f.getName(), body == null ? "unreadable" : body);
+    private static boolean addLogFile(java.util.Map<String, String> files, java.io.File f) {
+        if (f == null || !f.exists()) return false;
+        int limit = 512 * 1024;
+        try (java.io.FileInputStream input = new java.io.FileInputStream(f)) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while (bytes.size() < limit && (count = input.read(buffer, 0, Math.min(buffer.length, limit - bytes.size()))) != -1) bytes.write(buffer, 0, count);
+            boolean truncated = input.read() != -1;
+            files.put(f.getPath(), new String(bytes.toByteArray(), "UTF-8") + (truncated ? "\n[file truncated]\n" : ""));
+            return truncated;
+        } catch (Exception error) {
+            files.put(f.getPath(), "[unreadable]\n");
+            return true;
+        }
     }
 
     private static String readSmallCapped(java.io.File f, int max) {

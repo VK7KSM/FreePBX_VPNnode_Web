@@ -25,7 +25,7 @@ final class RepairPolicy {
     static final String ST_FAILED = "failed";
     static final String ST_EXPIRED = "expired";
     static final String ST_REJECTED = "rejected";
-    static final int MAX_LOG_BYTES = 8192;
+    static final int MAX_LOG_BYTES = 3 * 1024 * 1024;
     static final String LAST_TASK_FILE = "/data/local/elfremote/task.last";
     static final String[] LOG_PATHS = {
             "/data/local/tmp/elfremote_wd.log",

@@ -3,6 +3,10 @@ main = "worker.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
 
+[[r2_buckets]]
+binding = "ELF_ARTIFACTS"
+bucket_name = "elfremote-private"
+
 # devices-client.js 是浏览器脚本，不能当 Worker 模块执行（会碰 localStorage）。
 # 部署前运行 node embed-devices-client.mjs，由 devices-client-source.js 以字符串嵌入。
 
