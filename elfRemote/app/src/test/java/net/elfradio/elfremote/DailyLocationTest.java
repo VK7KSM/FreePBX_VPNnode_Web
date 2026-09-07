@@ -4,6 +4,12 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DailyLocationTest {
+    @Test public void firstPermissionInitializationIsNotBlockedByPreviousDeniedSample() {
+        assertTrue(DailyLocation.shouldStart(1000, 0, false, 2000));
+        assertFalse(DailyLocation.shouldStart(1000, 1000, false, 2000));
+        assertFalse(DailyLocation.shouldStart(1000, 0, true, 2000));
+        assertTrue(DailyLocation.shouldStart(1000, 1000, false, 3601000));
+    }
     @Test public void retryAndReconnectDoNotCauseHourlySensorWorkToRepeat() {
         assertTrue(DailyLocation.due(0, 1000));
         assertFalse(DailyLocation.due(1000, 61000));

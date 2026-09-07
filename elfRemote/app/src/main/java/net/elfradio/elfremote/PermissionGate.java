@@ -8,6 +8,37 @@ import android.os.PowerManager;
 import android.provider.Settings;
 
 final class PermissionGate {
+    static boolean hasLocation(Context ctx) {
+        return ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                && ctx.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    static void initializeLocation(Context ctx, android.os.Handler worker, Runnable done) {
+        new Thread(() -> {
+            Process process = null;
+            try {
+                // 仅授予本应用已声明的两项权限；不接收服务器命令或修改定位开关。
+                String command = "pm grant --user 0 net.elfradio.elfremote android.permission.ACCESS_COARSE_LOCATION >/dev/null 2>&1"
+                        + " && pm grant --user 0 net.elfradio.elfremote android.permission.ACCESS_FINE_LOCATION >/dev/null 2>&1";
+                process = new ProcessBuilder("su", "-c", command).start();
+                long deadline = android.os.SystemClock.elapsedRealtime() + 3000L;
+                while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                    try { process.exitValue(); break; }
+                    catch (IllegalThreadStateException running) { Thread.sleep(50L); }
+                }
+            } catch (Exception error) { RuntimeLog.error("location_permission_init_failed", error); }
+            finally {
+                if (process != null) {
+                    process.destroy();
+                    try { process.getInputStream().close(); process.getErrorStream().close(); process.getOutputStream().close(); }
+                    catch (Exception ignored) {}
+                }
+                RuntimeLog.event("location_permission_ready=" + hasLocation(ctx));
+                worker.post(done);
+            }
+        }, "elfremote-location-permission").start();
+    }
+
     static boolean ignoringBattery(Context ctx) {
         if (Build.VERSION.SDK_INT < 23) return true;
         PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
