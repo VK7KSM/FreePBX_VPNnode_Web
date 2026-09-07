@@ -6,6 +6,47 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 
+test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {
+  let resolveResponse, requested;
+  const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},
+    fetch(url){requested=url;return new Promise(resolve=>{resolveResponse=resolve;});}});
+  vm.runInContext(source,context);
+  context.renderOps=()=>{};
+  context.DEV=[{id:"a"},{id:"b"}];context.selDev="a";
+  const state=context.historyState();
+  state.from="2026-09-01T00:00";state.to="2026-09-02T00:00";
+  const first=context.queryHistory(false);
+  context.selDev="b";
+  resolveResponse({ok:true,json:async()=>({ok:true,records:[{report_id:"one"}],next_cursor:"next"})});
+  await first;
+  assert.equal(context.historyState().rows.length,0);
+  assert.equal(state.rows[0].report_id,"one");
+  context.selDev="a";
+  const second=context.queryHistory(true);
+  assert.equal(new URL(requested,"https://example.test").searchParams.get("cursor"),"next");
+  resolveResponse({ok:true,json:async()=>({ok:true,records:[{report_id:"two"}],next_cursor:null})});
+  await second;
+  assert.equal(state.rows.length,2);
+  state.to="2026-09-03T00:00";
+  const third=context.queryHistory(true);
+  assert.equal(new URL(requested,"https://example.test").searchParams.has("cursor"),false);
+  resolveResponse({ok:false,json:async()=>({ok:false,msg:"测试错误"})});
+  await third;
+  assert.equal(state.error,"测试错误");assert.equal(state.loading,false);
+});
+
+test("远程定位失败不制造历史，流量缺失不伪装为零", async () => {
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  context.DEV=[{id:"a"}];context.selDev="a";context.renderOps=()=>{};
+  context.requestDeviceStatus=async()=>false;
+  await context.locNow();
+  assert.equal(context.historyState().rows.length,0);
+  assert.ok(context.historyState().error);
+  assert.match(context.trafficHtml(null),/暂无有效计量/);
+  assert.doesNotMatch(context.trafficHtml(null),/0\.0 KiB/);
+});
+
 test("同地点按实际距离分组，显示锚点与缩放无关，不改真实坐标", () => {
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
   vm.runInContext(source,context);

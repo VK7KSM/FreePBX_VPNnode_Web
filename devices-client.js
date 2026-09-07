@@ -10,6 +10,7 @@ var UI = {};
 var STATUS = {};
 var mapFitted = false;
 var markerGroups = [];
+var historyMarker = null;
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -165,13 +166,14 @@ async function requestDeviceStatus(id){
       var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
       if(!state.ok) throw new Error(state.msg || "查询失败");
       if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
-        STATUS[id]=""; await loadDevices(); return;
+        STATUS[id]=""; await loadDevices(); return true;
       }
       if(state.request && state.request.state==="expired") break;
     }
     STATUS[id]="拉取超时";
   } catch(error) { STATUS[id]="拉取失败"; }
   renderList();
+  return false;
 }
 
 async function refreshAllDevices(){
@@ -191,6 +193,7 @@ function esc(s){
 }
 
 function selectDev(id){
+  clearHistoryMarker();
   selDev = id;
   renderList();
   renderOps();
@@ -371,6 +374,7 @@ function renderOps(){
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += kv("远程Shell", shell);
   h += "</div>";
+  if(d) h += trafficHtml(d.traffic);
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
     var it = FN_ITEMS[i];
@@ -501,19 +505,82 @@ function pageContacts(dis){
 }
 
 function pageLocate(dis){
-  var u = uiOf();
-  var rows = u ? u.loc : [];
+  var state = historyState();
+  var rows = state ? state.rows : [];
   var h = '<div class="ops-actions">';
   h += '<button class="btn-green" onclick="locNow()"'+dis+'>立即更新位置</button>';
+  h += '<button class="btn-gray" onclick="clearHistoryMarker();flyTo(selDev)">实时位置</button>';
   h += "</div>";
-  h += '<table style="margin-top:.55rem"><thead><tr><th>时间</th><th>纬度</th><th>经度</th></tr></thead><tbody>';
-  if(!rows.length) h += '<tr><td colspan="3" class="muted">还没有定位记录</td></tr>';
+  if(!state) return h;
+  h += '<div class="ops-actions" style="margin-top:8px"><label>开始 <input class="inp" type="datetime-local" aria-label="开始时间" value="'+esc(state.from)+'" onchange="historyState().from=this.value"></label>';
+  h += '<label>结束 <input class="inp" type="datetime-local" aria-label="结束时间" value="'+esc(state.to)+'" onchange="historyState().to=this.value"></label>';
+  h += '<button class="btn-gray" onclick="queryHistory(false)"'+(state.loading?' disabled':'')+'>查询历史</button></div>';
+  h += '<p class="muted">筛选时间：浏览器本地时间；记录时间：悉尼</p>';
+  if(state.error) h += '<p role="alert">'+esc(state.error)+'</p>';
+  h += '<div style="overflow:auto;max-height:360px"><table style="margin-top:.55rem;min-width:540px"><thead><tr><th>上报 / 采样 / 接收时间</th><th>位置</th><th>公网 IP</th></tr></thead><tbody>';
+  if(!rows.length) h += '<tr><td colspan="3" class="muted">'+(state.loading?'查询中':state.loaded?'该时间范围没有记录':'尚未查询历史')+'</td></tr>';
   else for(var i=0;i<rows.length;i++){
-    var r=rows[i];
-    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.lat)+"</td><td>"+esc(r.lng)+"</td></tr>";
+    var r=rows[i], loc=r.location;
+    var label=loc ? locLabel(loc.source)+' · '+Number(loc.lat).toFixed(6)+' · '+Number(loc.lng).toFixed(6)+(loc.acc_m!=null?' · '+loc.acc_m+'m':'') : '无坐标 · '+(r.location_reason||r.location_status||'未提供');
+    h += '<tr><td>'+sydney(r.reported_at)+'<br><span class="muted">'+sydney(r.sample_at)+'<br>'+sydney(r.received_at)+'</span></td><td>';
+    h += loc ? '<button class="btn-gray" onclick="showHistoryRecord('+i+')">'+esc(label)+'</button>' : esc(label);
+    h += '</td><td>'+esc(r.ip||'—')+'</td></tr>';
   }
-  h += "</tbody></table>";
+  h += "</tbody></table></div>";
+  if(state.cursor) h += '<button class="btn-gray" onclick="queryHistory(true)"'+(state.loading?' disabled':'')+'>更多记录</button>';
   return h;
+}
+
+function localDateInput(date){
+  return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
+}
+function historyState(){
+  var u=uiOf(); if(!u) return null;
+  if(!u.history) u.history={from:localDateInput(new Date(Date.now()-86400000)),to:localDateInput(new Date()),rows:[],cursor:null,loading:false,loaded:false,error:'',sequence:0};
+  return u.history;
+}
+async function queryHistory(more){
+  var id=selDev, state=historyState(); if(!state || state.loading) return;
+  var from=new Date(state.from), to=new Date(state.to);
+  if(!state.from || !state.to || !isFinite(from.getTime()) || !isFinite(to.getTime()) || from>to){state.error='请选择有效的起止时间';renderOps();return;}
+  var range=from.toISOString()+'|'+to.toISOString();
+  if(more && state.range!==range) more=false;
+  var params=new URLSearchParams({device_id:id,from:from.toISOString(),to:to.toISOString(),limit:'100'});
+  if(more && state.cursor) params.set('cursor',state.cursor);
+  if(!more){state.rows=[];state.cursor=null;clearHistoryMarker();}
+  state.loading=true;state.error='';state.range=range;
+  var sequence=++state.sequence;renderOps();
+  try{
+    var response=await fetch('/api/devices/history?'+params.toString()), data=await response.json();
+    if(!response.ok || !data.ok) throw new Error(data.msg||'历史查询失败');
+    if(state.sequence!==sequence) return;
+    state.rows=more?state.rows.concat(data.records):data.records;
+    state.cursor=data.next_cursor;state.loaded=true;
+  }catch(error){state.error=error.message||'历史查询失败';}
+  finally{state.loading=false;if(selDev===id) renderOps();}
+}
+function clearHistoryMarker(){
+  if(historyMarker && map) map.removeLayer(historyMarker);
+  historyMarker=null;
+}
+function showHistoryRecord(index){
+  var state=historyState(), record=state && state.rows[index];
+  if(!record || !record.location || !map) return;
+  clearHistoryMarker();
+  var loc=record.location;
+  historyMarker=L.marker([loc.lat,loc.lng],{zIndexOffset:1000}).addTo(map)
+    .bindPopup('历史位置 · '+esc(sydney(record.timeline_at))).openPopup();
+  map.panTo([loc.lat,loc.lng]);
+}
+
+function trafficHtml(traffic){
+  if(!traffic || !traffic.available) return '<p class="muted">应用流量：暂无有效计量'+(traffic && traffic.reason?'（'+esc(traffic.reason)+'）':'')+'</p>';
+  function bytes(value){return (value/1024).toFixed(1)+' KiB';}
+  var h='<details><summary>应用流量 · 接收 '+bytes(traffic.rx_bytes)+' · 发送 '+bytes(traffic.tx_bytes)+'</summary>';
+  h+='<p class="muted">'+sydney(traffic.started_at_ms)+' 至 '+sydney(traffic.sampled_at_ms)+' · 覆盖 '+(traffic.covered_ms/3600000).toFixed(2)+' 小时 · 缺口 '+traffic.gaps+'</p>';
+  h+='<p class="muted">elfRemote 应用累计计量，不含其他应用和运营商计费差异</p>';
+  Object.keys(traffic.interfaces||{}).forEach(function(name){var v=traffic.interfaces[name];h+='<div>'+esc(name)+' · 接收 '+bytes(v.rx_bytes)+' · 发送 '+bytes(v.tx_bytes)+'</div>';});
+  return h+'</details>';
 }
 
 function pageAlarm(dis){
@@ -728,17 +795,12 @@ function contactDel(i){
   shellLog("sys", "删除通信录 → 已记下，设备未执行（Shell 未接入）");
   renderOps();
 }
-function locNow(){
-  var u=uiOf(); if(!u) return;
-  var d=currentDev();
-  var lat="—", lng="—";
-  if(d && d.loc && isFinite(d.loc.lat) && isFinite(d.loc.lng)){
-    lat=Number(d.loc.lat).toFixed(6);
-    lng=Number(d.loc.lng).toFixed(6);
-  }
-  u.loc.unshift({ at: nowIso(), lat: lat, lng: lng });
-  shellLog("sys", "立即定位 → 已记下，设备未执行（Shell 未接入）");
-  renderOps();
+async function locNow(){
+  var id=selDev;if(!currentDev()) return;
+  var ok=await requestDeviceStatus(id);
+  if(selDev!==id) return;
+  if(ok){historyState().to=localDateInput(new Date(Date.now()+60000));await queryHistory(false);}
+  else{historyState().error=STATUS[id]||'已有拉取请求正在执行';renderOps();}
 }
 function alarmPlay(){
   var u=uiOf(); if(!u) return;
