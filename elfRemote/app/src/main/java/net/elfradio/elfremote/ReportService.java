@@ -285,6 +285,7 @@ public final class ReportService extends Service {
         body.put("managed_log_tasks", true);
         body.put("managed_heal_tasks", true);
         body.put("managed_reboot_tasks", true);
+        body.put("managed_adbd_tasks", true);
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
@@ -385,7 +386,8 @@ public final class ReportService extends Service {
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
-                    || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -593,7 +595,7 @@ public final class ReportService extends Service {
                 armHealCmd(RepairPolicy.adbdCommand());
                 String rc = waitHealRc(45000L);
                 String out = readHealOut();
-                if (!"0".equals(rc)) {
+                if (!RepairPolicy.adbdSucceeded(rc, out)) {
                     postTask(id, RepairPolicy.ST_FAILED, "adbd-rc=" + rc, null);
                     writeLastTaskId(id);
                     writeTaskPhase(RepairPolicy.PHASE_DONE);
@@ -601,7 +603,7 @@ public final class ReportService extends Service {
                 }
                 org.json.JSONObject result = new org.json.JSONObject();
                 result.put("stage", "adbd");
-                result.put("action", out.contains("PORT=5555") ? "loopback" : "unknown");
+                result.put("action", "loopback");
                 result.put("text", out.length() > 1500 ? out.substring(0, 1500) : out);
                 postTask(id, RepairPolicy.ST_SUCCESS, "adbd-5555", result);
                 writeLastTaskId(id);
@@ -743,6 +745,8 @@ public final class ReportService extends Service {
 
     private void armHealCmd(String cmd) throws Exception {
         java.io.File dir = new java.io.File("/data/local/elfremote");
+        if (new java.io.File(dir, "heal.cmd").exists() || new java.io.File(dir, "heal.running").exists()
+                || new java.io.File(dir, "update.running").exists()) throw new java.io.IOException("root-command-busy");
         java.io.File tmp = new java.io.File(dir, "heal.cmd.tmp");
         java.io.FileOutputStream out = new java.io.FileOutputStream(tmp);
         try {
@@ -754,9 +758,7 @@ public final class ReportService extends Service {
         java.io.File rcf = new java.io.File(dir, "heal.rc");
         if (rcf.exists()) rcf.delete();
         java.io.File cmdf = new java.io.File(dir, "heal.cmd");
-        if (cmdf.exists() && !cmdf.delete()) {
-            throw new Exception("heal-cmd-stale");
-        }
+        if (cmdf.exists()) throw new java.io.IOException("root-command-busy");
         if (!tmp.renameTo(cmdf)) throw new Exception("heal-arm-fail");
     }
 

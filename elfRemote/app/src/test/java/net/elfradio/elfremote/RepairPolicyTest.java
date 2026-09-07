@@ -100,7 +100,17 @@ public class RepairPolicyTest {
         assertTrue(cmd.contains("5555"));
         assertTrue(cmd.contains("lo"));
         assertFalse(cmd.contains("persist.adb.tcp.port"));
+        assertTrue(cmd.indexOf("rule ip6tables") < cmd.indexOf("setprop service.adb.tcp.port 5555"));
+        assertTrue(cmd.contains("trap restore EXIT"));
         assertEquals("重启本机adbd", RepairPolicy.typeLabel("restart_adbd"));
+    }
+
+    @Test public void adbdSuccessRequiresExitCodeAndCompleteVerificationMarker() {
+        assertTrue(RepairPolicy.adbdSucceeded("0", "tcp listen\nADBD_LOOPBACK_OK\n"));
+        assertFalse(RepairPolicy.adbdSucceeded("1", "ADBD_LOOPBACK_OK\n"));
+        assertFalse(RepairPolicy.adbdSucceeded("0", "PORT=5555\n"));
+        assertFalse(RepairPolicy.adbdSucceeded("0", "echo ADBD_LOOPBACK_OK\n"));
+        assertFalse(RepairPolicy.adbdSucceeded("", null));
     }
 
     @Test

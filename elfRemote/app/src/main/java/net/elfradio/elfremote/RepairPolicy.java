@@ -100,13 +100,33 @@ final class RepairPolicy {
     }
 
     static String adbdCommand() {
-        return "setprop service.adb.tcp.port 5555"
-                + " && stop adbd && start adbd"
-                + "; iptables -D INPUT -p tcp --dport 5555 ! -i lo -j DROP 2>/dev/null"
-                + "; iptables -I INPUT -p tcp --dport 5555 ! -i lo -j DROP"
-                + "; echo PORT=$(getprop service.adb.tcp.port)"
-                + "; netstat -tln"
-                + "; iptables -L INPUT -n";
+        return "set -e\n"
+                + "old_port=$(getprop service.adb.tcp.port)\n"
+                + "added4=0; added6=0; changed=0\n"
+                + "restore() { rc=$?; trap - EXIT; if [ \"$rc\" != 0 ]; then"
+                + " set +e; if [ \"$changed\" = 1 ]; then setprop service.adb.tcp.port \"$old_port\"; stop adbd; start adbd; fi;"
+                + " if [ \"$added4\" = 1 ]; then iptables -D INPUT ! -i lo -p tcp --dport 5555 -j DROP; fi;"
+                + " if [ \"$added6\" = 1 ]; then ip6tables -D INPUT ! -i lo -p tcp --dport 5555 -j DROP; fi; fi; exit \"$rc\"; }\n"
+                + "trap restore EXIT\n"
+                + "rule() { if ! \"$1\" -C INPUT ! -i lo -p tcp --dport 5555 -j DROP 2>/dev/null; then"
+                + " \"$1\" -I INPUT 1 ! -i lo -p tcp --dport 5555 -j DROP;"
+                + " case \"$1\" in iptables) added4=1;; ip6tables) added6=1;; esac; fi; }\n"
+                + "rule iptables\nrule ip6tables\n"
+                + "changed=1\nsetprop service.adb.tcp.port 5555\nstop adbd\nstart adbd\n"
+                + "tries=0\nwhile ! { [ \"$(getprop init.svc.adbd)\" = running ]"
+                + " && netstat -tln | grep -E ':5555[[:space:]]'; }; do"
+                + " tries=$((tries+1)); [ \"$tries\" -lt 20 ]; sleep 1; done\n"
+                + "test \"$(getprop service.adb.tcp.port)\" = 5555\n"
+                + "iptables -C INPUT ! -i lo -p tcp --dport 5555 -j DROP\n"
+                + "ip6tables -C INPUT ! -i lo -p tcp --dport 5555 -j DROP\n"
+                + "netstat -tln | grep -E ':5555[[:space:]]'\n"
+                + "trap - EXIT\necho ADBD_LOOPBACK_OK\n";
+    }
+
+    static boolean adbdSucceeded(String rc, String output) {
+        if (!"0".equals(rc) || output == null) return false;
+        for (String line : output.split("\\r?\\n")) if ("ADBD_LOOPBACK_OK".equals(line.trim())) return true;
+        return false;
     }
 
     static String installCommand() {
