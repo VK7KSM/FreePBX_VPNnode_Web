@@ -536,7 +536,7 @@ function pageWifi(dis){
   if(device && device.task && device.task.type==='scan_wifi') h += '<span class="muted">'+esc(device.task.label)+' '+esc(device.task.detail||'')+'</span>';
   h += "</div>";
   h += '<table style="margin-top:.55rem"><thead><tr><th>SSID</th><th style="white-space:nowrap">信号</th><th>加密</th><th></th></tr></thead><tbody>';
-  if(!list.length) h += '<tr><td colspan="4" class="muted">等待设备上报周围 Wi-Fi</td></tr>';
+  if(!list.length) h += '<tr><td colspan="4" class="muted">'+(scan?'本次扫描未发现可显示的网络':'等待设备上报周围 Wi-Fi')+'</td></tr>';
   else for(var i=0;i<list.length;i++){
     var w=list[i];
     h += "<tr><td>"+esc(w.ssid)+"</td><td>"+esc(w.rssi)+"</td><td>"+esc(w.sec)+"</td>";

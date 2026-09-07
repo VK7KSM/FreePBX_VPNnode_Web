@@ -7,6 +7,10 @@ import static org.junit.Assert.*;
 
 public class AdbdScriptTest {
     private String run(boolean ipv6Fails, boolean listenerReady, int expected) throws Exception {
+        return run(ipv6Fails, listenerReady, expected, false);
+    }
+
+    private String run(boolean ipv6Fails, boolean listenerReady, int expected, boolean expired) throws Exception {
         String shell = System.getProperty("os.name").startsWith("Windows")
                 ? "C:/Program Files/Git/bin/bash.exe" : "/bin/sh";
         String stubs = "v4=0; v6=0; port=-1\n"
@@ -19,7 +23,7 @@ public class AdbdScriptTest {
                 + "netstat() { " + (listenerReady ? "echo 'tcp 0 0 :::5555 :::* LISTEN'" : ":") + "; }\n";
         // 所有设备命令均由本进程函数替代，不能触及宿主或设备网络。
         Process process = new ProcessBuilder(shell, "-s").redirectErrorStream(true).start();
-        process.getOutputStream().write((stubs + RepairPolicy.adbdCommand()).getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().write((stubs + (expired ? RepairPolicy.expiringAdbdCommand(1) : RepairPolicy.adbdCommand())).getBytes(StandardCharsets.UTF_8));
         process.getOutputStream().close();
         if (!process.waitFor(10, TimeUnit.SECONDS)) {
             process.destroyForcibly();
@@ -52,5 +56,13 @@ public class AdbdScriptTest {
         assertTrue(output.indexOf("v6 -I") < output.indexOf("setprop"));
         assertTrue(output.contains("ADBD_LOOPBACK_OK"));
         assertFalse(output.contains("-D"));
+    }
+
+    @Test public void expiredQueueCannotTouchFirewallOrDaemon() throws Exception {
+        String output = run(false, true, 1, true);
+        assertFalse(output.contains("v4"));
+        assertFalse(output.contains("v6"));
+        assertFalse(output.contains("setprop"));
+        assertFalse(output.contains("stop"));
     }
 }

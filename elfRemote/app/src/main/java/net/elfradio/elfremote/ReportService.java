@@ -601,7 +601,7 @@ public final class ReportService extends Service {
                 return;
             }
             if (RepairPolicy.TYPE_RESTART_ADBD.equals(type)) {
-                armHealCmd(RepairPolicy.adbdCommand());
+                armHealCmd(RepairPolicy.expiringAdbdCommand(offer.optLong("expires_at")));
                 String rc = waitHealRc(45000L);
                 String out = readHealOut();
                 if (!RepairPolicy.adbdSucceeded(rc, out)) {
@@ -618,6 +618,7 @@ public final class ReportService extends Service {
                 writeLastTaskId(id);
                 writeTaskPhase(RepairPolicy.PHASE_DONE);
                 store.setLastStatus("修机成功 重启本机adbd");
+                RuntimeLog.event("task_adbd_complete");
                 android.util.Log.i("elfRemote", "task restart_adbd " + result.optString("action"));
                 return;
             }

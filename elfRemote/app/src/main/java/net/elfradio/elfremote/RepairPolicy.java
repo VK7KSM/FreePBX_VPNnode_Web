@@ -131,6 +131,11 @@ final class RepairPolicy {
         return false;
     }
 
+    static String expiringAdbdCommand(long deadline) {
+        if (deadline <= 0) throw new IllegalArgumentException("adbd deadline missing");
+        return "set -e\ntest $(date +%s) -lt " + (deadline / 1000L) + "\n" + adbdCommand();
+    }
+
     static String installCommand() {
         return "mount -o rw,remount /system"
                 + " && cp " + TASK_APK + " /system/app/ElfRemote/ElfRemote.apk"

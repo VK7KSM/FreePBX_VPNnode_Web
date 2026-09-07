@@ -19,6 +19,9 @@ test("Wi-Fi 扫描使用真实任务，名称只作为文本且选择保持原�
   context.wifiPickIndex(0);assert.equal(context.uiOf().wifiSel,ssid);
   let requested='';context.enqueueRepair=type=>{requested=type;};
   context.wifiScan();assert.equal(requested,'scan_wifi');
+  context.DEV[0].wifi_scan.networks=[];
+  assert.match(context.pageWifi(''),/本次扫描未发现可显示的网络/);
+  assert.doesNotMatch(context.pageWifi(''),/等待设备上报周围 Wi-Fi/);
 });
 
 test("列表状态只显示一处，只有等待上报可触发拉取，自动报告清除旧错误",async()=>{
