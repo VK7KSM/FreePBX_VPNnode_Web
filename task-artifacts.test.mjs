@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import worker from './worker.js';
 import {fixture,login,request} from './test-support.mjs';
+
+test('生产显式部署配置绑定私有日志桶',()=>{
+  const config=JSON.parse(readFileSync(new URL('./wrangler.jsonc',import.meta.url),'utf8'));
+  assert.deepEqual(config.r2_buckets,[{binding:'ELF_ARTIFACTS',bucket_name:'elfremote-private'}]);
+  assert.match(readFileSync(new URL('./.github/workflows/deploy.yml',import.meta.url),'utf8'),/command: deploy --config wrangler\.jsonc/);
+});
 
 function setup(){
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',enabled:true,token_sha256:createHash('sha256').update('fixture-token').digest('hex'),
