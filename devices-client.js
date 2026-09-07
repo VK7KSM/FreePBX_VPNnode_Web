@@ -355,11 +355,11 @@ function renderOps(){
   if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '</div><div class="ops-head-actions">';
-  h += '<button class="btn-gray" onclick="openEdit()"'+dis+'>编辑</button>';
-  if(d && d.enabled===false) h += '<button class="btn-gray" onclick="setEnabled(true)">启用</button>';
-  else h += '<button class="btn-gray" onclick="setEnabled(false)"'+dis+'>停用</button>';
-  if(d && d.paired===false) h += '<button class="btn-green" onclick="openPairSelected()">立即配对</button>';
-  else h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()"'+dis+'>解除配对</button>';
+  h += '<button class="device-action action-edit" onclick="openEdit()"'+dis+'>编辑</button>';
+  if(d && d.enabled===false) h += '<button class="device-action action-enable" onclick="setEnabled(true)">启用</button>';
+  else h += '<button class="device-action action-disable" onclick="setEnabled(false)"'+dis+'>停用</button>';
+  if(d && d.paired===false) h += '<button class="device-action action-pair" onclick="openPairSelected()">立即配对</button>';
+  else h += '<button class="device-action action-unpair" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
   h += '<div class="ops-grid">';
   h += kv("电量", bat);
