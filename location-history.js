@@ -1,3 +1,5 @@
+import { normalizeTraffic } from "./traffic.js";
+
 function timestamp(value, fallback = null) {
   if (value == null || value === "") return fallback;
   const at = typeof value === "number" ? value : Date.parse(value);
@@ -18,10 +20,11 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const received = new Date(now).toISOString();
   const timeline = reported || received;
   const dedupKey = "history-id/" + encodeURIComponent(device) + "/" + id;
+  const traffic = normalizeTraffic(data.traffic);
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,
     cell: data.cell || null, network: data.network || "unknown", battery: data.battery ?? null,
     app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null,
-    status_request_id: data.status_request_id || null });
+    status_request_id: data.status_request_id || null, ...(traffic == null ? {} : { traffic }) });
   const hash = await sha(content);
   const previous = await storage.get(dedupKey);
   if (previous) {
@@ -31,7 +34,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const record = { device_id: device, report_id: id, reported_at: reported, received_at: received,
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
-    location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied };
+    location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic };
   const key = prefix(device) + timeline + "/" + id;
   await storage.put(key, record);
   await storage.put(dedupKey, { key, hash });

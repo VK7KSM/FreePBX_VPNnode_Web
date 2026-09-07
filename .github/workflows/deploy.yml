@@ -10,6 +10,7 @@ on:
       - "admin-auth.js"
       - "admin-session.js"
       - "location-history.js"
+      - "traffic.js"
       - "push-control.js"
       - "logo.js"
       - "logo.png"

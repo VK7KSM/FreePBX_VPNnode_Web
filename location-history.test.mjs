@@ -7,6 +7,31 @@ import { pickLocation } from "./remote-location.js";
 
 const token = "test-device-token";
 const hash = createHash("sha256").update(token).digest("hex");
+const traffic = { available: true, scope: "application_uid", source: "qtaguid_uid",
+  started_at_ms: 1000, sampled_at_ms: 2000, covered_ms: 1000, gaps: 0,
+  rx_bytes: 123, tx_bytes: 456, interfaces: { wlan0: { rx_bytes: 123, tx_bytes: 456 } } };
+
+test("流量进入现有设备与历史查询，重试去重，补报不覆盖新计量", async () => {
+  const f=setup(),c=await login(f);
+  assert.equal((await report(f,"traffic-new","2026-09-07T02:00:00Z",null,{traffic})).status,200);
+  assert.equal((await report(f,"traffic-new","2026-09-07T02:00:00Z",null,{traffic})).status,200);
+  await report(f,"traffic-old","2026-09-07T01:00:00Z",null,{traffic:{available:false,reason:"uid_counter_unsupported"}});
+  const devices=await (await worker.fetch(request("/api/devices","GET",undefined,c),f.env)).json();
+  assert.deepEqual(devices.devices[0].traffic,traffic);
+  const rows=(await history(f,c)).records;
+  assert.equal(rows.length,2); assert.deepEqual(rows[1].traffic,traffic);
+  assert.equal((await report(f,"traffic-new","2026-09-07T02:00:00Z",null,{traffic:{...traffic,gaps:1}})).status,400);
+});
+
+test("流量拒绝负数、非整数、超界及不一致总量，失败不留下历史", async () => {
+  const f=setup(),c=await login(f);
+  for (const value of [false, {}, {...traffic,rx_bytes:-1}, {...traffic,covered_ms:0.5},
+    {...traffic,tx_bytes:Number.MAX_SAFE_INTEGER+1}, {...traffic,rx_bytes:124},
+    {...traffic,interfaces:{bad:{rx_bytes:0,tx_bytes:0}}}, {available:false,reason:"arbitrary"}]) {
+    assert.equal((await report(f,"invalid","2026-09-07T02:00:00Z",null,{traffic:value})).status,400);
+  }
+  assert.equal((await history(f,c)).records.length,0);
+});
 function setup() {
   return fixture({ admin_pass: "fixture-password", remote_devices: [{ id: "dev_test", name: "测试机", enabled: true, token_sha256: hash }],
     remote_device_models: [{ id: "mdl_d22", name: "D22" }] });

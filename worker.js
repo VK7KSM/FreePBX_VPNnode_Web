@@ -836,6 +836,7 @@ function publicDevice(d, modelName) {
     online: isControlPlaneOnline(d.last_seen, Date.now()),
     last_seen: d.last_seen || null,
     battery: d.battery == null ? null : d.battery,
+    traffic: d.traffic || null,
     network: d.network || "unknown",
     ip: d.ip || "",
     os_version: d.os_version || "",
@@ -1146,6 +1147,7 @@ async function handleDeviceReport(env, request) {
       list[i].online = true;
       if (fresh) {
       list[i].last_reported_at = history.record.timeline_at;
+      list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);
       if (data.network != null) list[i].network = String(data.network).slice(0, 32);

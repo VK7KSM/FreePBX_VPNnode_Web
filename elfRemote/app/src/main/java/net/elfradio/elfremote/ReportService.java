@@ -32,6 +32,7 @@ public final class ReportService extends Service {
     private String lastNotifyText = "";
     private int reportFailures;
     private PushConnection push;
+    private TrafficMeter traffic;
 
     private final Runnable loop = new Runnable() {
         @Override
@@ -54,6 +55,7 @@ public final class ReportService extends Service {
     public void onCreate() {
         super.onCreate();
         store = new PairingStore(this);
+        traffic = new TrafficMeter(this);
         if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
         RuntimeLog.event("service_start status_only=" + BuildConfig.STATUS_ONLY);
         startForeground(7, buildNotification());
@@ -66,6 +68,7 @@ public final class ReportService extends Service {
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (!loopStarted) {
             loopStarted = true;
+            if (BuildConfig.STATUS_ONLY) worker.post(() -> traffic.sample());
             worker.post(loop);
         }
         if (!BuildConfig.STATUS_ONLY) WatchdogInstaller.ensure(this);
@@ -136,6 +139,7 @@ public final class ReportService extends Service {
             android.util.Log.w("elfRemote", "tick failed", e);
             store.setLastStatus(Protocol.formatNetError(e));
         }
+        if (BuildConfig.STATUS_ONLY) traffic.sample();
         maybeNotify();
     }
 
@@ -202,6 +206,7 @@ public final class ReportService extends Service {
         body.put("network", networkType());
         body.put("battery", batteryPct());
         body.put("ready", true);
+        body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
         else body.put("location_reason", "no_cached_location");
@@ -255,6 +260,7 @@ public final class ReportService extends Service {
                 catch (Exception error) { RuntimeLog.error("push_fallback_failed", error); }
             });
         }).flush(store.token(), priorityRequest);
+        traffic.sample();
         store.setLastStatus(sent > 0 ? "已上报" : "等待上报");
     }
 
