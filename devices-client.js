@@ -1,4 +1,5 @@
 var DEV = [];
+var UNPAIRED = [];
 var MODELS = [];
 var selDev = "";
 var selFn = "adb";
@@ -103,6 +104,7 @@ function loadDevices(){
     fetch("/api/device-models").then(function(r){return r.json();})
   ]).then(function(arr){
     if(arr[0].devices) DEV = arr[0].devices;
+    UNPAIRED = arr[0].unpaired || [];
     if(arr[1].models) MODELS = arr[1].models;
     if(!currentDev() && DEV.length) selDev = DEV[0].id;
     renderList();
@@ -113,7 +115,7 @@ function loadDevices(){
 
 function renderList(){
   var box = $("devList");
-  if(!DEV.length){
+  if(!DEV.length && !UNPAIRED.length){
     box.innerHTML = '<p class="muted">还没有设备</p>';
     return;
   }
@@ -128,9 +130,25 @@ function renderList(){
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
     h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
+    if(d.contact_state === "awaiting_report") h += '<span class="tag">等待定时报送</span>';
+    if(d.contact_state === "report_overdue") h += '<span class="tag">报告超时</span>';
     h += '</div>';
   }
+  for(var j=0;j<UNPAIRED.length;j++){
+    var pending = UNPAIRED[j];
+    h += '<div class="dev-row" onclick="selectUnpaired('+j+')"><span class="dot dot-off"></span><span class="dev-name">'+esc(pending.name)+'</span><span class="tag">未配对</span></div>';
+  }
   box.innerHTML = h;
+}
+
+function selectUnpaired(index){
+  var pending = UNPAIRED[index];
+  if(!pending) return;
+  openAdd();
+  $("dName").value = pending.name;
+  $("pairCode").value = pending.code || "";
+  if(!pending.code) $("pairErr").innerText = "设备暂未连接，等待重新上报配对码";
+  syncAddButtons();
 }
 
 function esc(s){
@@ -784,7 +802,7 @@ function submitPair(){
   }
   var body = {
     code: $("pairCode").value.trim(),
-    name: $("dName").value.trim() || "D22-XX",
+    name: $("dName").value.trim(),
     model_id: $("dModel").value || "mdl_d22"
   };
   fetch("/api/devices/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})

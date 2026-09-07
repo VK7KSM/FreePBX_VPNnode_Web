@@ -48,7 +48,8 @@ public final class ReportService extends Service {
                     ? WatchdogPolicy.pairedReportIntervalMs()
                     : WatchdogPolicy.unpairedReportIntervalMs();
             if (BuildConfig.STATUS_ONLY && store.paired()) {
-                delay = push != null && push.connected() ? 3600000L : 900000L;
+                delay = "wifi".equals(networkType()) || "ethernet".equals(networkType())
+                        || push == null || !push.connected() ? 900000L : 3600000L;
                 if (statusOutbox().entries().length > 0) delay = 60000L;
             }
             if (BuildConfig.STATUS_ONLY && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
@@ -168,12 +169,16 @@ public final class ReportService extends Service {
     }
 
     private void enrollOrPoll() throws Exception {
+        if (store.expiresAt() > 0 && store.expiresAt() <= System.currentTimeMillis()) store.clearEnroll();
         if (store.code().length() != 6 || store.enrollId().length() == 0) {
             JSONObject body = new JSONObject();
             body.put("token_sha256", store.tokenSha256());
             body.put("app_version", Protocol.appVersion());
             body.put("os_version", "Android " + Build.VERSION.RELEASE);
             body.put("model_hint", "D22");
+            String deviceName = android.provider.Settings.Global.getString(getContentResolver(), "device_name");
+            if (deviceName == null || deviceName.trim().isEmpty()) deviceName = android.provider.Settings.Secure.getString(getContentResolver(), "bluetooth_name");
+            body.put("device_name", deviceName == null || deviceName.trim().isEmpty() ? Build.MODEL : deviceName.trim());
             JSONObject res = Protocol.parseObject(HttpJson.post(Protocol.enrollPath(), body.toString()));
             if (!Protocol.isOk(res)) {
                 store.setLastStatus(res.optString("msg", "申请配对码失败"));

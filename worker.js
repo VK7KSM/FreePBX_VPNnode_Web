@@ -407,7 +407,14 @@ const app = {
     }
     if (pathname === "/api/devices" && method === "GET") {
       const devices = await loadDevicesHydrated(env);
-      return json({ ok: true, devices });
+      const registered = await loadDevices(env);
+      const unpaired = Object.entries(await loadEnrolls(env))
+        .filter(([, row]) => row && !row.paired && !registered.some(d => d.token_sha256 === row.token_sha256))
+        .map(([code, row]) => ({ name: row.device_name || row.model_hint || "未命名设备",
+          code: Date.parse(row.expires_at) > Date.now() ? code : "",
+          app_version: row.app_version, last_seen: row.last_seen || row.created_at,
+          model_hint: row.model_hint, expires_at: row.expires_at }));
+      return json({ ok: true, devices, unpaired });
     }
     if (pathname === "/api/devices" && method === "POST") {
       return handleDeviceCreate(env, request);
@@ -1006,7 +1013,7 @@ function purgeEnrolls(map, now) {
   for (let i = 0; i < keys.length; i++) {
     const row = map[keys[i]];
     if (!row || !row.expires_at) continue;
-    if (Date.parse(row.expires_at) > now) out[keys[i]] = row;
+    if (!row.paired || Date.parse(row.expires_at) > now) out[keys[i]] = row;
   }
   return out;
 }
@@ -1020,6 +1027,16 @@ async function handleDeviceEnroll(env, request) {
     }
     const now = Date.now();
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+    for (const [oldCode, row] of Object.entries(enrolls)) {
+      if (row.token_sha256 !== tokenSha) continue;
+      if (Date.parse(row.expires_at) > now) {
+        row.device_name = String(data.device_name || row.device_name || data.model_hint || "未命名设备").slice(0, 80);
+        row.last_seen = new Date(now).toISOString();
+        await saveEnrolls(env, enrolls);
+        return json({ ok: true, code: oldCode, enroll_id: row.enroll_id, expires_at: row.expires_at });
+      }
+      delete enrolls[oldCode];
+    }
     let code = "";
     for (let i = 0; i < 12; i++) {
       const bytes = crypto.getRandomValues(new Uint8Array(3));
@@ -1034,6 +1051,8 @@ async function handleDeviceEnroll(env, request) {
       app_version: String(data.app_version || "").slice(0, 80),
       os_version: String(data.os_version || "").slice(0, 80),
       model_hint: String(data.model_hint || "").slice(0, 32),
+      device_name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
+      last_seen: new Date(now).toISOString(),
       created_at: new Date(now).toISOString(),
       expires_at: new Date(now + PAIR_CODE_TTL_MS).toISOString(),
       paired: false,
@@ -1061,6 +1080,8 @@ async function handleDeviceEnrollStatus(env, url) {
   if (!row || row.enroll_id !== enrollId) {
     return json({ ok: true, paired: false });
   }
+  row.last_seen = new Date(now).toISOString();
+  await saveEnrolls(env, enrolls);
   return json({
     ok: true,
     paired: !!row.paired,
@@ -1074,7 +1095,7 @@ async function handleDevicePair(env, request) {
     const data = await request.json();
     const code = normalizePairCode(data.code);
     if (!code) return json({ ok: false, msg: "请输入六位数字配对码" }, 400);
-    const name = String(data.name || "").trim() || "D22-XX";
+    const name = String(data.name || "").trim();
     const model_id = String(data.model_id || "mdl_d22").trim();
     const models = await loadDeviceModels(env);
     let okModel = false;
@@ -1083,7 +1104,7 @@ async function handleDevicePair(env, request) {
     const now = Date.now();
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
     const row = enrolls[code];
-    if (!row) return json({ ok: false, msg: "配对码无效或已过期" }, 400);
+    if (!row || Date.parse(row.expires_at) <= now) return json({ ok: false, msg: "配对码无效或已过期" }, 400);
     if (row.paired && row.device_id) {
       const list = await loadDevices(env);
       const existing = list.filter(function (d) { return d.id === row.device_id; })[0];
@@ -1094,7 +1115,7 @@ async function handleDevicePair(env, request) {
     const ip = String(data.ip || "").trim();
     const device = {
       id: newRemoteId("dev_"),
-      name: name,
+      name: name || row.device_name || row.model_hint || "未命名设备",
       model_id: model_id,
       enabled: true,
       online: false,
