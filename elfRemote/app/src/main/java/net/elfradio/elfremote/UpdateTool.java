@@ -20,6 +20,7 @@ public final class UpdateTool {
     private static String deviceId = "";
     private static String token = "";
     private static String jobId = "";
+    private static boolean managedUpdate;
 
     public static void main(String[] args) {
         int rc = 2;
@@ -46,6 +47,7 @@ public final class UpdateTool {
         }
         String rawJob = readFile(new File(args[1]));
         JSONObject job = new JSONObject(rawJob);
+        managedUpdate = job.optBoolean("managed_update_v1");
         String manRaw = job.getString("manifest_raw");
         String sig = job.getString("signature");
         deviceId = job.optString("device_id", "");
@@ -56,19 +58,29 @@ public final class UpdateTool {
             return 4;
         }
         JSONObject m = UpdatePolicy.parseManifest(manRaw);
-        if (m == null || UpdatePolicy.expired(m, System.currentTimeMillis())) {
+        if (m == null) {
             progress(UpdatePolicy.ST_CLAIMED, "bad-manifest");
             return 5;
         }
         jobId = m.getString("job_id");
-        writeFlag("updater.ok");
+        if (m.has("device_id") && !deviceId.equals(m.optString("device_id"))) {
+            progress(UpdatePolicy.ST_REJECTED, "wrong-device"); return 0;
+        }
+        boolean resuming = jobId.equals(readStateJobId()) && (UpdatePolicy.ST_INSTALLING.equals(readState())
+                || UpdatePolicy.ST_WAIT_HEALTH.equals(readState()) || UpdatePolicy.ST_ROLLBACK.equals(readState())
+                || UpdatePolicy.ST_RECOVERED.equals(readState()) || UpdatePolicy.ST_SUCCESS.equals(readState()));
+        if (UpdatePolicy.expired(m, System.currentTimeMillis()) && !resuming) {
+            writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"));
+            progress(UpdatePolicy.ST_REJECTED, "expired"); return 0;
+        }
+        writeUpdaterIdentity();
         int wantCode = m.getInt("versionCode");
         String wantName = m.getString("versionName");
         Context ctx = systemContext();
         PackageInfo cur = ctx.getPackageManager().getPackageInfo(UpdatePolicy.PKG, 0);
         boolean onTarget = UpdatePolicy.alreadyOnTarget(
                 cur.versionName, cur.versionCode, wantName, wantCode);
-        boolean healthOk = healthMatches(wantCode);
+        boolean healthOk = jobId.equals(readStateJobId()) && healthMatches(wantCode);
         boolean lastGood = new File(UpdatePolicy.LAST_GOOD_APK).isFile();
         String act = UpdatePolicy.resumeAction(readState(), onTarget, healthOk, lastGood,
                 readStateJobId(), jobId);
@@ -77,6 +89,9 @@ public final class UpdateTool {
             return 0;
         }
         if (UpdatePolicy.ST_RECOVERED.equals(act)) {
+            PackageInfo backup = ctx.getPackageManager().getPackageArchiveInfo(UpdatePolicy.LAST_GOOD_APK, PackageManager.GET_SIGNATURES);
+            if (backup == null || !UpdatePolicy.alreadyOnTarget(cur.versionName, cur.versionCode, backup.versionName, backup.versionCode))
+                return doRollback(wantCode, wantName);
             String disk = readState();
             if (!UpdatePolicy.ST_ROLLBACK.equals(disk)
                     && !UpdatePolicy.ST_RECOVERED.equals(disk)) {
@@ -121,7 +136,7 @@ public final class UpdateTool {
             return 0;
         }
         progress(UpdatePolicy.ST_INSTALLING, "");
-        backupLastGood();
+        if (!UpdatePolicy.preserveBackup(jobId, readStateJobId(), readState(), lastGood)) backupLastGood();
         writeState(UpdatePolicy.ST_INSTALLING, wantCode, wantName);
         new File(DIR, "health.ok").delete();
         if (!installApk(apk.getAbsolutePath())) {
@@ -136,7 +151,12 @@ public final class UpdateTool {
         writeState(UpdatePolicy.ST_WAIT_HEALTH, wantCode, wantName);
         progress(UpdatePolicy.ST_WAIT_HEALTH, detail);
         exec("am", "force-stop", UpdatePolicy.PKG);
-        if (waitHealth(wantCode)) return 0;
+        startMainApp();
+        if (waitHealth(wantCode)) {
+            writeState(UpdatePolicy.ST_SUCCESS, wantCode, wantName);
+            progress(UpdatePolicy.ST_SUCCESS, "health-ok");
+            return 0;
+        }
         return doRollback(wantCode, wantName);
     }
 
@@ -150,7 +170,13 @@ public final class UpdateTool {
         writeState(UpdatePolicy.ST_RECOVERED, wantCode, wantName);
         progress(UpdatePolicy.ST_RECOVERED, "last-good");
         exec("am", "force-stop", UpdatePolicy.PKG);
+        startMainApp();
         return 0;
+    }
+
+    private static void startMainApp() {
+        String command = android.os.Build.VERSION.SDK_INT >= 26 ? "start-foreground-service" : "startservice";
+        exec("am", command, "--user", "0", "-n", UpdatePolicy.PKG + "/.ReportService");
     }
 
     private static boolean installApk(String path) {
@@ -251,6 +277,7 @@ public final class UpdateTool {
     private static void writeState(String state, int code, String name) throws Exception {
         JSONObject o = new JSONObject();
         o.put("job_id", jobId);
+        o.put("managed_update_v1", managedUpdate);
         o.put("state", state);
         o.put("versionCode", code);
         o.put("versionName", name);
@@ -267,23 +294,14 @@ public final class UpdateTool {
         }
     }
 
-    private static String readState() {
-        try {
-            File f = new File(DIR, "update.state");
-            return new JSONObject(new String(new android.util.AtomicFile(f).readFully(), "UTF-8")).optString("state", "");
-        } catch (Exception e) {
-            return "";
-        }
+    private static JSONObject readStateObject() throws Exception {
+        File f = new File(DIR, "update.state");
+        if (!f.exists() && !new File(f.getPath() + ".bak").exists()) return new JSONObject();
+        return new JSONObject(new String(new android.util.AtomicFile(f).readFully(), "UTF-8"));
     }
 
-    private static String readStateJobId() {
-        try {
-            File f = new File(DIR, "update.state");
-            return new JSONObject(new String(new android.util.AtomicFile(f).readFully(), "UTF-8")).optString("job_id", "");
-        } catch (Exception e) {
-            return "";
-        }
-    }
+    private static String readState() throws Exception { return readStateObject().optString("state", ""); }
+    private static String readStateJobId() throws Exception { return readStateObject().optString("job_id", ""); }
 
     private static boolean healthMatches(int wantCode) {
         try {
@@ -295,13 +313,14 @@ public final class UpdateTool {
         }
     }
 
-    private static void writeFlag(String name) throws Exception {
-        File f = new File(DIR, name);
-        FileOutputStream out = new FileOutputStream(f);
+    private static void writeUpdaterIdentity() throws Exception {
+        android.util.AtomicFile file = new android.util.AtomicFile(new File(DIR, "updater.ok"));
+        FileOutputStream out = file.startWrite();
         try {
-            out.write("1\n".getBytes("UTF-8"));
-        } finally {
-            out.close();
+            out.write((android.os.Process.myPid() + "\n").getBytes("UTF-8"));
+            file.finishWrite(out);
+        } catch (Exception error) {
+            file.failWrite(out); throw error;
         }
     }
 

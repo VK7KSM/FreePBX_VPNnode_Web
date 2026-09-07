@@ -112,6 +112,11 @@ final class UpdatePolicy {
         return haveCode == wantCode && wantName != null && wantName.equals(haveName);
     }
 
+    static boolean preserveBackup(String job, String diskJob, String state, boolean backupExists) {
+        return backupExists && job != null && !job.isEmpty() && job.equals(diskJob)
+                && (ST_INSTALLING.equals(state) || ST_WAIT_HEALTH.equals(state) || ST_ROLLBACK.equals(state));
+    }
+
     static boolean healthy(Health h, String wantName, int wantCode) {
         if (h == null) return false;
         if (!h.identityOk || !h.reportOk || !h.watchdogAlive || !h.updaterAlive) return false;

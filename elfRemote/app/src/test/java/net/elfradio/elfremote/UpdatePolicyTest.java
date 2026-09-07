@@ -11,6 +11,15 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class UpdatePolicyTest {
+    @Test
+    public void interruptedInstallCannotOverwriteItsHealthyBackup() {
+        assertTrue(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_INSTALLING,true));
+        assertTrue(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_WAIT_HEALTH,true));
+        assertTrue(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_ROLLBACK,true));
+        assertFalse(UpdatePolicy.preserveBackup("two","one",UpdatePolicy.ST_INSTALLING,true));
+        assertFalse(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_CLAIMED,true));
+        assertFalse(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_INSTALLING,false));
+    }
     @Test(expected=IllegalArgumentException.class)
     public void systemInstallerRejectsUncontrolledPaths() {
         UpdatePolicy.systemInstallCommand("/tmp/untrusted'; echo SYS_OK");

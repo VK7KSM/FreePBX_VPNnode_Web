@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {saveReleaseApk} from './update-artifacts.js';
 import worker from './worker.js';
-import {fixture,request} from './test-support.mjs';
+import {fixture,request,login} from './test-support.mjs';
 
 test('更新制品校验后进入私有对象存储，下载不依赖状态中的Base64',async()=>{
   const bytes=Buffer.alloc(512*1024,7),sha256=createHash('sha256').update(bytes).digest('hex');
@@ -28,4 +28,21 @@ test('旧制品仍可下载，新制品缺失不返回空APK',async()=>{
   assert.equal(await (await worker.fetch(request('/api/elfremote/apk/fixture-job'),f.env)).text(),'fixture');
   f.data.set('elfremote_rel_100',{apk_key:'apks/fixture'});
   assert.equal((await worker.fetch(request('/api/elfremote/apk/fixture-job'),f.env)).status,503);
+});
+
+test('更新分配校验设备能力与签名清单目标，重复分配不重置状态',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true}]});
+  const cookie=await login(f);
+  const rel={job_id:'update-one',manifest_raw:JSON.stringify({device_id:'device'}),expires_at:Date.now()+60000,versionCode:100,versionName:'fixture'};
+  f.data.set('elfremote_rel_100',rel);
+  const assign=()=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:100},cookie),f.env);
+  assert.equal((await assign()).status,400);
+  let devices=f.data.get('remote_devices');devices[0].managed_update=true;f.data.set('remote_devices',devices);
+  f.data.set('elfremote_rel_100',{...rel,manifest_raw:JSON.stringify({device_id:'another-device'})});
+  assert.equal((await assign()).status,400);
+  f.data.set('elfremote_rel_100',rel);assert.equal((await assign()).status,200);
+  devices=f.data.get('remote_devices');assert.equal(devices[0].update.managed_update_v1,true);
+  devices[0].update.state='success';f.data.set('remote_devices',devices);
+  assert.equal((await assign()).status,200);
+  assert.equal(f.data.get('remote_devices')[0].update.state,'success');
 });

@@ -782,6 +782,7 @@ function assignUpdate(){
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }
       loadDevices();
+      requestDeviceStatus(d.id);
     });
 }
 function enqueueRepair(type){

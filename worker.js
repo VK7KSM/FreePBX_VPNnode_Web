@@ -1236,6 +1236,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
+      list[i].managed_update = data.managed_update === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
@@ -1405,6 +1406,13 @@ async function assignReleaseToDevice(env, deviceId, rel) {
   let found = null;
   for (let i = 0; i < list.length; i++) {
     if (list[i].id !== deviceId) continue;
+    if (list[i].enabled === false) throw new Error("设备已停用");
+    const manifest = JSON.parse(rel.manifest_raw);
+    if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
+    if (list[i].status_only && list[i].managed_update !== true) throw new Error("当前客户端尚未接通更新");
+    if (list[i].update?.job_id === rel.job_id) return list[i];
+    if (list[i].update && !["success","recovered","rejected"].includes(list[i].update.state)
+        && (!list[i].update.expires_at || Number(list[i].update.expires_at) > Date.now())) throw new Error("已有更新进行中");
     list[i].update = {
       job_id: rel.job_id,
       state: "pending",
@@ -1415,6 +1423,7 @@ async function assignReleaseToDevice(env, deviceId, rel) {
       expires_at: rel.expires_at,
       detail: ""
     };
+    if (list[i].status_only) list[i].update.managed_update_v1 = true;
     found = list[i];
     break;
   }
@@ -1438,7 +1447,7 @@ async function handleElfUpdateProgress(env, request) {
     let found = null;
     for (let i = 0; i < list.length; i++) {
       if (list[i].id !== deviceId) continue;
-      if (list[i].token_sha256 && list[i].token_sha256 !== tokenSha) {
+      if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
       }
       applyUpdateProgress(list[i], jobId, state, data.detail);
@@ -1454,6 +1463,9 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if (device.enabled !== false && report.status_only === true && report.managed_update === true
+      && device.update?.managed_update_v1 === true && shouldOfferUpdate(device, now))
+    body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true};
   if (device.enabled !== false && report.status_only === true && report.managed_log_tasks === true
       && device.task?.managed_log_v1 === true && device.task.type === "pull_logs" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_log_v1:true};

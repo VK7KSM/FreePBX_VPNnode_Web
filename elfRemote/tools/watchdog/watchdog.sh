@@ -116,6 +116,9 @@ run_heal() {
 }
 
 run_update() {
+  retry_at=$(cat "$DIR/update.retry-at" 2>/dev/null)
+  case "$retry_at" in ''|*[!0-9]*) retry_at=0 ;; esac
+  [ "$(date +%s)" -ge "$retry_at" ] || return
   cmdf="$DIR/update.job"
   [ -f "$cmdf" ] || return
   mv "$cmdf" "$DIR/update.running" 2>/dev/null || return
@@ -137,13 +140,19 @@ run_update() {
   mv "$DIR/update.rc.tmp" "$DIR/update.rc"
   if [ $upd_rc -ne 0 ]; then
     log "update retry rc=$upd_rc"
+    echo $(($(date +%s) + 60)) > "$DIR/update.retry-at"
     mv "$DIR/update.running" "$DIR/update.job" 2>/dev/null || true
   else
     rm -f "$DIR/update.running"
+    rm -f "$DIR/update.retry-at"
   fi
 }
 
 log "start pid=$$"
+if [ -f "$DIR/update.managed" ] && [ -f "$DIR/update.running" ] && [ ! -f "$DIR/update.job" ]; then
+  mv "$DIR/update.running" "$DIR/update.job"
+  log "resume managed update"
+fi
 loop=0
 while true; do
   run_heal

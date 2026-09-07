@@ -36,6 +36,8 @@ public final class ReportService extends Service {
     private DailyLocation dailyLocation;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
+    private boolean healthReportConfirmed;
+    private final Runnable healthCheck = this::maybeFinishHealth;
 
     private final Runnable loop = new Runnable() {
         @Override
@@ -272,6 +274,7 @@ public final class ReportService extends Service {
         body.put("managed_log_tasks", true);
         body.put("managed_heal_tasks", true);
         body.put("managed_reboot_tasks", true);
+        body.put("managed_update", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
@@ -356,6 +359,13 @@ public final class ReportService extends Service {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
             JSONObject managed = response.optJSONObject("managed_task");
+            if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
+                healthReportConfirmed = true;
+                JSONObject update = response.optJSONObject("managed_update");
+                if (update != null && update.optBoolean("managed_update_v1")) worker.post(() -> maybeQueueUpdate(update));
+                worker.removeCallbacks(healthCheck);
+                worker.post(healthCheck);
+            }
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
@@ -413,6 +423,7 @@ public final class ReportService extends Service {
             res = Protocol.parseObject(HttpJson.post(Protocol.reportPath(), body.toString()));
         }
         if (Protocol.isOk(res)) {
+            healthReportConfirmed = true;
             healer.saveSnapshot(healer.observe());
             store.setLastStatus("已上报");
             maybeQueueUpdate(res.optJSONObject("update"));
@@ -434,45 +445,48 @@ public final class ReportService extends Service {
             return;
         }
         try {
+            if (UpdatePolicy.expired(m, System.currentTimeMillis())) return;
+            if (m.has("device_id") && !store.deviceId().equals(m.optString("device_id"))) return;
+            java.io.File dir = new java.io.File("/data/local/elfremote");
+            if (new java.io.File(dir, "update.job").exists() || new java.io.File(dir, "update.running").exists()) return;
+            String previousRaw = readTaskState(new java.io.File(dir, "update.state").getPath());
+            JSONObject previous = previousRaw.isEmpty() ? null : new JSONObject(previousRaw);
+            if (previous != null && m.optString("job_id").equals(previous.optString("job_id"))
+                    && !UpdatePolicy.ST_CLAIMED.equals(previous.optString("state"))) return;
             JSONObject job = new JSONObject();
             job.put("manifest_raw", raw);
             job.put("signature", sig);
             job.put("device_id", store.deviceId());
             job.put("token", store.token());
-            java.io.File dir = new java.io.File("/data/local/elfremote");
+            job.put("managed_update_v1", true);
             java.io.File json = new java.io.File(dir, "update.job.json");
-            java.io.FileOutputStream out = new java.io.FileOutputStream(json);
-            try {
-                out.write(job.toString().getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
+            writeSmall(json.getPath(), job.toString());
             String src = getApplicationInfo().sourceDir;
             if (src != null && src.length() > 0) {
-                copyFile(new java.io.File(src), new java.io.File(dir, "updater.apk"));
+                java.io.File stagedUpdater = new java.io.File(dir, "updater.apk.new");
+                copyFile(new java.io.File(src), stagedUpdater);
+                if (!stagedUpdater.renameTo(new java.io.File(dir, "updater.apk"))) throw new java.io.IOException("updater commit failed");
             }
             JSONObject fresh = new JSONObject();
             fresh.put("job_id", m.optString("job_id", ""));
+            fresh.put("managed_update_v1", true);
             fresh.put("state", UpdatePolicy.ST_CLAIMED);
             fresh.put("versionCode", m.optInt("versionCode", 0));
             fresh.put("versionName", m.optString("versionName", ""));
             java.io.File statef = new java.io.File(dir, "update.state");
-            java.io.FileOutputStream stOut = new java.io.FileOutputStream(statef);
-            try {
-                stOut.write(fresh.toString().getBytes("UTF-8"));
-            } finally {
-                stOut.close();
-            }
-            java.io.File sh = new java.io.File(dir, "update.job");
+            writeSmall(statef.getPath(), fresh.toString());
+            writeSmall(new java.io.File(dir, "update.managed").getPath(), m.getString("job_id"));
+            java.io.File sh = new java.io.File(dir, "update.job.tmp");
             java.io.FileOutputStream shOut = new java.io.FileOutputStream(sh);
             try {
                 shOut.write(UpdatePolicy.jobShell(json.getAbsolutePath()).getBytes("UTF-8"));
+                shOut.getFD().sync();
             } finally {
                 shOut.close();
             }
-            sh.setExecutable(true, false);
+            if (!sh.renameTo(new java.io.File(dir, "update.job"))) throw new java.io.IOException("update queue commit failed");
         } catch (Exception e) {
-            android.util.Log.w("elfRemote", "queue update failed " + e.getMessage());
+            RuntimeLog.error("update_queue_failed", e);
         }
     }
 
@@ -926,23 +940,13 @@ public final class ReportService extends Service {
     private void maybeFinishHealth() {
         try {
             java.io.File statef = new java.io.File("/data/local/elfremote/update.state");
-            if (!statef.isFile()) return;
-            String raw = readSmall(statef);
+            String raw = readTaskState(statef.getPath());
+            if (raw.isEmpty()) return;
             JSONObject st = new JSONObject(raw);
+            if (BuildConfig.STATUS_ONLY && !st.optBoolean("managed_update_v1")) return;
             String disk = st.optString("state", "");
-            if (UpdatePolicy.ST_ROLLBACK.equals(disk) || UpdatePolicy.ST_RECOVERED.equals(disk)) {
-                JSONObject body = new JSONObject();
-                body.put("device_id", store.deviceId());
-                body.put("token", store.token());
-                body.put("job_id", st.optString("job_id", ""));
-                body.put("detail", "last-good");
-                body.put("state", UpdatePolicy.ST_WAIT_HEALTH);
-                HttpJson.post(Protocol.updateProgressPath(), body.toString());
-                body.put("state", UpdatePolicy.ST_ROLLBACK);
-                HttpJson.post(Protocol.updateProgressPath(), body.toString());
-                body.put("state", UpdatePolicy.ST_RECOVERED);
-                HttpJson.post(Protocol.updateProgressPath(), body.toString());
-                store.setLastStatus("更新已回滚");
+            if (UpdatePolicy.ST_SUCCESS.equals(disk) || UpdatePolicy.ST_RECOVERED.equals(disk)) {
+                acknowledgeUpdateCompletion(st);
                 return;
             }
             if (!UpdatePolicy.ST_WAIT_HEALTH.equals(disk)) return;
@@ -952,38 +956,54 @@ public final class ReportService extends Service {
             UpdatePolicy.Health h = new UpdatePolicy.Health();
             h.versionName = Protocol.appVersion();
             h.versionCode = pi.versionCode;
-            h.identityOk = store.paired() && store.deviceId().length() > 0;
-            h.reportOk = true;
-            h.watchdogAlive = new java.io.File("/data/local/elfremote/watchdog.pid").isFile();
-            h.updaterAlive = new java.io.File("/data/local/elfremote/updater.ok").isFile();
-            if (!UpdatePolicy.healthy(h, wantName, want)) return;
-            JSONObject body = new JSONObject();
-            body.put("device_id", store.deviceId());
-            body.put("token", store.token());
-            body.put("job_id", st.optString("job_id", ""));
-            body.put("detail", "health-ok");
-            body.put("state", UpdatePolicy.ST_WAIT_HEALTH);
-            HttpJson.post(Protocol.updateProgressPath(), body.toString());
-            body.put("state", UpdatePolicy.ST_SUCCESS);
-            HttpJson.post(Protocol.updateProgressPath(), body.toString());
-            java.io.FileOutputStream hf = new java.io.FileOutputStream(
-                    new java.io.File("/data/local/elfremote/health.ok"));
-            try {
-                hf.write((want + "\n").getBytes("UTF-8"));
-            } finally {
-                hf.close();
+            h.identityOk = store.registered() && store.deviceId().length() > 0;
+            h.reportOk = healthReportConfirmed;
+            h.watchdogAlive = processIdentityMatches("/data/local/elfremote/watchdog.pid", "/data/local/elfremote/watchdog.sh");
+            h.updaterAlive = processIdentityMatches("/data/local/elfremote/updater.ok", "net.elfradio.elfremote.UpdateTool");
+            if (!UpdatePolicy.healthy(h, wantName, want)) {
+                if (worker != null) worker.postDelayed(healthCheck, 5000L);
+                return;
             }
+            writeSmall("/data/local/elfremote/health.ok", String.valueOf(want));
             st.put("state", UpdatePolicy.ST_SUCCESS);
-            java.io.FileOutputStream out = new java.io.FileOutputStream(statef);
-            try {
-                out.write(st.toString().getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
+            writeSmall(statef.getPath(), st.toString());
+            acknowledgeUpdateCompletion(st);
             store.setLastStatus("更新成功 " + wantName);
         } catch (Exception e) {
-            android.util.Log.w("elfRemote", "health finish " + e.getMessage());
+            RuntimeLog.error("update_health_pending", e);
         }
+    }
+
+    private void acknowledgeUpdateCompletion(JSONObject state) throws Exception {
+        String job = state.getString("job_id"), terminal = state.getString("state");
+        String path = new java.io.File(getFilesDir(), "update-confirmed.json").getPath();
+        String raw = readTaskState(path);
+        if (!raw.isEmpty()) {
+            JSONObject previous = new JSONObject(raw);
+            if (job.equals(previous.optString("job_id")) && terminal.equals(previous.optString("state"))) return;
+        }
+        JSONObject body = new JSONObject().put("device_id", store.deviceId()).put("token", store.token())
+                .put("job_id", job).put("detail", UpdatePolicy.ST_SUCCESS.equals(terminal) ? "health-ok" : "last-good");
+        body.put("state", UpdatePolicy.ST_SUCCESS.equals(terminal) ? UpdatePolicy.ST_WAIT_HEALTH : UpdatePolicy.ST_ROLLBACK);
+        HttpJson.post(Protocol.updateProgressPath(), body.toString());
+        body.put("state", terminal);
+        JSONObject reply = new JSONObject(HttpJson.post(Protocol.updateProgressPath(), body.toString()));
+        JSONObject update = reply.optJSONObject("update");
+        if (!reply.optBoolean("ok") || update == null || !job.equals(update.optString("job_id")) || !terminal.equals(update.optString("state")))
+            throw new java.io.IOException("update acknowledgment missing");
+        writeSmall(path, new JSONObject().put("job_id", job).put("state", terminal).toString());
+        RuntimeLog.event("update_completion_confirmed state=" + terminal);
+    }
+
+    private static boolean processIdentityMatches(String pidFile, String identity) {
+        try {
+            String pid = readTaskState(pidFile);
+            if (!pid.matches("[1-9][0-9]{0,8}")) return false;
+            String command = readSmallCapped(new java.io.File("/proc/" + pid + "/cmdline"), 4096);
+            if (command == null) return false;
+            for (String argument : command.split("\u0000")) if (identity.equals(argument)) return true;
+        } catch (Exception error) { RuntimeLog.error("update_process_check_failed", error); }
+        return false;
     }
 
     private static String readSmall(java.io.File f) throws Exception {
@@ -1006,13 +1026,13 @@ public final class ReportService extends Service {
                 byte[] buf = new byte[8192];
                 int n;
                 while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+                out.getFD().sync();
             } finally {
                 out.close();
             }
         } finally {
             in.close();
         }
-        to.setReadable(true, false);
     }
 
     private String networkType() {
