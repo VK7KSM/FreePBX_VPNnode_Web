@@ -958,20 +958,14 @@ public final class ReportService extends Service {
             h.versionCode = pi.versionCode;
             h.identityOk = store.registered() && store.deviceId().length() > 0;
             h.reportOk = healthReportConfirmed;
-            h.watchdogAlive = processIdentityMatches("/data/local/elfremote/watchdog.pid", "/data/local/elfremote/watchdog.sh");
-            h.updaterAlive = processIdentityMatches("/data/local/elfremote/updater.ok", "net.elfradio.elfremote.UpdateTool");
-            if (!UpdatePolicy.healthy(h, wantName, want)) {
+            if (!UpdatePolicy.applicationHealthy(h, wantName, want)) {
                 RuntimeLog.event("update_health_wait version=" + h.versionCode
-                        + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk
-                        + " watchdog=" + h.watchdogAlive + " updater=" + h.updaterAlive);
+                        + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk);
                 if (worker != null) worker.postDelayed(healthCheck, 5000L);
                 return;
             }
             writeSmall("/data/local/elfremote/health.ok", String.valueOf(want));
-            st.put("state", UpdatePolicy.ST_SUCCESS);
-            writeSmall(statef.getPath(), st.toString());
-            acknowledgeUpdateCompletion(st);
-            store.setLastStatus("更新成功 " + wantName);
+            if (worker != null) worker.postDelayed(healthCheck, 5000L);
         } catch (Exception e) {
             RuntimeLog.error("update_health_pending", e);
         }
@@ -996,17 +990,6 @@ public final class ReportService extends Service {
             throw new java.io.IOException("update acknowledgment missing");
         writeSmall(path, new JSONObject().put("job_id", job).put("state", terminal).toString());
         RuntimeLog.event("update_completion_confirmed state=" + terminal);
-    }
-
-    private static boolean processIdentityMatches(String pidFile, String identity) {
-        try {
-            String pid = readTaskState(pidFile);
-            if (!pid.matches("[1-9][0-9]{0,8}")) return false;
-            String command = readSmallCapped(new java.io.File("/proc/" + pid + "/cmdline"), 4096);
-            if (command == null) return false;
-            for (String argument : command.split("\u0000")) if (identity.equals(argument)) return true;
-        } catch (Exception error) { RuntimeLog.error("update_process_check_failed", error); }
-        return false;
     }
 
     private static String readSmall(java.io.File f) throws Exception {

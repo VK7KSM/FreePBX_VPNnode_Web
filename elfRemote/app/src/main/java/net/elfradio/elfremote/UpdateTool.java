@@ -80,11 +80,12 @@ public final class UpdateTool {
         PackageInfo cur = ctx.getPackageManager().getPackageInfo(UpdatePolicy.PKG, 0);
         boolean onTarget = UpdatePolicy.alreadyOnTarget(
                 cur.versionName, cur.versionCode, wantName, wantCode);
-        boolean healthOk = jobId.equals(readStateJobId()) && healthMatches(wantCode);
+        boolean healthOk = jobId.equals(readStateJobId()) && healthMatches(wantCode) && watchdogAlive();
         boolean lastGood = new File(UpdatePolicy.LAST_GOOD_APK).isFile();
         String act = UpdatePolicy.resumeAction(readState(), onTarget, healthOk, lastGood,
                 readStateJobId(), jobId);
         if (UpdatePolicy.ST_SUCCESS.equals(act)) {
+            writeState(UpdatePolicy.ST_SUCCESS, wantCode, wantName);
             progress(UpdatePolicy.ST_SUCCESS, "already-healthy");
             return 0;
         }
@@ -219,7 +220,7 @@ public final class UpdateTool {
             try {
                 if (health.isFile()) {
                     String t = readFile(health).trim();
-                    if (t.equals(String.valueOf(wantCode))) return true;
+                    if (t.equals(String.valueOf(wantCode)) && watchdogAlive()) return true;
                 }
                 Thread.sleep(2000);
             } catch (Exception e) {
@@ -313,6 +314,22 @@ public final class UpdateTool {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    // Root owns the keeper check; Android app processes may not see root /proc entries.
+    private static boolean watchdogAlive() {
+        try {
+            String pid = readFile(new File(DIR, "watchdog.pid")).trim();
+            if (!pid.matches("[1-9][0-9]{0,8}")) return false;
+            byte[] command = new byte[4096];
+            try (FileInputStream in = new FileInputStream("/proc/" + pid + "/cmdline")) {
+                int count = in.read(command);
+                if (count <= 0) return false;
+                for (String argument : new String(command, 0, count, "UTF-8").split("\u0000"))
+                    if ("/data/local/elfremote/watchdog.sh".equals(argument)) return true;
+            }
+        } catch (Exception error) { System.err.println("watchdog check: " + error.getClass().getSimpleName()); }
+        return false;
     }
 
     private static void writeUpdaterIdentity() throws Exception {

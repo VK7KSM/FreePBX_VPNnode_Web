@@ -119,8 +119,11 @@ final class UpdatePolicy {
     }
 
     static boolean healthy(Health h, String wantName, int wantCode) {
-        if (h == null) return false;
-        if (!h.identityOk || !h.reportOk || !h.watchdogAlive || !h.updaterAlive) return false;
+        return applicationHealthy(h, wantName, wantCode) && h.watchdogAlive && h.updaterAlive;
+    }
+
+    static boolean applicationHealthy(Health h, String wantName, int wantCode) {
+        if (h == null || !h.identityOk || !h.reportOk) return false;
         return alreadyOnTarget(h.versionName, h.versionCode, wantName, wantCode);
     }
 

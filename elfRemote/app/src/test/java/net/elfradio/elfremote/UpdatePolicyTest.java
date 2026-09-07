@@ -12,6 +12,20 @@ import static org.junit.Assert.assertTrue;
 
 public class UpdatePolicyTest {
     @Test
+    public void applicationReadinessCannotReplaceRootKeeperVerification() {
+        UpdatePolicy.Health h = new UpdatePolicy.Health();
+        h.versionCode = 80; h.versionName = "target";
+        h.identityOk = true; h.reportOk = true;
+        assertTrue(UpdatePolicy.applicationHealthy(h, "target", 80));
+        assertFalse(UpdatePolicy.healthy(h, "target", 80));
+        h.watchdogAlive = true; h.updaterAlive = true;
+        assertTrue(UpdatePolicy.healthy(h, "target", 80));
+        h.reportOk = false;
+        assertFalse(UpdatePolicy.applicationHealthy(h, "target", 80));
+        h.reportOk = true;
+        assertFalse(UpdatePolicy.applicationHealthy(h, "target", 81));
+    }
+    @Test
     public void interruptedInstallCannotOverwriteItsHealthyBackup() {
         assertTrue(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_INSTALLING,true));
         assertTrue(UpdatePolicy.preserveBackup("one","one",UpdatePolicy.ST_WAIT_HEALTH,true));
