@@ -32,7 +32,7 @@ final class PushConnection {
 
     void ensure() {
         if (closed) return;
-        if (!pairing.paired()) {
+        if (!pairing.registered()) {
             disposeClient(); worker.removeCallbacks(retry); identity = ""; prefs = null; return;
         }
         String next = PairingStore.sha256Hex(Protocol.BASE_URL + ":" + pairing.deviceId());
@@ -72,7 +72,7 @@ final class PushConnection {
     }
 
     private void connect() {
-        if (closed || !pairing.paired() || connecting || connected()) return;
+        if (closed || !pairing.registered() || connecting || connected()) return;
         worker.removeCallbacks(retry);
         connecting = true;
         try {
@@ -175,7 +175,7 @@ final class PushConnection {
     }
 
     void sync() {
-        if (closed || !pairing.paired()) return;
+        if (closed || !pairing.registered()) return;
         try {
             JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushSyncPath(), identityBody().toString()));
             if (!reply.optBoolean("ok")) throw new IOException("push sync failed");

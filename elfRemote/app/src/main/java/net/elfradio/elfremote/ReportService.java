@@ -38,16 +38,16 @@ public final class ReportService extends Service {
     private final Runnable loop = new Runnable() {
         @Override
         public void run() {
-            if (dailyLocation != null && store.paired()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
+            if (dailyLocation != null && store.registered()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
             else reportAndSchedule();
         }
 
         private void reportAndSchedule() {
             tick();
-            long delay = store.paired()
+            long delay = store.registered()
                     ? WatchdogPolicy.pairedReportIntervalMs()
                     : WatchdogPolicy.unpairedReportIntervalMs();
-            if (BuildConfig.STATUS_ONLY && store.paired()) {
+            if (BuildConfig.STATUS_ONLY && store.registered()) {
                 delay = "wifi".equals(networkType()) || "ethernet".equals(networkType())
                         || push == null || !push.connected() ? 900000L : 3600000L;
                 if (statusOutbox().entries().length > 0) delay = 60000L;
@@ -142,11 +142,11 @@ public final class ReportService extends Service {
     private void tick() {
         try {
             if (push != null) push.ensure();
-            if (!store.paired()) enrollOrPoll();
-            else reportCurrent();
+            if (!store.registered() || (!store.paired() && store.expiresAt() <= System.currentTimeMillis())) registerDevice();
+            if (store.registered()) reportCurrent();
             reportFailures = 0;
         } catch (Exception e) {
-            reportFailures = store.paired() ? Math.min(10, reportFailures + 1) : 0;
+            reportFailures = store.registered() ? Math.min(10, reportFailures + 1) : 0;
             RuntimeLog.error("report_failed", e);
             android.util.Log.w("elfRemote", "tick failed", e);
             store.setLastStatus(Protocol.formatNetError(e));
@@ -210,6 +210,21 @@ public final class ReportService extends Service {
         }
     }
 
+    private void registerDevice() throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("token", store.token());
+        body.put("token_sha256", store.tokenSha256());
+        body.put("device_name", defaultDeviceName());
+        body.put("model_hint", "D22");
+        body.put("app_version", Protocol.appVersion());
+        body.put("os_version", "Android " + Build.VERSION.RELEASE);
+        JSONObject reply = new JSONObject(HttpJson.post(Protocol.enrollPath(), body.toString()));
+        if (!reply.optBoolean("ok") || reply.optString("device_id").isEmpty()) throw new java.io.IOException("registration failed");
+        store.saveEnroll(reply.getString("code"), reply.getString("enroll_id"), Protocol.parseIsoMillis(reply.getString("expires_at")));
+        store.saveRegistration(reply.getString("device_id"), reply.optBoolean("paired"));
+        if (push != null) push.ensure();
+    }
+
     private void reportCurrent() throws Exception {
         if (BuildConfig.STATUS_ONLY) reportStatus();
         else report();
@@ -244,6 +259,15 @@ public final class ReportService extends Service {
     }
 
     private void receiveStatusRequest(JSONObject notice, Runnable acknowledge) throws Exception {
+        if (dailyLocation != null) {
+            dailyLocation.beforePeriodicReport(() -> {
+                try { queueStatusRequest(notice, acknowledge); }
+                catch (Exception error) { RuntimeLog.error("requested_report_failed", error); }
+            });
+        } else queueStatusRequest(notice, acknowledge);
+    }
+
+    private void queueStatusRequest(JSONObject notice, Runnable acknowledge) throws Exception {
         if (push == null || !PushPolicy.shouldQueue(notice, push.lastVersion(), System.currentTimeMillis())) {
             RuntimeLog.event("push_notice_ignored"); acknowledge.run(); return;
         }
@@ -255,9 +279,12 @@ public final class ReportService extends Service {
         acknowledge.run();
         try {
             flushStatus(outbox, requestId);
-            if (outbox.entries().length > 0 && worker != null) {
+            if (worker != null) {
                 worker.removeCallbacks(loop);
-                worker.postDelayed(loop, 60000L);
+                long delay = outbox.entries().length > 0 ? 60000L
+                        : ("wifi".equals(networkType()) || "ethernet".equals(networkType()) || !push.connected() ? 900000L : 3600000L);
+                worker.postDelayed(loop, delay);
+                RuntimeLog.event("requested_report_next delay_ms=" + delay);
             }
         }
         catch (Exception error) {
@@ -281,6 +308,12 @@ public final class ReportService extends Service {
     private void flushStatus(StatusOutbox outbox, String priorityRequest) throws Exception {
         int sent = new StatusReporter(outbox, json -> {
             String reply = HttpJson.post(Protocol.reportPath(), json);
+            JSONObject response = new JSONObject(reply);
+            if (response.optBoolean("ok") && response.has("paired")) {
+                boolean revoked = store.paired() && !response.optBoolean("paired");
+                store.saveRegistration(store.deviceId(), response.optBoolean("paired"));
+                if (revoked) registerDevice();
+            }
             if (new JSONObject(reply).optBoolean("pairing_required", false)) {
                 store.clearEnroll();
                 if (push != null) push.ensure();

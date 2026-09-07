@@ -44,7 +44,11 @@ final class DailyLocation {
     String reason() { return "sampled".equals(reason) || "recent_cache".equals(reason) ? "no_cached_location" : reason; }
 
     void beforePeriodicReport(Runnable then) {
-        if (completion != null) return;
+        if (completion != null) {
+            Runnable previous = completion;
+            completion = () -> { previous.run(); then.run(); };
+            return;
+        }
         long now = System.currentTimeMillis();
         boolean granted = PermissionGate.hasLocation(context);
         if (!"not_sampled".equals(reason) && !shouldStart(prefs.getLong("attempt_at", 0), prefs.getLong("permission_attempt_at", 0), granted, now)) { then.run(); return; }

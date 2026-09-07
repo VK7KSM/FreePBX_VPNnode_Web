@@ -7,6 +7,8 @@ var map = null;
 var markers = {};
 var circles = {};
 var UI = {};
+var STATUS = {};
+var mapFitted = false;
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -100,7 +102,7 @@ function doLogin(){
 function logout(){ return adminSession.logout(); }
 
 function loadDevices(){
-  Promise.all([
+  return Promise.all([
     fetch("/api/devices").then(function(r){return r.json();}),
     fetch("/api/device-models").then(function(r){return r.json();})
   ]).then(function(arr){
@@ -110,7 +112,7 @@ function loadDevices(){
     if(!currentDev() && DEV.length) selDev = DEV[0].id;
     renderList();
     renderMap();
-    renderOps();
+    if(!$("devOps").contains(document.activeElement)) renderOps();
   }).catch(function(){});
 }
 
@@ -131,6 +133,8 @@ function renderList(){
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
     h += '<span class="dev-name">'+esc(d.name)+'</span>'+upd;
+    if(d.paired === false) h += '<span class="tag">未配对</span>';
+    h += '<button class="btn-gray" title="拉取设备信息" onclick="event.stopPropagation();requestDeviceStatus(\''+d.id+'\')"'+(STATUS[d.id]==="拉取中"?' disabled':'')+'>'+esc(STATUS[d.id] || "等待定时报送")+'</button>';
     if(d.contact_state === "report_overdue") h += '<span class="tag">报告超时</span>';
     h += '</div>';
   }
@@ -144,11 +148,38 @@ function renderList(){
 function selectUnpaired(index){
   var pending = UNPAIRED[index];
   if(!pending) return;
-  openAdd();
-  $("dName").value = pending.name;
-  $("pairCode").value = "";
-  $("pairErr").innerText = pending.pairable ? "请输入设备端显示的六位配对码" : "等待设备重新注册后，输入设备端配对码";
-  syncAddButtons();
+  if(pending.id) selectDev(pending.id);
+}
+
+async function requestDeviceStatus(id){
+  if(STATUS[id]==="拉取中") return;
+  STATUS[id]="拉取中"; renderList();
+  try {
+    var result = await (await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})})).json();
+    if(!result.ok) throw new Error(result.msg || "请求失败");
+    var requestId = result.request && result.request.request_id;
+    for(var attempt=0;attempt<150;attempt++){
+      await new Promise(function(resolve){setTimeout(resolve,2000);});
+      var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
+      if(!state.ok) throw new Error(state.msg || "查询失败");
+      if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
+        STATUS[id]="已刷新"; await loadDevices(); return;
+      }
+      if(state.request && state.request.state==="expired") break;
+    }
+    STATUS[id]="拉取超时";
+  } catch(error) { STATUS[id]="拉取失败"; }
+  renderList();
+}
+
+async function refreshAllDevices(){
+  var button=$("refreshDevices");
+  button.disabled=true;
+  try {
+    await loadDevices();
+    await Promise.allSettled(DEV.map(function(d){return requestDeviceStatus(d.id);}));
+    await loadDevices();
+  } finally {button.disabled=false;}
 }
 
 function esc(s){
@@ -210,7 +241,7 @@ function renderMap(){
   var hasIpArea = false;
   for(var i=0;i<DEV.length;i++){
     var d = DEV[i];
-    if(!d.loc || !isFinite(d.loc.lat) || !isFinite(d.loc.lng)) continue;
+    if(!d.online || !d.loc || !isFinite(d.loc.lat) || !isFinite(d.loc.lng)) continue;
     var ll = [d.loc.lat, d.loc.lng];
     var gps = d.loc.source==="gps";
     var acc = Number(d.loc.acc_m);
@@ -233,18 +264,20 @@ function renderMap(){
     bounds.push(tb.getNorthEast());
     if(!gps) hasIpArea = true;
     (function(id, dev){
+      var siblings=DEV.filter(function(other){return other.online && other.loc && Number(other.loc.lat)===Number(dev.loc.lat) && Number(other.loc.lng)===Number(dev.loc.lng);}).sort(function(a,b){return a.id.localeCompare(b.id);});
+      var offset=siblings.findIndex(function(other){return other.id===id;});
       circ.on("click", function(){ selectDev(id); });
       var ic = L.divIcon({
         className: "dpin-wrap",
         html: pinHtml(dev, id===selDev),
         iconSize: [170, 42],
-        iconAnchor: [8, 14]
+        iconAnchor: [8, 14 - (offset-(siblings.length-1)/2)*48]
       });
       markers[id] = L.marker(ll, { icon: ic, zIndexOffset: id===selDev ? 600 : 200 })
         .addTo(map).on("click", function(){ selectDev(id); });
     })(d.id, d);
   }
-  if(bounds.length) map.fitBounds(bounds, { padding: [36,36], maxZoom: hasIpArea ? 14 : 16 });
+  if(bounds.length && !mapFitted) { map.fitBounds(bounds, { padding: [100,100], maxZoom: hasIpArea ? 14 : 16 }); mapFitted=true; }
 }
 
 function flyTo(id){
@@ -749,7 +782,7 @@ function setEnabled(on){
 }
 function delDev(){
   var d = currentDev(); if(!d) return;
-  if(!confirm("确定解除配对「"+d.name+"」？此台将返回未配对列表。")) return;
+  if(!confirm("确定解除配对「"+d.name+"」？在线时仍可管理，离线后不再保留列表项。")) return;
   fetch("/api/devices/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:d.id,confirm:true})})
   .then(function(r){return r.json();}).then(function(x){
     if(!x.ok){ alert(x.msg||"删除失败"); return; }

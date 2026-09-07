@@ -838,7 +838,8 @@ function publicDevice(d, modelName) {
   const contact = contactState(d.last_seen, Date.now(), d.status_only === true, d.network);
   return {
     id: d.id,
-    name: d.name,
+    name: d.paired === false ? (d.device_name || d.name) : d.name,
+    paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
     enabled: d.enabled !== false,
@@ -880,7 +881,8 @@ async function loadDevicesHydrated(env) {
   for (let i = 0; i < list.length; i++) {
     const d = list[i];
     const m = byId[d.model_id];
-    out.push(publicDevice(d, m ? m.name : ""));
+    const visible = publicDevice(d, m ? m.name : "");
+    if (visible.paired || visible.online) out.push(visible);
   }
   return out;
 }
@@ -984,6 +986,16 @@ async function handleDeviceDelete(env, request) {
     const next = list.filter(function (d) { return d.id !== id; });
     if (next.length === list.length) return json({ ok: false, msg: "未找到该设备" }, 404);
     const removed = list.find(d => d.id === id);
+    if (removed.registration_version === 2) {
+      removed.paired = false;
+      const enrolls = await loadEnrolls(env);
+      for (const code of Object.keys(enrolls)) {
+        if (enrolls[code].token_sha256 === removed.token_sha256) delete enrolls[code];
+      }
+      await saveEnrolls(env, enrolls);
+      await saveDevices(env, list);
+      return json({ ok: true });
+    }
     const enrolls = await loadEnrolls(env);
     const original = Object.values(enrolls).find(row => row.token_sha256 === removed.token_sha256);
     enrolls["unpaired_" + id] = { token_sha256: removed.token_sha256,
@@ -1036,13 +1048,31 @@ async function handleDeviceEnroll(env, request) {
     }
     const now = Date.now();
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+    let registered = null;
+    if (data.token) {
+      if (await sha256Hex(data.token) !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+      const devices = await loadDevices(env);
+      registered = devices.find(d => d.token_sha256 === tokenSha);
+      if (!registered) {
+        registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
+          name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
+          model_id: "mdl_d22", enabled: true, status_only: true };
+        devices.push(registered);
+      }
+      registered.registration_version = 2;
+      registered.device_name = String(data.device_name || registered.device_name || registered.name).slice(0, 80);
+      await saveDevices(env, devices);
+    }
     for (const [oldCode, row] of Object.entries(enrolls)) {
       if (row.token_sha256 !== tokenSha) continue;
       if (!row.paired && Date.parse(row.expires_at) > now) {
         row.device_name = String(data.device_name || row.device_name || data.model_hint || "未命名设备").slice(0, 80);
         row.last_seen = new Date(now).toISOString();
         await saveEnrolls(env, enrolls);
-        return json({ ok: true, code: oldCode, enroll_id: row.enroll_id, expires_at: row.expires_at });
+        if (registered) row.device_id = registered.id;
+        await saveEnrolls(env, enrolls);
+        return json({ ok: true, code: oldCode, enroll_id: row.enroll_id, expires_at: row.expires_at,
+          device_id: registered?.id, paired: registered ? registered.paired !== false : false });
       }
       delete enrolls[oldCode];
     }
@@ -1064,14 +1094,16 @@ async function handleDeviceEnroll(env, request) {
       last_seen: new Date(now).toISOString(),
       created_at: new Date(now).toISOString(),
       expires_at: new Date(now + PAIR_CODE_TTL_MS).toISOString(),
-      paired: false,
-      device_id: ""
+      paired: registered ? registered.paired !== false : false,
+      device_id: registered?.id || ""
     };
     await saveEnrolls(env, enrolls);
     return json({
       ok: true,
       code: code,
       enroll_id: enrollId,
+      device_id: registered?.id,
+      paired: registered ? registered.paired !== false : false,
       expires_at: enrolls[code].expires_at
     });
   } catch (e) {
@@ -1122,6 +1154,16 @@ async function handleDevicePair(env, request) {
     }
     const list = await loadDevices(env);
     const ip = String(data.ip || "").trim();
+    const registered = list.find(d => d.id === row.device_id && d.token_sha256 === row.token_sha256);
+    if (registered) {
+      registered.paired = true;
+      registered.name = name || registered.device_name || registered.name;
+      registered.model_id = model_id;
+      row.paired = true;
+      await saveDevices(env, list);
+      await saveEnrolls(env, enrolls);
+      return json({ ok: true, device: publicDevice(registered, "") });
+    }
     const device = {
       id: newRemoteId("dev_"),
       name: name || row.device_name || row.model_hint || "未命名设备",
@@ -1170,7 +1212,7 @@ async function handleDeviceReport(env, request) {
     const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
     const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation);
     await acknowledgeStatus(env.__storage, deviceId, data);
-    if (history.duplicate) return json({ ok: true, duplicate: true, report_id: history.record.report_id });
+    if (history.duplicate) return json({ ok: true, paired: matched.paired !== false, duplicate: true, report_id: history.record.report_id });
     const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
     let found = null;
     for (let i = 0; i < list.length; i++) {
@@ -1207,7 +1249,7 @@ async function handleDeviceReport(env, request) {
       found.task.detail = "expired";
     }
     await saveDevices(env, list);
-    const body = { ok: true, report_id: history.record.report_id };
+    const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
@@ -2233,6 +2275,7 @@ function renderDevicesHtml() {
     '<div class="card" style="border-radius:1rem;display:flex;flex-direction:column;min-height:0">',
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:.75rem .8rem 0">',
     '<h3 style="margin:0;font-size:.95rem">设备<\/h3>',
+    '<button id="refreshDevices" class="btn-gray" onclick="refreshAllDevices()" title="刷新设备列表并拉取所有设备信息">刷新<\/button>',
     '<button class="btn-green btn-add" onclick="openAdd()">添加设备<\/button>',
     '<\/div>',
     '<div id="devList"><\/div><\/div>',

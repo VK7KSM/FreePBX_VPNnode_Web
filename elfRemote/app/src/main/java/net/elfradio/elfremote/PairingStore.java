@@ -33,6 +33,11 @@ final class PairingStore {
     String enrollId() { return prefs.getString("enroll_id", ""); }
     String deviceId() { return prefs.getString("device_id", ""); }
     boolean paired() { return prefs.getBoolean("paired", false); }
+    boolean registered() { return prefs.getBoolean("registration_v2", false) && !deviceId().isEmpty(); }
+    void saveRegistration(String id, boolean paired) {
+        prefs.edit().putString("device_id", id).putBoolean("paired", paired)
+                .putBoolean("registration_v2", true).apply();
+    }
     String lastStatus() { return prefs.getString("last_status", ""); }
     long expiresAt() { return prefs.getLong("expires_at", 0L); }
 
