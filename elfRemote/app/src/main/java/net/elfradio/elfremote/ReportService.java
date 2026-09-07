@@ -356,7 +356,10 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type"))) {
-                worker.post(() -> maybeRunTask(managed));
+                worker.post(() -> {
+                    try { maybeRunTask(managed); }
+                    catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
+                });
             }
             if (response.optBoolean("ok") && response.has("paired")) {
                 boolean revoked = store.paired() && !response.optBoolean("paired");
@@ -476,6 +479,7 @@ public final class ReportService extends Service {
         try {
             JSONObject saved = taskReceipts().read(id);
             if (saved != null) {
+                if (saved.optBoolean("acknowledged")) return;
                 postTask(id, saved.getString("state"), saved.optString("detail"), saved.optJSONObject("result"));
                 return;
             }
@@ -751,6 +755,7 @@ public final class ReportService extends Service {
                 JSONObject task = reply.optJSONObject("task");
                 if (!reply.optBoolean("ok") || task == null || !taskId.equals(task.optString("id")) || !state.equals(task.optString("state")))
                     throw new java.io.IOException("task acknowledgment missing");
+                if (TaskReceipts.terminal(state)) taskReceipts().acknowledge(taskId);
                 return;
             } catch (Exception e) {
                 last = e;

@@ -8,6 +8,20 @@ import static org.junit.Assert.*;
 
 public class TaskReceiptsTest {
     @Test
+    public void acknowledgmentReleasesLogButKeepsRestartDeduplication() throws Exception {
+        File directory=Files.createTempDirectory("task-receipts").toFile();
+        TaskReceipts receipts=new TaskReceipts(directory);
+        receipts.save(new JSONObject().put("task_id","log").put("state","success")
+                .put("result",new JSONObject().put("log_text","private fixture log")));
+        receipts.acknowledge("log");
+        receipts.acknowledge("log");
+        JSONObject compact=new TaskReceipts(directory).read("log");
+        assertTrue(compact.getBoolean("acknowledged"));
+        assertEquals("success",compact.getString("state"));
+        assertFalse(compact.has("result"));
+        assertEquals(0,directory.listFiles((dir,name)->name.endsWith(".json")).length);
+    }
+    @Test
     public void completedResultSurvivesRestartAndCannotBecomeFailure() throws Exception {
         File directory=Files.createTempDirectory("task-receipts").toFile();
         JSONObject result=new JSONObject().put("task_id","task-one").put("state","success").put("detail","done");
