@@ -177,6 +177,11 @@ final class NetworkHealer {
     private void fillTableRoute(HealPolicy.Facts f) {
         String iface = f.iface.length() == 0 ? "wlan0" : f.iface;
         if (!iface.matches("[a-zA-Z0-9_]+")) iface = "wlan0";
+        f.iface = iface;
+        try {
+            java.net.NetworkInterface networkInterface = java.net.NetworkInterface.getByName(iface);
+            if (networkInterface != null) f.ifaceIndex = networkInterface.getIndex();
+        } catch (Exception error) { logLine("interface-index-unavailable"); }
         String text = execOut(new String[]{"/system/bin/ip", "route", "show", "table", "all"});
         HealPolicy.applyKernelTable(f, text == null ? "" : text, text != null);
         String one = text == null ? "null" : text.replace('\n', '|').trim();
@@ -193,6 +198,8 @@ final class NetworkHealer {
                 while ((line = r.readLine()) != null) {
                     String[] p = line.split("\\s+");
                     if (p.length < 3) continue;
+                    String expectedIface = f.iface.length() == 0 ? "wlan0" : f.iface;
+                    if (!expectedIface.equals(p[0])) continue;
                     if (!"00000000".equals(p[1])) continue;
                     f.hasDefaultRoute = true;
                     if (p[0] != null && p[0].length() > 0 && !"Iface".equals(p[0])) f.iface = p[0];

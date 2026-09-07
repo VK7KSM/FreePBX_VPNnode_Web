@@ -13,6 +13,7 @@ final class HealPolicy {
         boolean ourFirewall;
         int netId;
         String iface = "";
+        int ifaceIndex;
         String ipv4 = "";
         String gateway = "";
         String dns = "";
@@ -265,7 +266,7 @@ final class HealPolicy {
 
     static void applyKernelTable(Facts f, String tableText, boolean tableReadOk) {
         if (f == null || !tableReadOk || !kernelTableTextOk(tableText)) return;
-        String gw = defaultGatewayFromIpRoute(tableText);
+        String gw = defaultGatewayFromIpRoute(tableText, f.iface, f.ifaceIndex);
         if (usableIpv4(gw)) {
             f.hasDefaultRoute = true;
             f.gateway = gw;
@@ -275,12 +276,27 @@ final class HealPolicy {
     }
 
     static String defaultGatewayFromIpRoute(String text) {
+        return defaultGatewayFromIpRoute(text, "");
+    }
+
+    static String defaultGatewayFromIpRoute(String text, String iface) {
+        return defaultGatewayFromIpRoute(text, iface, 0);
+    }
+
+    static String defaultGatewayFromIpRoute(String text, String iface, int ifaceIndex) {
         if (text == null) return "";
         String[] lines = text.split("\n");
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i].trim();
             if (!line.startsWith("default ")) continue;
             String[] p = line.split("\\s+");
+            if (!empty(iface)) {
+                boolean matching = false;
+                for (int j = 0; j < p.length - 1; j++)
+                    if ("dev".equals(p[j]) && (iface.equals(p[j + 1])
+                            || (ifaceIndex > 0 && ("if" + ifaceIndex).equals(p[j + 1])))) matching = true;
+                if (!matching) continue;
+            }
             for (int j = 0; j < p.length - 1; j++) {
                 if ("via".equals(p[j]) && usableIpv4(p[j + 1])) return p[j + 1];
             }

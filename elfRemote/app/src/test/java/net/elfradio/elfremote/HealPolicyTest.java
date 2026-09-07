@@ -8,6 +8,21 @@ import static org.junit.Assert.assertTrue;
 
 public class HealPolicyTest {
     @Test
+    public void anotherInterfacesDefaultRouteCannotHideWifiRouteLoss() {
+        HealPolicy.Facts facts = new HealPolicy.Facts();
+        facts.iface = "wlan0";
+        facts.ifaceIndex = 28;
+        facts.hasDefaultRoute = true;
+        HealPolicy.applyKernelTable(facts, "default via 10.0.0.1 dev tun0 table 100\n", true);
+        assertFalse(facts.hasDefaultRoute);
+        HealPolicy.applyKernelTable(facts, "default via 10.0.0.1 dev if29 table 100\n", true);
+        assertFalse(facts.hasDefaultRoute);
+        HealPolicy.applyKernelTable(facts, "default via 10.0.0.1 dev tun0 table 100\n"
+                + "default via 192.168.2.1 dev wlan0 table wlan0\n", true);
+        assertTrue(facts.hasDefaultRoute);
+        assertEquals("192.168.2.1", facts.gateway);
+    }
+    @Test
     public void cellularOrEthernetDoesNotEnableWifiOrSaveWifiSnapshot() {
         HealPolicy.Facts f = facts();
         f.otherNetworkConnected = true;
@@ -211,6 +226,7 @@ public class HealPolicyTest {
     @Test
     public void kernelTableOverridesStaleLinkPropertiesDefault() {
         HealPolicy.Facts f = facts();
+        f.ifaceIndex = 28;
         f.hasDefaultRoute = true;
         f.gateway = "192.168.2.1";
         HealPolicy.applyKernelTable(f, "192.168.2.0/24 dev wlan0 proto static scope link\n", true);
