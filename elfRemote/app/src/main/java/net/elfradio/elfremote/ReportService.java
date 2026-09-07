@@ -38,6 +38,7 @@ public final class ReportService extends Service {
     private final Runnable loop = new Runnable() {
         @Override
         public void run() {
+            if (push != null) push.ensure();
             if (dailyLocation != null && store.registered()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
             else reportAndSchedule();
         }
