@@ -369,6 +369,10 @@ final class NetworkHealer {
         File cmdf = new File(dir, "heal.cmd");
         File rcf = new File(dir, "heal.rc");
         try {
+            if (cmdf.exists() || new File(dir, "heal.running").exists() || new File(dir, "update.running").exists()) {
+                logLine("wd-busy");
+                return false;
+            }
             if (rcf.exists() && !rcf.delete()) {
                 logLine("wd-rc-stale");
             }
@@ -376,6 +380,7 @@ final class NetworkHealer {
             FileOutputStream out = new FileOutputStream(tmp);
             try {
                 out.write((withPath(cmd) + "\n").getBytes("UTF-8"));
+                out.getFD().sync();
             } finally {
                 out.close();
             }

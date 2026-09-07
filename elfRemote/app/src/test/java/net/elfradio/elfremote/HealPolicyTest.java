@@ -8,6 +8,21 @@ import static org.junit.Assert.assertTrue;
 
 public class HealPolicyTest {
     @Test
+    public void automaticRecoveryOnlyRepairsConfirmedRouteOrDnsFaults() {
+        HealPolicy.Facts f = facts();
+        f.wifiEnabled = true; f.hasIpv4 = true; f.hasDefaultRoute = true;
+        f.gateway = "192.168.1.1"; f.dns = "192.168.1.1";
+        assertFalse(HealPolicy.automaticRepairNeeded(f, null));
+        f.hasDefaultRoute = false;
+        assertTrue(HealPolicy.automaticRepairNeeded(f, null));
+        f.otherNetworkConnected = true;
+        assertFalse(HealPolicy.automaticRepairNeeded(f, null));
+        f.otherNetworkConnected = false; f.wifiEnabled = false;
+        assertFalse(HealPolicy.automaticRepairNeeded(f, null));
+        f.wifiEnabled = true; f.hasIpv4 = false;
+        assertFalse(HealPolicy.automaticRepairNeeded(f, null));
+    }
+    @Test
     public void anotherInterfacesDefaultRouteCannotHideWifiRouteLoss() {
         HealPolicy.Facts facts = new HealPolicy.Facts();
         facts.iface = "wlan0";

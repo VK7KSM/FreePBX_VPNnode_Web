@@ -173,6 +173,7 @@ public final class ReportService extends Service {
         } catch (Exception e) {
             reportFailures = store.registered() ? Math.min(10, reportFailures + 1) : 0;
             RuntimeLog.error("report_failed", e);
+            healAfterReportFailure();
             android.util.Log.w("elfRemote", "tick failed", e);
             store.setLastStatus(Protocol.formatNetError(e));
         }
@@ -197,6 +198,16 @@ public final class ReportService extends Service {
         String name = android.provider.Settings.Global.getString(getContentResolver(), "device_name");
         if (name == null || name.trim().isEmpty()) name = android.provider.Settings.Secure.getString(getContentResolver(), "bluetooth_name");
         return name == null || name.trim().isEmpty() ? Build.MODEL : name.trim();
+    }
+
+    private void healAfterReportFailure() {
+        if (!BuildConfig.STATUS_ONLY) return;
+        try {
+            if (healer == null) healer = new NetworkHealer(this, store);
+            if (!HealPolicy.automaticRepairNeeded(healer.observe(), HealPolicy.Snapshot.parse(store.netSnap()))) return;
+            RuntimeLog.event("automatic_heal stage=" + healer.maybeHeal(true));
+            if (push != null) push.networkHint();
+        } catch (Exception error) { RuntimeLog.error("automatic_heal_failed", error); }
     }
 
     private void enrollOrPoll() throws Exception {
@@ -338,6 +349,7 @@ public final class ReportService extends Service {
         }
         catch (Exception error) {
             RuntimeLog.error("push_report_pending", error);
+            healAfterReportFailure();
             reportFailures = Math.min(10, reportFailures + 1);
             if (worker != null) {
                 worker.removeCallbacks(loop);
@@ -361,6 +373,10 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 healthReportConfirmed = true;
+                try {
+                    if (healer == null) healer = new NetworkHealer(this, store);
+                    healer.saveSnapshot(healer.observe());
+                } catch (Exception error) { RuntimeLog.error("network_snapshot_failed", error); }
                 JSONObject update = response.optJSONObject("managed_update");
                 if (update != null && update.optBoolean("managed_update_v1")) worker.post(() -> maybeQueueUpdate(update));
                 worker.removeCallbacks(healthCheck);

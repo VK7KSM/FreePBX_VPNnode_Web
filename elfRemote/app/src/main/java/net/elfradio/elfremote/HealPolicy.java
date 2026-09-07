@@ -102,6 +102,12 @@ final class HealPolicy {
         return count(blob, stage, nowMs) < COOL_MAX;
     }
 
+    static boolean automaticRepairNeeded(Facts facts, Snapshot snapshot) {
+        if (facts == null || !facts.wifiEnabled || !facts.hasIpv4 || facts.otherNetworkConnected) return false;
+        String action = decide(facts, snapshot).action;
+        return "restore_route".equals(action) || "restore_dns".equals(action);
+    }
+
     static String record(String blob, String stage, long nowMs) {
         if (stage == null || stage.length() == 0) return blob == null ? "" : blob;
         String cur = blob == null ? "" : blob;
