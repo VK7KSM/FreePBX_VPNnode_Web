@@ -31,6 +31,7 @@ import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
+import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -153,6 +154,16 @@ export class ElfStore {
     if (url.pathname.startsWith("/__auth/")) {
       return this.ctx.blockConcurrencyWhile(() => handleAdminAuth(this.ctx.storage, this.env, request));
     }
+    if (url.pathname.startsWith("/__push/")) {
+      const raw = await request.text();
+      return this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          return await this.ctx.storage.transaction(storage => pushState(storage,
+            new Request(request.url, { method: "POST", body: raw }),
+            () => loadDevices({ ...this.env, __storage: storage })));
+        } catch { return authJson({ ok: false, msg: "推送状态保存失败" }, 503); }
+      });
+    }
     if (url.pathname.startsWith("/api/")) {
       const raw = request.method === "GET" ? undefined : await request.text();
       return this.ctx.blockConcurrencyWhile(async () => {
@@ -205,6 +216,11 @@ const app = {
       }
       const session = await adminRpc(env, request, "session");
       if (!session.ok) return session;
+    }
+    if (!env.__storage && isPushHttp(pathname)) {
+      const stub = elfDoStub(env);
+      if (!stub) return authJson({ ok: false, msg: "设备存储不可用" }, 503);
+      return pushHttp(env, request, stub);
     }
     if (!env.__storage && (pathname.startsWith("/api/devices") || pathname === "/api/device-models"
         || pathname.startsWith("/api/elfremote/"))) {
@@ -1117,6 +1133,7 @@ async function handleDeviceReport(env, request) {
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
     const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
     const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation);
+    await acknowledgeStatus(env.__storage, deviceId, data);
     if (history.duplicate) return json({ ok: true, duplicate: true, report_id: history.record.report_id });
     const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
     let found = null;
@@ -1152,6 +1169,7 @@ async function handleDeviceReport(env, request) {
     }
     await saveDevices(env, list);
     const body = { ok: true, report_id: history.record.report_id };
+    if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,

@@ -12,3 +12,5 @@ jobs:
           node-version: "22"
       - run: npm run embed:check
       - run: npm test
+      - run: python3 -m unittest discover -s mqtt-server -p 'test_*.py'
+      - run: sh -n mqtt-server/install.sh && sh -n mqtt-server/install-api.sh && sh -n mqtt-server/renew-certificate.sh

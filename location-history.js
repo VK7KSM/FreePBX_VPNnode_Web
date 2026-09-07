@@ -20,7 +20,8 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const dedupKey = "history-id/" + encodeURIComponent(device) + "/" + id;
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,
     cell: data.cell || null, network: data.network || "unknown", battery: data.battery ?? null,
-    app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null });
+    app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null,
+    status_request_id: data.status_request_id || null });
   const hash = await sha(content);
   const previous = await storage.get(dedupKey);
   if (previous) {

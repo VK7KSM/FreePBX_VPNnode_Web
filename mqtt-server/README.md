@@ -29,3 +29,13 @@
 已部署并通过脚本语法检查、实际通知与权限测试、节点外系统信任链验证以及 Certbot 模拟续期。初次测试暴露 Paho 1.5.1 的等待接口差异，已改为有界轮询并重测通过。临时测试账号均已删除。
 
 部署前后 XRay 与 cloudflared 主进程编号不变且状态正常；MQTT 短时内存约 2.3MB，没有监听明文端口。此结果仅证明当前 Broker 服务可用，Android、Worker 接线与长测仍按前述边界待验收。
+
+## 本机发布入口
+
+`api.py` 仅监听 `127.0.0.1:8787`，通过既有隧道的独立域名 `mqtt-api.elfradio.net` 提供服务。`stream` 路由保持原内容。首次安装使用 `sudo sh install-api.sh`，服务名为 `elfremote-mqtt-api`；独立随机服务凭据在 `/etc/elfremote-mqtt/api-token`，不向设备发放。
+
+接口均为 `POST` 并检查服务凭据：`/v1/credentials` 发放独立设备身份，`/v1/publish` 仅发布有界的状态通知，`/v1/revoke` 删除身份。设备名限于由 Worker 生成的 `d_` 加 64 位摘要，不能发放 `control-plane` 身份。状态通知只含编号、递增版本和有效期，不包含执行命令。服务因需要维护密码文件及重载 Mosquitto，以管理员身份运行；systemd 限制文件写入目录，接口不接收路径或任意命令。
+
+运行 `python3 -m unittest -v test_api` 验证接口边界，`sudo python3 smoke_api.py` 经真实 HTTPS 隧道与 MQTT/TLS 检查通知送达。客户端使用明确的 `elfRemote` 服务标识；默认 Python 请求曾收到 CF 403，补充标识后通过，未更改 CF 防火墙。回退本步骤只停用新增 API 服务并移除新增隧道路由及 DNS，Broker 与原业务继续保留。
+
+Worker 配置项为 `MQTT_API_URL=https://mqtt-api.elfradio.net` 和 Secret `MQTT_API_TOKEN`。设备通过现有配对令牌调用 `/api/devices/push-config` 取得自己的连接参数、调用 `/api/devices/push-sync` 补领状态请求。管理员接口为 `POST /api/devices/request-status` 与 `GET /api/devices/status-request?device_id=...`。请求先写入现有 Durable Object，再在事务外发布；发布最多尝试三次，同一待处理请求合并，五分钟过期；发布失败保留待处理状态，只有带匹配关联号的设备状态上报才记完成。此处服务端代码已完成，生产 Worker 尚未部署。

@@ -1,0 +1,19 @@
+[Unit]
+Description=elfRemote MQTT API
+After=network-online.target mosquitto.service
+Wants=network-online.target
+Requires=mosquitto.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/elfremote-mqtt/api.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/elfremote-mqtt /etc/mosquitto/elfremote
+
+[Install]
+WantedBy=multi-user.target

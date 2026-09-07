@@ -35,6 +35,7 @@ export function isMachineRoute(path, method) {
   return new Set([
     "GET /api/sip/pull", "POST /api/sip/heartbeat",
     "POST /api/devices/enroll", "GET /api/devices/enroll-status", "POST /api/devices/report",
+    "POST /api/devices/push-config", "POST /api/devices/push-sync",
     "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress"
   ]).has(`${method} ${path}`) || (method === "GET" && /^\/api\/elfremote\/apk\/[^/]+$/.test(path));
 }
