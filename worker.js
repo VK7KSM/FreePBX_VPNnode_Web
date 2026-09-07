@@ -10,6 +10,7 @@ import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // 2026-09-06: 远程Shell buttons then plain status text.
 import {
   isControlPlaneOnline,
+  contactState,
   normalizePairCode,
   makePairCode,
   tokenSha256HexLooksValid,
@@ -827,6 +828,7 @@ async function geoForIp(env, ip) {
 }
 
 function publicDevice(d, modelName) {
+  const contact = contactState(d.last_seen, Date.now(), d.status_only === true);
   return {
     id: d.id,
     name: d.name,
@@ -835,6 +837,8 @@ function publicDevice(d, modelName) {
     enabled: d.enabled !== false,
     online: isControlPlaneOnline(d.last_seen, Date.now()),
     last_seen: d.last_seen || null,
+    contact_state: contact.state,
+    report_due_at: contact.report_due_at,
     battery: d.battery == null ? null : d.battery,
     traffic: d.traffic || null,
     network: d.network || "unknown",
@@ -1147,6 +1151,7 @@ async function handleDeviceReport(env, request) {
       list[i].online = true;
       if (fresh) {
       list[i].last_reported_at = history.record.timeline_at;
+      list[i].status_only = data.status_only === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);

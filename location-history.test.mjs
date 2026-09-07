@@ -71,6 +71,16 @@ test("无 GPS 仍有记录；补报不覆盖较新状态；分页无遗漏", asy
   assert.equal(second.next_cursor,null);
 });
 
+test("低频状态模式随新报告保存，旧补报不回退模式，管理员可查联系状态", async () => {
+  const f=setup(),c=await login(f);
+  await report(f,"mode-new","2026-09-07T02:00:00Z");
+  await report(f,"mode-old","2026-09-07T01:00:00Z",null,{status_only:false});
+  assert.equal(f.data.get("remote_devices")[0].status_only,true);
+  const response=await (await worker.fetch(request("/api/devices","GET",undefined,c),f.env)).json();
+  assert.equal(response.devices[0].contact_state,"recent_contact");
+  assert.ok(response.devices[0].report_due_at);
+});
+
 test("并发上报与改名不丢字段，状态模式不领取或更改旧维护任务", async () => {
   const f=setup(),c=await login(f);
   const d=f.data.get("remote_devices")[0];

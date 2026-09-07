@@ -1,6 +1,15 @@
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
 
+export function contactState(lastSeen, nowMs, statusOnly = false) {
+  const at = lastSeen ? Date.parse(lastSeen) : NaN;
+  if (!Number.isFinite(at) || at > nowMs) return { state: "unknown", report_due_at: null };
+  const window = statusOnly ? 75 * 60 * 1000 : CONTROL_PLANE_ONLINE_MS;
+  return { state: nowMs - at <= CONTROL_PLANE_ONLINE_MS ? "recent_contact"
+    : nowMs - at <= window ? "awaiting_report" : "report_overdue",
+    report_due_at: new Date(at + window).toISOString() };
+}
+
 export function isControlPlaneOnline(lastSeen, nowMs) {
   if (!lastSeen) return false;
   const t = Date.parse(lastSeen);
