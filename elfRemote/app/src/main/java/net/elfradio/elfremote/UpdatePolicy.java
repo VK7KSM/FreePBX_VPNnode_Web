@@ -24,6 +24,7 @@ final class UpdatePolicy {
     static final String LAST_GOOD_APK = "/data/local/elfremote/last_good.apk";
     static final String UPDATER_APK = "/data/local/elfremote/updater.apk";
     static final long HEALTH_TIMEOUT_MS = 90_000L;
+    static final long MAX_APK_BYTES = 64L * 1024 * 1024;
     static final String PKG = "net.elfradio.elfremote";
     static final String PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\n"
             + "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuHuRa52XY+MxbuXi5azn\n"
@@ -54,7 +55,7 @@ final class UpdatePolicy {
             if (m.optString("versionName", "").length() == 0) return null;
             if (!sha256HexLooksValid(m.optString("sha256", ""))) return null;
             if (!sha256HexLooksValid(m.optString("certSha256", ""))) return null;
-            if (m.optInt("size", 0) <= 0) return null;
+            if (m.optLong("size", 0) <= 0 || m.optLong("size", 0) > MAX_APK_BYTES) return null;
             String url = m.optString("url", "");
             if (!url.startsWith("https://")) return null;
             if (url.contains("127.0.0.1") || url.contains("://localhost")) return null;
@@ -69,6 +70,14 @@ final class UpdatePolicy {
         if (m == null) return true;
         long exp = m.optLong("expires_at", 0L);
         return exp > 0 && nowMs >= exp;
+    }
+
+    static boolean hasStagingSpace(long available, long apkBytes, long backupBytes) {
+        if (available < 0 || apkBytes <= 0 || apkBytes > MAX_APK_BYTES || backupBytes <= 0) return false;
+        try {
+            long required = Math.addExact(Math.multiplyExact(apkBytes, 2), backupBytes);
+            return available >= Math.addExact(required, 1024L * 1024);
+        } catch (ArithmeticException overflow) { return false; }
     }
 
     static boolean sha256HexLooksValid(String hex) {

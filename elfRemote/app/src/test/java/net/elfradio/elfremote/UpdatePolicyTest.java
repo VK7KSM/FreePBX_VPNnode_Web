@@ -11,6 +11,21 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class UpdatePolicyTest {
+    @Test public void storagePreflightReservesDownloadInstallAndBackupSpace() {
+        long required = 2 * 300000L + 280000L + 1024 * 1024L;
+        assertTrue(UpdatePolicy.hasStagingSpace(required, 300000, 280000));
+        assertFalse(UpdatePolicy.hasStagingSpace(required - 1, 300000, 280000));
+        assertFalse(UpdatePolicy.hasStagingSpace(Long.MAX_VALUE, 300000, Long.MAX_VALUE));
+        assertFalse(UpdatePolicy.hasStagingSpace(required, 300000, 0));
+        assertFalse(UpdatePolicy.hasStagingSpace(-1, 300000, 280000));
+    }
+    @Test public void manifestSizeMustFitDownloadLimitWithoutIntegerWrap() throws Exception {
+        for (long size : new long[]{0, -1, UpdatePolicy.MAX_APK_BYTES + 1, 4294967297L}) {
+            JSONObject m = goodManifest(85, "target").put("size", size);
+            assertEquals(null, UpdatePolicy.parseManifest(m.toString()));
+        }
+        assertTrue(UpdatePolicy.parseManifest(goodManifest(85, "target").put("size", UpdatePolicy.MAX_APK_BYTES).toString()) != null);
+    }
     @Test
     public void applicationReadinessCannotReplaceRootKeeperVerification() {
         UpdatePolicy.Health h = new UpdatePolicy.Health();

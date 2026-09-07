@@ -14,7 +14,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 
-/** Root CLI: download, verify, install. Health success is decided by the main app. */
+/** Root CLI: download, verify, install and confirm application/keeper health. */
 public final class UpdateTool {
     private static final File DIR = new File("/data/local/elfremote");
     private static String deviceId = "";
@@ -111,6 +111,12 @@ public final class UpdateTool {
         }
         if (UpdatePolicy.ST_ROLLBACK.equals(act)) {
             return doRollback(wantCode, wantName);
+        }
+        File currentApk = new File(ctx.getPackageManager().getApplicationInfo(UpdatePolicy.PKG, 0).sourceDir);
+        if (!UpdatePolicy.hasStagingSpace(DIR.getUsableSpace(), m.getLong("size"), currentApk.length())) {
+            writeState(UpdatePolicy.ST_REJECTED, wantCode, wantName, "insufficient-storage");
+            progress(UpdatePolicy.ST_REJECTED, "insufficient-storage");
+            return 0;
         }
         progress(UpdatePolicy.ST_CLAIMED, "");
         progress(UpdatePolicy.ST_DOWNLOADING, "");
