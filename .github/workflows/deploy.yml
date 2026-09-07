@@ -35,6 +35,7 @@ jobs:
         with:
           node-version: "22"
       - run: npm run embed:check
+      - run: npm ci
       - run: npm test
       - uses: cloudflare/wrangler-action@v3
         with:
