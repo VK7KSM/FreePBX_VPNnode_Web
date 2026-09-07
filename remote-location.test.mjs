@@ -23,7 +23,8 @@ test("有 GPS 时不用 IP", () => {
 test("无 GPS 时用 IP 粗圈", () => {
   const loc = pickLocation({}, { lat: -33.87, lng: 151.21 });
   assert.equal(loc.source, "ip");
-  assert.equal(loc.acc_m, 25000);
+  // 沿用现有地图的展示半径；不代表 IP 定位具有实测精度。
+  assert.equal(loc.acc_m, 2000);
   assert.equal(loc.lat, -33.87);
 });
 

@@ -5,7 +5,9 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "embed:devices-client": "node embed-devices-client.mjs",
-    "test:elfremote": "node --test elfRemote/control-plane.test.mjs devices-client-source.test.mjs"
+    "embed:check": "node embed-devices-client.mjs --check",
+    "test": "node --test *.test.mjs elfRemote/*.test.mjs",
+    "test:elfremote": "npm test"
   },
   "devDependencies": {
     "wrangler": "^4.127.1"

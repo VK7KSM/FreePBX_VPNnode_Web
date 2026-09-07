@@ -11,6 +11,13 @@ on:
       - "wrangler.toml"
       - "wrangler.jsonc"
       - "package.json"
+      - "devices-client.js"
+      - "devices-client-source.js"
+      - "embed-devices-client.mjs"
+      - "remote-location.js"
+      - "elfRemote/control-plane.js"
+      - "*.test.mjs"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 jobs:
@@ -21,6 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - run: npm run embed:check
+      - run: npm test
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
