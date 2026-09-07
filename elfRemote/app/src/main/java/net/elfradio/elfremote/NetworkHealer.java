@@ -36,9 +36,13 @@ final class NetworkHealer {
 
     HealPolicy.Facts observe() {
         HealPolicy.Facts f = new HealPolicy.Facts();
+        NetworkInfo active = cm == null ? null : cm.getActiveNetworkInfo();
+        f.otherNetworkConnected = active != null && active.isConnected()
+                && active.getType() != ConnectivityManager.TYPE_WIFI;
         f.airplane = Settings.Global.getInt(ctx.getContentResolver(),
                 Settings.Global.AIRPLANE_MODE_ON, 0) == 1;
         f.wifiEnabled = wifi != null && wifi.isWifiEnabled();
+        if (f.otherNetworkConnected) return f;
         if (wifi != null) {
             WifiInfo info = wifi.getConnectionInfo();
             if (info != null) {
@@ -275,7 +279,7 @@ final class NetworkHealer {
         for (int i = 0; i < all.length; i++) {
             if (isWifi(all[i])) return all[i];
         }
-        return active;
+        return null;
     }
 
     private boolean isWifi(Network n) {

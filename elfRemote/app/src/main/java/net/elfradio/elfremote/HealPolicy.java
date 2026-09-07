@@ -6,6 +6,7 @@ final class HealPolicy {
 
     static final class Facts {
         boolean airplane;
+        boolean otherNetworkConnected;
         boolean wifiEnabled;
         boolean hasIpv4;
         boolean hasDefaultRoute;
@@ -62,9 +63,12 @@ final class HealPolicy {
     }
 
     static Decision decide(Facts now, Snapshot snap) {
+        if (now != null && now.otherNetworkConnected)
+            return new Decision("L0", "none", "", "", "non-wifi-network-active");
         if (now == null || now.airplane) {
             return new Decision("L1", "wait_physical", "", "", "airplane-or-empty");
         }
+        if (!sameWifi(now, snap)) snap = null;
         if (!now.wifiEnabled) {
             return new Decision("L2", "enable_wifi", "", "", "wifi-off");
         }
@@ -164,7 +168,8 @@ final class HealPolicy {
     }
 
     static Snapshot sanitizeSnapshot(Facts f, Snapshot previous) {
-        if (f == null || !f.hasIpv4) return null;
+        if (f == null || f.otherNetworkConnected || !f.hasIpv4) return null;
+        if (!sameWifi(f, previous)) previous = null;
         String gw = nz(f.gateway);
         if (!f.hasDefaultRoute && empty(gw)) return null;
         Snapshot s = new Snapshot();
@@ -179,6 +184,12 @@ final class HealPolicy {
         s.ssid = nz(f.ssid);
         if (!usableIpv4(s.gateway)) return null;
         return s;
+    }
+
+    private static boolean sameWifi(Facts facts, Snapshot snapshot) {
+        return facts != null && snapshot != null && !empty(facts.ssid)
+                && !"<unknown ssid>".equalsIgnoreCase(facts.ssid)
+                && facts.ssid.equals(snapshot.ssid) && facts.iface.equals(snapshot.iface);
     }
 
     static String restoreRouteCmd(String iface, String gateway) {

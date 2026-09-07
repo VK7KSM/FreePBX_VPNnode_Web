@@ -8,6 +8,29 @@ import static org.junit.Assert.assertTrue;
 
 public class HealPolicyTest {
     @Test
+    public void cellularOrEthernetDoesNotEnableWifiOrSaveWifiSnapshot() {
+        HealPolicy.Facts f = facts();
+        f.otherNetworkConnected = true;
+        f.wifiEnabled = false;
+        f.hasIpv4 = true;
+        assertEquals("none", HealPolicy.decide(f, snap()).action);
+        assertEquals(null, HealPolicy.sanitizeSnapshot(f, snap()));
+    }
+
+    @Test
+    public void differentOrUnknownWifiCannotRestoreOldGatewayOrDns() {
+        HealPolicy.Facts f = facts();
+        f.wifiEnabled = true; f.hasIpv4 = true; f.dns = "8.8.8.8";
+        f.ssid = "different-network";
+        assertEquals("wait_no_snapshot", HealPolicy.decide(f, snap()).action);
+        f.dns = "127.0.0.1";
+        assertEquals("wait_no_snapshot", HealPolicy.decide(f, snap()).action);
+        f.ssid = "";
+        assertEquals("wait_no_snapshot", HealPolicy.decide(f, snap()).action);
+        f.gateway = "192.168.2.1"; f.hasDefaultRoute = true;
+        assertEquals("", HealPolicy.sanitizeSnapshot(f, snap()).dns);
+    }
+    @Test
     public void airplaneIsPhysicalAndDoesNotDhcp() {
         HealPolicy.Facts f = facts();
         f.airplane = true;
@@ -280,6 +303,7 @@ public class HealPolicyTest {
     private static HealPolicy.Facts facts() {
         HealPolicy.Facts f = new HealPolicy.Facts();
         f.iface = "wlan0";
+        f.ssid = "lab";
         return f;
     }
 

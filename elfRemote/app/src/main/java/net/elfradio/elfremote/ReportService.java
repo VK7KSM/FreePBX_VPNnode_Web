@@ -270,6 +270,7 @@ public final class ReportService extends Service {
         body.put("battery", batteryPct());
         body.put("ready", true);
         body.put("managed_log_tasks", true);
+        body.put("managed_heal_tasks", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
@@ -355,7 +356,8 @@ public final class ReportService extends Service {
             JSONObject response = new JSONObject(reply);
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
-                    && managed != null && managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type"))) {
+                    && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -609,6 +611,7 @@ public final class ReportService extends Service {
                 return;
             }
             if (RepairPolicy.TYPE_HEAL_NETWORK.equals(type)) {
+                if (healer == null) healer = new NetworkHealer(this, store);
                 String stage = healer.maybeHeal(false);
                 HealPolicy.Facts f = healer.observe();
                 HealPolicy.Snapshot snap = HealPolicy.Snapshot.parse(store.netSnap());
@@ -617,10 +620,12 @@ public final class ReportService extends Service {
                 result.put("stage", stage);
                 result.put("action", d.action);
                 result.put("reason", d.reason);
-                postTask(id, RepairPolicy.ST_SUCCESS, stage, result);
+                boolean recovered = "none".equals(d.action);
+                postTask(id, recovered ? RepairPolicy.ST_SUCCESS : RepairPolicy.ST_FAILED, d.reason, result);
                 writeLastTaskId(id);
                 writeTaskPhase(RepairPolicy.PHASE_DONE);
-                store.setLastStatus("修机成功 强制自愈 " + stage);
+                store.setLastStatus((recovered ? "修机成功" : "修机未恢复") + " 强制自愈 " + stage);
+                RuntimeLog.event("task_heal_complete recovered=" + recovered + " stage=" + stage);
                 android.util.Log.i("elfRemote", "task heal_network stage=" + stage
                         + " action=" + d.action + " reason=" + d.reason);
                 return;

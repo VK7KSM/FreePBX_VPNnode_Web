@@ -1217,7 +1217,7 @@ async function handleDeviceReport(env, request) {
     await acknowledgeStatus(env.__storage, deviceId, data);
     if (history.duplicate) {
       const body = { ok: true, paired: matched.paired !== false, duplicate: true, report_id: history.record.report_id };
-      addManagedLogOffer(body, matched, data, Date.now());
+      addManagedTaskOffer(body, matched, data, Date.now());
       return json(body);
     }
     const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
@@ -1233,6 +1233,7 @@ async function handleDeviceReport(env, request) {
       list[i].last_reported_at = history.record.timeline_at;
       list[i].status_only = data.status_only === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
+      list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
@@ -1251,7 +1252,7 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_log_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
@@ -1259,7 +1260,7 @@ async function handleDeviceReport(env, request) {
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
-    addManagedLogOffer(body, found, data, now);
+    addManagedTaskOffer(body, found, data, now);
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,
@@ -1450,10 +1451,13 @@ async function handleElfUpdateProgress(env, request) {
   }
 }
 
-function addManagedLogOffer(body, device, report, now) {
+function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.status_only === true && report.managed_log_tasks === true
       && device.task?.managed_log_v1 === true && device.task.type === "pull_logs" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_log_v1:true};
+  if (device.enabled !== false && report.status_only === true && report.managed_heal_tasks === true
+      && device.task?.managed_heal_v1 === true && device.task.type === "heal_network" && shouldOfferRepair(device, now))
+    body.managed_task = {...repairOfferPayload(device.task), managed_heal_v1:true};
 }
 
 async function handleElfEnqueueTask(env, request) {
@@ -1470,7 +1474,8 @@ async function handleElfEnqueueTask(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
-    if(found.status_only && (data.type!=="pull_logs" || found.managed_log_tasks!==true)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    if(found.status_only && !((data.type==="pull_logs" && found.managed_log_tasks===true)
+        || (data.type==="heal_network" && found.managed_heal_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
     if (String(data.type || "") === "install_apk") {
@@ -1496,6 +1501,7 @@ async function handleElfEnqueueTask(env, request) {
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
+    if(!queued.duplicate && found.status_only && data.type==="heal_network") found.task.managed_heal_v1=true;
     await saveDevices(env, list);
     return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });
   } catch (e) {
