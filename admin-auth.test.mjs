@@ -2,38 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import fs from "node:fs";
-import worker, { ElfStore } from "./worker.js";
+import worker from "./worker.js";
+import { fixture, request, login } from "./test-support.mjs";
 import { handleAdminAuth, isMachineRoute } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import sipSource from "./sip-client-source.js";
-
-function fixture(initial = { admin_pass: "fixture-password" }) {
-  const data = new Map(Object.entries(initial));
-  const storage = {
-    async get(k) { return structuredClone(data.get(k)); },
-    async put(k, v) { data.set(k, structuredClone(v)); },
-    async delete(k) { return data.delete(k); },
-    async list({ prefix }) { return new Map([...data].filter(([k]) => k.startsWith(prefix))); }
-  };
-  let pending = Promise.resolve();
-  const ctx = { storage, blockConcurrencyWhile(fn) {
-    const next = pending.then(fn); pending = next.catch(() => {}); return next;
-  } };
-  const env = {};
-  const store = new ElfStore(ctx, env);
-  env.ELF_DO = { idFromName: x => x, get: () => ({ fetch: (url, init) => store.fetch(url instanceof Request ? url : new Request(url, init)) }) };
-  return { data, storage, env };
-}
-function request(path, method = "GET", body, cookie, extra = {}) {
-  return new Request("https://example.test" + path, { method, headers: {
-    ...(cookie ? { Cookie: cookie } : {}), "Content-Type": "application/json", ...extra
-  }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-}
-async function login(f) {
-  const response = await worker.fetch(request("/api/login", "POST", { username: "admin", password: "fixture-password" }), f.env);
-  assert.equal(response.status, 200);
-  return response.headers.get("Set-Cookie").split(";")[0];
-}
 
 test("管理路由匿名与伪造标记均不能绕过登录，未知 API 默认保护", async () => {
   const f = fixture();

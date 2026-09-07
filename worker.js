@@ -30,6 +30,7 @@ import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
+import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -55,9 +56,25 @@ function elfDoStub(env) {
 }
 
 async function getStore(env, key) {
+  if (env.__storage) {
+    const value = await env.__storage.get(key);
+    if (value !== undefined && value !== null) return value;
+    if (!await env.__storage.get("legacy_done:" + key)) {
+      const raw = await env.SUB_STORE_KV?.get(key);
+      if (raw != null) {
+        const parsed = parseStoreVal(raw);
+        await env.__storage.put(key, parsed);
+        await env.__storage.put("legacy_done:" + key, true);
+        return parsed;
+      }
+      await env.__storage.put("legacy_done:" + key, true);
+    }
+    return storeDefaults(key);
+  }
   const stub = elfDoStub(env);
   if (stub) {
     const res = await stub.fetch("https://elf-store/" + encodeURIComponent(key));
+    if (!res.ok) throw new Error("数据存储不可用");
     if (res.ok) {
       const parsed = await res.json();
       if (parsed !== null) return parsed;
@@ -83,13 +100,19 @@ async function getStore(env, key) {
 }
 
 async function setStore(env, key, value) {
+  if (env.__storage) {
+    await env.__storage.put(key, value);
+    await env.__storage.put("legacy_done:" + key, true);
+    return;
+  }
   const stub = elfDoStub(env);
   if (stub) {
-    await stub.fetch("https://elf-store/" + encodeURIComponent(key), {
+    const result = await stub.fetch("https://elf-store/" + encodeURIComponent(key), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value)
     });
+    if (!result.ok) throw new Error("数据保存失败");
     return;
   }
   if (env && env.SUB_STORE_KV) {
@@ -130,6 +153,22 @@ export class ElfStore {
     if (url.pathname.startsWith("/__auth/")) {
       return this.ctx.blockConcurrencyWhile(() => handleAdminAuth(this.ctx.storage, this.env, request));
     }
+    if (url.pathname.startsWith("/api/")) {
+      const raw = request.method === "GET" ? undefined : await request.text();
+      return this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          return await this.ctx.storage.transaction(async storage => {
+            const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
+            const response = await app.fetch(replay, { ...this.env, __storage: storage,
+              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "" });
+            if (!response.ok) throw response;
+            return response;
+          });
+        } catch (error) {
+          return error instanceof Response ? error : json({ ok: false, msg: "设备数据保存失败" }, 503);
+        }
+      });
+    }
     const key = decodeURIComponent(url.pathname.slice(1));
     if (request.method === "GET") {
       const v = await this.ctx.storage.get(key);
@@ -148,7 +187,7 @@ export class ElfStore {
   }
 }
 
-export default {
+const app = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -157,7 +196,7 @@ export default {
     if (pathname === "/admin-session.js") {
       return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
     }
-    if (pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
+    if (!env.__storage && pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
       if (!trustedOrigin(request)) return authJson({ ok: false, msg: "请求来源不匹配" }, 403);
       const action = { "/api/login": "login", "/api/logout": "logout", "/api/session": "session" }[pathname];
       if (action) {
@@ -166,6 +205,16 @@ export default {
       }
       const session = await adminRpc(env, request, "session");
       if (!session.ok) return session;
+    }
+    if (!env.__storage && (pathname.startsWith("/api/devices") || pathname === "/api/device-models"
+        || pathname.startsWith("/api/elfremote/"))) {
+      const stub = elfDoStub(env);
+      if (!stub) return json({ ok: false, msg: "设备存储不可用" }, 503);
+      return stub.fetch(request);
+    }
+    if (pathname === "/api/devices/history" && method === "GET") {
+      try { return json(await queryLocationHistory(env.__storage, url)); }
+      catch (error) { return json({ ok: false, msg: error.message }, 400); }
     }
 
     if (pathname === "/logo.png" || pathname === "/favicon.ico") {
@@ -403,12 +452,14 @@ export default {
       });
     }
 
+    if (pathname.startsWith("/api/")) return json({ ok: false, msg: "接口不存在" }, 404);
     // 前端 HTML
     return new Response(renderHtml(), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
   }
 };
+export default app;
 
 function defaultSipExtensions() {
   const rows = [
@@ -738,6 +789,17 @@ async function geoForIp(env, ip) {
   if (!ip || isPrivateIp(ip)) return null;
   const cached = parseGeoCache(await getStore(env, "geo_" + ip));
   if (cached) return cached;
+  // 事务内只使用可信入口地理信息或已有缓存，避免慢外部查询长期占住设备更新。
+  if (env.__storage) {
+    const cf = env.__requestCf;
+    if (ip === env.__requestIp && cf?.latitude != null && cf?.longitude != null) {
+      const lat = Number(cf.latitude), lng = Number(cf.longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+        return { lat, lng, acc_m: 2000 };
+      }
+    }
+    return null;
+  }
   try {
     const looked = await fetchIpGeo(ip);
     if (looked) {
@@ -786,22 +848,12 @@ async function loadDevicesHydrated(env) {
   const byId = {};
   for (let i = 0; i < models.length; i++) byId[models[i].id] = models[i];
   const list = await loadDevices(env);
-  let dirty = false;
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const d = list[i];
     const m = byId[d.model_id];
-    if (!d.loc || !Number.isFinite(Number(d.loc.lat))) {
-      const ipGeo = await geoForIp(env, d.ip);
-      const loc = pickLocation(d, ipGeo);
-      if (loc) {
-        d.loc = loc;
-        dirty = true;
-      }
-    }
     out.push(publicDevice(d, m ? m.name : ""));
   }
-  if (dirty) await saveDevices(env, list);
   return out;
 }
 
@@ -1015,6 +1067,7 @@ async function handleDevicePair(env, request) {
       const list = await loadDevices(env);
       const existing = list.filter(function (d) { return d.id === row.device_id; })[0];
       if (existing) return json({ ok: true, device: publicDevice(existing, ""), msg: "已经配对" });
+      return json({ ok: false, msg: "该配对关系已解除，请使用新的配对码" }, 409);
     }
     const list = await loadDevices(env);
     const ip = String(data.ip || "").trim();
@@ -1058,6 +1111,14 @@ async function handleDeviceReport(env, request) {
     if (!deviceId || !token) return json({ ok: false, msg: "缺少设备凭证" }, 400);
     const tokenSha = await sha256Hex(token);
     const list = await loadDevices(env);
+    const matched = list.find(d => d.id === deviceId);
+    if (!matched) return json({ ok: false, msg: "未找到该设备" }, 404);
+    if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    const observedIp = request.headers.get("CF-Connecting-IP") || "";
+    const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
+    const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation);
+    if (history.duplicate) return json({ ok: true, duplicate: true, report_id: history.record.report_id });
+    const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
     let found = null;
     for (let i = 0; i < list.length; i++) {
       if (list[i].id !== deviceId) continue;
@@ -1066,6 +1127,8 @@ async function handleDeviceReport(env, request) {
       }
       list[i].last_seen = new Date().toISOString();
       list[i].online = true;
+      if (fresh) {
+      list[i].last_reported_at = history.record.timeline_at;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);
       if (data.network != null) list[i].network = String(data.network).slice(0, 32);
@@ -1073,35 +1136,30 @@ async function handleDeviceReport(env, request) {
         list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
       }
       if (data.ready != null) list[i].ready = !!data.ready;
-      const ip = request.headers.get("CF-Connecting-IP") || "";
+      const ip = observedIp;
       if (ip && !isPrivateIp(ip)) list[i].ip = ip;
-      const ipGeo = await geoForIp(env, list[i].ip);
-      const loc = pickLocation(data, ipGeo);
-      if (loc) {
-        if (loc.source === "gps" || !list[i].loc || list[i].loc.source !== "gps") {
-          list[i].loc = loc;
-        }
+      list[i].loc = reportLocation;
       }
       found = list[i];
       break;
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if (found.task && repairExpired(found.task, now)
+    if (!data.status_only && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
     }
     await saveDevices(env, list);
-    const body = { ok: true };
-    if (shouldOfferUpdate(found, now) && found.update) {
+    const body = { ok: true, report_id: history.record.report_id };
+    if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,
         manifest_raw: found.update.manifest_raw,
         signature: found.update.signature
       };
     }
-    if (shouldOfferRepair(found, now) && found.task) {
+    if (!data.status_only && shouldOfferRepair(found, now) && found.task) {
       body.task = repairOfferPayload(found.task);
     }
     return json(body);

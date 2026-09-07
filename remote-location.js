@@ -9,7 +9,9 @@ export function isPrivateIp(ip) {
 }
 
 function finitePoint(p) {
-  return p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
+  return p && p.lat != null && p.lng != null && String(p.lat).trim() !== "" && String(p.lng).trim() !== ""
+    && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng))
+    && Math.abs(Number(p.lat)) <= 90 && Math.abs(Number(p.lng)) <= 180;
 }
 
 function accOr(v, fallback) {
@@ -24,7 +26,7 @@ export function pickLocation(report, ipGeo) {
     return {
       lat: Number(r.gps.lat),
       lng: Number(r.gps.lng),
-      acc_m: acc < 5000 ? acc : 30,
+      acc_m: acc,
       source: "gps",
       at: r.gps.at || null
     };

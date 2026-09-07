@@ -9,6 +9,7 @@ on:
       - "sip-client-source.js"
       - "admin-auth.js"
       - "admin-session.js"
+      - "location-history.js"
       - "logo.js"
       - "logo.png"
       - "wrangler.toml"
