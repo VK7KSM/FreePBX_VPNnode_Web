@@ -133,8 +133,7 @@ function renderList(){
     var upd = inflight ? '<span class="tag">'+esc(d.update.label || "升级中")+'</span>' : "";
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
     h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
-    h += '<span class="dev-identity"><span class="dev-name">'+esc(d.name)+'</span>'+upd;
-    if(d.paired === false) h += '<span class="tag">未配对</span>';
+    h += '<span class="dev-identity"><span class="dev-name'+(d.paired===false?' unpaired-name':'')+'"'+(d.paired===false?' title="未配对"':'')+'>'+esc(d.name)+'</span>'+upd;
     h += '</span>';
     var status = STATUS[d.id] || (d.contact_state === "report_overdue" ? "报告超时" : "等待上报信息");
     h += '<span class="report-status" role="button" tabindex="0" title="拉取设备信息" aria-disabled="'+(STATUS[d.id]==="拉取中")+'" onclick="event.stopPropagation();requestDeviceStatus(\''+d.id+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();event.stopPropagation();requestDeviceStatus(\''+d.id+'\')}">'+esc(status)+'</span>';
@@ -315,6 +314,9 @@ function renderOps(){
   var bat = !d || d.battery==null ? "—" : (d.battery+"%");
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
+  if(d && d.loc && d.loc.source==="gps" && d.loc.lat!=null && d.loc.lng!=null && isFinite(Number(d.loc.lat)) && isFinite(Number(d.loc.lng))) {
+    src += " · 纬度 " + Number(d.loc.lat).toFixed(6) + " · 经度 " + Number(d.loc.lng).toFixed(6);
+  }
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "会话已开" : "未接入");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
@@ -324,7 +326,8 @@ function renderOps(){
   h += '<button class="btn-gray" onclick="openEdit()"'+dis+'>编辑</button>';
   if(d && d.enabled===false) h += '<button class="btn-gray" onclick="setEnabled(true)">启用</button>';
   else h += '<button class="btn-gray" onclick="setEnabled(false)"'+dis+'>停用</button>';
-  h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()"'+dis+'>解除配对</button>';
+  if(d && d.paired===false) h += '<button class="btn-green" onclick="openPairSelected()">立即配对</button>';
+  else h += '<button class="btn-gray" style="color:#f87171" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
   h += '<div class="ops-grid">';
   h += kv("电量", bat);
@@ -827,6 +830,15 @@ function openAdd(){
   syncAddButtons();
 }
 function closeAdd(){ hide("addWrap"); }
+
+function openPairSelected(){
+  var d = currentDev();
+  if(!d || d.paired!==false) return;
+  openAdd();
+  $("dName").value = d.name || "";
+  fillModelSelect($("dModel"), d.model_id);
+  $("pairCode").focus();
+}
 
 function saveManual(){ submitPair(); }
 function submitPair(){
