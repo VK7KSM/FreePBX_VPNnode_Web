@@ -32,21 +32,23 @@ final class TrafficLedger {
             }
             if (reset) state.put("gaps", state.getInt("gaps") + 1);
         }
-        // 启动/来源变化/计数回退时重新建立基线，保留已测累计量并明确缺口。
-        if (same && !reset) {
+        // 接口变化只重建该接口基线，其他接口可验证的增量仍须计入。
+        if (same) {
             for (Iterator<String> names = counters.keys(); names.hasNext();) {
                 String name = names.next();
                 JSONObject current = counters.getJSONObject(name), old = previous.optJSONObject(name);
+                if (old == null || current.getLong("rx_bytes") < old.getLong("rx_bytes")
+                        || current.getLong("tx_bytes") < old.getLong("tx_bytes")) continue;
                 JSONObject total = totals.optJSONObject(name);
                 if (total == null) total = new JSONObject().put("rx_bytes", 0).put("tx_bytes", 0);
                 for (String field : new String[]{"rx_bytes", "tx_bytes"}) {
-                    long delta = current.getLong(field) - (old == null ? 0 : old.getLong(field));
+                    long delta = current.getLong(field) - old.getLong(field);
                     if (delta < 0) throw new IllegalArgumentException("traffic delta invalid");
                     total.put(field, Math.addExact(total.getLong(field), delta));
                 }
                 totals.put(name, total);
             }
-            state.put("covered_ms", Math.addExact(state.getLong("covered_ms"), uptime - state.getLong("uptime_ms")));
+            if (!reset) state.put("covered_ms", Math.addExact(state.getLong("covered_ms"), uptime - state.getLong("uptime_ms")));
         }
         if (!state.has("started_at_ms")) state.put("started_at_ms", now);
         state.put("last", new JSONObject(counters.toString())).put("source", source).put("boot", boot)

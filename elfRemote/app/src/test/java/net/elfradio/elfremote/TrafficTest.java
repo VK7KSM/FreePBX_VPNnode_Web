@@ -11,15 +11,31 @@ public class TrafficTest {
         ledger.sample(counters(10, 20), "qtaguid_uid", "boot", 100, 1000);
         JSONObject changed = counters(20, 30).put("rmnet0", new JSONObject().put("rx_bytes", 9000).put("tx_bytes", 8000));
         JSONObject result = ledger.sample(changed, "qtaguid_uid", "boot", 200, 1100);
-        assertEquals(0, result.getLong("rx_bytes"));
+        assertEquals(10, result.getLong("rx_bytes"));
         assertEquals(1, result.getInt("gaps"));
         changed.getJSONObject("rmnet0").put("rx_bytes", 9010);
         result = ledger.sample(changed, "qtaguid_uid", "boot", 300, 1200);
-        assertEquals(10, result.getLong("rx_bytes"));
+        assertEquals(20, result.getLong("rx_bytes"));
         assertEquals(100, result.getLong("covered_ms"));
     }
     private JSONObject counters(long rx, long tx) throws Exception {
         return new JSONObject().put("wlan0", new JSONObject().put("rx_bytes", rx).put("tx_bytes", tx));
+    }
+    @Test public void disappearingOrResetInterfaceKeepsOtherInterfaceTrafficButMarksCoverageGap() throws Exception {
+        TrafficLedger ledger = new TrafficLedger(null);
+        ledger.sample(counters(100, 100).put("rmnet0", new JSONObject().put("rx_bytes", 50).put("tx_bytes", 50)),
+                "qtaguid_uid", "boot", 100, 1000);
+        JSONObject result = ledger.sample(counters(120, 130).put("rmnet0", new JSONObject().put("rx_bytes", 1).put("tx_bytes", 2)),
+                "qtaguid_uid", "boot", 200, 1100);
+        assertEquals(20, result.getLong("rx_bytes"));
+        assertEquals(30, result.getLong("tx_bytes"));
+        assertEquals(1, result.getInt("gaps"));
+        assertEquals(0, result.getLong("covered_ms"));
+        result = new TrafficLedger(ledger.saved()).sample(counters(150, 170), "qtaguid_uid", "boot", 300, 1200);
+        assertEquals(50, result.getLong("rx_bytes"));
+        assertEquals(70, result.getLong("tx_bytes"));
+        assertEquals(2, result.getInt("gaps"));
+        assertEquals(0, result.getLong("covered_ms"));
     }
     @Test public void uidCountersDoNotDoubleCountTagsOrOtherApplications() throws Exception {
         String source = "idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes tx_bytes\n"
