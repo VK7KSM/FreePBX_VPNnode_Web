@@ -168,6 +168,12 @@ public final class ReportService extends Service {
         mainHandler.post(() -> startForeground(7, buildNotification()));
     }
 
+    private String defaultDeviceName() {
+        String name = android.provider.Settings.Global.getString(getContentResolver(), "device_name");
+        if (name == null || name.trim().isEmpty()) name = android.provider.Settings.Secure.getString(getContentResolver(), "bluetooth_name");
+        return name == null || name.trim().isEmpty() ? Build.MODEL : name.trim();
+    }
+
     private void enrollOrPoll() throws Exception {
         if (store.expiresAt() > 0 && store.expiresAt() <= System.currentTimeMillis()) store.clearEnroll();
         if (store.code().length() != 6 || store.enrollId().length() == 0) {
@@ -176,9 +182,7 @@ public final class ReportService extends Service {
             body.put("app_version", Protocol.appVersion());
             body.put("os_version", "Android " + Build.VERSION.RELEASE);
             body.put("model_hint", "D22");
-            String deviceName = android.provider.Settings.Global.getString(getContentResolver(), "device_name");
-            if (deviceName == null || deviceName.trim().isEmpty()) deviceName = android.provider.Settings.Secure.getString(getContentResolver(), "bluetooth_name");
-            body.put("device_name", deviceName == null || deviceName.trim().isEmpty() ? Build.MODEL : deviceName.trim());
+            body.put("device_name", defaultDeviceName());
             JSONObject res = Protocol.parseObject(HttpJson.post(Protocol.enrollPath(), body.toString()));
             if (!Protocol.isOk(res)) {
                 store.setLastStatus(res.optString("msg", "申请配对码失败"));
@@ -224,6 +228,7 @@ public final class ReportService extends Service {
         body.put("app_version", Protocol.appVersion());
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
         body.put("network", networkType());
+        body.put("device_name", defaultDeviceName());
         body.put("battery", batteryPct());
         body.put("ready", true);
         body.put("traffic", traffic.sample());

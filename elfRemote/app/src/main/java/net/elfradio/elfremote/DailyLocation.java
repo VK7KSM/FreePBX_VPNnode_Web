@@ -47,7 +47,7 @@ final class DailyLocation {
         if (completion != null) return;
         long now = System.currentTimeMillis();
         boolean granted = PermissionGate.hasLocation(context);
-        if (!shouldStart(prefs.getLong("attempt_at", 0), prefs.getLong("permission_attempt_at", 0), granted, now)) { then.run(); return; }
+        if (!"not_sampled".equals(reason) && !shouldStart(prefs.getLong("attempt_at", 0), prefs.getLong("permission_attempt_at", 0), granted, now)) { then.run(); return; }
         SharedPreferences.Editor editor = prefs.edit().putLong("attempt_at", now);
         if (!granted) editor.putLong("permission_attempt_at", now);
         if (!editor.commit()) {

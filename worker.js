@@ -1185,6 +1185,7 @@ async function handleDeviceReport(env, request) {
       list[i].status_only = data.status_only === true;
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
+      if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
       if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);
       if (data.network != null) list[i].network = String(data.network).slice(0, 32);
       if (data.battery != null && Number.isFinite(Number(data.battery))) {
