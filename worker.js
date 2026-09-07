@@ -1215,7 +1215,11 @@ async function handleDeviceReport(env, request) {
     const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
     const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation);
     await acknowledgeStatus(env.__storage, deviceId, data);
-    if (history.duplicate) return json({ ok: true, paired: matched.paired !== false, duplicate: true, report_id: history.record.report_id });
+    if (history.duplicate) {
+      const body = { ok: true, paired: matched.paired !== false, duplicate: true, report_id: history.record.report_id };
+      addManagedLogOffer(body, matched, data, Date.now());
+      return json(body);
+    }
     const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
     let found = null;
     for (let i = 0; i < list.length; i++) {
@@ -1255,8 +1259,7 @@ async function handleDeviceReport(env, request) {
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
-    if (found.enabled !== false && data.status_only === true && data.managed_log_tasks === true && found.task?.managed_log_v1 === true
-        && found.task.type === "pull_logs" && shouldOfferRepair(found, now)) body.managed_task = {...repairOfferPayload(found.task),managed_log_v1:true};
+    addManagedLogOffer(body, found, data, now);
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
       body.update = {
         job_id: found.update.job_id,
@@ -1445,6 +1448,12 @@ async function handleElfUpdateProgress(env, request) {
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
+}
+
+function addManagedLogOffer(body, device, report, now) {
+  if (device.enabled !== false && report.status_only === true && report.managed_log_tasks === true
+      && device.task?.managed_log_v1 === true && device.task.type === "pull_logs" && shouldOfferRepair(device, now))
+    body.managed_task = {...repairOfferPayload(device.task), managed_log_v1:true};
 }
 
 async function handleElfEnqueueTask(env, request) {

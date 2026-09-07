@@ -67,6 +67,11 @@ test('状态模式仅向声明能力的客户端提供新建日志任务',async(
   assert.equal(offered.managed_task.type,'pull_logs');
   assert.equal(offered.managed_task.managed_log_v1,true);
   assert.equal(offered.task,undefined);assert.equal(offered.update,undefined);
+  const repeated=await (await worker.fetch(request('/api/devices/report','POST',{
+    device_id:'device',token:'fixture-token',status_only:true,managed_log_tasks:true,report_id:'fixture-report-'+sequence
+  }),f.env)).json();
+  assert.equal(repeated.duplicate,true);
+  assert.equal(repeated.managed_task.id,offered.managed_task.id);
   assert.equal((await report(false)).managed_task,undefined);
   assert.equal((await enqueue('pull_logs')).status,409);
 });
