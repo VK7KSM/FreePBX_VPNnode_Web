@@ -235,3 +235,14 @@ test('维护按钮遵循能力和任务占用，历史成功不冒充本次结�
  d.enabled=false;assert.equal(context.maintenanceAvailable(d,'pull_logs'),false);
  context.MAINTENANCE_RUN.fixture={pending:true};d.enabled=true;assert.equal(context.maintenanceAvailable(d,'pull_logs'),false);
 });
+
+test('已发布版本按编号降序，默认最新，手动选择不被重绘覆盖',async()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:async()=>({ok:true,json:async()=>({ok:true,releases:[{versionCode:9,versionName:'旧版'},{versionCode:95,versionName:'新版'}]})})});
+ vm.runInContext(source,context);context.DEV=[{id:'fixture'}];context.selDev='fixture';context.renderOps=()=>{};
+ await context.loadReleases();assert.equal(context.RELEASES[0].versionCode,95);assert.equal(context.selectedRelease().versionCode,95);
+ assert.match(context.pageUpdate(''),/<option value="95" selected>/);
+ context.uiOf().releaseVersion='9';assert.equal(context.selectedRelease().versionCode,9);
+ assert.match(context.pageUpdate(''),/<option value="9" selected>/);
+ context.fetch=async()=>({ok:false});await context.loadReleases();
+ assert.match(context.pageUpdate(''),/版本读取失败/);assert.match(context.pageUpdate(''),/assignUpdate\(\)" disabled/);
+});

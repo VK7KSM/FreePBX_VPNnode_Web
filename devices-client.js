@@ -385,6 +385,7 @@ function kv(k,v){ return '<div class="kv"><div class="k">'+k+'</div><div class="
 function pickFn(id){
   selFn = id;
   renderOps();
+  if(id==='update')loadReleases();
 }
 
 function onFnClick(ev){
@@ -509,20 +510,38 @@ function pageAdb(dis){
   return '<div class="monitor-grid">'+maintenance+'<section class="monitor"><h4 class="monitor-heading"><span>命令终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+dis+'>'+(on?'断开ADB':'连接ADB')+'</button></h4>'+h+'</section></div>';
 }
 
+var RELEASES=[], RELEASE_STATE='idle', RELEASE_REQUEST=null;
+function loadReleases(){
+  if(RELEASE_REQUEST)return RELEASE_REQUEST;
+  RELEASE_STATE='loading';if(selFn==='update')renderOps();
+  RELEASE_REQUEST=fetch('/api/elfremote/releases').then(function(r){if(!r.ok)throw Error('版本读取失败');return r.json();}).then(function(x){
+    if(!x.ok || !Array.isArray(x.releases))throw Error('版本读取失败');
+    RELEASES=x.releases.filter(function(r){return Number.isInteger(r.versionCode)&&r.versionCode>0;}).sort(function(a,b){return b.versionCode-a.versionCode;});RELEASE_STATE='ready';
+  }).catch(function(){RELEASE_STATE='error';}).finally(function(){RELEASE_REQUEST=null;if(selFn==='update')renderOps();});
+  return RELEASE_REQUEST;
+}
+function selectedRelease(){
+  var u=uiOf(),selected=u && u.releaseVersion;
+  return RELEASES.find(function(r){return String(r.versionCode)===String(selected);}) || RELEASES[0];
+}
 function pageUpdate(dis){
   var d = currentDev();
   var u = d && d.update ? d.update : {};
   var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
   var h = '<div class="update-facts">';
-  h += kv("当前版本", ver);
-  h += kv("目标版本", u.target || "无");
+  h += kv("设备当前版本", ver);
+  h += kv("上次下发版本", u.target || "无");
   h += kv("阶段", u.label || u.state || "无");
   h += kv("说明", u.detail || "");
   h += "</div>";
   var status=functionSection('更新状态',h);h='';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
-  h += '<input id="updVc" class="inp" placeholder="已发布版本号（versionCode）" style="max-width:240px"'+dis+'>';
-  h += '<button class="btn-green" onclick="assignUpdate()"'+dis+'>下发该版本</button>';
+  var ready=RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=dis || (ready?'':' disabled');
+  h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value"'+blocked+'>';
+  if(!ready)h+='<option value="">'+(RELEASE_STATE==='error'?'版本读取失败':RELEASE_STATE==='ready'?'暂无已发布版本':'正在读取版本…')+'</option>';
+  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(i===0?'（最新发布）':'')+'</option>';});
+  h+='</select><button class="btn-green" onclick="assignUpdate()"'+blocked+'>下发该版本</button>';
+  if(RELEASE_STATE==='error')h+='<button class="btn-gray" onclick="loadReleases()">重试</button>';
   h += "</div>";
   return status+functionSection('下发版本',h);
 }
@@ -859,7 +878,7 @@ function assignUpdate(){
   var d = currentDev();
   if(!d) return;
   var vc = parseInt($("updVc") && $("updVc").value, 10);
-  if(!vc){ alert("请填写已发布的 versionCode"); return; }
+  if(RELEASE_STATE!=='ready' || !RELEASES.some(function(r){return r.versionCode===vc;})){ alert('请选择已发布版本'); return; }
   fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,versionCode:vc})})
     .then(function(r){ return r.json(); })
     .then(function(x){
