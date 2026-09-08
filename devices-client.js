@@ -118,7 +118,7 @@ function loadDevices(){
     UNPAIRED = arr[0].unpaired || [];
     if(arr[1].models) MODELS = arr[1].models;
     if(!currentDev() && DEV.length) selDev = DEV[0].id;
-    renderList();
+    renderList(); updateReportFeedback();
     renderMap();
     var editing = $("devOps").contains(document.activeElement) && document.activeElement.matches("input,textarea,select,[contenteditable=true]");
     if(!editing){
@@ -190,25 +190,34 @@ function selectUnpaired(index){
   if(pending.id) selectDev(pending.id);
 }
 
+function reportFeedback(d){
+  if(!d || !REQUEST_TIMING[d.id])return '';
+  var t=REQUEST_TIMING[d.id];
+  if(t.completedMs!=null)return '信息已更新 · 用时 '+(t.completedMs/1000).toFixed(1)+' 秒';
+  if(STATUS[d.id]==='拉取超时')return '暂未收到设备信息，请稍后重试';
+  if(STATUS[d.id]==='拉取失败')return '更新失败，请重试';
+  return t.receivedMs!=null?'设备正在上报信息…':'正在获取设备信息…';
+}
+function updateReportFeedback(){var el=$('reportFeedback');if(el)el.textContent=reportFeedback(currentDev());}
 async function requestDeviceStatus(id){
   if(["拉取中","等待设备领取","等待完整上报"].includes(STATUS[id])) return false;
   var device=DEV.find(function(d){return d.id===id;});
   STATUS_SEEN[id]=device && device.last_seen;
-  STATUS[id]="拉取中"; renderList();
+  STATUS[id]="拉取中"; renderList(); updateReportFeedback();
   var started=performance.now();
   REQUEST_TIMING[id]={};
   try {
     var result = await (await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})})).json();
     if(!result.ok) throw new Error(result.msg || "请求失败");
     var requestId = result.request && result.request.request_id;
-    STATUS[id]="等待设备领取"; renderList();
+    STATUS[id]="等待设备领取"; renderList(); updateReportFeedback();
     for(var attempt=0;attempt<150;attempt++){
       await new Promise(function(resolve){setTimeout(resolve,2000);});
       var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
       if(!state.ok) throw new Error(state.msg || "查询失败");
       if(state.request && state.request.request_id===requestId && state.request.received_at && REQUEST_TIMING[id].receivedMs==null){
         REQUEST_TIMING[id].receivedMs=Math.round(performance.now()-started);
-        STATUS[id]="等待完整上报"; renderList();
+        STATUS[id]="等待完整上报"; renderList(); updateReportFeedback();
       }
       if(state.request && state.request.request_id===requestId && state.request.state==="completed") {
         REQUEST_TIMING[id].completedMs=Math.round(performance.now()-started);
@@ -218,7 +227,7 @@ async function requestDeviceStatus(id){
     }
     STATUS[id]="拉取超时";
   } catch(error) { STATUS[id]="拉取失败"; }
-  renderList();
+  renderList(); updateReportFeedback();
   return false;
 }
 
@@ -241,7 +250,7 @@ function esc(s){
 function selectDev(id){
   clearHistoryMarker();
   selDev = id;
-  renderList();
+  renderList(); updateReportFeedback();
   renderOps();
   flyTo(id);
 }
@@ -404,6 +413,7 @@ function renderOps(){
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
   if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
+  h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';
   h += '<button class="device-action action-edit" onclick="openEdit()"'+dis+'>编辑</button>';
   if(d && d.enabled===false) h += '<button class="device-action action-enable" onclick="setEnabled(true)">启用</button>';
@@ -421,10 +431,6 @@ function renderOps(){
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += kv("远程Shell", shell);
   h += "</div>";
-  if(d && REQUEST_TIMING[d.id]){
-    var timing=REQUEST_TIMING[d.id];
-    h+='<p class="muted" style="font-size:12px">本次拉取 · 领取回执 '+(timing.receivedMs==null?'待确认':(timing.receivedMs/1000).toFixed(1)+'s')+' · 完整报告 '+(timing.completedMs==null?'等待中':(timing.completedMs/1000).toFixed(1)+'s')+'</p>';
-  }
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
     var it = FN_ITEMS[i];
@@ -647,7 +653,7 @@ function renderRemoteConsole(){
   var h='<div class="remote-head"><h3>远程音视频</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
   h+='<div class="remote-preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span></div><div class="remote-controls">';
   ['PTT','麦克风','前置摄像头','后置摄像头'].forEach(function(label){h+='<button type="button" disabled>'+label+'</button>';});
-  h+='</div><div class="remote-traffic"><div class="remote-head"><strong>应用流量</strong><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史</button></div><div class="muted">悉尼 · '+day+' · 00:00–24:00</div><div>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'选择设备后显示应用流量')+'</div></div>';
+  h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;
   if(d && !cached){
     DAILY_CACHE[key]={pending:true};
@@ -657,7 +663,7 @@ function renderRemoteConsole(){
 function openTrafficHistory(){
   var d=currentDev();if(!d)return;var to=trafficDay();
   TRAFFIC_HISTORY={seq:TRAFFIC_HISTORY.seq+1,id:d.id,name:d.name,days:[]};
-  $('trafficHistoryBody').innerHTML='<h3>'+esc(d.name)+' · 应用流量</h3><div class="traffic-range"><label>开始 <input class="inp" type="date" id="trafficFrom" value="'+shiftTrafficDay(to,-29)+'"></label><label>结束 <input class="inp" type="date" id="trafficTo" value="'+to+'"></label><button class="btn-gray" onclick="loadTrafficHistory()">查询</button></div><p class="muted">悉尼时间 · <span style="color:#60a5fa">接收</span> / <span style="color:#34d399">发送</span> · KB</p><div id="trafficChart"></div><p id="trafficDetail" role="status"></p>';
+  $('trafficHistoryBody').innerHTML='<div class="traffic-header"><h3>历史流量</h3><div class="traffic-range"><input type="date" aria-label="开始日期" id="trafficFrom" value="'+shiftTrafficDay(to,-29)+'" onchange="loadTrafficHistory()"><span>–</span><input type="date" aria-label="结束日期" id="trafficTo" value="'+to+'" onchange="loadTrafficHistory()"></div></div><div id="trafficChart"></div><p id="trafficDetail" role="status"></p>';
   show('trafficHistoryWrap');loadTrafficHistory();
 }
 function closeTrafficHistory(){TRAFFIC_HISTORY.seq++;hide('trafficHistoryWrap');}
@@ -672,7 +678,11 @@ function loadTrafficHistory(){
 }
 function renderTrafficChart(){
   var days=TRAFFIC_HISTORY.days,max=Math.max(1,...days.map(function(d){return d.rx_bytes+d.tx_bytes;}));
-  $('trafficChart').innerHTML='<div class="traffic-bars">'+days.map(function(d,i){var title=d.date+' · '+dailyTrafficHtml(d);return '<button class="traffic-bar" onclick="selectTrafficBar('+i+')" title="'+esc(title)+'" aria-label="'+esc(title)+'"><span class="traffic-stack">'+(d.available?'<i style="height:'+Math.max(d.tx_bytes?1:0,d.tx_bytes/max*170)+'px;background:#34d399"></i><i style="height:'+Math.max(d.rx_bytes?1:0,d.rx_bytes/max*170)+'px;background:#60a5fa"></i>':'<span class="muted">—</span>')+'</span><small>'+d.date.slice(5)+'</small></button>';}).join('')+'</div>';
+  var axis=days.length?[0,Math.floor((days.length-1)/2),days.length-1].filter(function(n,i,a){return a.indexOf(n)===i;}):[];
+  $('trafficChart').innerHTML='<div class="traffic-plot" style="min-width:'+Math.max(0,days.length*9)+'px"><div class="traffic-bars">'+days.map(function(d,i){
+    var title=d.date+' · '+dailyTrafficHtml(d);
+    return '<button class="traffic-bar" onclick="selectTrafficBar('+i+')" title="'+esc(title)+'" aria-label="'+esc(title)+'"><span class="traffic-stack">'+(d.available?'<i class="traffic-tx" style="height:'+Math.max(d.tx_bytes?1:0,d.tx_bytes/max*180)+'px"></i><i class="traffic-rx" style="height:'+Math.max(d.rx_bytes?1:0,d.rx_bytes/max*180)+'px"></i>':'')+'</span></button>';
+  }).join('')+'</div><div class="traffic-axis">'+axis.map(function(i){return '<span style="left:'+((i+.5)/days.length*100)+'%">'+days[i].date.slice(5).replace('-','/')+'</span>';}).join('')+'</div></div>';
 }
 function selectTrafficBar(i){
   var d=TRAFFIC_HISTORY.days[i];if(!d)return;
