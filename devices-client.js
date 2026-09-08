@@ -677,7 +677,7 @@ function renderTrafficChart(){
 function selectTrafficBar(i){
   var d=TRAFFIC_HISTORY.days[i];if(!d)return;
   $('trafficDetail').textContent=d.date+' · '+dailyTrafficHtml(d)+(d.available?' · 总计 '+trafficBytes(d.rx_bytes+d.tx_bytes):'');
-  document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);});
+  document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);if(n===i){var chart=$('trafficChart'),bar=b.getBoundingClientRect(),view=chart.getBoundingClientRect();chart.scrollLeft+=bar.left-view.left-(chart.clientWidth-bar.width)/2;}});
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
