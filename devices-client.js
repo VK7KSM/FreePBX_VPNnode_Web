@@ -488,7 +488,7 @@ function pageAdb(dis){
   if(st) h += '<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
   h += "</div>";
   var maintenance='<section class="monitor"><h4>设备维护</h4><pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre><div class="monitor-footer">'+h;
-  if(d && r.artifact) maintenance+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
+  if(d && r.artifact) maintenance+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 仅含部分日志':'')+'</a>';
   maintenance+='</div></section>';h='';
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
