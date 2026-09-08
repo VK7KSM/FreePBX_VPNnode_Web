@@ -65,7 +65,7 @@ test("设备组合筛选不改变原列表，未接通能力不制造成功记�
   vm.runInContext(source,context);
   const d={id:'a',name:'D22-XX',model_id:'d22',online:true,paired:false};
   context.DEV=[d];context.selDev='a';
-  context.LIST_FILTER={text:'xx',model:'d22',state:'unpaired'};
+  context.LIST_FILTER={model:'d22',state:'unpaired'};
   assert.equal(context.matchesDevice(d),true);
   context.LIST_FILTER.state='offline';assert.equal(context.matchesDevice(d),false);
   const before=JSON.stringify(context.uiOf());

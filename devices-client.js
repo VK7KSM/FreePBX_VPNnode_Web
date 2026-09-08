@@ -13,7 +13,7 @@ var mapFitted = false;
 var markerGroups = [];
 var historyMarker = null;
 var deviceLoad = null;
-var LIST_FILTER = {text:"",model:"",state:""};
+var LIST_FILTER = {model:"",state:""};
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
@@ -115,7 +115,6 @@ function loadDevices(){
     if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
     var previousId=selDev;
     var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
-    var trafficOpen=!!$("devOps").querySelector('details[open]');
     if(arr[0].devices) DEV = arr[0].devices;
     UNPAIRED = arr[0].unpaired || [];
     if(arr[1].models) MODELS = arr[1].models;
@@ -127,9 +126,9 @@ function loadDevices(){
       renderOps();
       if(previousId===selDev){
         savedInputs.forEach(function(saved){var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
-        var details=$("devOps").querySelector('details');if(details) details.open=trafficOpen;
       }
     }
+    if(editing) renderRemoteConsole();
     renderFilters();
     if($("deviceLoadError")) $("deviceLoadError").textContent='';
     return true;
@@ -141,8 +140,7 @@ function loadDevices(){
 }
 
 function matchesDevice(d){
-  return (!LIST_FILTER.text || String(d.name||'').toLowerCase().includes(LIST_FILTER.text.toLowerCase())) &&
-    (!LIST_FILTER.model || d.model_id===LIST_FILTER.model) &&
+  return (!LIST_FILTER.model || d.model_id===LIST_FILTER.model) &&
     (!LIST_FILTER.state || (LIST_FILTER.state==='unpaired' ? d.paired===false : LIST_FILTER.state==='disabled' ? d.enabled===false : LIST_FILTER.state==='online' ? d.online && d.enabled!==false : !d.online && d.enabled!==false));
 }
 function setListFilter(field,value){LIST_FILTER[field]=value;renderList();}
@@ -401,6 +399,7 @@ function onFnClick(ev){
 }
 
 function renderOps(){
+  renderRemoteConsole();
   var box = $("devOps");
   var d = currentDev();
   var dis = d ? "" : " disabled";
@@ -435,7 +434,6 @@ function renderOps(){
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += kv("远程Shell", shell);
   h += "</div>";
-  if(d) h += trafficHtml(d.traffic);
   if(d && REQUEST_TIMING[d.id]){
     var timing=REQUEST_TIMING[d.id];
     h+='<p class="muted" style="font-size:12px">本次拉取 · 领取回执 '+(timing.receivedMs==null?'待确认':(timing.receivedMs/1000).toFixed(1)+'s')+' · 完整报告 '+(timing.completedMs==null?'等待中':(timing.completedMs/1000).toFixed(1)+'s')+'</p>';
@@ -651,6 +649,17 @@ function showHistoryRecord(index){
   map.panTo([loc.lat,loc.lng]);
 }
 
+function renderRemoteConsole(){
+  var box=$('remoteConsole');if(!box) return;
+  var d=currentDev(),same=box.dataset.deviceId===(d?d.id:''),opened=same && !!box.querySelector('details[open]');
+  var h='<div class="remote-head"><h3>远程音视频</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
+  h+='<div class="remote-preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span></div>';
+  h+='<div class="remote-controls">';
+  ['连接设备','播放','录音','录像','拍照','实时对讲'].forEach(function(label){h+='<button type="button" disabled title="功能待接入">'+label+'</button>';});
+  h+='</div><p class="remote-note">音视频功能待接入</p><div class="remote-traffic">'+(d?trafficHtml(d.traffic):'<span class="muted">选择设备后显示应用流量</span>')+'</div>';
+  box.innerHTML=h;box.dataset.deviceId=d?d.id:'';
+  var details=box.querySelector('details');if(details) details.open=opened;
+}
 function trafficHtml(traffic){
   if(!traffic || !traffic.available) return '<p class="muted">应用流量：暂无有效计量'+(traffic && traffic.reason?'（'+esc(traffic.reason)+'）':'')+'</p>';
   function bytes(value){return (value/1024).toFixed(1)+' KiB';}
