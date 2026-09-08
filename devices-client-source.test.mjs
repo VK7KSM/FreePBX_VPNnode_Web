@@ -262,3 +262,17 @@ test('更新检查区分新旧和未知版本，快捷更新总是指定最新�
  assert.doesNotMatch(context.updateProgress({state:'success',detail:'health-ok'}),/health-ok/);
  assert.match(context.updateProgress({state:'rejected',detail:'hash-mismatch'}),/安装包校验不通过/);
 });
+
+test('安装进展与结果分列，过期进展不猜测下载中断，结果包含悉尼时间',()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+ vm.runInContext(source,context);context.DEV=[{id:'fixture',update:{state:'success',completed_at:'2026-09-08T00:00:00Z'}}];context.selDev='fixture';
+ const html=context.pageUpdate('');assert.match(html,/安装进展<\/div>.*安装结果<\/div>/);assert.doesNotMatch(html,/安装进展与结果/);
+ assert.match(context.installationProgress({state:'downloading',updated_at:new Date(1000).toISOString()},1001),/^下载中$/);
+ const stale=context.installationProgress({state:'downloading',updated_at:new Date(1000).toISOString()},62000);
+ assert.match(stale,/尚未收到后续进展/);assert.doesNotMatch(stale,/中断|失败/);
+ assert.match(context.installationResult(context.DEV[0].update),/成功.*2026\/9\/8 10:00:00/);
+ assert.match(context.installationResult({state:'success'}),/时间未记录/);
+ assert.match(context.installationResult({state:'rejected',detail:'hash-mismatch'}),/失败.*安装包校验不通过/);
+ assert.match(context.installationResult({state:'installing',detail:'install-fail'}),/失败/);
+ assert.match(context.installationResult({state:'downloading'}),/等待安装结果/);
+});

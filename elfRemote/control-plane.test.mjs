@@ -275,3 +275,15 @@ test("过期或未知任务可拒绝，不得从成功倒退", () => {
   applyRepairProgress(d2, "t2", "expired", "expired");
   assert.equal(d2.task.state, "expired");
 });
+
+test('更新进展时间按真实变化记录，重复回执不改完成时间，旧记录不伪造时间',()=>{
+ const d={update:{job_id:'j',state:'wait_health',detail:'installed'}};
+ applyUpdateProgress(d,'j','success','health-ok',1000);
+ assert.equal(d.update.completed_at,new Date(1000).toISOString());
+ applyUpdateProgress(d,'j','success','health-ok',2000);
+ assert.equal(d.update.completed_at,new Date(1000).toISOString());
+ assert.equal(d.update.updated_at,new Date(1000).toISOString());
+ applyUpdateProgress(d,'wrong','rejected','expired',3000);assert.equal(d.update.state,'success');
+ const legacy={update:{job_id:'j',state:'success',detail:'health-ok'}};
+ applyUpdateProgress(legacy,'j','success','health-ok',4000);assert.equal(legacy.update.completed_at,undefined);
+});

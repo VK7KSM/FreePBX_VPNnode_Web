@@ -541,6 +541,25 @@ function updateProgress(u){
   var prefix=u.target?'最近一次更新（'+u.target+'）：':'';
   return prefix+(states[u.state]||'设备尚未返回可识别的安装进展，请拉取最新信息。')+(reasons[u.detail]||'');
 }
+function installationProgress(u,now){
+  var labels={pending:'等待设备接收',claimed:'准备下载',downloading:'下载中',verifying:'下载完成，正在校验安装包',installing:'安装中',wait_health:'安装完成，正在确认客户端正常运行',success:'安装完成',rollback:'正在重新安装之前可用的版本',recovered:'旧版本已恢复',rejected:'安装未执行'};
+  if(!u.state)return '尚未开始安装';
+  var text=labels[u.state]||'等待设备返回安装进展';
+  if(u.detail==='install-fail')text='系统安装失败，等待设备报告后续处理结果';
+  if(u.detail==='rollback-fail')text='旧版本重新安装失败，等待设备报告后续处理结果';
+  var at=Date.parse(u.updated_at);
+  if(updateBusy(u) && (!Number.isFinite(at) || (now||Date.now())-at>60000))text+=' · 尚未收到后续进展'+(Number.isFinite(at)?'（最后更新 '+sydney(u.updated_at)+'）':'');
+  return text;
+}
+function installationResult(u){
+  var success=u.state==='success',failed=['recovered','rejected'].includes(u.state)||['install-fail','rollback-fail'].includes(u.detail);
+  if(!success&&!failed)return '<span>'+ (u.state?'等待安装结果':'暂无安装结果')+'</span>';
+  var at=u.completed_at || (['install-fail','rollback-fail'].includes(u.detail)?u.updated_at:'');
+  var h='<span style="color:'+(success?'#4ade80':'#f87171')+'">'+(success?'成功':'失败')+'</span> · '+esc(at?sydney(at):'时间未记录');
+  if(u.target)h+='<br>'+esc('版本 '+u.target);
+  if(failed)h+='<br>'+esc(updateProgress(u));
+  return h;
+}
 function pageUpdate(dis){
   var d = currentDev();
   var u = d && d.update ? d.update : {};
@@ -553,7 +572,8 @@ function pageUpdate(dis){
   var busy=updateBusy(u),updateDisabled=dis || (busy?' disabled':'');
   if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+updateDisabled+'>更新</button>';
   h += '</div></div>';
-  h += kv("安装进展与结果", updateProgress(u));
+  h += kv("安装进展", installationProgress(u));
+  h += '<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(u)+'</div></div>';
   h += "</div>";
   var status=functionSection('更新状态',h);h='';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
@@ -1126,7 +1146,7 @@ checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
 var lastPollAt=0;
 setInterval(function(){
-  if(adminSession.authenticated && Date.now()-lastPollAt >= (document.hidden?60000:10000)){
+  if(adminSession.authenticated && Date.now()-lastPollAt >= (document.hidden?60000:selFn==='update'?2000:10000)){
     lastPollAt=Date.now();loadDevices();
   }
-}, 10000);
+}, 2000);

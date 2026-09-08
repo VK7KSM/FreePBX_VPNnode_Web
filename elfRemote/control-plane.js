@@ -102,11 +102,19 @@ export function shouldOfferUpdate(device, nowMs) {
   return u.state === "pending" || u.state === "claimed";
 }
 
-export function applyUpdateProgress(device, jobId, state, detail) {
+export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.now()) {
   if (!device || !device.update || device.update.job_id !== jobId) return device;
   if (!canAdvanceUpdate(device.update.state, state)) return device;
-  device.update.state = state;
-  device.update.detail = detail == null ? "" : String(detail).slice(0, 200);
+  const u = device.update;
+  const nextDetail = detail == null ? "" : String(detail).slice(0, 200);
+  if (u.state !== state || u.detail !== nextDetail) {
+    u.updated_at = new Date(nowMs).toISOString();
+    if (["success", "recovered", "rejected"].includes(state) && !["success", "recovered", "rejected"].includes(u.state)) {
+      u.completed_at = u.updated_at;
+    }
+  }
+  u.state = state;
+  u.detail = nextDetail;
   return device;
 }
 

@@ -883,6 +883,8 @@ function publicUpdate(u) {
     target: u.versionName || "",
     versionCode: u.versionCode || 0,
     job_id: u.job_id || "",
+    updated_at: u.updated_at || "",
+    completed_at: u.completed_at || "",
     detail: u.detail || "",
     label: updateStateLabel(u.state || "")
   };
@@ -1439,6 +1441,7 @@ async function assignReleaseToDevice(env, deviceId, rel) {
     list[i].update = {
       job_id: rel.job_id,
       state: "pending",
+      updated_at: new Date().toISOString(),
       versionCode: rel.versionCode,
       versionName: rel.versionName,
       manifest_raw: rel.manifest_raw,
