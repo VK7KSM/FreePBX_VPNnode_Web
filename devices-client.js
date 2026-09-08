@@ -271,12 +271,17 @@ function deviceColor(id, online){
   var c = pal[Math.max(0,index)%pal.length];
   return online ? c : "#64748b";
 }
-function battHtml(pct){
+function batteryText(d){
+  return (!d || d.battery==null ? "—" : d.battery+"%") + (d && d.charging===true ? " · 充电中" : "");
+}
+function battHtml(pct, charging){
   var p = pct==null || !isFinite(Number(pct)) ? -1 : Math.max(0, Math.min(100, Math.round(Number(pct))));
   var fill = p<0 ? 0 : p;
   var col = p<0 ? "#64748b" : (p<=20 ? "#f87171" : (p<=50 ? "#fbbf24" : "#4ade80"));
   var title = p<0 ? "电量未知" : ("电量 "+p+"%");
-  return '<span class="mbatt" title="'+title+'"><span class="mbatt-b"><span class="mbatt-l" style="width:'+fill+'%;background:'+col+'"></span></span><span class="mbatt-n"></span></span>';
+  if(charging===true) title += " · 充电中";
+  var bolt = charging===true ? '<svg class="mbatt-bolt" viewBox="0 0 10 14" aria-hidden="true"><path d="M6 1 1 8h4l-1 5 5-7H5z"/></svg>' : '';
+  return '<span class="mbatt" title="'+title+'"><span class="mbatt-b"><span class="mbatt-l" style="width:'+fill+'%;background:'+col+'"></span>'+bolt+'</span><span class="mbatt-n"></span></span>';
 }
 function pinHtml(d, selected){
   var on = d.online && d.enabled!==false;
@@ -285,7 +290,7 @@ function pinHtml(d, selected){
   return '<div class="dpin'+(selected?" pin-on":"")+'">'+
     '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 1px #0f172a,0 0 0 2px '+col+'"></div>'+
     '<div class="dpin-card">'+
-      '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery)+'</div>'+
+      '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery,d.charging)+'</div>'+
       '<div class="dpin-time">'+esc(seen)+'</div>'+
     '</div></div>';
 }
@@ -400,7 +405,7 @@ function renderOps(){
   var box = $("devOps");
   var d = currentDev();
   var dis = d ? "" : " disabled";
-  var bat = !d || d.battery==null ? "—" : (d.battery+"%");
+  var bat = batteryText(d);
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
   if(d && d.loc && d.loc.source==="gps" && d.loc.lat!=null && d.loc.lng!=null && isFinite(Number(d.loc.lat)) && isFinite(Number(d.loc.lng))) {

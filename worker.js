@@ -870,6 +870,7 @@ function publicDevice(d, modelName) {
     contact_state: contact.state,
     report_due_at: contact.report_due_at,
     battery: d.battery == null ? null : d.battery,
+    charging: typeof d.charging === "boolean" ? d.charging : null,
     traffic: d.traffic || null,
     wifi_scan: d.wifi_scan || null,
     alarm: d.alarm || null,
@@ -1280,6 +1281,7 @@ async function handleDeviceReport(env, request) {
       if (data.battery != null && Number.isFinite(Number(data.battery))) {
         list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
       }
+      list[i].charging = typeof data.charging === "boolean" ? data.charging : null;
       if (data.ready != null) list[i].ready = !!data.ready;
       const ip = observedIp;
       if (ip && !isPrivateIp(ip)) list[i].ip = ip;
@@ -2380,7 +2382,8 @@ function renderDevicesHtml() {
     '.dpin-time{font-size:10px;color:#94a3b8;line-height:1.2}',
     '.pin-on .dpin-card{border-color:#93c5fd}',
     '.mbatt{display:inline-flex;align-items:center;flex-shrink:0}',
-    '.mbatt-b{width:15px;height:8px;border:1px solid #cbd5e1;border-radius:1px;padding:1px;box-sizing:border-box;background:#0f172a}',
+    '.mbatt-b{position:relative;width:15px;height:8px;border:1px solid #cbd5e1;border-radius:1px;padding:1px;box-sizing:border-box;background:#0f172a}',
+    '.mbatt-bolt{position:absolute;width:8px;height:12px;left:3px;top:-3px;fill:#f8fafc;stroke:#0f172a;stroke-width:1;stroke-linejoin:round;pointer-events:none}',
     '.mbatt-l{display:block;height:100%;border-radius:1px}',
     '.mbatt-n{width:2px;height:4px;background:#cbd5e1;border-radius:0 1px 1px 0;margin-left:1px}',
     'table{width:100%;border-collapse:collapse}',

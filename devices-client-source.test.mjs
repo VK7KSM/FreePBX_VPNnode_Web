@@ -276,3 +276,14 @@ test('安装进展与结果分列，过期进展不猜测下载中断，结果�
  assert.match(context.installationResult({state:'installing',detail:'install-fail'}),/失败/);
  assert.match(context.installationResult({state:'downloading'}),/等待安装结果/);
 });
+
+test('充电时电池显示闪电和充电中文字，未充电与旧报告不误显示',()=>{
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  assert.equal(context.batteryText({battery:100,charging:true}),'100% · 充电中');
+  assert.match(context.battHtml(100,true),/mbatt-bolt/);
+  for(const charging of [false,null,undefined]) {
+    assert.equal(context.batteryText({battery:100,charging}),'100%');
+    assert.doesNotMatch(context.battHtml(100,charging),/mbatt-bolt|充电中/);
+  }
+});

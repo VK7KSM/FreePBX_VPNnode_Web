@@ -321,7 +321,7 @@ public final class ReportService extends Service {
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
         body.put("network", networkType());
         body.put("device_name", defaultDeviceName());
-        body.put("battery", batteryPct());
+        putBattery(body);
         body.put("ready", true);
         body.put("managed_log_tasks", true);
         body.put("managed_heal_tasks", true);
@@ -483,7 +483,7 @@ public final class ReportService extends Service {
         body.put("app_version", Protocol.appVersion());
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
         body.put("network", networkType());
-        body.put("battery", batteryPct());
+        putBattery(body);
         body.put("ready", true);
         JSONObject gps = gpsFix();
         if (gps != null) body.put("gps", gps);
@@ -1200,15 +1200,16 @@ public final class ReportService extends Service {
         }
     }
 
-    private int batteryPct() {
-        Intent i = registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (i == null) return -1;
-        int level = i.getIntExtra("level", -1);
-        int scale = i.getIntExtra("scale", 100);
-        if (level < 0 || scale <= 0) return -1;
-        return Math.round(level * 100f / scale);
+    private void putBattery(JSONObject body) throws Exception {
+        Intent snapshot = registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (snapshot == null) return;
+        int level = snapshot.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+        int scale = snapshot.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+        if (level >= 0 && scale > 0) body.put("battery", Math.round(level * 100f / scale));
+        // 满电仍接着电源时保留充电标志，与设备日常管理的显示含义一致。
+        int plugged = snapshot.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, -1);
+        if (plugged >= 0) body.put("charging", plugged > 0);
     }
-
     private Notification buildNotification() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
@@ -1238,3 +1239,4 @@ public final class ReportService extends Service {
         return b.build();
     }
 }
+

@@ -12,13 +12,16 @@ test("临时身份可报告和推送，配对及解除保持身份，超时仅�
   const registered = await call("/api/devices/enroll", body, undefined);
   assert.ok(registered.device_id);
   assert.equal(registered.paired,false);
-  const report = () => call("/api/devices/report", {device_id:registered.device_id,token,status_only:true,
-    report_id:crypto.randomUUID(),reported_at:new Date().toISOString(),network:"wifi",battery:88,device_name:"系统名称"}, undefined);
+  const report = (charging = true) => call("/api/devices/report", {device_id:registered.device_id,token,status_only:true,
+    report_id:crypto.randomUUID(),reported_at:new Date().toISOString(),network:"wifi",battery:88,charging,device_name:"系统名称"}, undefined);
   assert.equal((await report()).ok,true);
   let visible=(await call("/api/devices")).devices;
   assert.equal(visible.length,1);
   assert.equal(visible[0].paired,false);
   assert.equal(visible[0].battery,88);
+  assert.equal(visible[0].charging,true);
+  await report(false); assert.equal((await call("/api/devices")).devices[0].charging,false);
+  await report(null); assert.equal((await call("/api/devices")).devices[0].charging,null);
   assert.equal(JSON.stringify(visible).includes(registered.code),false);
   assert.equal((await call("/api/devices/push-sync", {device_id:registered.device_id,token},undefined)).ok,true);
   const paired=await call("/api/devices/pair",{code:registered.code,name:"备注名",model_id:"mdl_d22"});
@@ -120,3 +123,4 @@ test("解除配对提交后才发送通知，旧设备上报明确要求重新�
     assert.equal((await report.json()).pairing_required, true);
   } finally { globalThis.fetch = original; }
 });
+
