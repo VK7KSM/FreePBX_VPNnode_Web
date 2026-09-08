@@ -427,7 +427,7 @@ function renderOps(){
   h += kv("IP", d && d.ip ? d.ip : "—");
   h += kv("定位", src);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
-  h += kv("elfRemote", d ? managerLabel(d) : "—");
+  h += kv("客户端版本", d ? managerLabel(d) : "—");
   h += kv("最后上报", d ? sydney(d.last_seen) : "—");
   h += kv("远程Shell", shell);
   h += "</div>";
@@ -478,20 +478,14 @@ function pageAdb(dis){
   h += '<button class="btn-gray" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
   if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
   h += "</div>";
-  h += '<pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre>';
-  h += '<div class="monitor-footer">';
-  if(d && r.artifact) h+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
-  var maintenance='<section class="monitor"><h4>设备维护</h4>'+h+'</div></section>';h='';
-  h += '<div class="ops-actions" style="margin-bottom:.55rem">';
-  h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
-  h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
-  h += '<span class="muted">'+(on ? "ADB 会话已开" : "ADB 未接入")+"</span>";
-  h += "</div>";
+  var maintenance='<section class="monitor"><h4>设备维护</h4><pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre><div class="monitor-footer">'+h;
+  if(d && r.artifact) maintenance+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
+  maintenance+='</div></section>';h='';
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
   var lines = (u && u.adb.lines) ? u.adb.lines : [];
-  if(!lines.length) h += '<span class="adb-sys">尚无命令记录</span>';
-  else {
+  h += '<span class="adb-sys">'+(on?'ADB 已连接':'ADB 未接入')+'</span>\n';
+  if(lines.length) {
     for(var i=0;i<lines.length;i++){
       h += '<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+"</span>\n";
     }
@@ -503,7 +497,7 @@ function pageAdb(dis){
   h += dis ? " disabled>" : ">";
   h += '<button class="btn-green" onclick="adbSend()"'+dis+'>发送</button>';
   h += "</div></div>";
-  return '<div class="monitor-grid">'+maintenance+'<section class="monitor"><h4>命令终端</h4>'+h+'</section></div>';
+  return '<div class="monitor-grid">'+maintenance+'<section class="monitor"><h4 class="monitor-heading"><span>命令终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+dis+'>'+(on?'断开ADB':'连接ADB')+'</button></h4>'+h+'</section></div>';
 }
 
 function pageUpdate(dis){
@@ -820,13 +814,8 @@ function adbHist(dir){
 }
 function adbConnect(){
   var u=uiOf(); if(!u) return;
-  if(u.adb.connected){
-    adbPrint("sys", "已经连接。");
-    renderOps();
-    return;
-  }
-  u.adb.connected=true;
-  shellLog("sys", "已打开网页侧 ADB 会话标记。互联网 ADB 隧道尚未接入，命令仍不会到达设备。");
+  if(u.adb.connected)return;
+  shellLog('sys','连接未建立：网页 ADB 通道尚未接通。设备维护按钮可正常使用。');
   renderOps();
 }
 function adbDisconnect(){
