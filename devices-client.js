@@ -678,7 +678,13 @@ function pageAlarm(dis){
 function pageLost(dis){
   var u = uiOf();
   var live = u && u.live ? u.live : "未开始";
-  var h = '<div class="lost-bar">';
+  var d=currentDev(), mode=d && d.lost_mode || {state:'disabled',message:''};
+  var blocked=dis || (d && d.managed_lost_tasks ? '' : ' disabled');
+  var h='<div class="ops-actions"><input id="lostMessage" class="inp" maxlength="300" placeholder="锁屏显示的失主文字" value="'+esc(mode.message||'')+'"'+blocked+'>';
+  h+='<button class="btn-green" onclick="setLostMode(true)"'+blocked+'>启用 / 更新</button><button class="btn-gray" onclick="setLostMode(false)"'+blocked+'>退出丢失模式</button></div>';
+  h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'等待恢复设置'})[mode.state]||'状态未知')+' · 退出后恢复原锁屏文字，日常位置历史继续保留。</p>';
+  if(d && d.task && d.task.type==='set_lost_mode') h+='<p class="muted">'+esc(d.task.label)+' · '+esc(d.task.detail)+'</p>';
+  h += '<div class="lost-bar">';
   h += '<button class="btn-gray" onclick="lostRec()"'+dis+'>远程录音</button>';
   h += '<button class="btn-gray" onclick="lostVideo(\'front\')"'+dis+'>前置录像</button>';
   h += '<button class="btn-gray" onclick="lostVideo(\'back\')"'+dis+'>后置录像</button>';
@@ -870,6 +876,9 @@ function alarmPlay(){
 }
 function lostRec(){
   unavailableAction('远程录音');
+}
+function setLostMode(enabled){
+  return enqueueRepair('set_lost_mode',{enabled:enabled,message:enabled?$('lostMessage').value:''});
 }
 function lostVideo(cam){
   unavailableAction('远程录像');

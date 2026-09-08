@@ -111,7 +111,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -133,6 +133,7 @@ export const REPAIR_TYPE_LABELS = {
   play_alarm: "播放警报",
   stop_alarm: "停止警报",
   locate_now: "立即定位",
+  set_lost_mode: "设置丢失模式",
   connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
 
@@ -200,7 +201,7 @@ export function makeRepairTask(input, nowMs) {
   return {
     id,
     type,
-    params: CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -245,10 +246,14 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
   if (!canAdvanceRepair(device.task.state, state)) return device;
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
+  const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
+  if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending")) throw new Error("缺少丢失模式完成状态");
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
+  if (lost) device.lost_mode = lost;
+  if(device.task.type==="set_lost_mode" && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if(CONFIG_TYPES.includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
@@ -270,6 +275,18 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
   return device;
 }
 
+export function lostModeParams(value={}) {
+  if(typeof value?.enabled!=="boolean") throw new Error("丢失模式状态无效");
+  const message=typeof value.message==="string"?value.message.trim():"";
+  if(value.enabled && (!message || message.length>300 || message.includes('\0'))) throw new Error("请填写不超过300字的失主文字");
+  return {enabled:value.enabled,message:value.enabled?message:""};
+}
+export function normalizeLostMode(value) {
+  if(!value) return null;
+  const params=lostModeParams(value);
+  if(!["pending","enabled","disabled"].includes(value.state) || (value.state!=="pending" && (value.state==="enabled")!==params.enabled)) throw new Error("丢失模式回执无效");
+  return {...params,state:value.state};
+}
 export function configParams(type,value={}) {
   if(type==='contacts_read') return {};
   if(type==='connect_wifi') {

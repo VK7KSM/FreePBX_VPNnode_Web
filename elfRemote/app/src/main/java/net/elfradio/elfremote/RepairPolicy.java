@@ -49,6 +49,7 @@ final class RepairPolicy {
     }
 
     static boolean allowedType(String type) {
+        if("set_lost_mode".equals(type)) return true;
         if (configType(type)) return true;
         return TYPE_PULL_LOGS.equals(type)
                 || TYPE_HEAL_NETWORK.equals(type)

@@ -37,6 +37,7 @@ public final class ReportService extends Service {
     private AlarmPlayer alarm;
     private String locatingTask = "";
     private WifiConnector wifiConnector;
+    private LostMode lostMode;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
@@ -88,6 +89,8 @@ public final class ReportService extends Service {
             if (target != null) target.post(this::tick);
         });
         wifiConnector=new WifiConnector(this,worker);
+        lostMode=new LostMode(this);
+        worker.post(lostMode::recover);
         worker.post(wifiConnector::recover);
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
@@ -301,6 +304,8 @@ public final class ReportService extends Service {
         body.put("managed_alarm_tasks", true);
         body.put("managed_locate_tasks", true);
         body.put("managed_config_tasks", true);
+        body.put("managed_lost_tasks", true);
+        body.put("lost_mode", lostMode.snapshot());
         body.put("alarm", alarm.snapshot());
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
@@ -408,7 +413,8 @@ public final class ReportService extends Service {
                     || (managed.optBoolean("managed_alarm_v1") && ("play_alarm".equals(managed.optString("type"))
                     || "stop_alarm".equals(managed.optString("type"))))
                     || (managed.optBoolean("managed_locate_v1") && "locate_now".equals(managed.optString("type")))
-                    || (managed.optBoolean("managed_config_v1") && RepairPolicy.configType(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_config_v1") && RepairPolicy.configType(managed.optString("type")))
+                    || (managed.optBoolean("managed_lost_v1") && "set_lost_mode".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -606,6 +612,12 @@ public final class ReportService extends Service {
             String type = offer.optString("type", "");
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
+            if("set_lost_mode".equals(type)) {
+                JSONObject outcome=lostMode.set(offer.getJSONObject("params"));
+                if(!outcome.getBoolean("enabled")) alarm.stop();
+                postTask(id,RepairPolicy.ST_SUCCESS,"lost-"+outcome.getString("state"),new JSONObject().put("lost_mode",outcome));
+                return;
+            }
             if(RepairPolicy.configType(type)) {
                 JSONObject params=offer.optJSONObject("params");if(params==null) params=new JSONObject();
                 if("connect_wifi".equals(type)) {
@@ -765,7 +777,7 @@ public final class ReportService extends Service {
                     + " truncated=" + pack.truncated + " sha=" + pack.sha256);
         } catch (Exception e) {
             String taskError=Protocol.formatNetError(e);
-            if(RepairPolicy.configType(offer.optString("type"))) {
+            if(RepairPolicy.configType(offer.optString("type")) || "set_lost_mode".equals(offer.optString("type"))) {
                 String code=e.getMessage();taskError=code!=null && code.matches("[a-z][a-z-]{1,79}")?code:"configuration-operation-failed";
             }
             try {

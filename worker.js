@@ -25,6 +25,7 @@ import {
   publicRepair,
   repairOfferPayload,
   normalizeAlarm,
+  normalizeLostMode,
   CONFIG_TYPES,
   repairExpired
 } from "./elfRemote/control-plane.js";
@@ -856,6 +857,8 @@ function publicDevice(d, modelName) {
     traffic: d.traffic || null,
     wifi_scan: d.wifi_scan || null,
     alarm: d.alarm || null,
+    lost_mode: d.lost_mode || null,
+    managed_lost_tasks: d.managed_lost_tasks === true,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1245,6 +1248,9 @@ async function handleDeviceReport(env, request) {
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
       list[i].managed_config_tasks = data.managed_config_tasks === true;
+      list[i].managed_lost_tasks = data.managed_lost_tasks === true;
+      const lost = normalizeLostMode(data.lost_mode);
+      if (lost) list[i].lost_mode = lost;
       const alarm = normalizeAlarm(data.alarm);
       if (alarm) list[i].alarm = alarm;
       list[i].managed_update = data.managed_update === true;
@@ -1266,11 +1272,11 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
-      if(CONFIG_TYPES.includes(found.task.type)) found.task.params={};
+      if(CONFIG_TYPES.includes(found.task.type) || found.task.type==="set_lost_mode") found.task.params={};
     }
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
@@ -1502,6 +1508,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
+  if(device.enabled!==false && report.status_only===true && report.managed_lost_tasks===true
+      && device.task?.managed_lost_v1===true && device.task.type==="set_lost_mode" && shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_lost_v1:true};
 }
 
 async function handleElfEnqueueTask(env, request) {
@@ -1533,6 +1542,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="scan_wifi" && found.managed_wifi_scan_tasks===true)
         || (["play_alarm","stop_alarm"].includes(data.type) && found.managed_alarm_tasks===true)
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
+        || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
@@ -1557,6 +1567,7 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="scan_wifi") found.task.managed_wifi_scan_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
+    if(!queued.duplicate && found.status_only && data.type==="set_lost_mode") found.task.managed_lost_v1=true;
     if(!queued.duplicate && found.status_only && CONFIG_TYPES.includes(data.type)) found.task.managed_config_v1=true;
     await saveDevices(env, list);
     return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });

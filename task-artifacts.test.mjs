@@ -101,11 +101,11 @@ test('新自愈能力不影响旧客户端且停用设备不能领取',async()=>
   assert.equal((await report(true)).managed_task,undefined);
 });
 
-for (const [type, capability, marker] of [['reboot','managed_reboot_tasks','managed_reboot_v1'],['restart_adbd','managed_adbd_tasks','managed_adbd_v1'],['scan_wifi','managed_wifi_scan_tasks','managed_wifi_scan_v1'],['play_alarm','managed_alarm_tasks','managed_alarm_v1'],['stop_alarm','managed_alarm_tasks','managed_alarm_v1'],['locate_now','managed_locate_tasks','managed_locate_v1'],...['connect_wifi','contacts_read','contact_add','contact_update','contact_delete'].map(type=>[type,'managed_config_tasks','managed_config_v1'])]) {
+for (const [type, capability, marker] of [['reboot','managed_reboot_tasks','managed_reboot_v1'],['restart_adbd','managed_adbd_tasks','managed_adbd_v1'],['scan_wifi','managed_wifi_scan_tasks','managed_wifi_scan_v1'],['play_alarm','managed_alarm_tasks','managed_alarm_v1'],['stop_alarm','managed_alarm_tasks','managed_alarm_v1'],['locate_now','managed_locate_tasks','managed_locate_v1'],['set_lost_mode','managed_lost_tasks','managed_lost_v1'],...['connect_wifi','contacts_read','contact_add','contact_update','contact_delete'].map(type=>[type,'managed_config_tasks','managed_config_v1'])]) {
 test(type+' 只提供给明确声明能力的客户端且过期后不再提供',async()=>{
   const f=setup(),cookie=await login(f);
   const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
-  const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type,params:{ssid:'fixture',password:'fixture-pass',id:1,name:'测试',phone:'000'}},cookie),f.env);
+  const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type,params:{ssid:'fixture',password:'fixture-pass',id:1,name:'测试',phone:'000',enabled:true,message:'测试'}},cookie),f.env);
   assert.equal((await enqueue()).status,409);
   let sequence=0;
   const report=async capable => (await worker.fetch(request('/api/devices/report','POST',{
