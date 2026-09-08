@@ -565,7 +565,7 @@ function pageContacts(dis){
   h += configTaskStatus(device);
   if(snapshot) h += '<p class="muted">上次读取：'+sydney(snapshot.sampled_at_ms)+(snapshot.truncated?' · 仅显示前1000个号码':'')+'</p>';
   h += '<table style="margin-top:.55rem"><thead><tr><th>姓名</th><th>号码</th><th></th></tr></thead><tbody>';
-  if(!list.length) h += '<tr><td colspan="3" class="muted">暂无联系人</td></tr>';
+  if(!list.length) h += '<tr><td colspan="3" class="muted">'+(snapshot?'暂无联系人号码':'尚未读取设备通信录')+'</td></tr>';
   else for(var i=0;i<list.length;i++){
     var c=list[i];
     h += "<tr><td>"+esc(c.name)+"</td><td>"+esc(c.phone)+"</td><td>";

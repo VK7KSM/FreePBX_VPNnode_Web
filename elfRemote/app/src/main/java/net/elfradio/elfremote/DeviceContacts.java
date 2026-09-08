@@ -50,13 +50,16 @@ final class DeviceContacts {
                 raw=c.getLong(0);
             }
             if("contact_delete".equals(type)) {
-                boolean own=false;int count=0;
+                boolean own=false, simple=true;int phones=0;
                 try(Cursor c=resolver.query(ContactsContract.RawContacts.CONTENT_URI,new String[]{"sync1"},"_id=?",new String[]{Long.toString(raw)},null)) {
                     own=c!=null && c.moveToFirst() && c.getString(0)!=null && c.getString(0).startsWith("elfremote:");
                 }
-                try(Cursor c=resolver.query(ContactsContract.Data.CONTENT_URI,new String[]{"_id"},"raw_contact_id=?",new String[]{Long.toString(raw)},null)) {if(c!=null)count=c.getCount();}
+                try(Cursor c=resolver.query(ContactsContract.Data.CONTENT_URI,new String[]{"mimetype"},"raw_contact_id=?",new String[]{Long.toString(raw)},null)) {
+                    if(c==null) simple=false;
+                    else while(c.moveToNext()) {String mime=c.getString(0);if(Phone.CONTENT_ITEM_TYPE.equals(mime)) phones++;else if(!StructuredName.CONTENT_ITEM_TYPE.equals(mime)) simple=false;}
+                }
                 // 页面的一行对应一个号码；不连带删除同联系人其他号码和资料。
-                if(own && count==2) ops.add(ContentProviderOperation.newDelete(ContactsContract.RawContacts.CONTENT_URI).withSelection("_id=?",new String[]{Long.toString(raw)}).build());
+                if(own && simple && phones==1) ops.add(ContentProviderOperation.newDelete(ContactsContract.RawContacts.CONTENT_URI).withSelection("_id=?",new String[]{Long.toString(raw)}).build());
                 else ops.add(ContentProviderOperation.newDelete(ContactsContract.Data.CONTENT_URI).withSelection("_id=? AND mimetype=?",new String[]{Long.toString(id),Phone.CONTENT_ITEM_TYPE}).build());
             } else {
                 ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI).withSelection("_id=? AND mimetype=?",new String[]{Long.toString(id),Phone.CONTENT_ITEM_TYPE})
