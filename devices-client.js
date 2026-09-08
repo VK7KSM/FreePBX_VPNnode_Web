@@ -448,14 +448,22 @@ function fnPageHtml(){
   var dis = disAttr();
   if(selFn==="update") return pageUpdate(dis);
   if(selFn==="wifi") return pageSystem(dis);
-  if(selFn==="contacts") return pageContacts(dis);
-  if(selFn==="locate") return pageLocate(dis);
-  if(selFn==="alarm") return pageAlarm(dis);
-  if(selFn==="lost") return pageLost(dis);
-  if(selFn==="model") return pageModel();
+  if(selFn==="contacts") return functionSection('联系人管理',pageContacts(dis));
+  if(selFn==="locate") return functionSection('位置与历史',pageLocate(dis));
+  if(selFn==="alarm") return functionSection('警报控制',pageAlarm(dis));
+  if(selFn==="lost") return functionSection('失主信息',pageLost(dis));
+  if(selFn==="model") return functionSection('型号管理',pageModel());
   return pageAdb(dis);
 }
 
+function functionSection(title,content){
+  return '<section class="function-section"><h4>'+esc(title)+'</h4><div class="function-content">'+content+'</div></section>';
+}
+function pageModel(){
+  var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+  MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
+  return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
+}
 function pageAdb(dis){
   var d = currentDev();
   var t = d && d.task ? d.task : {};
@@ -464,23 +472,25 @@ function pageAdb(dis){
   var on = !!(u && u.adb.connected);
   var st = t.label || t.state || "";
   var h = '<div class="ops-actions" style="margin:.55rem 0">';
-  h += '<button class="btn-green" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
-  h += '<button class="btn-green" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
-  h += '<button class="btn-green" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
-  h += '<button class="btn-green" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
+  h += '<button class="btn-gray" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
+  h += '<button class="btn-gray" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
+  h += '<button class="btn-gray" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
+  h += '<button class="btn-gray" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
   if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
   h += "</div>";
-  h += '<pre class="adb-term" id="taskOut" style="margin-bottom:.55rem;min-height:120px;max-height:180px">'+esc(r.text||"")+"</pre>";
-  if(d && r.artifact) h+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+Math.ceil(r.artifact.bytes/1024)+' KiB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
+  h += '<pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre>';
+  h += '<div class="monitor-footer">';
+  if(d && r.artifact) h+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
+  var maintenance='<section class="monitor"><h4>设备维护</h4>'+h+'</div></section>';h='';
   h += '<div class="ops-actions" style="margin-bottom:.55rem">';
   h += '<button class="btn-green" onclick="adbConnect()"'+dis+'>连接 ADB</button>';
   h += '<button class="btn-gray" onclick="adbDisconnect()"'+dis+'>断开</button>';
-  h += '<span class="muted">'+(on ? "ADB 会话已开" : "ADB 未接入，指令仍写入日志")+"</span>";
+  h += '<span class="muted">'+(on ? "ADB 会话已开" : "ADB 未接入")+"</span>";
   h += "</div>";
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
   var lines = (u && u.adb.lines) ? u.adb.lines : [];
-  if(!lines.length) h += '<span class="adb-sys">这里记录设备管理发出的每条指令。ADB 未接入时也可以输入，结果会标明尚未送到设备。</span>';
+  if(!lines.length) h += '<span class="adb-sys">尚无命令记录</span>';
   else {
     for(var i=0;i<lines.length;i++){
       h += '<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+"</span>\n";
@@ -493,25 +503,25 @@ function pageAdb(dis){
   h += dis ? " disabled>" : ">";
   h += '<button class="btn-green" onclick="adbSend()"'+dis+'>发送</button>';
   h += "</div></div>";
-  return h;
+  return '<div class="monitor-grid">'+maintenance+'<section class="monitor"><h4>命令终端</h4>'+h+'</section></div>';
 }
 
 function pageUpdate(dis){
   var d = currentDev();
   var u = d && d.update ? d.update : {};
   var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
-  var h = '<div class="ops-grid">';
+  var h = '<div class="update-facts">';
   h += kv("当前版本", ver);
   h += kv("目标版本", u.target || "无");
   h += kv("阶段", u.label || u.state || "无");
   h += kv("说明", u.detail || "");
   h += "</div>";
-  h += '<p class="muted" style="margin-top:.7rem">只显示设备回传的真实阶段。安装成功不等于健康确认。</p>';
+  var status=functionSection('更新状态',h);h='';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
-  h += '<input id="updVc" class="inp" placeholder="已发布 versionCode" style="max-width:180px"'+dis+'>';
+  h += '<input id="updVc" class="inp" placeholder="已发布版本号（versionCode）" style="max-width:240px"'+dis+'>';
   h += '<button class="btn-green" onclick="assignUpdate()"'+dis+'>下发该版本</button>';
   h += "</div>";
-  return h;
+  return status+functionSection('下发版本',h);
 }
 
 function pageWifi(dis){
@@ -555,7 +565,7 @@ function pageContacts(dis){
   h += "</div>";
   h += configTaskStatus(device);
   if(snapshot) h += '<p class="muted">上次读取：'+sydney(snapshot.sampled_at_ms)+(snapshot.truncated?' · 仅显示前1000个号码':'')+'</p>';
-  h += '<table style="margin-top:.55rem"><thead><tr><th>姓名</th><th>号码</th><th></th></tr></thead><tbody>';
+  h += '<div class="function-table"><table style="margin-top:.55rem"><thead><tr><th>姓名</th><th>号码</th><th></th></tr></thead><tbody>';
   if(!list.length) h += '<tr><td colspan="3" class="muted">'+(snapshot?'暂无联系人号码':'尚未读取设备通信录')+'</td></tr>';
   else for(var i=0;i<list.length;i++){
     var c=list[i];
@@ -564,7 +574,7 @@ function pageContacts(dis){
     h += '<button class="btn-gray" style="color:#f87171" onclick="contactDel('+i+')"'+dis+'>删</button>';
     h += "</td></tr>";
   }
-  h += "</tbody></table>";
+  h += "</tbody></table></div>";
   return h;
 }
 
@@ -707,10 +717,10 @@ function pageAlarm(dis){
   h += '<button class="btn-green" onclick="alarmPlay()"'+dis+'>播放警报声</button>';
   h += '<button class="btn-gray" onclick="enqueueRepair(\'stop_alarm\')"'+dis+'>停止警报</button>';
   h += "</div>";
-  h += '<table style="margin-top:.55rem"><thead><tr><th>最近播放时间</th><th>最长时长</th><th>状态</th></tr></thead><tbody>';
+  h += '<div class="function-table"><table style="margin-top:.55rem"><thead><tr><th>最近播放时间</th><th>最长时长</th><th>状态</th></tr></thead><tbody>';
   if(!alarm || !alarm.started_at_ms) h += '<tr><td colspan="3" class="muted">还没有播放记录</td></tr>';
   else h += '<tr><td>'+sydney(alarm.started_at_ms)+'</td><td>'+esc(alarm.duration_ms/1000)+' 秒</td><td>'+esc(labels[alarm.state]||'未知')+'</td></tr>';
-  h += "</tbody></table>";
+  h += "</tbody></table></div>";
   return h;
 }
 
@@ -723,7 +733,7 @@ function pageLost(dis){
   h+='<button class="btn-green" onclick="setLostMode(true)"'+blocked+'>启用 / 更新</button><button class="btn-gray" onclick="setLostMode(false)"'+blocked+'>退出丢失模式</button></div>';
   h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'等待恢复设置'})[mode.state]||'状态未知')+' · 退出后恢复原锁屏文字，日常位置历史继续保留。</p>';
   if(d && d.task && d.task.type==='set_lost_mode') h+='<p class="muted">'+esc(d.task.label)+' · '+esc(d.task.detail)+'</p>';
-  h += '<div class="lost-bar">';
+  h += '<details class="function-extra"><summary>其他功能 · 尚未接通</summary><div class="lost-bar">';
   h += '<button class="btn-gray" onclick="lostRec()"'+dis+'>远程录音</button>';
   h += '<button class="btn-gray" onclick="lostVideo(\'front\')"'+dis+'>前置录像</button>';
   h += '<button class="btn-gray" onclick="lostVideo(\'back\')"'+dis+'>后置录像</button>';
@@ -741,7 +751,7 @@ function pageLost(dis){
   h += lostRecTable(u);
   h += '<p class="ops-sec-title" style="margin-top:.85rem">照片</p>';
   h += lostPhotoTable(u);
-  return h;
+  return h+'</details>';
 }
 
 function lostRecTable(u){

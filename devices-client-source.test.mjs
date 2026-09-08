@@ -199,3 +199,13 @@ test('流量历史过期请求不覆盖新的范围，柱子选择显示收发�
  assert.equal(context.TRAFFIC_HISTORY.days.length,1);
  assert.match(nodes.trafficDetail.innerHTML,/2026-09-08.*traffic-rx-text.*接收 1.0 KB.*traffic-tx-text.*发送 2.0 KB.*总计 3.0 KB/);
 });
+
+test('所有功能页均可渲染，型号名称转义且操作使用当前条目',()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+ vm.runInContext(source,context);
+ context.DEV=[{id:'fixture',enabled:true,managed_lost_tasks:true}];context.selDev='fixture';
+ context.MODELS=[{id:'m',name:'<script>测试</script>',note:'<img>'}];
+ for(const item of context.FN_ITEMS){context.selFn=item[0];assert.doesNotThrow(()=>context.fnPageHtml(),item[1]);}
+ const html=context.pageModel();assert.doesNotMatch(html,/<script>|<img>/);assert.match(html,/editModel\(MODELS\[0\]\.id\)/);
+ const shell=context.pageAdb('');assert.match(shell,/monitor-grid/);assert.match(shell,/id="taskOut"/);assert.match(shell,/id="adbTerm"/);
+});
