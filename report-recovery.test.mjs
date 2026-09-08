@@ -11,7 +11,7 @@ test('蜂窝与Wi-Fi到期不同，补拉两次后停止，完整报告重新开
   const cell={...wifi,id:'cell',network:'cellular'};
   const disabled={...wifi,id:'disabled',enabled:false};
   const now=start+1000000,devices=[wifi,cell,disabled];
-  assert.equal(recoveryContact(wifi,now).state,'checking_connection');
+  assert.equal(recoveryContact(wifi,now).state,'report_overdue');
   assert.equal(recoveryContact(cell,now).state,'awaiting_report');
   assert.equal((await prepareRecovery(f.storage,devices,now)).length,1);
   assert.equal((await prepareRecovery(f.storage,devices,now)).length,0);

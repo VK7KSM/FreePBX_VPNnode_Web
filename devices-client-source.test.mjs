@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
+import crypto from "node:crypto";
 
 test('丢失模式使用真实回执并将失主文字转义为文本',()=>{
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({value:'测试'})}});
@@ -249,7 +250,7 @@ test('已发布版本按编号降序，默认最新，手动选择不被重绘�
 
 test('更新检查区分新旧和未知版本，快捷更新总是指定最新版',()=>{
  const requests=[];
- const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:(url,options)=>{requests.push(JSON.parse(options.body));return new Promise(()=>{});}});
+ const context=vm.createContext({crypto,adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:(url,options)=>{requests.push(JSON.parse(options.body));return new Promise(()=>{});}});
  vm.runInContext(source,context);context.DEV=[{id:'fixture',app_version:'0.1.9'}];context.selDev='fixture';context.RELEASE_STATE='ready';
  context.RELEASES=[{versionCode:95,versionName:'0.1.94-production-lost-mode'},{versionCode:10,versionName:'0.1.9'}];context.uiOf().releaseVersion=10;
  assert.match(context.pageUpdate(''),/新的软件版本.*assignUpdate\(95\)/);

@@ -137,4 +137,16 @@ public class StatusLoggingTest {
         assertEquals(120000,StatusReporter.retryDelay(60000,1));
         assertEquals(900000,StatusReporter.retryDelay(60000,20));
     }
+
+    @org.junit.Test public void malformedFirstReportIsPreservedWithoutBlockingLaterReports() throws Exception {
+        java.io.File dir=java.nio.file.Files.createTempDirectory("outbox-corrupt").toFile();
+        java.nio.file.Files.write(new java.io.File(dir,"000-invalid.json").toPath(), "broken-json".getBytes("UTF-8"));
+        StatusOutbox box=new StatusOutbox(dir,10);
+        box.add(new org.json.JSONObject().put("report_id","good").put("queued_at_ms",1000));
+        org.junit.Assert.assertEquals(1,box.entries().length);
+        org.junit.Assert.assertEquals("good",box.read(box.entries()[0]).getString("report_id"));
+        java.io.File[] originals=new java.io.File(dir,"invalid").listFiles();
+        org.junit.Assert.assertEquals(1,originals.length);
+        org.junit.Assert.assertEquals("broken-json",new String(java.nio.file.Files.readAllBytes(originals[0].toPath()),"UTF-8"));
+    }
 }

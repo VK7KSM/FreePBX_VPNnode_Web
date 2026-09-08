@@ -73,3 +73,32 @@ test('能力上报留下的空更新记录不阻止首次下发，真实进行�
   assert.equal((await assign(103)).status,400);
   assert.equal(f.data.get('remote_devices')[0].update.job_id,'first-install');
 });
+
+
+test('新客户端安装尝试独立于发布版本，重试幂等且过期清单明确拒绝',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true,managed_update_v2:true}]});
+  const cookie=await login(f);
+  const rel={job_id:'release-fixed',manifest_raw:'{}',expires_at:0,versionCode:200,versionName:'fixture'};
+  f.data.set('elfremote_rel_200',rel);
+  const assign=key=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:200,request_id:key},cookie),f.env);
+  const first=await (await assign('request-first')).json();
+  assert.match(first.update.job_id,/^update-/);
+  const same=await (await assign('request-first')).json();assert.equal(same.update.job_id,first.update.job_id);
+  const devices=f.data.get('remote_devices');devices[0].update.state='rejected';f.data.set('remote_devices',devices);
+  const next=await (await assign('request-second')).json();assert.notEqual(next.update.job_id,first.update.job_id);
+  assert.equal(next.update.state,'pending');
+  f.data.set('elfremote_rel_200',{...rel,expires_at:Date.now()-1});
+  assert.equal((await assign('request-third')).status,400);
+});
+
+test('一次任务提交即通知且发布发生在任务保存之后',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_log_tasks:true}]});
+  const cookie=await login(f);let calls=0;
+  f.env.MQTT_API_URL='https://mqtt.example.test';f.env.MQTT_API_TOKEN='fixture';
+  f.env.MQTT_FETCH=async(url,options)=>{
+    calls++;assert.equal(f.data.get('remote_devices')[0].task.type,'pull_logs');
+    const value=JSON.parse(options.body);return Response.json({ok:true,accepted:true,request_id:value.notification.request_id});
+  };
+  const result=await (await worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'pull_logs'},cookie),f.env)).json();
+  assert.equal(calls,1);assert.equal(result.notification.published,true);
+});

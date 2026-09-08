@@ -1,67 +1,62 @@
 package net.elfradio.elfremote;
 
 import android.content.Context;
-import android.util.Log;
-
-import java.io.ByteArrayOutputStream;
+import android.os.SystemClock;
+import org.json.JSONObject;
 import java.io.File;
-import java.io.InputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
+/** 生产客户端首次启动也部署独立守护；通过应用自己的root通道核验。 */
 final class WatchdogInstaller {
-    private static final String TAG = "elfRemote";
-    private static volatile boolean attempted;
+    private static volatile boolean running, ready;
+    private static volatile String state = "pending";
+    private static long nextAttempt;
+    private static int failures;
 
-    static void ensure(Context ctx) {
-        if (ctx == null || attempted) return;
-        attempted = true;
+    static boolean ready() { return ready; }
+    static JSONObject snapshot() throws Exception {
+        return new JSONObject().put("state", state).put("ready", ready);
+    }
+    static synchronized void ensure(Context ctx, Runnable completed) {
+        if (ctx == null || running || SystemClock.elapsedRealtime() < nextAttempt) return;
+        running = true;
         final Context app = ctx.getApplicationContext();
-        new Thread(() -> run(app), "elfremote-wd-install").start();
-    }
-
-    static void run(Context ctx) {
-        try {
-            File staged = new File(ctx.getFilesDir(), "watchdog");
-            WatchdogPolicy.stage(staged);
-            File apply = new File(staged, "apply.sh");
-            java.io.FileOutputStream out = new java.io.FileOutputStream(apply);
+        new Thread(() -> {
+            boolean wasReady = ready;
             try {
-                out.write(WatchdogPolicy.applyCommands(staged.getAbsolutePath())
-                        .getBytes("UTF-8"));
+                File staged = new File(app.getFilesDir(), "watchdog");
+                WatchdogPolicy.stage(staged);
+                File apply = new File(staged, "apply.sh");
+                try (FileOutputStream out = new FileOutputStream(apply)) {
+                    out.write(WatchdogPolicy.applyCommands(staged.getAbsolutePath()).getBytes(StandardCharsets.UTF_8));
+                    out.getFD().sync();
+                }
+                // 输出仅存应用私有文件，不把root错误正文送入服务器或公开日志。
+                File output = new File(staged, "initialize.out");
+                Process process = new ProcessBuilder("su", "-c", "sh '" + apply.getAbsolutePath() + "'")
+                        .redirectErrorStream(true).redirectOutput(output).start();
+                try {
+                    if (!process.waitFor(45, TimeUnit.SECONDS)) throw new java.io.IOException("bootstrap-timeout");
+                    if (process.exitValue() != 0) throw new java.io.IOException("bootstrap-not-ready");
+                } finally { process.destroy(); }
+                File check = new File(WatchdogPolicy.DIR, "app-write-check.tmp");
+                try (FileOutputStream out = new FileOutputStream(check)) { out.write(1); out.getFD().sync(); }
+                if (!check.delete()) throw new java.io.IOException("bootstrap-write-check");
+                ready = true; state = "ready"; failures = 0;
+                PermissionGate.initializeBackground(app);
+                nextAttempt = SystemClock.elapsedRealtime() + 3600000L;
+            } catch (Exception error) {
+                ready = false; state = "initialization_failed";
+                nextAttempt = SystemClock.elapsedRealtime() + Math.min(900000L, 60000L << Math.min(4, failures++));
+                RuntimeLog.error("bootstrap_failed", error);
             } finally {
-                out.close();
+                RuntimeLog.event("bootstrap_ready=" + ready);
+                running = false;
+                if (completed != null && wasReady != ready) completed.run();
             }
-            apply.setReadable(true, false);
-            apply.setExecutable(true, false);
-            execSu("sh " + apply.getAbsolutePath());
-        } catch (Exception e) {
-            Log.w(TAG, "watchdog install skipped: " + e.getMessage());
-        }
+        }, "elfremote-bootstrap").start();
     }
-
-    private static void execSu(String cmd) throws Exception {
-        Process p;
-        try {
-            ProcessBuilder pb = new ProcessBuilder("su", "-c", cmd);
-            pb.redirectErrorStream(true);
-            p = pb.start();
-        } catch (Exception e) {
-            Log.w(TAG, "no su; watchdog stays undeployed");
-            return;
-        }
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        InputStream in = p.getInputStream();
-        byte[] buf = new byte[256];
-        int n;
-        while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
-        int code = p.waitFor();
-        if (code != 0) {
-            String msg = bos.toString("UTF-8");
-            if (msg.length() > 180) msg = msg.substring(0, 180);
-            Log.w(TAG, "watchdog apply exit=" + code + " " + msg);
-        } else {
-            Log.i(TAG, "watchdog apply ok");
-        }
-    }
-
     private WatchdogInstaller() {}
 }

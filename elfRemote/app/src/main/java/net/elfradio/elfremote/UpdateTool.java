@@ -21,14 +21,29 @@ public final class UpdateTool {
     private static String token = "";
     private static String jobId = "";
     private static boolean managedUpdate;
+    private static int targetCode;
+    private static String targetName = "";
 
     public static void main(String[] args) {
         int rc = 2;
         try {
             rc = run(args);
         } catch (Throwable t) {
-            System.err.println("update-tool " + t);
+            System.err.println("update-tool error=" + t.getClass().getSimpleName());
             rc = 3;
+            try {
+                if (UpdatePolicy.ST_DOWNLOADING.equals(readState()) && !jobId.isEmpty()) {
+                    android.util.AtomicFile retry = new android.util.AtomicFile(new File(DIR, "download-retries.json"));
+                    JSONObject record = retry.getBaseFile().exists() ? new JSONObject(new String(retry.readFully(), "UTF-8")) : new JSONObject();
+                    int count = jobId.equals(record.optString("job_id")) ? record.optInt("count") + 1 : 1;
+                    FileOutputStream out = retry.startWrite();
+                    try { out.write(new JSONObject().put("job_id", jobId).put("count", count).toString().getBytes("UTF-8")); retry.finishWrite(out); }
+                    catch (Exception error) { retry.failWrite(out); throw error; }
+                    progress(count >= 5 ? UpdatePolicy.ST_REJECTED : UpdatePolicy.ST_DOWNLOADING,
+                            count >= 5 ? "download-failed" : "download-interrupted");
+                    if (count >= 5) rc = 0;
+                }
+            } catch (Exception ignored) { System.err.println("update failure state pending"); }
         }
         System.exit(rc);
     }
@@ -62,7 +77,11 @@ public final class UpdateTool {
         if (m == null) {
             return rejectQueuedJob("bad-manifest");
         }
+        boolean signedExpired = UpdatePolicy.expired(m, System.currentTimeMillis());
+        m = UpdatePolicy.executionManifest(m, job, deviceId, 0);
+        if (m == null) return rejectQueuedJob("bad-task");
         jobId = m.getString("job_id");
+        targetCode = m.getInt("versionCode"); targetName = m.getString("versionName");
         if (m.has("device_id") && !deviceId.equals(m.optString("device_id"))) {
             writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"), "wrong-device");
             progress(UpdatePolicy.ST_REJECTED, "wrong-device"); return 0;
@@ -70,7 +89,7 @@ public final class UpdateTool {
         boolean resuming = jobId.equals(readStateJobId()) && (UpdatePolicy.ST_INSTALLING.equals(readState())
                 || UpdatePolicy.ST_WAIT_HEALTH.equals(readState()) || UpdatePolicy.ST_ROLLBACK.equals(readState())
                 || UpdatePolicy.ST_RECOVERED.equals(readState()) || UpdatePolicy.ST_SUCCESS.equals(readState()));
-        if (UpdatePolicy.expired(m, System.currentTimeMillis()) && !resuming) {
+        if ((signedExpired || UpdatePolicy.expired(m, System.currentTimeMillis())) && !resuming) {
             writeState(UpdatePolicy.ST_REJECTED, m.getInt("versionCode"), m.getString("versionName"), "expired");
             progress(UpdatePolicy.ST_REJECTED, "expired"); return 0;
         }
@@ -83,6 +102,7 @@ public final class UpdateTool {
                 cur.versionName, cur.versionCode, wantName, wantCode);
         boolean healthOk = jobId.equals(readStateJobId()) && healthMatches(wantCode) && watchdogAlive();
         boolean lastGood = new File(UpdatePolicy.LAST_GOOD_APK).isFile();
+        boolean keepBackup = UpdatePolicy.preserveBackup(jobId, readStateJobId(), readState(), lastGood);
         String act = UpdatePolicy.resumeAction(readState(), onTarget, healthOk, lastGood,
                 readStateJobId(), jobId);
         if (UpdatePolicy.ST_SUCCESS.equals(act)) {
@@ -118,10 +138,21 @@ public final class UpdateTool {
             progress(UpdatePolicy.ST_REJECTED, "insufficient-storage");
             return 0;
         }
-        progress(UpdatePolicy.ST_CLAIMED, "");
-        progress(UpdatePolicy.ST_DOWNLOADING, "");
         File apk = new File(DIR, "pending.apk");
-        HttpJson.download(m.getString("url"), apk, m.getInt("size"));
+        boolean cached = apk.isFile() && apk.length() == m.getLong("size")
+                && UpdatePolicy.apkMatches(readBytes(apk), m.getInt("size"), m.getString("sha256"));
+        if (!cached) {
+            android.net.ConnectivityManager manager = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.Network network = manager.getActiveNetwork();
+            android.net.NetworkCapabilities capabilities = network == null ? null : manager.getNetworkCapabilities(network);
+            if (capabilities == null || !(capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    || capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))) {
+                if (!"waiting-wifi".equals(readStateObject().optString("detail"))) progress(UpdatePolicy.ST_DOWNLOADING, "waiting-wifi");
+                return 75;
+            }
+            progress(UpdatePolicy.ST_DOWNLOADING, "");
+            HttpJson.download(m.getString("url"), apk, m.getInt("size"), network);
+        }
         byte[] bytes = readBytes(apk);
         progress(UpdatePolicy.ST_VERIFYING, "");
         if (!UpdatePolicy.apkMatches(bytes, m.getInt("size"), m.getString("sha256"))) {
@@ -143,8 +174,8 @@ public final class UpdateTool {
             progress(UpdatePolicy.ST_REJECTED, "apk-metadata-mismatch");
             return 0;
         }
+        if (!keepBackup) backupLastGood();
         progress(UpdatePolicy.ST_INSTALLING, "");
-        if (!UpdatePolicy.preserveBackup(jobId, readStateJobId(), readState(), lastGood)) backupLastGood();
         writeState(UpdatePolicy.ST_INSTALLING, wantCode, wantName);
         new File(DIR, "health.ok").delete();
         if (!installApk(apk.getAbsolutePath())) {
@@ -254,7 +285,8 @@ public final class UpdateTool {
         return UpdatePolicy.sha256Hex(sigs[0].toByteArray());
     }
 
-    private static void progress(String state, String detail) {
+    private static void progress(String state, String detail) throws Exception {
+        if (targetCode > 0) writeState(state, targetCode, targetName, detail);
         JSONObject body = new JSONObject();
         try {
             body.put("device_id", deviceId);
@@ -269,7 +301,10 @@ public final class UpdateTool {
         String payload = body.toString();
         for (int i = 0; i < 3; i++) {
             try {
-                HttpJson.post(Protocol.updateProgressPath(), payload);
+                JSONObject reply = new JSONObject(HttpJson.post(Protocol.updateProgressPath(), payload));
+                JSONObject accepted = reply.optJSONObject("update");
+                if (!reply.optBoolean("ok") || accepted == null || !jobId.equals(accepted.optString("job_id"))
+                        || !state.equals(accepted.optString("state"))) throw new java.io.IOException("progress-not-accepted");
                 System.out.println("update-tool state=" + state);
                 return;
             } catch (Exception e) {

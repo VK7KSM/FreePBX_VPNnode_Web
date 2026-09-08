@@ -287,3 +287,27 @@ test('更新进展时间按真实变化记录，重复回执不改完成时间�
  const legacy={update:{job_id:'j',state:'success',detail:'health-ok'}};
  applyUpdateProgress(legacy,'j','success','health-ok',4000);assert.equal(legacy.update.completed_at,undefined);
 });
+
+// 设备已经完成健康验证，中间HTTPS回执丢失不能让服务器永久停在下载中。
+test("更新丢失中间阶段后按真实健康结果收敛，旧阶段和旧任务不回退", () => {
+  const d={update:{job_id:"recovery",state:"downloading"}};
+  applyUpdateProgress(d,"recovery","wait_health","installed");
+  assert.equal(d.update.state,"wait_health");
+  applyUpdateProgress(d,"recovery","success","health-ok");
+  assert.equal(d.update.state,"success");
+  const completed=d.update.completed_at;
+  applyUpdateProgress(d,"recovery","downloading","");
+  applyUpdateProgress(d,"old","rejected","expired");
+  assert.equal(d.update.state,"success"); assert.equal(d.update.completed_at,completed);
+  const direct={update:{job_id:"recovery",state:"claimed"}};
+  applyUpdateProgress(direct,"recovery","success","health-ok");
+  assert.equal(direct.update.state,"success");
+});
+
+test('新版同版本任务仍交给设备核对健康，旧客户端保持原行为',()=>{
+ const update={job_id:'update-fixture',versionName:'0.1.97',state:'pending',managed_update_v2:true};
+ const device={app_version:'0.1.97',update};
+ assert.equal(shouldOfferUpdate(device,1000),true);
+ update.managed_update_v2=false;assert.equal(shouldOfferUpdate(device,1000),false);
+ update.managed_update_v2=true;update.state='success';assert.equal(shouldOfferUpdate(device,1000),false);
+});

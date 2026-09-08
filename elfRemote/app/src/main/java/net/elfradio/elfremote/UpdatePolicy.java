@@ -66,6 +66,21 @@ final class UpdatePolicy {
         }
     }
 
+    // 制品签名先核验；仅为经过设备HTTPS认证通道领取的任务生成执行视图。
+    static JSONObject executionManifest(JSONObject signed, JSONObject offer, String device, long now) throws Exception {
+        if (expired(signed, now)) return null;
+        if (signed.has("device_id") && !device.equals(signed.optString("device_id"))) return null;
+        JSONObject result = new JSONObject(signed.toString());
+        if (offer.has("task_id")) {
+            String id = offer.optString("task_id");
+            long expiry = offer.optLong("task_expires_at");
+            if (!id.matches("update-[a-zA-Z0-9-]{1,80}") || expiry <= now
+                    || !device.equals(offer.optString("task_device_id"))) return null;
+            result.put("job_id", id).put("expires_at", expiry);
+        }
+        return result;
+    }
+
     static boolean expired(JSONObject m, long nowMs) {
         if (m == null) return true;
         long exp = m.optLong("expires_at", 0L);

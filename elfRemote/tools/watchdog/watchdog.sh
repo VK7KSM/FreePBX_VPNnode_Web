@@ -54,7 +54,8 @@ cleanup() {
     rm -rf "$LOCK"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 renice 19 $$ >/dev/null 2>&1
 
 log() {
@@ -140,11 +141,16 @@ run_update() {
   mv "$DIR/update.rc.tmp" "$DIR/update.rc"
   if [ $upd_rc -ne 0 ]; then
     log "update retry rc=$upd_rc"
-    echo $(($(date +%s) + 60)) > "$DIR/update.retry-at"
+    backoff=$(cat "$DIR/update.backoff" 2>/dev/null)
+    case "$backoff" in ''|*[!0-9]*) backoff=30;; esac
+    backoff=$((backoff * 2)); [ $backoff -le 900 ] || backoff=900
+    if [ $upd_rc -eq 75 ]; then backoff=300; fi
+    echo $backoff > "$DIR/update.backoff"
+    echo $(($(date +%s) + backoff)) > "$DIR/update.retry-at"
     mv "$DIR/update.running" "$DIR/update.job" 2>/dev/null || true
   else
     rm -f "$DIR/update.running"
-    rm -f "$DIR/update.retry-at"
+    rm -f "$DIR/update.retry-at" "$DIR/update.backoff"
   fi
 }
 

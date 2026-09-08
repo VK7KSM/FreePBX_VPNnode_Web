@@ -10,7 +10,7 @@ export function recoveryContact(device, now = Date.now()) {
   const probe = device.report_probe;
   const deadline = Date.parse(contact.report_due_at) + 90000;
   if (probe?.baseline === device.last_seen && probe.state === 'failed') return contact;
-  if (now < deadline + CHECK_WINDOW_MS) return { ...contact,
+  if (probe?.baseline === device.last_seen && probe.attempts > 0 && now < deadline + CHECK_WINDOW_MS) return { ...contact,
     state: probe?.baseline === device.last_seen && probe.received ? 'awaiting_full_report' : 'checking_connection' };
   return contact;
 }
@@ -26,9 +26,10 @@ export async function prepareRecovery(storage, devices, now = Date.now()) {
     if (!probe || probe.baseline !== device.last_seen) {
       probe = device.report_probe = { baseline: device.last_seen, attempts: 0, state: 'checking', next_at: now };
     }
-    if (probe.state === 'failed' || now < probe.next_at) continue;
+    if (probe.state === 'failed') continue;
     const pending = await pendingStatus(storage, device.id, now);
     probe.received = pending?.request_id === probe.request_id && !!pending?.received_at;
+    if (now < probe.next_at) continue;
     if (probe.attempts >= 2) { probe.state = 'failed'; continue; }
     const response = await pushState(storage, new Request('https://elf-store/__push/prepare', {
       method: 'POST', body: JSON.stringify({device_id: device.id})
@@ -49,6 +50,7 @@ export async function runRecovery(env, stub) {
   const response = await stub.fetch('https://elf-store/__recovery', {method:'POST'});
   if (!response.ok) throw new Error('超时检查准备失败');
   const {outgoing} = await response.json();
+  const run = {started_at:new Date().toISOString(), prepared:outgoing.length, accepted:0, failed:0};
   await Promise.all(outgoing.map(async item => {
     let accepted = false;
     try {
@@ -60,5 +62,9 @@ export async function runRecovery(env, stub) {
       attempt_at_ms:item.request.last_publish_at_ms, accepted
     })});
     if (!recorded.ok) throw new Error('补拉发送结果保存失败');
+    if (accepted) run.accepted++; else run.failed++;
   }));
+  run.completed_at = new Date().toISOString();
+  const saved = await stub.fetch('https://elf-store/report_recovery_run', {method:'PUT',body:JSON.stringify(run)});
+  if (!saved.ok) throw new Error('定时检查结果保存失败');
 }

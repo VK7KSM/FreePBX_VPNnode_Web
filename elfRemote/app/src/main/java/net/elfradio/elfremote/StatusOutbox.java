@@ -37,7 +37,20 @@ final class StatusOutbox {
         File[] entries = directory.listFiles((dir, name) -> name.endsWith(".json"));
         if (entries == null) return new File[0];
         Arrays.sort(entries, (a,b) -> a.getName().compareTo(b.getName()));
-        return entries;
+        java.util.ArrayList<File> valid = new java.util.ArrayList<>();
+        for (File file : entries) {
+            try {
+                JSONObject record = read(file);
+                if (!record.getString("report_id").matches("[a-zA-Z0-9-]{1,96}")) throw new IOException("queued report fields missing");
+                valid.add(file);
+            } catch (Exception malformed) {
+                File quarantine = new File(directory, "invalid");
+                if ((quarantine.isDirectory() || quarantine.mkdirs()) && file.renameTo(new File(quarantine, file.getName() + "-" + System.nanoTime())))
+                    RuntimeLog.event("outbox_gap reason=invalid_record");
+                else RuntimeLog.event("outbox_invalid_record_retained");
+            }
+        }
+        return valid.toArray(new File[0]);
     }
 
     JSONObject read(File file) throws Exception {

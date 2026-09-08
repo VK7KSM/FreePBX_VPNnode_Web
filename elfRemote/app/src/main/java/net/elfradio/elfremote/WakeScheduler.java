@@ -19,15 +19,16 @@ final class WakeScheduler {
         this.context = context.getApplicationContext();
         alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
     }
-    private PendingIntent intent(String key) {
-        Intent i = new Intent(context, WakeReceiver.class).setAction(ACTION + "." + key).putExtra("wake_key", key);
+    private PendingIntent intent(String key, long due) {
+        Intent i = new Intent(context, WakeReceiver.class).setAction(ACTION + "." + key).putExtra("wake_key", key).putExtra("due_elapsed", due);
         return PendingIntent.getBroadcast(context, 0, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
     void schedule(String key, long delayMs) {
-        alarms.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + Math.max(1000L, delayMs), intent(key));
+        long due = SystemClock.elapsedRealtime() + Math.max(1000L, delayMs);
+        alarms.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, due, intent(key, due));
+        RuntimeLog.event("wake_scheduled key=" + key + " due_elapsed=" + due);
     }
-    void cancel(String key) { alarms.cancel(intent(key)); }
+    void cancel(String key) { alarms.cancel(intent(key, 0)); }
     static synchronized void hold(Context ctx, String key, long timeoutMs) {
         PowerManager.WakeLock lock = locks.get(key);
         if (lock == null) {

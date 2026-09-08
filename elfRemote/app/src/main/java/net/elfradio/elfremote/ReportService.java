@@ -43,6 +43,15 @@ public final class ReportService extends Service {
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
+    private String lastNetwork = "";
+    private final Runnable networkReport = () -> {
+        String current = networkType();
+        if (current.equals(lastNetwork)) { WakeScheduler.release("network-change"); return; }
+        String previous = lastNetwork; lastNetwork = current;
+        RuntimeLog.event("report_network_changed from=" + previous + " to=" + current);
+        if (!"unknown".equals(current) && !"none".equals(current)) scheduleReport(1000L);
+        WakeScheduler.release("network-change");
+    };
     private final Runnable healthCheck = this::maybeFinishHealth;
 
     private final Runnable loop = new Runnable() {
@@ -109,11 +118,19 @@ public final class ReportService extends Service {
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
         if (BuildConfig.STATUS_ONLY) {
+            lastNetwork = networkType();
             connectivity = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 private void changed() {
                     Handler target = worker;
-                    if (target != null) target.post(() -> { if (push != null) push.networkHint(); });
+                    if (target != null) {
+                        WakeScheduler.hold(ReportService.this, "network-change", 30000L);
+                        target.post(() -> {
+                            if (push != null) push.networkHint();
+                            target.removeCallbacks(networkReport);
+                            target.postDelayed(networkReport, 3000L);
+                        });
+                    }
                 }
                 @Override public void onAvailable(android.net.Network network) { changed(); }
                 @Override public void onLost(android.net.Network network) { changed(); }
@@ -129,7 +146,7 @@ public final class ReportService extends Service {
             if (BuildConfig.STATUS_ONLY) worker.post(() -> traffic.sample());
             worker.post(loop);
         }
-        if (!BuildConfig.STATUS_ONLY) WatchdogInstaller.ensure(this);
+        ensureMaintenance();
     }
 
     @Override
@@ -138,10 +155,10 @@ public final class ReportService extends Service {
             String key = intent.getStringExtra("wake_key");
             worker.post(() -> {
                 try {
-                    RuntimeLog.event("wake_alarm key=" + key);
+                    RuntimeLog.event("wake_alarm key=" + key + " queue_ms=" + Math.max(0, android.os.SystemClock.elapsedRealtime()-intent.getLongExtra("received_elapsed", android.os.SystemClock.elapsedRealtime())));
                     if ("report".equals(key)) loop.run();
                     else if (push != null) push.wake(key);
-                } finally { WakeScheduler.release("dispatch"); }
+                } finally { WakeScheduler.release("dispatch-" + key); }
             });
         }
         if (intent != null && ACTION_RENEW.equals(intent.getAction())) {
@@ -180,6 +197,8 @@ public final class ReportService extends Service {
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
         }
         if (worker != null) worker.removeCallbacks(loop);
+        if (worker != null) worker.removeCallbacks(networkReport);
+        WakeScheduler.release("network-change");
         if (wake != null) wake.cancel("report");
         WakeScheduler.release("report");
         WakeScheduler.release("notice");
@@ -307,7 +326,15 @@ public final class ReportService extends Service {
         else report();
     }
 
+    private void ensureMaintenance() {
+        WatchdogInstaller.ensure(this, () -> {
+            Handler target = worker;
+            if (target != null) target.post(() -> scheduleReport(1000L));
+        });
+    }
+
     private JSONObject statusBody(String requestId) throws Exception {
+        ensureMaintenance();
         JSONObject body = new JSONObject();
         body.put("device_id", store.deviceId());
         body.put("report_id", java.util.UUID.randomUUID().toString());
@@ -322,19 +349,21 @@ public final class ReportService extends Service {
         body.put("network", networkType());
         body.put("device_name", defaultDeviceName());
         putBattery(body);
-        body.put("ready", true);
+        body.put("ready", WatchdogInstaller.ready());
+        body.put("maintenance", WatchdogInstaller.snapshot());
         body.put("managed_log_tasks", true);
-        body.put("managed_heal_tasks", true);
-        body.put("managed_reboot_tasks", true);
-        body.put("managed_adbd_tasks", true);
+        body.put("managed_heal_tasks", WatchdogInstaller.ready());
+        body.put("managed_reboot_tasks", WatchdogInstaller.ready());
+        body.put("managed_adbd_tasks", WatchdogInstaller.ready());
         body.put("managed_wifi_scan_tasks", true);
         body.put("managed_alarm_tasks", true);
         body.put("managed_locate_tasks", true);
-        body.put("managed_config_tasks", true);
+        body.put("managed_config_tasks", WatchdogInstaller.ready());
         body.put("managed_lost_tasks", true);
         body.put("lost_mode", lostMode.snapshot());
         body.put("alarm", alarm.snapshot());
-        body.put("managed_update", true);
+        body.put("managed_update", WatchdogInstaller.ready());
+        body.put("managed_update_v2", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
@@ -484,7 +513,8 @@ public final class ReportService extends Service {
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
         body.put("network", networkType());
         putBattery(body);
-        body.put("ready", true);
+        body.put("ready", WatchdogInstaller.ready());
+        body.put("maintenance", WatchdogInstaller.snapshot());
         JSONObject gps = gpsFix();
         if (gps != null) body.put("gps", gps);
         JSONObject res;
@@ -518,7 +548,8 @@ public final class ReportService extends Service {
             return;
         }
         try {
-            if (UpdatePolicy.expired(m, System.currentTimeMillis())) return;
+            m = UpdatePolicy.executionManifest(m, upd, store.deviceId(), System.currentTimeMillis());
+            if (m == null) return;
             if (m.has("device_id") && !store.deviceId().equals(m.optString("device_id"))) return;
             java.io.File dir = new java.io.File("/data/local/elfremote");
             if (new java.io.File(dir, "update.job").exists() || new java.io.File(dir, "update.running").exists()) return;
@@ -532,6 +563,11 @@ public final class ReportService extends Service {
             job.put("device_id", store.deviceId());
             job.put("token", store.token());
             job.put("managed_update_v1", true);
+            if (upd.has("task_id")) {
+                job.put("task_id", upd.getString("task_id"));
+                job.put("task_expires_at", upd.getLong("task_expires_at"));
+                job.put("task_device_id", upd.getString("task_device_id"));
+            }
             java.io.File json = new java.io.File(dir, "update.job.json");
             writeSmall(json.getPath(), job.toString());
             String src = getApplicationInfo().sourceDir;

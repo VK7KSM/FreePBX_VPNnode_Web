@@ -78,6 +78,7 @@ final class PushConnection {
         wake.cancel("retry");
         connecting = true;
         WakeScheduler.hold(context, "connect", 60000L);
+        wake.schedule("connect-timeout", 45000L);
         try {
             network = activeNetwork();
             if (network.isEmpty()) throw new IOException("network unavailable");
@@ -112,8 +113,9 @@ final class PushConnection {
                     public void deliveryComplete(IMqttDeliveryToken token) {}
                     public void messageArrived(String receivedTopic, MqttMessage message) {
                         byte[] bytes = message.getPayload();
+                        WakeScheduler.hold(context, "mqtt-dispatch", 120000L);
                         worker.post(() -> {
-                            if (client != source || closed) return;
+                            if (client != source || closed) { WakeScheduler.release("mqtt-dispatch"); return; }
                             Runnable ack = () -> {
                                 try { source.messageArrivedComplete(message.getId(), message.getQos()); }
                                 catch (Exception error) { RuntimeLog.error("mqtt_ack_failed", error); }
@@ -128,7 +130,7 @@ final class PushConnection {
                                 RuntimeLog.error("mqtt_notice_failed", error);
                                 disposeClient();
                                 schedule(error);
-                            }
+                            } finally { WakeScheduler.release("mqtt-dispatch"); }
                         });
                     }
                 });
@@ -170,6 +172,7 @@ final class PushConnection {
                         disposeClient(); schedule(new IOException("subscription refused")); return;
                     }
                     connecting = false; subscribed = true; failures = 0;
+                    wake.cancel("connect-timeout");
                     RuntimeLog.event("mqtt_subscribed");
                     try { sync(); } finally { WakeScheduler.release("connect"); }
                 }); }
@@ -192,6 +195,7 @@ final class PushConnection {
     }
 
     private void schedule(Throwable error) {
+        wake.cancel("connect-timeout");
         connecting = false; subscribed = false;
         if (closed) return;
         long delay = PushPolicy.retryDelay(failures++, Math.random());
@@ -203,6 +207,7 @@ final class PushConnection {
     }
 
     private void disposeClient() {
+        wake.cancel("connect-timeout");
         if (ping != null) { ping.stop(); ping = null; }
         WakeScheduler.release("connect");
         MqttAsyncClient previous = client;
@@ -214,6 +219,9 @@ final class PushConnection {
     }
     void wake(String key) {
         if ("retry".equals(key)) connect();
+        else if ("connect-timeout".equals(key) && connecting) {
+            disposeClient(); schedule(new IOException("MQTT handshake timeout"));
+        }
         else if ("ping".equals(key) && ping != null) ping.fire();
     }
     void close() { closed = true; wake.cancel("retry"); disposeClient(); }

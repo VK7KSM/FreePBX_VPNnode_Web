@@ -21,8 +21,13 @@ final class HttpJson {
     }
 
     static void download(String url, java.io.File dest, long maximumBytes) throws Exception {
+        download(url, dest, maximumBytes, null);
+    }
+
+    static void download(String url, java.io.File dest, long maximumBytes, android.net.Network network) throws Exception {
         if (maximumBytes <= 0 || maximumBytes > 64L * 1024 * 1024) throw new java.io.IOException("download size invalid");
-        HttpURLConnection c = (HttpURLConnection) Protocol.requireHttpsUrl(url).openConnection();
+        HttpURLConnection c = (HttpURLConnection) (network == null ? Protocol.requireHttpsUrl(url).openConnection()
+                : network.openConnection(Protocol.requireHttpsUrl(url)));
         try {
             c.setConnectTimeout(20000);
             c.setReadTimeout(60000);

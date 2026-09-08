@@ -247,4 +247,17 @@ public class UpdatePolicyTest {
         m.put("expires_at", 4102444800000L);
         return m;
     }
+
+    @org.junit.Test public void executionAttemptDoesNotModifySignedArtifactAndChecksTargetAndExpiry() throws Exception {
+        org.json.JSONObject artifact = new org.json.JSONObject().put("job_id", "published").put("expires_at", 0);
+        org.json.JSONObject task = new org.json.JSONObject().put("task_id", "update-attempt-one")
+                .put("task_device_id", "device").put("task_expires_at", 2000);
+        org.json.JSONObject actual = UpdatePolicy.executionManifest(artifact, task, "device", 1000);
+        org.junit.Assert.assertEquals("update-attempt-one", actual.getString("job_id"));
+        org.junit.Assert.assertEquals("published", artifact.getString("job_id"));
+        org.junit.Assert.assertNull(UpdatePolicy.executionManifest(artifact, task, "other", 1000));
+        org.junit.Assert.assertNull(UpdatePolicy.executionManifest(artifact, task, "device", 2000));
+        artifact.put("expires_at", 900);
+        org.junit.Assert.assertNull(UpdatePolicy.executionManifest(artifact, task, "device", 1000));
+    }
 }

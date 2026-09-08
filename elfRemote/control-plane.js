@@ -86,7 +86,8 @@ export function canAdvanceUpdate(from, to) {
   if (to === "rejected" && (from === "claimed" || from === "downloading" || from === "verifying")) {
     return true;
   }
-  return UPDATE_ADVANCE[from] === to;
+  const order = ["pending","claimed","downloading","verifying","installing","wait_health"];
+  return order.includes(from) && order.includes(to) && order.indexOf(to) > order.indexOf(from);
 }
 
 export function shouldOfferUpdate(device, nowMs) {
@@ -98,13 +99,15 @@ export function shouldOfferUpdate(device, nowMs) {
     if (!Number.isFinite(t)) t = Date.parse(u.expires_at);
     if (Number.isFinite(t) && nowMs >= t) return false;
   }
-  if (String(device.app_version || "") === String(u.versionName || "")) return false;
+  if (!u.managed_update_v2 && String(device.app_version || "") === String(u.versionName || "")) return false;
   return u.state === "pending" || u.state === "claimed";
 }
 
 export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.now()) {
   if (!device || !device.update || device.update.job_id !== jobId) return device;
-  if (!canAdvanceUpdate(device.update.state, state)) return device;
+  const active = ["pending","claimed","downloading","verifying","installing","wait_health"].includes(device.update.state);
+  const healthy = state === "success" && active && ["health-ok","already-healthy"].includes(detail);
+  if (!canAdvanceUpdate(device.update.state, state) && !healthy) return device;
   const u = device.update;
   const nextDetail = detail == null ? "" : String(detail).slice(0, 200);
   if (u.state !== state || u.detail !== nextDetail) {

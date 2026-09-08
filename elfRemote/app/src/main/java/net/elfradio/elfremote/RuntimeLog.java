@@ -20,7 +20,10 @@ final class RuntimeLog {
 
     static void error(String event, Throwable error) {
         // 不写异常消息、请求正文或 URL 查询串，避免令牌进入诊断日志。
-        event(event + " error=" + error.getClass().getSimpleName());
+        String extra = error instanceof org.eclipse.paho.client.mqttv3.MqttException
+                ? " mqtt_reason=" + ((org.eclipse.paho.client.mqttv3.MqttException)error).getReasonCode() : "";
+        if (error.getCause() != null) extra += " cause=" + error.getCause().getClass().getSimpleName();
+        event(event + " error=" + error.getClass().getSimpleName() + extra);
         StackTraceElement[] stack = error.getStackTrace();
         for (int i = 0; i < Math.min(4, stack.length); i++) event("at=" + stack[i].toString());
     }

@@ -243,8 +243,23 @@ const app = {
         || pathname.startsWith("/api/elfremote/"))) {
       const stub = elfDoStub(env);
       if (!stub) return json({ ok: false, msg: "设备存储不可用" }, 503);
+      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign"].includes(pathname)) {
+        const payload = await request.clone().json().catch(() => null);
+        const saved = await stub.fetch(request);
+        if (!saved.ok || !payload?.device_id) return saved;
+        const result = await saved.json();
+        try {
+          const notified = await pushHttp(env, new Request(new URL("/api/devices/request-status", request.url), {
+            method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
+          }), stub);
+          const notice = await notified.json();
+          result.notification = notice.request || null;
+        } catch { result.notification = null; }
+        return json(result, saved.status);
+      }
       return stub.fetch(request);
     }
+    if (pathname === "/api/devices/recovery" && method === "GET") return json({ok:true,run:await getStore(env,"report_recovery_run")});
     if (pathname === "/api/devices/traffic" && method === "GET") {
       try { return json(await queryDailyTraffic(env.__storage,url)); }
       catch(error) { return json({ok:false,msg:error.message},400); }
@@ -882,6 +897,7 @@ function publicDevice(d, modelName) {
     os_version: d.os_version || "",
     app_version: d.app_version || "",
     ready: !!d.ready,
+    maintenance: d.maintenance || null,
     loc: d.loc || null,
     update: publicUpdate(d.update),
     task: publicRepair(d.task)
@@ -1273,6 +1289,9 @@ async function handleDeviceReport(env, request) {
       const alarm = normalizeAlarm(data.alarm);
       if (alarm) list[i].alarm = alarm;
       list[i].managed_update = data.managed_update === true;
+      list[i].managed_update_v2 = data.managed_update_v2 === true;
+      if (data.maintenance && ["pending","ready","initialization_failed"].includes(data.maintenance.state))
+        list[i].maintenance = {state:data.maintenance.state,ready:data.maintenance.ready===true};
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
@@ -1431,7 +1450,7 @@ async function handleElfAssign(env, request) {
     if (!deviceId || vc <= 0) return json({ ok: false, msg: "缺少设备或版本" }, 400);
     const rel = await getStore(env, "elfremote_rel_" + vc);
     if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
-    const d = await assignReleaseToDevice(env, deviceId, rel);
+    const d = await assignReleaseToDevice(env, deviceId, rel, data);
     if (!d) return json({ ok: false, msg: "未找到该设备" }, 404);
     return json({ ok: true, update: publicUpdate(d.update) });
   } catch (e) {
@@ -1439,7 +1458,7 @@ async function handleElfAssign(env, request) {
   }
 }
 
-async function assignReleaseToDevice(env, deviceId, rel) {
+async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
   const list = await loadDevices(env);
   let found = null;
   for (let i = 0; i < list.length; i++) {
@@ -1448,18 +1467,35 @@ async function assignReleaseToDevice(env, deviceId, rel) {
     const manifest = JSON.parse(rel.manifest_raw);
     if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
     if (list[i].status_only && list[i].managed_update !== true) throw new Error("当前客户端尚未接通更新");
-    if (list[i].update?.job_id === rel.job_id) return list[i];
+    if (Number(rel.expires_at) > 0 && Number(rel.expires_at) <= Date.now()) throw new Error("该发布清单已过期，请重新发布有效版本");
+    const modern = list[i].managed_update_v2 === true;
+    const requestId = String(input.request_id || "");
+    if (requestId && !/^[a-zA-Z0-9-]{8,96}$/.test(requestId)) throw new Error("更新请求编号无效");
+    if (modern && requestId && list[i].update?.request_id === requestId) {
+      if (list[i].update.versionCode !== rel.versionCode) throw new Error("同一请求不能选择不同版本");
+      return list[i];
+    }
+    if (!modern && list[i].update?.job_id === rel.job_id) {
+      if (["rejected","recovered"].includes(list[i].update.state)) throw new Error("旧客户端不支持同版重新尝试，请先安装新版客户端");
+      return list[i];
+    }
+    if (modern && list[i].update?.release_job_id === rel.job_id
+        && !["success","recovered","rejected"].includes(list[i].update.state)
+        && Number(list[i].update.expires_at) > Date.now() && !requestId) return list[i];
     if (list[i].update?.job_id && !["success","recovered","rejected"].includes(list[i].update.state)
         && (!list[i].update.expires_at || Number(list[i].update.expires_at) > Date.now())) throw new Error("已有更新进行中");
     list[i].update = {
-      job_id: rel.job_id,
+      job_id: modern ? "update-" + crypto.randomUUID() : rel.job_id,
+      release_job_id: rel.job_id,
+      request_id: requestId,
+      managed_update_v2: modern,
       state: "pending",
       updated_at: new Date().toISOString(),
       versionCode: rel.versionCode,
       versionName: rel.versionName,
       manifest_raw: rel.manifest_raw,
       signature: rel.signature,
-      expires_at: rel.expires_at,
+      expires_at: modern ? Date.now() + 3600000 : rel.expires_at,
       detail: ""
     };
     if (list[i].status_only) list[i].update.managed_update_v1 = true;
@@ -1504,7 +1540,8 @@ async function handleElfUpdateProgress(env, request) {
 function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.status_only === true && report.managed_update === true
       && device.update?.managed_update_v1 === true && shouldOfferUpdate(device, now))
-    body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true};
+    body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true,
+      ...(device.update.managed_update_v2 ? {task_id:device.update.job_id,task_expires_at:device.update.expires_at,task_device_id:device.id} : {})};
   if (device.enabled !== false && report.status_only === true && report.managed_log_tasks === true
       && device.task?.managed_log_v1 === true && device.task.type === "pull_logs" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_log_v1:true};
@@ -1553,7 +1590,7 @@ async function handleElfEnqueueTask(env, request) {
       if (!Number.isInteger(vc) || vc <= 0) return json({ok:false,msg:"缺少有效 versionCode"},400);
       const release = await getStore(env, "elfremote_rel_" + vc);
       if (!release) return json({ok:false,msg:"未发布该版本"},404);
-      const assigned = await assignReleaseToDevice(env, deviceId, release);
+      const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
     if(found.status_only && !((data.type==="pull_logs" && found.managed_log_tasks===true)
