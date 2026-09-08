@@ -219,3 +219,19 @@ test('ADB通道未实现时不伪造连接成功，按钮在终端标题内且�
  context.uiOf().adb.connected=true;assert.match(context.pageAdb(''),/断开ADB/);
  context.adbDisconnect();assert.equal(context.uiOf().adb.connected,false);
 });
+
+test('维护按钮遵循能力和任务占用，历史成功不冒充本次结果',()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+ vm.runInContext(source,context);
+ const d={id:'fixture',enabled:true,status_only:true,managed_log_tasks:true,task:{id:'old',state:'success',label:'成功'}};
+ context.DEV=[d];context.selDev=d.id;
+ assert.equal(context.maintenanceAvailable(d,'pull_logs'),true);
+ assert.equal(context.maintenanceAvailable(d,'reboot'),false);
+ assert.doesNotMatch(context.pageAdb(''),/class="maintenance-status/);
+ d.task={id:'new',state:'running',expires_at:Date.now()+60000};assert.equal(context.maintenanceAvailable(d,'pull_logs'),false);
+ d.task.expires_at=Date.now()-1000;assert.equal(context.maintenanceAvailable(d,'pull_logs'),true);
+ context.MAINTENANCE_RUN.fixture={id:'new'};d.task.state='success';d.task.label='成功';
+ assert.match(context.pageAdb(''),/maintenance-status maintenance-success/);
+ d.enabled=false;assert.equal(context.maintenanceAvailable(d,'pull_logs'),false);
+ context.MAINTENANCE_RUN.fixture={pending:true};d.enabled=true;assert.equal(context.maintenanceAvailable(d,'pull_logs'),false);
+});

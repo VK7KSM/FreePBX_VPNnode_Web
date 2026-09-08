@@ -408,7 +408,7 @@ function renderOps(){
     src = ({ip:"IP",wifi:"Wi-Fi",cell:"Cell",network:"Wi-Fi / Cell"})[d.loc.source] || locLabel(d.loc.source);
     if(Number(d.loc.acc_m)>0) src += " · " + Math.round(Number(d.loc.acc_m)) + "m";
   }
-  var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "会话已开" : "未接入");
+  var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "已连接" : "未连接");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
   if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
@@ -464,19 +464,28 @@ function pageModel(){
   MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
   return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
 }
+var MAINTENANCE_RUN={};
+var MAINTENANCE_CAPS={pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+function maintenanceAvailable(d,type){
+  if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
+  if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
+  var t=d.task,expires=t && (Number(t.expires_at)||Date.parse(t.expires_at));
+  return !(t && ['pending','claimed','running'].includes(t.state) && !(Number.isFinite(expires)&&Date.now()>=expires));
+}
 function pageAdb(dis){
   var d = currentDev();
   var t = d && d.task ? d.task : {};
   var r = t.result || {};
   var u = uiOf();
   var on = !!(u && u.adb.connected);
-  var st = t.label || t.state || "";
+  var run= d && MAINTENANCE_RUN[d.id];
+  var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
   var h = '<div class="ops-actions" style="margin:.55rem 0">';
-  h += '<button class="btn-gray" onclick="enqueueRepair(\'pull_logs\')"'+dis+'>拉取日志</button>';
-  h += '<button class="btn-gray" onclick="enqueueRepair(\'heal_network\')"'+dis+'>强制自愈</button>';
-  h += '<button class="btn-gray" onclick="enqueueRepair(\'reboot\')"'+dis+'>受控重启</button>';
-  h += '<button class="btn-gray" onclick="enqueueRepair(\'restart_adbd\')"'+dis+'>重启本机adbd</button>';
-  if(st) h += '<span class="muted" style="margin-left:.55rem">'+esc(st)+"</span>";
+  h += '<button class="'+(maintenanceAvailable(d,'pull_logs')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'pull_logs\')"'+(maintenanceAvailable(d,'pull_logs')?'':' disabled')+'>拉取日志</button>';
+  h += '<button class="'+(maintenanceAvailable(d,'heal_network')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'heal_network\')"'+(maintenanceAvailable(d,'heal_network')?'':' disabled')+'>强制自愈</button>';
+  h += '<button class="'+(maintenanceAvailable(d,'reboot')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'reboot\')"'+(maintenanceAvailable(d,'reboot')?'':' disabled')+'>受控重启</button>';
+  h += '<button class="'+(maintenanceAvailable(d,'restart_adbd')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'restart_adbd\')"'+(maintenanceAvailable(d,'restart_adbd')?'':' disabled')+'>重启本机adbd</button>';
+  if(st) h += '<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
   h += "</div>";
   var maintenance='<section class="monitor"><h4>设备维护</h4><pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre><div class="monitor-footer">'+h;
   if(d && r.artifact) maintenance+='<a class="btn-gray" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 已截断':'')+'</a>';
@@ -484,7 +493,7 @@ function pageAdb(dis){
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
   var lines = (u && u.adb.lines) ? u.adb.lines : [];
-  h += '<span class="adb-sys">'+(on?'ADB 已连接':'ADB 未接入')+'</span>\n';
+  h += '<span class="adb-sys">'+(on?'ADB 已连接':'ADB 未连接')+'</span>\n';
   if(lines.length) {
     for(var i=0;i<lines.length;i++){
       h += '<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+"</span>\n";
@@ -840,7 +849,7 @@ function adbSend(){
   u.adb.histI = u.adb.hist.length;
   adbPrint("in", (u.adb.connected ? "adb " : "shell ")+raw);
   if(!u.adb.connected){
-    adbPrint("sys", "已记下。ADB 未接入，命令未送到设备。");
+    adbPrint("sys", "已记下。ADB 未连接，命令未送到设备。");
   } else {
     adbPrint("out", "远程配置客户端未接入，命令未送达设备。");
   }
@@ -862,13 +871,20 @@ function assignUpdate(){
 function enqueueRepair(type,params){
   var d = currentDev();
   if(!d) return;
+  var run=null;
+  if(MAINTENANCE_CAPS[type]){
+    if(!maintenanceAvailable(d,type))return Promise.resolve();
+    run={pending:true};MAINTENANCE_RUN[d.id]=run;renderOps();
+  }
   return fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type,params:params||{}})})
-    .then(function(r){ return r.json(); })
+    .then(function(r){return r.json();})
     .then(function(x){
-      if(!x.ok){ alert(x.msg || "下发失败"); return; }
-      loadDevices();
-      requestDeviceStatus(d.id);
-    }).catch(function(){alert('下发失败，请检查连接');});
+      if(!x.ok){if(run)run.error=true;alert(x.msg||'下发失败');return;}
+      if(run)run.id=x.task && x.task.id;
+      loadDevices();requestDeviceStatus(d.id);
+      return x;
+    }).catch(function(){if(run)run.error=true;alert('下发失败，请检查连接');})
+    .finally(function(){if(run){run.pending=false;if(selDev===d.id)renderOps();}});
 }
 function wifiScan(){
   enqueueRepair('scan_wifi');
