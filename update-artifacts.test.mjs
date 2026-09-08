@@ -60,3 +60,16 @@ test('覆盖安装复用签名更新及回滚流程，不新建旧修复安装�
   assert.equal(device.update.managed_update_v1,true);
   assert.equal(device.task,undefined);
 });
+
+test('能力上报留下的空更新记录不阻止首次下发，真实进行中任务仍受保护',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true,update:{state:'',managed_update_v1:true}}]});
+  const cookie=await login(f);
+  const rel={job_id:'first-install',manifest_raw:'{}',expires_at:0,versionCode:102,versionName:'fixture'};
+  f.data.set('elfremote_rel_102',rel);
+  const assign=versionCode=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode},cookie),f.env);
+  assert.equal((await assign(102)).status,200);
+  assert.equal(f.data.get('remote_devices')[0].update.job_id,'first-install');
+  f.data.set('elfremote_rel_103',{...rel,job_id:'second-install',versionCode:103});
+  assert.equal((await assign(103)).status,400);
+  assert.equal(f.data.get('remote_devices')[0].update.job_id,'first-install');
+});

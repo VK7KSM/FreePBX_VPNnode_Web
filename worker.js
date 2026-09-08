@@ -1447,7 +1447,7 @@ async function assignReleaseToDevice(env, deviceId, rel) {
     if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
     if (list[i].status_only && list[i].managed_update !== true) throw new Error("当前客户端尚未接通更新");
     if (list[i].update?.job_id === rel.job_id) return list[i];
-    if (list[i].update && !["success","recovered","rejected"].includes(list[i].update.state)
+    if (list[i].update?.job_id && !["success","recovered","rejected"].includes(list[i].update.state)
         && (!list[i].update.expires_at || Number(list[i].update.expires_at) > Date.now())) throw new Error("已有更新进行中");
     list[i].update = {
       job_id: rel.job_id,
