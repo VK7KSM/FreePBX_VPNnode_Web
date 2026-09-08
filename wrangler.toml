@@ -3,6 +3,9 @@ main = "worker.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
 
+[triggers]
+crons = ["* * * * *"]
+
 [[r2_buckets]]
 binding = "ELF_ARTIFACTS"
 bucket_name = "elfremote-private"

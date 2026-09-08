@@ -29,6 +29,8 @@ public final class ReportService extends Service {
     private PairingStore store;
     private NetworkHealer healer;
     private boolean loopStarted;
+    private boolean reporting;
+    private WakeScheduler wake;
     private String lastNotifyText = "";
     private int reportFailures;
     private PushConnection push;
@@ -46,6 +48,9 @@ public final class ReportService extends Service {
     private final Runnable loop = new Runnable() {
         @Override
         public void run() {
+            if (reporting) return;
+            reporting = true;
+            WakeScheduler.hold(ReportService.this, "report", 120000L);
             if (push != null) push.ensure();
             if (dailyLocation != null && store.registered()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
             else reportAndSchedule();
@@ -64,15 +69,24 @@ public final class ReportService extends Service {
             if (BuildConfig.STATUS_ONLY && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
             RuntimeLog.event("next_report delay_ms=" + delay);
             if (worker != null) {
-                worker.removeCallbacks(this);
-                worker.postDelayed(this, delay);
+                scheduleReport(delay);
             }
+            reporting = false;
+            WakeScheduler.release("report");
         }
     };
+
+    private void scheduleReport(long delay) {
+        worker.removeCallbacks(loop);
+        if (BuildConfig.STATUS_ONLY) wake.schedule("report", delay);
+        else worker.postDelayed(loop, delay);
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        wake = new WakeScheduler(this);
+        PermissionGate.initializeBackground(this);
         store = new PairingStore(this);
         traffic = new TrafficMeter(this);
         if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
@@ -120,6 +134,16 @@ public final class ReportService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && WakeScheduler.ACTION.equals(intent.getAction()) && worker != null) {
+            String key = intent.getStringExtra("wake_key");
+            worker.post(() -> {
+                try {
+                    RuntimeLog.event("wake_alarm key=" + key);
+                    if ("report".equals(key)) loop.run();
+                    else if (push != null) push.wake(key);
+                } finally { WakeScheduler.release("dispatch"); }
+            });
+        }
         if (intent != null && ACTION_RENEW.equals(intent.getAction())) {
             store.clearEnroll();
             store.setLastStatus("正在重新获取配对码");
@@ -136,7 +160,7 @@ public final class ReportService extends Service {
                 || ACTION_RENEW.equals(intent.getAction()))) {
             if (worker != null) worker.post(() -> {
                 if (push != null) { push.ensure(); push.networkHint(); }
-                tick();
+                loop.run();
             });
         }
         return START_STICKY;
@@ -156,6 +180,9 @@ public final class ReportService extends Service {
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
         }
         if (worker != null) worker.removeCallbacks(loop);
+        if (wake != null) wake.cancel("report");
+        WakeScheduler.release("report");
+        WakeScheduler.release("notice");
         if (worker != null && push != null) worker.post(push::close);
         if (worker != null && dailyLocation != null) worker.post(dailyLocation::close);
         if (workerThread != null) {
@@ -329,6 +356,7 @@ public final class ReportService extends Service {
         long version = notice.getLong("version");
         if (samplingRequestVersion == version) return;
         samplingRequestVersion = version;
+        WakeScheduler.hold(this, "notice", 120000L);
         RuntimeLog.event("push_notice_received version=" + version);
         try {
             JSONObject receipt = new JSONObject().put("device_id", store.deviceId()).put("token", store.token())
@@ -341,11 +369,11 @@ public final class ReportService extends Service {
             dailyLocation.beforePeriodicReport(() -> {
                 try { queueStatusRequest(notice, acknowledge); }
                 catch (Exception error) { RuntimeLog.error("requested_report_failed", error); }
-                finally { if (samplingRequestVersion == version) samplingRequestVersion = 0; }
+                finally { if (samplingRequestVersion == version) { samplingRequestVersion = 0; WakeScheduler.release("notice"); } }
             });
         } else {
             try { queueStatusRequest(notice, acknowledge); }
-            finally { samplingRequestVersion = 0; }
+            finally { samplingRequestVersion = 0; WakeScheduler.release("notice"); }
         }
     }
 
@@ -365,7 +393,7 @@ public final class ReportService extends Service {
                 worker.removeCallbacks(loop);
                 long delay = outbox.entries().length > 0 ? 60000L
                         : ("wifi".equals(networkType()) || "ethernet".equals(networkType()) || !push.connected() ? 900000L : 3600000L);
-                worker.postDelayed(loop, delay);
+                scheduleReport(delay);
                 RuntimeLog.event("requested_report_next delay_ms=" + delay);
             }
         }
@@ -375,7 +403,7 @@ public final class ReportService extends Service {
             reportFailures = Math.min(10, reportFailures + 1);
             if (worker != null) {
                 worker.removeCallbacks(loop);
-                worker.postDelayed(loop, StatusReporter.retryDelay(60000L, reportFailures));
+                scheduleReport(StatusReporter.retryDelay(60000L, reportFailures));
             }
         }
     }
@@ -429,7 +457,7 @@ public final class ReportService extends Service {
                 store.clearEnroll();
                 if (push != null) push.ensure();
                 RuntimeLog.event("pairing_revoked_register_again");
-                if (worker != null) { worker.removeCallbacks(loop); worker.postDelayed(loop, 1000L); }
+                if (worker != null) { scheduleReport(1000L); }
                 throw new java.io.IOException("pairing required");
             }
             return reply;
@@ -672,7 +700,9 @@ public final class ReportService extends Service {
                 return;
             }
             if (RepairPolicy.TYPE_RESTART_ADBD.equals(type)) {
-                armHealCmd(RepairPolicy.expiringAdbdCommand(offer.optLong("expires_at")));
+                JSONObject params = offer.optJSONObject("params");
+                if (params == null) params = new JSONObject();
+                armHealCmd(RepairPolicy.expiringAdbdCommand(offer.optLong("expires_at"), params.optString("lan_peer", "")));
                 String rc = waitHealRc(45000L);
                 String out = readHealOut();
                 if (!RepairPolicy.adbdSucceeded(rc, out)) {
@@ -683,7 +713,7 @@ public final class ReportService extends Service {
                 }
                 org.json.JSONObject result = new org.json.JSONObject();
                 result.put("stage", "adbd");
-                result.put("action", "loopback");
+                result.put("action", params.optString("lan_peer", "").isEmpty() ? "loopback" : "lan");
                 result.put("text", out.length() > 1500 ? out.substring(0, 1500) : out);
                 postTask(id, RepairPolicy.ST_SUCCESS, "adbd-5555", result);
                 writeLastTaskId(id);

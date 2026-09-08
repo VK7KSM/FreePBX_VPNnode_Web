@@ -45,6 +45,26 @@ final class PermissionGate {
         return pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
     }
 
+    static void initializeBackground(Context ctx) {
+        if (ignoringBattery(ctx)) return;
+        new Thread(() -> {
+            Process process = null;
+            try {
+                // 仅豁免本应用，不关闭系统休眠，也不请求用户现场点击。
+                process = new ProcessBuilder("su", "-c", "dumpsys deviceidle whitelist +net.elfradio.elfremote >/dev/null 2>&1").start();
+                long until = android.os.SystemClock.elapsedRealtime() + 3000L;
+                while (android.os.SystemClock.elapsedRealtime() < until) {
+                    try { process.exitValue(); break; }
+                    catch (IllegalThreadStateException running) { Thread.sleep(50L); }
+                }
+            } catch (Exception e) { RuntimeLog.error("background_permission_failed", e); }
+            finally {
+                if (process != null) process.destroy();
+                RuntimeLog.event("background_permission_ready=" + ignoringBattery(ctx));
+            }
+        }, "elfremote-background-permission").start();
+    }
+
     static void requestIgnoreBattery(Context ctx) {
         if (ignoringBattery(ctx)) return;
         Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);

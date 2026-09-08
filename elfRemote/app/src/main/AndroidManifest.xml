@@ -47,6 +47,8 @@
             android:exported="false"
             android:stopWithTask="false" />
 
+        <receiver android:name=".WakeReceiver" android:exported="false" />
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

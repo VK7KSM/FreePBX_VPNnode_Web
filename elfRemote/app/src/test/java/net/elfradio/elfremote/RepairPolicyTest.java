@@ -185,4 +185,16 @@ public class RepairPolicyTest {
         for (int i = 0; i < d.length; i++) sb.append(String.format("%02x", d[i] & 0xff));
         return sb.toString();
     }
+    @org.junit.Test public void lanAdbOnlyAllowsExplicitPrivatePeerAndKeepsRollback() {
+        String cmd = RepairPolicy.expiringAdbdCommand(900000L, "192.168.2.54");
+        org.junit.Assert.assertTrue(cmd.contains("-i wlan+ -s 192.168.2.54 -p tcp --dport 5555 -j ACCEPT"));
+        org.junit.Assert.assertTrue(cmd.contains("addedlan=1"));
+        org.junit.Assert.assertTrue(cmd.contains("iptables -D INPUT -i wlan+ -s 192.168.2.54"));
+        org.junit.Assert.assertTrue(cmd.contains("ADBD_LAN_OK"));
+        org.junit.Assert.assertTrue(cmd.contains("ip6tables -C INPUT ! -i lo"));
+        for (String bad : new String[]{"8.8.8.8", "192.168.2.54;reboot", "192.168.2.999", "192.168.02.54", "0.0.0.0/0"}) {
+            try { RepairPolicy.expiringAdbdCommand(900000L, bad); org.junit.Assert.fail(bad); }
+            catch (IllegalArgumentException expected) { }
+        }
+    }
 }

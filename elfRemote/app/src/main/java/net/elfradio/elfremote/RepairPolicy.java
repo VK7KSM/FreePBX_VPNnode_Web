@@ -138,13 +138,33 @@ final class RepairPolicy {
 
     static boolean adbdSucceeded(String rc, String output) {
         if (!"0".equals(rc) || output == null) return false;
-        for (String line : output.split("\\r?\\n")) if ("ADBD_LOOPBACK_OK".equals(line.trim())) return true;
+        for (String line : output.split("\\r?\\n")) if ("ADBD_LOOPBACK_OK".equals(line.trim()) || "ADBD_LAN_OK".equals(line.trim())) return true;
         return false;
     }
 
     static String expiringAdbdCommand(long deadline) {
+        return expiringAdbdCommand(deadline, "");
+    }
+
+    static String expiringAdbdCommand(long deadline, String peer) {
         if (deadline <= 0) throw new IllegalArgumentException("adbd deadline missing");
-        return "set -e\ntest $(date +%s) -lt " + (deadline / 1000L) + "\n" + adbdCommand();
+        String command = adbdCommand();
+        if (peer != null && !peer.isEmpty()) {
+            String[] parts = peer.split("\\.", -1);
+            if (parts.length != 4) throw new IllegalArgumentException("invalid-lan-peer");
+            for (String part : parts) if (!part.matches("0|[1-9][0-9]{0,2}") || Integer.parseInt(part) > 255)
+                throw new IllegalArgumentException("invalid-lan-peer");
+            boolean local = peer.startsWith("192.168.") || peer.startsWith("10.")
+                    || (parts[0].equals("172") && Integer.parseInt(parts[1]) >= 16 && Integer.parseInt(parts[1]) <= 31);
+            if (!local) throw new IllegalArgumentException("invalid-lan-peer");
+            String rule = "INPUT -i wlan+ -s " + peer + " -p tcp --dport 5555 -j ACCEPT";
+            command = command.replace("added4=0;", "addedlan=0; added4=0;")
+                    .replace("set +e; if", "set +e; if [ \"$addedlan\" = 1 ]; then iptables -D " + rule + "; fi; if")
+                    .replace("rule iptables\nrule ip6tables\n", "rule iptables\nrule ip6tables\n"
+                            + "if ! iptables -C " + rule + " 2>/dev/null; then iptables -I " + rule.replace("INPUT ", "INPUT 1 ") + "; addedlan=1; fi\n")
+                    .replace("trap - EXIT\necho ADBD_LOOPBACK_OK", "iptables -C " + rule + "\ntrap - EXIT\necho ADBD_LAN_OK");
+        }
+        return "set -e\ntest $(date +%s) -lt " + (deadline / 1000L) + "\n" + command;
     }
 
     static String installCommand() {

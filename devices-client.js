@@ -144,7 +144,7 @@ function deviceListStatus(d){
   if(update && update.state && !["success","recovered","rejected"].includes(update.state)) return update.label || "升级中";
   var task=d.task;
   if(task && ["pending","claimed","running"].includes(task.state)) return (task.type_label || "任务")+" · "+(task.label || "执行中");
-  return STATUS[d.id] || (d.contact_state==="report_overdue" ? "报告超时" : "等待上报信息");
+  return STATUS[d.id] || (d.contact_state==="awaiting_full_report" ? "设备已响应，等待报告" : d.contact_state==="checking_connection" ? "正在检查连接" : d.contact_state==="report_overdue" ? "报告超时" : "等待上报信息");
 }
 function requestListedDeviceStatus(id){
   var d=DEV.find(function(device){return device.id===id;});

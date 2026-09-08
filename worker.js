@@ -38,6 +38,7 @@ import { queryDailyTraffic } from "./daily-traffic.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
+import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -157,6 +158,15 @@ export class ElfStore {
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/__recovery" && request.method === "POST") {
+      return this.ctx.blockConcurrencyWhile(() => this.ctx.storage.transaction(async storage => {
+        const scoped = { ...this.env, __storage: storage };
+        const devices = await loadDevices(scoped);
+        const outgoing = await prepareRecovery(storage, devices);
+        await saveDevices(scoped, devices);
+        return json({ok:true,outgoing});
+      }));
+    }
     if (url.pathname.startsWith("/__auth/")) {
       return this.ctx.blockConcurrencyWhile(() => handleAdminAuth(this.ctx.storage, this.env, request));
     }
@@ -205,6 +215,7 @@ export class ElfStore {
 }
 
 const app = {
+  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -846,7 +857,7 @@ async function geoForIp(env, ip) {
 }
 
 function publicDevice(d, modelName) {
-  const contact = contactState(d.last_seen, Date.now(), d.status_only === true, d.network);
+  const contact = recoveryContact(d);
   return {
     id: d.id,
     name: d.paired === false ? (d.device_name || d.name) : d.name,
@@ -854,7 +865,7 @@ function publicDevice(d, modelName) {
     model_id: d.model_id,
     model_name: modelName || "",
     enabled: d.enabled !== false,
-    online: contact.state === "recent_contact" || contact.state === "awaiting_report",
+    online: ["recent_contact", "awaiting_report", "checking_connection", "awaiting_full_report"].includes(contact.state),
     last_seen: d.last_seen || null,
     contact_state: contact.state,
     report_due_at: contact.report_due_at,

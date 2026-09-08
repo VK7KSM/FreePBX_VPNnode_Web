@@ -24,21 +24,22 @@ final class PushConnection {
     private boolean connecting, subscribed, closed;
     private int failures;
     private String network = "";
-    private final Runnable retry = this::connect;
+    private final WakeScheduler wake;
+    private AlarmPingSender ping;
 
     PushConnection(Context context, Handler worker, PairingStore pairing, Receiver receiver) {
-        this.context = context; this.worker = worker; this.pairing = pairing; this.receiver = receiver;
+        this.context = context; this.worker = worker; this.pairing = pairing; this.receiver = receiver; this.wake = new WakeScheduler(context);
     }
 
     void ensure() {
         if (closed) return;
         if (!pairing.registered()) {
-            disposeClient(); worker.removeCallbacks(retry); identity = ""; prefs = null; return;
+            disposeClient(); wake.cancel("retry"); identity = ""; prefs = null; return;
         }
         String next = PairingStore.sha256Hex(Protocol.BASE_URL + ":" + pairing.deviceId());
         if (!next.equals(identity)) {
             disposeClient();
-            worker.removeCallbacks(retry);
+            wake.cancel("retry");
             identity = next;
             prefs = context.getSharedPreferences("push-" + identity, Context.MODE_PRIVATE);
             failures = 0;
@@ -59,12 +60,13 @@ final class PushConnection {
     void networkHint() {
         if (closed || prefs == null) return;
         String current = activeNetwork();
-        if (!network.equals(current)) {
+        boolean changed = !network.equals(current);
+        if (changed) {
             disposeClient();
             network = current;
             RuntimeLog.event("mqtt_network_changed");
         }
-        if (!current.isEmpty() && !connecting && !connected()) connect();
+        if (!current.isEmpty() && !connecting && !connected() && (changed || failures == 0)) connect();
     }
 
     private JSONObject identityBody() throws Exception {
@@ -73,8 +75,9 @@ final class PushConnection {
 
     private void connect() {
         if (closed || !pairing.registered() || connecting || connected()) return;
-        worker.removeCallbacks(retry);
+        wake.cancel("retry");
         connecting = true;
+        WakeScheduler.hold(context, "connect", 60000L);
         try {
             network = activeNetwork();
             if (network.isEmpty()) throw new IOException("network unavailable");
@@ -96,7 +99,10 @@ final class PushConnection {
             if (client == null) {
                 File directory = new File(context.getFilesDir(), "mqtt/" + identity);
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("mqtt storage unavailable");
-                client = new MqttAsyncClient("ssl://" + host + ":" + port, username, new MqttDefaultFilePersistence(directory.getPath()));
+                ping = new AlarmPingSender(context);
+                client = new MqttAsyncClient("ssl://" + host + ":" + port, username,
+                        new MqttDefaultFilePersistence(directory.getPath()), ping, null,
+                        android.os.SystemClock::elapsedRealtimeNanos);
                 client.setManualAcks(true);
                 final MqttAsyncClient source = client;
                 client.setCallback(new MqttCallback() {
@@ -165,7 +171,7 @@ final class PushConnection {
                     }
                     connecting = false; subscribed = true; failures = 0;
                     RuntimeLog.event("mqtt_subscribed");
-                    sync();
+                    try { sync(); } finally { WakeScheduler.release("connect"); }
                 }); }
                 public void onFailure(IMqttToken token, Throwable error) { worker.post(() -> {
                     if (client == source && !closed) { disposeClient(); schedule(error); }
@@ -189,13 +195,16 @@ final class PushConnection {
         connecting = false; subscribed = false;
         if (closed) return;
         long delay = PushPolicy.retryDelay(failures++, Math.random());
-        worker.removeCallbacks(retry);
-        worker.postDelayed(retry, delay);
+        wake.cancel("retry");
+        wake.schedule("retry", delay);
+        WakeScheduler.release("connect");
         RuntimeLog.event("mqtt_retry delay_ms=" + delay);
         if (error != null) RuntimeLog.error("mqtt_failed", error);
     }
 
     private void disposeClient() {
+        if (ping != null) { ping.stop(); ping = null; }
+        WakeScheduler.release("connect");
         MqttAsyncClient previous = client;
         client = null; connecting = false; subscribed = false;
         if (previous != null) {
@@ -203,5 +212,9 @@ final class PushConnection {
             try { previous.close(true); } catch (Exception ignored) {}
         }
     }
-    void close() { closed = true; worker.removeCallbacks(retry); disposeClient(); }
+    void wake(String key) {
+        if ("retry".equals(key)) connect();
+        else if ("ping".equals(key) && ping != null) ping.fire();
+    }
+    void close() { closed = true; wake.cancel("retry"); disposeClient(); }
 }
