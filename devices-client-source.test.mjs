@@ -246,3 +246,19 @@ test('已发布版本按编号降序，默认最新，手动选择不被重绘�
  context.fetch=async()=>({ok:false});await context.loadReleases();
  assert.match(context.pageUpdate(''),/版本读取失败/);assert.match(context.pageUpdate(''),/assignUpdate\(\)" disabled/);
 });
+
+test('更新检查区分新旧和未知版本，快捷更新总是指定最新版',()=>{
+ const requests=[];
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:(url,options)=>{requests.push(JSON.parse(options.body));return new Promise(()=>{});}});
+ vm.runInContext(source,context);context.DEV=[{id:'fixture',app_version:'0.1.9'}];context.selDev='fixture';context.RELEASE_STATE='ready';
+ context.RELEASES=[{versionCode:95,versionName:'0.1.94-production-lost-mode'},{versionCode:10,versionName:'0.1.9'}];context.uiOf().releaseVersion=10;
+ assert.match(context.pageUpdate(''),/新的软件版本.*assignUpdate\(95\)/);
+ context.assignUpdate(95);assert.equal(requests[0].versionCode,95);
+ for(const version of ['0.1.94-production-lost-mode','0.1.94','0.1.100']){context.DEV[0].app_version=version;assert.match(context.pageUpdate(''),/当前版本即最新版本/);}
+ context.DEV[0].app_version='未知';assert.match(context.pageUpdate(''),/无法识别/);assert.doesNotMatch(context.pageUpdate(''),/当前版本即最新版本/);
+ context.DEV[0].app_version='0.1.9';context.DEV[0].update={state:'downloading'};
+ assert.match(context.pageUpdate(''),/assignUpdate\(95\)" disabled/);context.assignUpdate(95);assert.equal(requests.length,1);
+ assert.match(context.updateProgress({state:'success',target:'0.1.80',detail:'health-ok'}),/最近一次更新.*0.1.80.*运行正常/);
+ assert.doesNotMatch(context.updateProgress({state:'success',detail:'health-ok'}),/health-ok/);
+ assert.match(context.updateProgress({state:'rejected',detail:'hash-mismatch'}),/安装包校验不通过/);
+});

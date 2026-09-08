@@ -524,19 +524,40 @@ function selectedRelease(){
   var u=uiOf(),selected=u && u.releaseVersion;
   return RELEASES.find(function(r){return String(r.versionCode)===String(selected);}) || RELEASES[0];
 }
+function compareReleaseVersion(current,latest){
+  var exact=RELEASES.find(function(r){return r.versionName===current;});
+  if(exact)return Math.sign(exact.versionCode-latest.versionCode);
+  var a=String(current||'').match(/^\d+(?:\.\d+)+/),b=String(latest.versionName||'').match(/^\d+(?:\.\d+)+/);
+  if(!a||!b)return null;
+  a=a[0].split('.').map(Number);b=b[0].split('.').map(Number);
+  for(var i=0;i<Math.max(a.length,b.length);i++){var diff=(a[i]||0)-(b[i]||0);if(diff)return Math.sign(diff);}
+  return 0;
+}
+function updateBusy(u){return ['pending','claimed','downloading','verifying','installing','wait_health','rollback'].includes(u.state);}
+function updateProgress(u){
+  var states={pending:'更新已发送，等待设备接收。',claimed:'设备已接收更新，正在准备下载安装包。',downloading:'设备正在下载安装包，请稍候。',verifying:'下载完成，正在检查安装包是否完整、签名是否正确。',installing:'正在设备上安装新版本，请等待安装结果。',wait_health:'新版本已安装，正在确认客户端能正常启动和上报。',success:'这次更新已完成，设备已确认客户端运行正常。',rollback:'更新后未能确认运行正常，正在恢复之前可用的版本。',recovered:'已恢复之前可用的版本，本次更新未完成。',rejected:'设备未执行本次更新。'};
+  var reasons={'wrong-device':'安装包指定的设备与当前设备不符。',expired:'更新任务已过期，请重新下发。','insufficient-storage':'安装程序检查可用存储空间未通过，请检查设备存储。','hash-mismatch':'下载的安装包校验不通过，请重新下发。','cert-mismatch':'安装包签名与客户端要求不一致，未继续安装。','apk-metadata-mismatch':'安装包的包名或版本与发布记录不一致。','install-fail':'系统安装失败，正在等待设备报告恢复结果。','health-timeout':'等待新版本正常启动的时间已超过限制。','rollback-fail':'恢复旧版本失败，请拉取日志检查原因。'};
+  if(!u.state)return '尚未从网页发起过客户端更新。';
+  var prefix=u.target?'最近一次更新（'+u.target+'）：':'';
+  return prefix+(states[u.state]||'设备尚未返回可识别的安装进展，请拉取最新信息。')+(reasons[u.detail]||'');
+}
 function pageUpdate(dis){
   var d = currentDev();
   var u = d && d.update ? d.update : {};
   var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
   var h = '<div class="update-facts">';
   h += kv("设备当前版本", ver);
-  h += kv("上次下发版本", u.target || "无");
-  h += kv("阶段", u.label || u.state || "无");
-  h += kv("说明", u.detail || "");
+  var latest=RELEASES[0],comparison=latest?compareReleaseVersion(d && d.app_version,latest):null;
+  var check=RELEASE_STATE==='error'?'无法读取已发布版本，请重试。':RELEASE_STATE!=='ready'?'正在检查是否有新版本…':!latest?'暂无已发布版本。':comparison===null?'无法识别设备当前版本，请先拉取设备信息。':comparison>=0?'当前版本即最新版本':'新的软件版本 '+latest.versionName;
+  h += '<div class="kv"><div class="k">更新安装状态</div><div class="v">'+esc(check);
+  var busy=updateBusy(u),updateDisabled=dis || (busy?' disabled':'');
+  if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+updateDisabled+'>更新</button>';
+  h += '</div></div>';
+  h += kv("安装进展与结果", updateProgress(u));
   h += "</div>";
   var status=functionSection('更新状态',h);h='';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
-  var ready=RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=dis || (ready?'':' disabled');
+  var ready=RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=updateDisabled || (ready?'':' disabled');
   h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value"'+blocked+'>';
   if(!ready)h+='<option value="">'+(RELEASE_STATE==='error'?'版本读取失败':RELEASE_STATE==='ready'?'暂无已发布版本':'正在读取版本…')+'</option>';
   else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(i===0?'（最新发布）':'')+'</option>';});
@@ -874,10 +895,10 @@ function adbSend(){
   }
   renderOps();
 }
-function assignUpdate(){
+function assignUpdate(versionCode){
   var d = currentDev();
-  if(!d) return;
-  var vc = parseInt($("updVc") && $("updVc").value, 10);
+  if(!d || updateBusy(d.update||{})) return;
+  var vc = parseInt(versionCode===undefined ? ($("updVc") && $("updVc").value) : versionCode, 10);
   if(RELEASE_STATE!=='ready' || !RELEASES.some(function(r){return r.versionCode===vc;})){ alert('请选择已发布版本'); return; }
   fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,versionCode:vc})})
     .then(function(r){ return r.json(); })
