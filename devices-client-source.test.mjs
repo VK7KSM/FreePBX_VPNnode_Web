@@ -157,7 +157,7 @@ test("devices-client-source 必须与 devices-client.js 逐字一致", () => {
 test("远程ADB 含快捷任务，顶栏保留更新客户端，没有修机项", () => {
   const root = path.dirname(fileURLToPath(import.meta.url));
   const raw = fs.readFileSync(path.join(root, "devices-client.js"), "utf8");
-  assert.match(raw, /\["adb", "远程ADB"/);
+  assert.match(raw, /\["adb", "远程终端"/);
   assert.match(raw, /\["update", "更新客户端"/);
   assert.equal(raw.includes('["repair"'), false);
   assert.equal(raw.includes("类型化修机"), false);

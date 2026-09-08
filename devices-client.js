@@ -15,7 +15,7 @@ var historyMarker = null;
 var deviceLoad = null;
 
 var FN_ITEMS = [
-  ["adb", "远程ADB", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
+  ["adb", "远程终端", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
   ["wifi", "系统配置", '<path d="M9.5 3h5l.6 2.4 2.1 1.2 2.4-.7 2.5 4.2-1.8 1.7v2.4l1.8 1.7-2.5 4.2-2.4-.7-2.1 1.2-.6 2.4h-5l-.6-2.4-2.1-1.2-2.4.7-2.5-4.2 1.8-1.7v-2.4L1.9 10l2.5-4.2 2.4.7 2.1-1.2z" transform="translate(1 0) scale(.92)"/><circle cx="12" cy="12" r="3"/>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
@@ -488,7 +488,7 @@ function pageAdb(dis){
   if(st) h += '<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
   h += "</div>";
   var maintenance='<section class="monitor"><h4>设备维护</h4><pre class="adb-term task-result" id="taskOut">'+esc(r.text||'')+'</pre><div class="monitor-footer">'+h;
-  if(d && r.artifact) maintenance+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+(r.artifact.truncated?' · 仅含部分日志':'')+'</a>';
+  if(d && r.artifact) maintenance+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB'+'</a>';
   maintenance+='</div></section>';h='';
   h += '<div class="adb-box">';
   h += '<pre class="adb-term" id="adbTerm">';
