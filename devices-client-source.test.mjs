@@ -187,7 +187,7 @@ test('今日流量使用KB，无数据不冒充零；系统配置保留原Wi-Fi�
  assert.doesNotMatch(context.pageSystem(''),/type="checkbox"/);
 });
 test('流量历史过期请求不覆盖新的范围，柱子选择显示收发明细',async()=>{
- const nodes={trafficFrom:{value:'2026-09-01'},trafficTo:{value:'2026-09-08'},trafficChart:{innerHTML:''},trafficDetail:{textContent:''}};
+ const nodes={trafficFrom:{value:'2026-09-01'},trafficTo:{value:'2026-09-08'},trafficChart:{innerHTML:''},trafficY:{innerHTML:''},trafficDetail:{textContent:''}};
  const pending=[];
  const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:id=>nodes[id],querySelectorAll:()=>[]},fetch:()=>new Promise(resolve=>pending.push(resolve))});
  vm.runInContext(source,context);
@@ -197,5 +197,5 @@ test('流量历史过期请求不覆盖新的范围，柱子选择显示收发�
  pending[1]({ok:true,json:async()=>({ok:true,days:[row]})});await second;
  pending[0]({ok:true,json:async()=>({ok:true,days:[]})});await first;
  assert.equal(context.TRAFFIC_HISTORY.days.length,1);
- assert.match(nodes.trafficDetail.textContent,/2026-09-08.*接收 1.0 KB.*发送 2.0 KB.*总计 3.0 KB/);
+ assert.match(nodes.trafficDetail.innerHTML,/2026-09-08.*traffic-rx-text.*接收 1.0 KB.*traffic-tx-text.*发送 2.0 KB.*总计 3.0 KB/);
 });

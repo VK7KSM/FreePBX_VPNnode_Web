@@ -663,7 +663,7 @@ function renderRemoteConsole(){
 function openTrafficHistory(){
   var d=currentDev();if(!d)return;var to=trafficDay();
   TRAFFIC_HISTORY={seq:TRAFFIC_HISTORY.seq+1,id:d.id,name:d.name,days:[]};
-  $('trafficHistoryBody').innerHTML='<div class="traffic-header"><h3>历史流量</h3><div class="traffic-range"><input type="date" aria-label="开始日期" id="trafficFrom" value="'+shiftTrafficDay(to,-29)+'" onchange="loadTrafficHistory()"><span>–</span><input type="date" aria-label="结束日期" id="trafficTo" value="'+to+'" onchange="loadTrafficHistory()"></div></div><div id="trafficChart"></div><p id="trafficDetail" role="status"></p>';
+  $('trafficHistoryBody').innerHTML='<div class="traffic-header"><h3>历史流量</h3><div class="traffic-range"><input type="date" aria-label="开始日期" id="trafficFrom" value="'+shiftTrafficDay(to,-29)+'" onchange="loadTrafficHistory()"><span>–</span><input type="date" aria-label="结束日期" id="trafficTo" value="'+to+'" onchange="loadTrafficHistory()"></div><button class="btn-close" onclick="closeTrafficHistory()" aria-label="关闭流量历史">&times;</button></div><div class="traffic-chart-frame"><div id="trafficY"></div><div id="trafficChart"></div></div><p id="trafficDetail" role="status"></p>';
   show('trafficHistoryWrap');loadTrafficHistory();
 }
 function closeTrafficHistory(){TRAFFIC_HISTORY.seq++;hide('trafficHistoryWrap');}
@@ -677,16 +677,18 @@ function loadTrafficHistory(){
   }).catch(function(e){if(TRAFFIC_HISTORY===state&&seq===state.seq){$('trafficChart').innerHTML='';$('trafficDetail').textContent=e.message;}});
 }
 function renderTrafficChart(){
-  var days=TRAFFIC_HISTORY.days,max=Math.max(1,...days.map(function(d){return d.rx_bytes+d.tx_bytes;}));
+  var days=TRAFFIC_HISTORY.days,peak=Math.max(1000,...days.map(function(d){return d.rx_bytes+d.tx_bytes;}));
+  var power=Math.pow(10,Math.floor(Math.log10(peak/3))),step=[1,2,5,10].map(function(n){return n*power;}).find(function(n){return n>=peak/3;}),max=step*3;
+  $('trafficY').innerHTML='<small>KB</small>'+[3,2,1,0].map(function(n){return '<span style="top:'+((3-n)*70)+'px">'+(n*step/1000).toLocaleString('en',{maximumFractionDigits:1})+'</span>';}).join('');
   var axis=days.length?[0,Math.floor((days.length-1)/2),days.length-1].filter(function(n,i,a){return a.indexOf(n)===i;}):[];
-  $('trafficChart').innerHTML='<div class="traffic-plot" style="min-width:'+Math.max(0,days.length*9)+'px"><div class="traffic-bars">'+days.map(function(d,i){
+  $('trafficChart').innerHTML='<div class="traffic-plot" style="min-width:'+Math.max(0,days.length*8)+'px"><div class="traffic-bars">'+days.map(function(d,i){
     var title=d.date+' · '+dailyTrafficHtml(d);
-    return '<button class="traffic-bar" onclick="selectTrafficBar('+i+')" title="'+esc(title)+'" aria-label="'+esc(title)+'"><span class="traffic-stack">'+(d.available?'<i class="traffic-tx" style="height:'+Math.max(d.tx_bytes?1:0,d.tx_bytes/max*180)+'px"></i><i class="traffic-rx" style="height:'+Math.max(d.rx_bytes?1:0,d.rx_bytes/max*180)+'px"></i>':'')+'</span></button>';
+    return '<button class="traffic-bar" onclick="selectTrafficBar('+i+')" title="'+esc(title)+'" aria-label="'+esc(title)+'"><span class="traffic-stack">'+(d.available?'<i class="traffic-tx" style="height:'+Math.max(d.tx_bytes?1:0,d.tx_bytes/max*210)+'px"></i><i class="traffic-rx" style="height:'+Math.max(d.rx_bytes?1:0,d.rx_bytes/max*210)+'px"></i>':'')+'</span>'+(!d.available||d.rx_bytes+d.tx_bytes===0?'<span class="traffic-empty" aria-hidden="true"></span>':'')+'</button>';
   }).join('')+'</div><div class="traffic-axis">'+axis.map(function(i){return '<span style="left:'+((i+.5)/days.length*100)+'%">'+days[i].date.slice(5).replace('-','/')+'</span>';}).join('')+'</div></div>';
 }
 function selectTrafficBar(i){
   var d=TRAFFIC_HISTORY.days[i];if(!d)return;
-  $('trafficDetail').textContent=d.date+' · '+dailyTrafficHtml(d)+(d.available?' · 总计 '+trafficBytes(d.rx_bytes+d.tx_bytes):'');
+  $('trafficDetail').innerHTML=esc(d.date)+' · '+(d.available?'<span class="traffic-rx-text">接收 '+trafficBytes(d.rx_bytes)+'</span> / <span class="traffic-tx-text">发送 '+trafficBytes(d.tx_bytes)+'</span> / 总计 '+trafficBytes(d.rx_bytes+d.tx_bytes):'无数据');
   document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);if(n===i){var chart=$('trafficChart'),bar=b.getBoundingClientRect(),view=chart.getBoundingClientRect();chart.scrollLeft+=bar.left-view.left-(chart.clientWidth-bar.width)/2;}});
 }
 var SYSTEM_TAB='Wi-Fi';
