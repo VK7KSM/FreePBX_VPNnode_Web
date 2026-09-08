@@ -110,7 +110,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -130,7 +130,8 @@ export const REPAIR_TYPE_LABELS = {
   restart_adbd: "重启本机adbd",
   scan_wifi: "扫描 Wi-Fi",
   play_alarm: "播放警报",
-  stop_alarm: "停止警报"
+  stop_alarm: "停止警报",
+  locate_now: "立即定位"
 };
 
 export function installParamsFromRelease(rel, baseUrl) {

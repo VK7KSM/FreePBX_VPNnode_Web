@@ -4,6 +4,12 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DailyLocationTest {
+    @Test public void explicitRequestRejectsRecentButPreRequestCache() {
+        assertTrue(DailyLocation.recent(1000, 3000));
+        assertFalse(DailyLocation.freshForRequest(1000, 3000, 2000));
+        assertTrue(DailyLocation.freshForRequest(2500, 3000, 2000));
+        assertFalse(DailyLocation.freshForRequest(4000, 3000, 2000));
+    }
     @Test public void firstPermissionInitializationIsNotBlockedByPreviousDeniedSample() {
         assertTrue(DailyLocation.shouldStart(1000, 0, false, 2000));
         assertFalse(DailyLocation.shouldStart(1000, 1000, false, 2000));

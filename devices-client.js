@@ -579,6 +579,11 @@ function pageLocate(dis){
   var h = '<div class="ops-actions">';
   h += '<button class="btn-green" onclick="locNow()"'+dis+'>立即更新位置</button>';
   h += '<button class="btn-gray" onclick="clearHistoryMarker();flyTo(selDev)">实时位置</button>';
+  var device=currentDev(), task=device && device.task;
+  if(task && task.type==='locate_now') {
+    var outcomes={'location-sampled':'已取得新坐标','location-timeout':'未取得新坐标，采样超时','location-location_disabled':'系统定位已关闭','location-permission_denied':'定位权限不可用','location-provider_unavailable':'定位服务不可用'};
+    h += '<span class="muted">'+esc(outcomes[task.detail]||task.label||'等待设备')+'</span>';
+  }
   h += "</div>";
   if(!state) return h;
   h += '<div class="ops-actions" style="margin-top:8px"><label>开始 <input class="inp" type="datetime-local" aria-label="开始时间" value="'+esc(state.from)+'" onchange="historyState().from=this.value"></label>';
@@ -659,7 +664,7 @@ function pageAlarm(dis){
   h += '<button class="btn-green" onclick="alarmPlay()"'+dis+'>播放警报声</button>';
   h += '<button class="btn-gray" onclick="enqueueRepair(\'stop_alarm\')"'+dis+'>停止警报</button>';
   h += "</div>";
-  h += '<table style="margin-top:.55rem"><thead><tr><th>最近播放时间</th><th>时长</th><th>状态</th></tr></thead><tbody>';
+  h += '<table style="margin-top:.55rem"><thead><tr><th>最近播放时间</th><th>最长时长</th><th>状态</th></tr></thead><tbody>';
   if(!alarm || !alarm.started_at_ms) h += '<tr><td colspan="3" class="muted">还没有播放记录</td></tr>';
   else h += '<tr><td>'+sydney(alarm.started_at_ms)+'</td><td>'+esc(alarm.duration_ms/1000)+' 秒</td><td>'+esc(labels[alarm.state]||'未知')+'</td></tr>';
   h += "</tbody></table>";
@@ -809,13 +814,13 @@ function assignUpdate(){
 function enqueueRepair(type){
   var d = currentDev();
   if(!d) return;
-  fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type})})
+  return fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }
       loadDevices();
       requestDeviceStatus(d.id);
-    });
+    }).catch(function(){alert('下发失败，请检查连接');});
 }
 function wifiScan(){
   enqueueRepair('scan_wifi');
@@ -843,12 +848,8 @@ function contactEdit(i){
 function contactDel(i){
   unavailableAction('删除通信录');
 }
-async function locNow(){
-  var id=selDev;if(!currentDev()) return;
-  var ok=await requestDeviceStatus(id);
-  if(selDev!==id) return;
-  if(ok){historyState().to=localDateInput(new Date(Date.now()+60000));await queryHistory(false);}
-  else{historyState().error=STATUS[id]||'已有拉取请求正在执行';renderOps();}
+function locNow(){
+  return enqueueRepair('locate_now');
 }
 function alarmPlay(){
   enqueueRepair('play_alarm');

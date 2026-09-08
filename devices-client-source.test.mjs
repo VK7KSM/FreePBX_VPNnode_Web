@@ -73,6 +73,7 @@ test('警报页面只显示设备实报状态并下发真实任务',()=>{
   assert.match(html,/播放中断/);assert.match(html,/停止警报/);
   let type='';context.enqueueRepair=value=>{type=value;};context.alarmPlay();assert.equal(type,'play_alarm');
   assert.equal(context.DEV[0].alarm.state,'interrupted');
+  context.locNow();assert.equal(type,'locate_now');
 });
 
 test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {
@@ -105,13 +106,13 @@ test("历史查询切设备不串台，翻页保持范围，修改范围重新�
 });
 
 test("远程定位失败不制造历史，流量缺失不伪装为零", async () => {
-  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  const errors=[];
+  const context=vm.createContext({alert:v=>errors.push(v),fetch:async()=>{throw new Error('offline');},adminSession:{check(){}},setTimeout(){},setInterval(){}});
   vm.runInContext(source,context);
   context.DEV=[{id:"a"}];context.selDev="a";context.renderOps=()=>{};
-  context.requestDeviceStatus=async()=>false;
   await context.locNow();
   assert.equal(context.historyState().rows.length,0);
-  assert.ok(context.historyState().error);
+  assert.match(errors[0],/下发失败/);
   assert.match(context.trafficHtml(null),/暂无有效计量/);
   assert.doesNotMatch(context.trafficHtml(null),/0\.0 KiB/);
 });

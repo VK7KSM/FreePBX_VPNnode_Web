@@ -35,6 +35,7 @@ public final class ReportService extends Service {
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
     private AlarmPlayer alarm;
+    private String locatingTask = "";
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
@@ -294,6 +295,7 @@ public final class ReportService extends Service {
         body.put("managed_adbd_tasks", true);
         body.put("managed_wifi_scan_tasks", true);
         body.put("managed_alarm_tasks", true);
+        body.put("managed_locate_tasks", true);
         body.put("alarm", alarm.snapshot());
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
@@ -399,7 +401,8 @@ public final class ReportService extends Service {
                     || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_wifi_scan_v1") && "scan_wifi".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_alarm_v1") && ("play_alarm".equals(managed.optString("type"))
-                    || "stop_alarm".equals(managed.optString("type")))))) {
+                    || "stop_alarm".equals(managed.optString("type"))))
+                    || (managed.optBoolean("managed_locate_v1") && "locate_now".equals(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -524,6 +527,7 @@ public final class ReportService extends Service {
         if (offer == null) return;
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
+        if (id.equals(locatingTask)) return;
         try {
             JSONObject saved = taskReceipts().read(id);
             if (saved != null) {
@@ -595,6 +599,19 @@ public final class ReportService extends Service {
             String type = offer.optString("type", "");
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
+            if (RepairPolicy.TYPE_LOCATE_NOW.equals(type)) {
+                if (dailyLocation == null) throw new java.io.IOException("location-unavailable");
+                locatingTask = id;
+                dailyLocation.requestNow(() -> {
+                    try {
+                        String outcome = dailyLocation.outcome();
+                        postTask(id, "sampled".equals(outcome) ? RepairPolicy.ST_SUCCESS : RepairPolicy.ST_FAILED,
+                                "location-" + outcome, new JSONObject().put("stage", "location").put("action", outcome));
+                    } catch (Exception error) { RuntimeLog.error("location_task_result_pending", error); }
+                    finally { locatingTask = ""; tick(); }
+                });
+                return;
+            }
             if (RepairPolicy.TYPE_PLAY_ALARM.equals(type) || RepairPolicy.TYPE_STOP_ALARM.equals(type)) {
                 if (RepairPolicy.rejectReason(offer, System.currentTimeMillis()).length() > 0) {
                     postTask(id, RepairPolicy.ST_REJECTED, "expired", null);

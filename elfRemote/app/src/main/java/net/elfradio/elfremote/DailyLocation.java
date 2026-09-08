@@ -21,6 +21,7 @@ final class DailyLocation {
     private final Runnable timeout = () -> finish("timeout");
     private String reason = "not_sampled";
     private boolean gpsRequested;
+    private long freshSinceNanos;
 
     DailyLocation(Context context, Handler worker) {
         this.context = context.getApplicationContext();
@@ -42,6 +43,16 @@ final class DailyLocation {
     }
 
     String reason() { return "sampled".equals(reason) || "recent_cache".equals(reason) ? "no_cached_location" : reason; }
+    String outcome() { return reason; }
+
+    static boolean freshForRequest(long sample, long now, long since) {
+        return recent(sample, now) && (since == 0 || sample >= since);
+    }
+
+    void requestNow(Runnable then) {
+        freshSinceNanos = SystemClock.elapsedRealtimeNanos();
+        beforePeriodicReport(then);
+    }
 
     void beforePeriodicReport(Runnable then) {
         if (completion != null) {
@@ -51,11 +62,11 @@ final class DailyLocation {
         }
         long now = System.currentTimeMillis();
         boolean granted = PermissionGate.hasLocation(context);
-        if (!"not_sampled".equals(reason) && !shouldStart(prefs.getLong("attempt_at", 0), prefs.getLong("permission_attempt_at", 0), granted, now)) { then.run(); return; }
+        if (freshSinceNanos == 0 && !"not_sampled".equals(reason) && !shouldStart(prefs.getLong("attempt_at", 0), prefs.getLong("permission_attempt_at", 0), granted, now)) { then.run(); return; }
         SharedPreferences.Editor editor = prefs.edit().putLong("attempt_at", now);
         if (!granted) editor.putLong("permission_attempt_at", now);
         if (!editor.commit()) {
-            reason = "schedule_unavailable"; then.run(); return;
+            reason = "schedule_unavailable"; freshSinceNanos = 0; then.run(); return;
         }
         completion = then;
         try {
@@ -86,14 +97,14 @@ final class DailyLocation {
                 if (!enabled(provider)) continue;
                 Location saved = manager.getLastKnownLocation(provider);
                 if (saved != null && (!gps || LocationManager.GPS_PROVIDER.equals(provider))
-                        && recent(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
+                        && freshSinceNanos == 0 && recent(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
                     finish("recent_cache"); return;
                 }
             }
             gpsRequested = gps;
             listener = new LocationListener() {
                 @Override public void onLocationChanged(Location location) {
-                    if (completion == null || !recent(location.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) return;
+                    if (completion == null || !freshForRequest(location.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos(), freshSinceNanos)) return;
                     if (!gpsRequested || LocationManager.GPS_PROVIDER.equals(location.getProvider())) finish("sampled");
                 }
                 @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
@@ -118,6 +129,7 @@ final class DailyLocation {
 
     private void finish(String outcome) {
         reason = outcome;
+        freshSinceNanos = 0;
         worker.removeCallbacks(timeout);
         if (listener != null) {
             try { manager.removeUpdates(listener); }
