@@ -12,6 +12,8 @@ final class RepairPolicy {
     static final String TYPE_INSTALL_APK = "install_apk";
     static final String TYPE_RESTART_ADBD = "restart_adbd";
     static final String TYPE_SCAN_WIFI = "scan_wifi";
+    static final String TYPE_PLAY_ALARM = "play_alarm";
+    static final String TYPE_STOP_ALARM = "stop_alarm";
     static final String PHASE_RUNNING = "running";
     static final String PHASE_INSTALLING = "installing";
     static final String PHASE_DONE = "done";
@@ -51,7 +53,8 @@ final class RepairPolicy {
                 || TYPE_REBOOT.equals(type)
                 || TYPE_INSTALL_APK.equals(type)
                 || TYPE_RESTART_ADBD.equals(type)
-                || TYPE_SCAN_WIFI.equals(type);
+                || TYPE_SCAN_WIFI.equals(type)
+                || TYPE_PLAY_ALARM.equals(type) || TYPE_STOP_ALARM.equals(type);
     }
 
     static String rejectReason(JSONObject task, long nowMs) {

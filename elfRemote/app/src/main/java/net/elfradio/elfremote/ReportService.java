@@ -34,6 +34,7 @@ public final class ReportService extends Service {
     private PushConnection push;
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
+    private AlarmPlayer alarm;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
@@ -80,6 +81,10 @@ public final class ReportService extends Service {
             workerThread.start();
             worker = new Handler(workerThread.getLooper());
         }
+        alarm = new AlarmPlayer(this, new Handler(android.os.Looper.getMainLooper()), () -> {
+            Handler target = worker;
+            if (target != null) target.post(this::tick);
+        });
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
         if (BuildConfig.STATUS_ONLY) {
@@ -138,6 +143,7 @@ public final class ReportService extends Service {
     @Override
     public void onDestroy() {
         RuntimeLog.event("service_stop");
+        if (alarm != null) alarm.close();
         if (connectivity != null && networkCallback != null) {
             try { connectivity.unregisterNetworkCallback(networkCallback); }
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
@@ -287,6 +293,8 @@ public final class ReportService extends Service {
         body.put("managed_reboot_tasks", true);
         body.put("managed_adbd_tasks", true);
         body.put("managed_wifi_scan_tasks", true);
+        body.put("managed_alarm_tasks", true);
+        body.put("alarm", alarm.snapshot());
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
@@ -389,7 +397,9 @@ public final class ReportService extends Service {
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
-                    || (managed.optBoolean("managed_wifi_scan_v1") && "scan_wifi".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_wifi_scan_v1") && "scan_wifi".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_alarm_v1") && ("play_alarm".equals(managed.optString("type"))
+                    || "stop_alarm".equals(managed.optString("type")))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -585,6 +595,16 @@ public final class ReportService extends Service {
             String type = offer.optString("type", "");
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
+            if (RepairPolicy.TYPE_PLAY_ALARM.equals(type) || RepairPolicy.TYPE_STOP_ALARM.equals(type)) {
+                if (RepairPolicy.rejectReason(offer, System.currentTimeMillis()).length() > 0) {
+                    postTask(id, RepairPolicy.ST_REJECTED, "expired", null);
+                    return;
+                }
+                JSONObject outcome = RepairPolicy.TYPE_PLAY_ALARM.equals(type) ? alarm.play(id) : alarm.stop();
+                postTask(id, RepairPolicy.ST_SUCCESS, "alarm-" + outcome.getString("state"),
+                        new JSONObject().put("stage", "alarm").put("action", outcome.getString("state")).put("alarm", outcome));
+                return;
+            }
             if (RepairPolicy.TYPE_SCAN_WIFI.equals(type)) {
                 JSONObject scan = WifiScanner.scan(this);
                 postTask(id, RepairPolicy.ST_SUCCESS, "wifi-scan-complete",

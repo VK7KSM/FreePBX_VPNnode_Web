@@ -60,9 +60,19 @@ test("设备组合筛选不改变原列表，未接通能力不制造成功记�
   assert.equal(context.matchesDevice(d),true);
   context.LIST_FILTER.state='offline';assert.equal(context.matchesDevice(d),false);
   const before=JSON.stringify(context.uiOf());
-  for(const name of ['wifiConnect','contactAdd','contactDel','alarmPlay','lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
+  for(const name of ['wifiConnect','contactAdd','contactDel','lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
   assert.equal(JSON.stringify(context.uiOf()),before);
-  assert.equal(alerts.length,10);
+  assert.equal(alerts.length,9);
+});
+
+test('警报页面只显示设备实报状态并下发真实任务',()=>{
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  context.DEV=[{id:'a',alarm:{state:'interrupted',started_at_ms:1000,duration_ms:10000}}];context.selDev='a';
+  const html=context.pageAlarm('');
+  assert.match(html,/播放中断/);assert.match(html,/停止警报/);
+  let type='';context.enqueueRepair=value=>{type=value;};context.alarmPlay();assert.equal(type,'play_alarm');
+  assert.equal(context.DEV[0].alarm.state,'interrupted');
 });
 
 test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {

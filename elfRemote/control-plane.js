@@ -110,7 +110,7 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm"];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -128,7 +128,9 @@ export const REPAIR_TYPE_LABELS = {
   reboot: "受控重启",
   install_apk: "覆盖安装",
   restart_adbd: "重启本机adbd",
-  scan_wifi: "扫描 Wi-Fi"
+  scan_wifi: "扫描 Wi-Fi",
+  play_alarm: "播放警报",
+  stop_alarm: "停止警报"
 };
 
 export function installParamsFromRelease(rel, baseUrl) {
@@ -242,6 +244,10 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
   if (scan) device.wifi_scan = scan;
+  if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
+    const alarm = normalizeAlarm(result?.alarm);
+    if (alarm) device.alarm = alarm;
+  }
   if (result && typeof result === "object") {
     const sha = String(result.sha256 || "").toLowerCase();
     device.task.result = {
@@ -256,6 +262,13 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
     };
   }
   return device;
+}
+
+export function normalizeAlarm(value) {
+  if (!value || !["idle", "starting", "playing", "completed", "stopped", "interrupted", "failed"].includes(value.state)) return null;
+  const started = Number(value.started_at_ms), duration = Number(value.duration_ms);
+  if (!Number.isSafeInteger(started) || started < 0 || !Number.isInteger(duration) || duration < 0 || duration > 10000) return null;
+  return {state:value.state, started_at_ms:started, duration_ms:duration};
 }
 
 export function normalizeWifiScan(value) {

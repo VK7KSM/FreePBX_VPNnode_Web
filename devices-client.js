@@ -653,17 +653,15 @@ function trafficHtml(traffic){
 }
 
 function pageAlarm(dis){
-  var u = uiOf();
-  var rows = u ? u.alarm : [];
+  var device = currentDev(), alarm = device && device.alarm;
+  var labels = {idle:'未播放',starting:'正在启动',playing:'播放中',completed:'播放结束',stopped:'已停止',interrupted:'播放中断',failed:'播放失败'};
   var h = '<div class="ops-actions">';
   h += '<button class="btn-green" onclick="alarmPlay()"'+dis+'>播放警报声</button>';
+  h += '<button class="btn-gray" onclick="enqueueRepair(\'stop_alarm\')"'+dis+'>停止警报</button>';
   h += "</div>";
-  h += '<table style="margin-top:.55rem"><thead><tr><th>时间</th><th>时长</th></tr></thead><tbody>';
-  if(!rows.length) h += '<tr><td colspan="2" class="muted">还没有播放记录</td></tr>';
-  else for(var i=0;i<rows.length;i++){
-    var r=rows[i];
-    h += "<tr><td>"+sydney(r.at)+"</td><td>"+esc(r.dur)+"</td></tr>";
-  }
+  h += '<table style="margin-top:.55rem"><thead><tr><th>最近播放时间</th><th>时长</th><th>状态</th></tr></thead><tbody>';
+  if(!alarm || !alarm.started_at_ms) h += '<tr><td colspan="3" class="muted">还没有播放记录</td></tr>';
+  else h += '<tr><td>'+sydney(alarm.started_at_ms)+'</td><td>'+esc(alarm.duration_ms/1000)+' 秒</td><td>'+esc(labels[alarm.state]||'未知')+'</td></tr>';
   h += "</tbody></table>";
   return h;
 }
@@ -853,7 +851,7 @@ async function locNow(){
   else{historyState().error=STATUS[id]||'已有拉取请求正在执行';renderOps();}
 }
 function alarmPlay(){
-  unavailableAction('播放警报');
+  enqueueRepair('play_alarm');
 }
 function lostRec(){
   unavailableAction('远程录音');
