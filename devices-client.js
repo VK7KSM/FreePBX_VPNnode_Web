@@ -17,7 +17,7 @@ var deviceLoad = null;
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
-  ["wifi", "系统配置", '<path d="M5 12.5a9 9 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle>'],
+  ["wifi", "系统配置", '<path d="M9.5 3h5l.6 2.4 2.1 1.2 2.4-.7 2.5 4.2-1.8 1.7v2.4l1.8 1.7-2.5 4.2-2.4-.7-2.1 1.2-.6 2.4h-5l-.6-2.4-2.1-1.2-2.4.7-2.5-4.2 1.8-1.7v-2.4L1.9 10l2.5-4.2 2.4.7 2.1-1.2z" transform="translate(1 0) scale(.92)"/><circle cx="12" cy="12" r="3"/>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
   ["locate", "立即定位", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
   ["alarm", "播放警报", '<path d="M11 5a1 1 0 0 1 2 0v1.1A7 7 0 0 1 19 13v4l1.5 2H3.5L5 17v-4a7 7 0 0 1 6-6.9V5z"></path><path d="M9 21h6"></path>'],
@@ -695,9 +695,9 @@ var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();}
 function pageSystem(dis){
-  var h='<div class="system-tabs">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</div>';
-  if(SYSTEM_TAB==='Wi-Fi')return h+pageWifi(dis);
-  return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div>';
+  var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
+  if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis)+'</div></section></div>';
+  return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div></section></div>';
 }
 
 function pageAlarm(dis){
