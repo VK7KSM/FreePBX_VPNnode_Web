@@ -11,6 +11,7 @@ on:
       - "admin-session.js"
       - "location-history.js"
       - "traffic.js"
+      - "daily-traffic.js"
       - "push-control.js"
       - "task-artifacts.js"
       - "update-artifacts.js"

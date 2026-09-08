@@ -34,6 +34,7 @@ import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
+import { queryDailyTraffic } from "./daily-traffic.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
@@ -232,6 +233,10 @@ const app = {
       const stub = elfDoStub(env);
       if (!stub) return json({ ok: false, msg: "设备存储不可用" }, 503);
       return stub.fetch(request);
+    }
+    if (pathname === "/api/devices/traffic" && method === "GET") {
+      try { return json(await queryDailyTraffic(env.__storage,url)); }
+      catch(error) { return json({ok:false,msg:error.message},400); }
     }
     if (pathname === "/api/devices/history" && method === "GET") {
       try { return json(await queryLocationHistory(env.__storage, url)); }
@@ -2309,8 +2314,9 @@ function renderDevicesHtml() {
     '#devMap{height:100%;min-height:320px;border-radius:.8rem;background:#0b1220}',
     '.leaflet-container{background:#0b1220;font:inherit}',
     '#devOps{grid-column:1/-1;padding:.85rem 1.1rem 1rem}',
-    '.remote-stage{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(0,1.2fr);gap:1rem;min-height:0}.remote-console{padding:14px;overflow:auto;border-radius:1rem;min-width:0}.remote-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.remote-head h3{margin:0;font-size:14px}.remote-device{font-size:12px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.remote-preview{height:112px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1px solid #334155;border-radius:10px;background:#101827;color:#64748b;font-size:12px}.remote-preview svg{width:30px;height:30px}.remote-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:10px 0}.remote-controls button{border:1px solid #334155;border-radius:7px;padding:7px 3px;background:#243247;color:#94a3b8;font-size:12px;cursor:not-allowed}.remote-note{font-size:11px;color:#94a3b8;margin:0 0 12px}.remote-traffic{border-top:1px solid #334155;padding-top:10px;font-size:12px;line-height:1.6}.remote-traffic summary{cursor:pointer}.remote-traffic p{font-size:11px;overflow-wrap:anywhere}.remote-map{border-radius:1rem;overflow:hidden;min-width:0}',
-    '@media(max-width:1000px) and (min-width:801px){.layout{grid-template-columns:190px minmax(0,1fr)}.remote-stage{grid-template-columns:minmax(260px,1fr) minmax(0,1fr);gap:10px}}@media(max-width:800px){.layout{grid-template-rows:auto auto auto}.remote-stage{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 320px}.remote-console{overflow:visible}#devList{max-height:180px}.remote-preview{height:140px}}',
+    '.remote-preview img,.remote-preview video{width:100%;height:100%;object-fit:contain}.traffic-link{border:0;background:none;color:#93c5fd;padding:0;cursor:pointer;font-size:12px}.traffic-range,.system-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.traffic-range label{display:flex;align-items:center;gap:6px}.traffic-range input{width:145px}#trafficChart{overflow-x:auto}.traffic-bars{display:flex;gap:3px;min-width:100%;width:max-content}.traffic-bar{border:1px solid transparent;background:none;color:#94a3b8;flex:1;min-width:23px;padding:2px;cursor:pointer}.traffic-bar.selected{border-color:#94a3b8;border-radius:5px;background:#243247}.traffic-stack{height:180px;display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch}.traffic-stack i{display:block;min-width:12px}.traffic-bar small{font-size:9px;writing-mode:vertical-rl;margin-top:6px}.system-tabs .active{background:#2563eb}.system-items>div{display:flex;justify-content:space-between;padding:12px;border-bottom:1px solid #334155}',
+    '.remote-stage{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(0,1.2fr);gap:1rem;min-height:0}.remote-console{padding:14px;overflow:auto;border-radius:1rem;min-width:0}.remote-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.remote-head h3{margin:0;font-size:14px}.remote-device{font-size:12px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.remote-preview{aspect-ratio:16/9;height:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1px solid #334155;border-radius:10px;background:#101827;color:#64748b;font-size:12px}.remote-preview svg{width:30px;height:30px}.remote-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:10px 0}.remote-controls button{border:1px solid #334155;border-radius:7px;padding:7px 3px;background:#243247;color:#94a3b8;font-size:12px;cursor:not-allowed}.remote-note{font-size:11px;color:#94a3b8;margin:0 0 12px}.remote-traffic{border-top:1px solid #334155;padding-top:10px;font-size:12px;line-height:1.6}.remote-traffic summary{cursor:pointer}.remote-traffic p{font-size:11px;overflow-wrap:anywhere}.remote-map{border-radius:1rem;overflow:hidden;min-width:0}',
+    '@media(max-width:1000px) and (min-width:801px){.layout{grid-template-columns:190px minmax(0,1fr)}.remote-stage{grid-template-columns:minmax(260px,1fr) minmax(0,1fr);gap:10px}}@media(max-width:800px){.layout{grid-template-rows:auto auto auto}.remote-stage{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 320px}.remote-console{overflow:visible}#devList{max-height:180px}.remote-preview{height:auto}}',
     '.ops-head{display:flex;align-items:center;gap:.6rem;margin-bottom:.65rem;flex-wrap:wrap}',
     '.ops-head-left{display:flex;align-items:baseline;gap:.55rem;min-width:0;flex:1}',
     '.ops-head h3{margin:0;font-size:1.05rem;white-space:nowrap}',
@@ -2390,7 +2396,7 @@ function renderDevicesHtml() {
     '<button id="refreshDevices" class="btn-gray" onclick="refreshAllDevices()" title="刷新设备列表并拉取所有设备信息" aria-label="刷新"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg><\/button>',
     '<button class="btn-green btn-add" onclick="openAdd()">添加设备<\/button>',
     '<\/div>',
-    '<div style="padding:0 .5rem;display:grid;gap:6px"><div style="display:flex;gap:6px"><select id="deviceModelFilter" class="inp" aria-label="型号筛选" onchange="setListFilter(\'model\',this.value)" style="width:50%;min-width:0"><option value="">全部型号</option></select><select class="inp" aria-label="状态筛选" onchange="setListFilter(\'state\',this.value)" style="width:50%;min-width:0"><option value="">全部状态</option><option value="online">在线</option><option value="offline">离线</option><option value="unpaired">未配对</option><option value="disabled">已停用</option></select></div><span id="deviceLoadError" role="alert" style="font-size:12px;color:#fca5a5"></span></div>',
+    '<span id="deviceLoadError" role="alert" style="font-size:12px;color:#fca5a5"></span>',
     '<div id="devList"><\/div><\/div>',
     '<div class="remote-stage"><section id="remoteConsole" class="card remote-console" aria-label="远程音视频控制"></section><div class="card remote-map">',
     '<div id="devMap"><\/div><\/div><\/div>',
@@ -2398,6 +2404,7 @@ function renderDevicesHtml() {
     '<div class="ops-head"><h3>功能设置<\/h3><span class="muted">请先从左侧选择设备，或点「添加设备」<\/span><\/div>',
     '<\/div>',
     '<\/div><\/main>',
+    '<div id="trafficHistoryWrap" class="modal-bg" style="display:none"><div class="card modal-card" style="width:min(900px,95vw);padding:24px;border-radius:16px"><button class="btn-close" onclick="closeTrafficHistory()" aria-label="关闭流量历史">&times;</button><div id="trafficHistoryBody"></div></div></div>',
     '<div id="addWrap" class="modal-bg" style="display:none">',
     '<div class="card modal-card" style="padding:.9rem 1rem 1rem;border-radius:1rem;width:100%;max-width:400px">',
     '<button type="button" class="btn-close" onclick="closeAdd()" title="关闭" aria-label="关闭">&times;<\/button>',

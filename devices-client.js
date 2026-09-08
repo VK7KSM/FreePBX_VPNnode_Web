@@ -13,12 +13,11 @@ var mapFitted = false;
 var markerGroups = [];
 var historyMarker = null;
 var deviceLoad = null;
-var LIST_FILTER = {model:"",state:""};
 
 var FN_ITEMS = [
   ["adb", "远程Shell", '<rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 20h8M12 18v2"></path><path d="M7 10h.01M10 10h6"></path>'],
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
-  ["wifi", "配置Wi-Fi", '<path d="M5 12.5a9 9 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle>'],
+  ["wifi", "系统配置", '<path d="M5 12.5a9 9 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
   ["locate", "立即定位", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
   ["alarm", "播放警报", '<path d="M11 5a1 1 0 0 1 2 0v1.1A7 7 0 0 1 19 13v4l1.5 2H3.5L5 17v-4a7 7 0 0 1 6-6.9V5z"></path><path d="M9 21h6"></path>'],
@@ -129,7 +128,7 @@ function loadDevices(){
       }
     }
     if(editing) renderRemoteConsole();
-    renderFilters();
+
     if($("deviceLoadError")) $("deviceLoadError").textContent='';
     return true;
   }).catch(function(error){
@@ -137,18 +136,6 @@ function loadDevices(){
     return false;
   }).finally(function(){deviceLoad=null;});
   return deviceLoad;
-}
-
-function matchesDevice(d){
-  return (!LIST_FILTER.model || d.model_id===LIST_FILTER.model) &&
-    (!LIST_FILTER.state || (LIST_FILTER.state==='unpaired' ? d.paired===false : LIST_FILTER.state==='disabled' ? d.enabled===false : LIST_FILTER.state==='online' ? d.online && d.enabled!==false : !d.online && d.enabled!==false));
-}
-function setListFilter(field,value){LIST_FILTER[field]=value;renderList();}
-function renderFilters(){
-  var box=$("deviceModelFilter");if(!box || document.activeElement===box) return;
-  var h='<option value="">全部型号</option>';
-  MODELS.forEach(function(m){h+='<option value="'+esc(m.id)+'">'+esc(m.name)+'</option>';});
-  box.innerHTML=h;box.value=LIST_FILTER.model;
 }
 
 function deviceListStatus(d){
@@ -178,7 +165,7 @@ function renderList(){
   var h = "";
   for(var i=0;i<DEV.length;i++){
     var d = DEV[i];
-    if(!matchesDevice(d)) continue;
+
     var on = d.online && d.enabled!==false;
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
     reconcileReportStatus(d);
@@ -454,7 +441,7 @@ function renderOps(){
 function fnPageHtml(){
   var dis = disAttr();
   if(selFn==="update") return pageUpdate(dis);
-  if(selFn==="wifi") return pageWifi(dis);
+  if(selFn==="wifi") return pageSystem(dis);
   if(selFn==="contacts") return pageContacts(dis);
   if(selFn==="locate") return pageLocate(dis);
   if(selFn==="alarm") return pageAlarm(dis);
@@ -649,25 +636,56 @@ function showHistoryRecord(index){
   map.panTo([loc.lat,loc.lng]);
 }
 
+var DAILY_CACHE={}, TRAFFIC_HISTORY={seq:0};
+function trafficDay(){var p=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());var v={};p.forEach(function(x){v[x.type]=x.value;});return v.year+'-'+v.month+'-'+v.day;}
+function shiftTrafficDay(day,n){return new Date(Date.parse(day+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);}
+function trafficBytes(n){return (Number(n||0)/1000).toFixed(1)+' KB';}
+function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficBytes(row.rx_bytes)+'　发送 '+trafficBytes(row.tx_bytes):'无数据';}
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
-  var d=currentDev(),same=box.dataset.deviceId===(d?d.id:''),opened=same && !!box.querySelector('details[open]');
+  var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
   var h='<div class="remote-head"><h3>远程音视频</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
-  h+='<div class="remote-preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span></div>';
-  h+='<div class="remote-controls">';
-  ['连接设备','播放','录音','录像','拍照','实时对讲'].forEach(function(label){h+='<button type="button" disabled title="功能待接入">'+label+'</button>';});
-  h+='</div><p class="remote-note">音视频功能待接入</p><div class="remote-traffic">'+(d?trafficHtml(d.traffic):'<span class="muted">选择设备后显示应用流量</span>')+'</div>';
-  box.innerHTML=h;box.dataset.deviceId=d?d.id:'';
-  var details=box.querySelector('details');if(details) details.open=opened;
+  h+='<div class="remote-preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span></div><div class="remote-controls">';
+  ['PTT','麦克风','前置摄像头','后置摄像头'].forEach(function(label){h+='<button type="button" disabled>'+label+'</button>';});
+  h+='</div><div class="remote-traffic"><div class="remote-head"><strong>应用流量</strong><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史</button></div><div class="muted">悉尼 · '+day+' · 00:00–24:00</div><div>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'选择设备后显示应用流量')+'</div></div>';
+  box.innerHTML=h;
+  if(d && !cached){
+    DAILY_CACHE[key]={pending:true};
+    fetch('/api/devices/traffic?'+new URLSearchParams({device_id:d.id,from:day,to:day})).then(function(r){if(!r.ok) throw Error('流量读取失败');return r.json();}).then(function(x){if(!x.ok) throw Error(x.msg||'流量读取失败');DAILY_CACHE[key]={row:x.days[0]};}).catch(function(){DAILY_CACHE[key]={error:'流量读取失败'};setTimeout(function(){delete DAILY_CACHE[key];},15000);}).finally(function(){if(currentDev()&&currentDev().id===d.id) renderRemoteConsole();});
+  }
 }
-function trafficHtml(traffic){
-  if(!traffic || !traffic.available) return '<p class="muted">应用流量：暂无有效计量'+(traffic && traffic.reason?'（'+esc(traffic.reason)+'）':'')+'</p>';
-  function bytes(value){return (value/1024).toFixed(1)+' KiB';}
-  var h='<details><summary>应用流量 · 接收 '+bytes(traffic.rx_bytes)+' · 发送 '+bytes(traffic.tx_bytes)+'</summary>';
-  h+='<p class="muted">'+sydney(traffic.started_at_ms)+' 至 '+sydney(traffic.sampled_at_ms)+' · 覆盖 '+(traffic.covered_ms/3600000).toFixed(2)+' 小时 · 缺口 '+traffic.gaps+'</p>';
-  h+='<p class="muted">elfRemote 应用累计计量，不含其他应用和运营商计费差异</p>';
-  Object.keys(traffic.interfaces||{}).forEach(function(name){var v=traffic.interfaces[name];h+='<div>'+esc(name)+' · 接收 '+bytes(v.rx_bytes)+' · 发送 '+bytes(v.tx_bytes)+'</div>';});
-  return h+'</details>';
+function openTrafficHistory(){
+  var d=currentDev();if(!d)return;var to=trafficDay();
+  TRAFFIC_HISTORY={seq:TRAFFIC_HISTORY.seq+1,id:d.id,name:d.name,days:[]};
+  $('trafficHistoryBody').innerHTML='<h3>'+esc(d.name)+' · 应用流量</h3><div class="traffic-range"><label>开始 <input class="inp" type="date" id="trafficFrom" value="'+shiftTrafficDay(to,-29)+'"></label><label>结束 <input class="inp" type="date" id="trafficTo" value="'+to+'"></label><button class="btn-gray" onclick="loadTrafficHistory()">查询</button></div><p class="muted">悉尼时间 · <span style="color:#60a5fa">接收</span> / <span style="color:#34d399">发送</span> · KB</p><div id="trafficChart"></div><p id="trafficDetail" role="status"></p>';
+  show('trafficHistoryWrap');loadTrafficHistory();
+}
+function closeTrafficHistory(){TRAFFIC_HISTORY.seq++;hide('trafficHistoryWrap');}
+function loadTrafficHistory(){
+  var state=TRAFFIC_HISTORY,seq=++state.seq,from=$('trafficFrom').value,to=$('trafficTo').value;
+  if(!from||!to||from>to||Date.parse(to)-Date.parse(from)>365*86400000){$('trafficDetail').textContent='请选择不超过366天的有效日期范围';return Promise.resolve();}
+  $('trafficDetail').textContent='读取中…';
+  return fetch('/api/devices/traffic?'+new URLSearchParams({device_id:state.id,from:from,to:to})).then(function(r){if(!r.ok)throw Error('查询失败');return r.json();}).then(function(x){
+    if(TRAFFIC_HISTORY!==state||seq!==state.seq)return;if(!x.ok)throw Error(x.msg||'查询失败');
+    state.days=x.days;renderTrafficChart();selectTrafficBar(state.days.length-1);
+  }).catch(function(e){if(TRAFFIC_HISTORY===state&&seq===state.seq){$('trafficChart').innerHTML='';$('trafficDetail').textContent=e.message;}});
+}
+function renderTrafficChart(){
+  var days=TRAFFIC_HISTORY.days,max=Math.max(1,...days.map(function(d){return d.rx_bytes+d.tx_bytes;}));
+  $('trafficChart').innerHTML='<div class="traffic-bars">'+days.map(function(d,i){var title=d.date+' · '+dailyTrafficHtml(d);return '<button class="traffic-bar" onclick="selectTrafficBar('+i+')" title="'+esc(title)+'" aria-label="'+esc(title)+'"><span class="traffic-stack">'+(d.available?'<i style="height:'+Math.max(d.tx_bytes?1:0,d.tx_bytes/max*170)+'px;background:#34d399"></i><i style="height:'+Math.max(d.rx_bytes?1:0,d.rx_bytes/max*170)+'px;background:#60a5fa"></i>':'<span class="muted">—</span>')+'</span><small>'+d.date.slice(5)+'</small></button>';}).join('')+'</div>';
+}
+function selectTrafficBar(i){
+  var d=TRAFFIC_HISTORY.days[i];if(!d)return;
+  $('trafficDetail').textContent=d.date+' · '+dailyTrafficHtml(d)+(d.available?' · 总计 '+trafficBytes(d.rx_bytes+d.tx_bytes):'');
+  document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);});
+}
+var SYSTEM_TAB='Wi-Fi';
+var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();}
+function pageSystem(dis){
+  var h='<div class="system-tabs">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</div>';
+  if(SYSTEM_TAB==='Wi-Fi')return h+pageWifi(dis);
+  return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div>';
 }
 
 function pageAlarm(dis){

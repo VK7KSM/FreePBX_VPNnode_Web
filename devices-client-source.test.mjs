@@ -59,15 +59,12 @@ test("列表状态只显示一处，只有等待上报可触发拉取，自动�
   assert.equal(calls,1);
 });
 
-test("设备组合筛选不改变原列表，未接通能力不制造成功记录", () => {
+test("未接通能力不制造成功记录", () => {
   const alerts=[];
   const context=vm.createContext({alert:value=>alerts.push(value),adminSession:{check(){}},setTimeout(){},setInterval(){}});
   vm.runInContext(source,context);
   const d={id:'a',name:'D22-XX',model_id:'d22',online:true,paired:false};
   context.DEV=[d];context.selDev='a';
-  context.LIST_FILTER={model:'d22',state:'unpaired'};
-  assert.equal(context.matchesDevice(d),true);
-  context.LIST_FILTER.state='offline';assert.equal(context.matchesDevice(d),false);
   const before=JSON.stringify(context.uiOf());
   for(const name of ['lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
   assert.equal(JSON.stringify(context.uiOf()),before);
@@ -134,8 +131,8 @@ test("远程定位失败不制造历史，流量缺失不伪装为零", async ()
   await context.locNow();
   assert.equal(context.historyState().rows.length,0);
   assert.match(errors[0],/下发失败/);
-  assert.match(context.trafficHtml(null),/暂无有效计量/);
-  assert.doesNotMatch(context.trafficHtml(null),/0\.0 KiB/);
+  assert.match(context.dailyTrafficHtml(null),/无数据/);
+  assert.doesNotMatch(context.dailyTrafficHtml(null),/0\.0 KiB/);
 });
 
 test("同地点按实际距离分组，显示锚点与缩放无关，不改真实坐标", () => {
@@ -177,4 +174,28 @@ test("远程Shell 含快捷任务，顶栏保留更新客户端，没有修机�
   assert.equal(raw.includes('kv("类型"'), false);
   assert.match(raw, /id="taskOut"/);
   assert.equal(/if\s*\(\s*r\.text\s*\)/.test(raw), false);
+});
+
+test('今日流量使用KB，无数据不冒充零；系统配置保留原Wi-Fi入口',()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+ vm.runInContext(source,context);context.DEV=[{id:'a'}];context.selDev='a';
+ assert.equal(context.trafficBytes(1234),'1.2 KB');
+ assert.equal(context.dailyTrafficHtml(null),'无数据');
+ assert.doesNotMatch(context.dailyTrafficHtml({available:true,rx_bytes:1000,tx_bytes:2000,estimated:true}),/估算|KiB/);
+ assert.match(context.pageSystem(''),/wifiScan/);
+ context.SYSTEM_TAB='语言与时间';assert.match(context.pageSystem(''),/自动时间/);
+ assert.doesNotMatch(context.pageSystem(''),/type="checkbox"/);
+});
+test('流量历史过期请求不覆盖新的范围，柱子选择显示收发明细',async()=>{
+ const nodes={trafficFrom:{value:'2026-09-01'},trafficTo:{value:'2026-09-08'},trafficChart:{innerHTML:''},trafficDetail:{textContent:''}};
+ const pending=[];
+ const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:id=>nodes[id],querySelectorAll:()=>[]},fetch:()=>new Promise(resolve=>pending.push(resolve))});
+ vm.runInContext(source,context);
+ context.TRAFFIC_HISTORY={id:'a',seq:0,days:[]};
+ const first=context.loadTrafficHistory();nodes.trafficFrom.value='2026-09-08';const second=context.loadTrafficHistory();
+ const row={date:'2026-09-08',available:true,rx_bytes:1000,tx_bytes:2000};
+ pending[1]({ok:true,json:async()=>({ok:true,days:[row]})});await second;
+ pending[0]({ok:true,json:async()=>({ok:true,days:[]})});await first;
+ assert.equal(context.TRAFFIC_HISTORY.days.length,1);
+ assert.match(nodes.trafficDetail.textContent,/2026-09-08.*接收 1.0 KB.*发送 2.0 KB.*总计 3.0 KB/);
 });
