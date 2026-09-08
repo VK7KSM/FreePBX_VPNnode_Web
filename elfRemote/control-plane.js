@@ -110,7 +110,8 @@ export function applyUpdateProgress(device, jobId, state, detail) {
   return device;
 }
 
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now"];
+export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
+export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -131,7 +132,8 @@ export const REPAIR_TYPE_LABELS = {
   scan_wifi: "扫描 Wi-Fi",
   play_alarm: "播放警报",
   stop_alarm: "停止警报",
-  locate_now: "立即定位"
+  locate_now: "立即定位",
+  connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
 
 export function installParamsFromRelease(rel, baseUrl) {
@@ -198,7 +200,7 @@ export function makeRepairTask(input, nowMs) {
   return {
     id,
     type,
-    params: src.params && typeof src.params === "object" ? src.params : {},
+    params: CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -242,9 +244,12 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
+  const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
   if (scan) device.wifi_scan = scan;
+  if (contacts) device.contacts = contacts;
+  if(CONFIG_TYPES.includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
     if (alarm) device.alarm = alarm;
@@ -263,6 +268,32 @@ export function applyRepairProgress(device, taskId, state, detail, result) {
     };
   }
   return device;
+}
+
+export function configParams(type,value={}) {
+  if(type==='contacts_read') return {};
+  if(type==='connect_wifi') {
+    const ssid=value?.ssid, password=value?.password??'';
+    if(typeof ssid!=='string'||!ssid.length||new TextEncoder().encode(ssid).length>32||ssid.includes('\0')) throw new Error('Wi-Fi 名称无效');
+    if(typeof password!=='string'||(password!==''&&!/^[0-9a-fA-F]{64}$/.test(password)&&!/^[\x20-\x7e]{8,63}$/.test(password))) throw new Error('Wi-Fi 密码格式无效');
+    return {ssid,password};
+  }
+  const id=Number(value?.id);
+  if(type!=='contact_add'&&(!Number.isSafeInteger(id)||id<=0)) throw new Error('联系人编号无效');
+  if(type==='contact_delete') return {id};
+  const name=value?.name?.trim(),phone=value?.phone?.trim();
+  if(typeof name!=='string'||!name.length||name.length>100||typeof phone!=='string'||!phone.length||phone.length>80||name.includes('\0')||phone.includes('\0')) throw new Error('联系人姓名或号码无效');
+  return type==='contact_add'?{name,phone}:{id,name,phone};
+}
+
+export function normalizeContacts(value) {
+  if(!value||!Number.isSafeInteger(value.sampled_at_ms)||value.sampled_at_ms<=0||!Array.isArray(value.items)||value.items.length>1000) throw new Error('通信录结果无效');
+  const seen=new Set();
+  const items=value.items.map(c=>{
+    if(!c||!Number.isSafeInteger(c.id)||c.id<=0||seen.has(c.id)||typeof c.name!=='string'||c.name.length>500||typeof c.phone!=='string'||c.phone.length>200) throw new Error('联系人结果无效');
+    seen.add(c.id);return {id:c.id,name:c.name,phone:c.phone};
+  });
+  return {sampled_at_ms:value.sampled_at_ms,items,truncated:value.truncated===true};
 }
 
 export function normalizeAlarm(value) {

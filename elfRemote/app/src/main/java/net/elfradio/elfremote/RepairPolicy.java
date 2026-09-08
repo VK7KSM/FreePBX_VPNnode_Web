@@ -49,6 +49,7 @@ final class RepairPolicy {
     }
 
     static boolean allowedType(String type) {
+        if (configType(type)) return true;
         return TYPE_PULL_LOGS.equals(type)
                 || TYPE_HEAL_NETWORK.equals(type)
                 || TYPE_REBOOT.equals(type)
@@ -56,6 +57,11 @@ final class RepairPolicy {
                 || TYPE_RESTART_ADBD.equals(type)
                 || TYPE_SCAN_WIFI.equals(type)
                 || TYPE_PLAY_ALARM.equals(type) || TYPE_STOP_ALARM.equals(type) || TYPE_LOCATE_NOW.equals(type);
+    }
+
+    static boolean configType(String type) {
+        return "connect_wifi".equals(type) || "contacts_read".equals(type) || "contact_add".equals(type)
+                || "contact_update".equals(type) || "contact_delete".equals(type);
     }
 
     static String rejectReason(JSONObject task, long nowMs) {

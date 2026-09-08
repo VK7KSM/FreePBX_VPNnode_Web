@@ -36,6 +36,7 @@ public final class ReportService extends Service {
     private DailyLocation dailyLocation;
     private AlarmPlayer alarm;
     private String locatingTask = "";
+    private WifiConnector wifiConnector;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
@@ -86,6 +87,8 @@ public final class ReportService extends Service {
             Handler target = worker;
             if (target != null) target.post(this::tick);
         });
+        wifiConnector=new WifiConnector(this,worker);
+        worker.post(wifiConnector::recover);
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
         if (BuildConfig.STATUS_ONLY) {
@@ -209,6 +212,7 @@ public final class ReportService extends Service {
 
     private void healAfterReportFailure() {
         if (!BuildConfig.STATUS_ONLY) return;
+        if(wifiConnector!=null && !wifiConnector.pendingTask().isEmpty()) return;
         try {
             if (healer == null) healer = new NetworkHealer(this, store);
             if (!HealPolicy.automaticRepairNeeded(healer.observe(), HealPolicy.Snapshot.parse(store.netSnap()))) return;
@@ -296,6 +300,7 @@ public final class ReportService extends Service {
         body.put("managed_wifi_scan_tasks", true);
         body.put("managed_alarm_tasks", true);
         body.put("managed_locate_tasks", true);
+        body.put("managed_config_tasks", true);
         body.put("alarm", alarm.snapshot());
         body.put("managed_update", true);
         body.put("traffic", traffic.sample());
@@ -402,7 +407,8 @@ public final class ReportService extends Service {
                     || (managed.optBoolean("managed_wifi_scan_v1") && "scan_wifi".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_alarm_v1") && ("play_alarm".equals(managed.optString("type"))
                     || "stop_alarm".equals(managed.optString("type"))))
-                    || (managed.optBoolean("managed_locate_v1") && "locate_now".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_locate_v1") && "locate_now".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_config_v1") && RepairPolicy.configType(managed.optString("type"))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
@@ -528,6 +534,7 @@ public final class ReportService extends Service {
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
         if (id.equals(locatingTask)) return;
+        if(wifiConnector!=null && wifiConnector.busy()) return;
         try {
             JSONObject saved = taskReceipts().read(id);
             if (saved != null) {
@@ -599,6 +606,21 @@ public final class ReportService extends Service {
             String type = offer.optString("type", "");
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
+            if(RepairPolicy.configType(type)) {
+                JSONObject params=offer.optJSONObject("params");if(params==null) params=new JSONObject();
+                if("connect_wifi".equals(type)) {
+                    wifiConnector.connect(id,params,(ok,detail)->{
+                        try {postTask(id,ok?RepairPolicy.ST_SUCCESS:RepairPolicy.ST_FAILED,detail,
+                                new JSONObject().put("stage","wifi").put("action",ok?"connected":"rolled_back"));}
+                        catch(Exception error){RuntimeLog.event("wifi_result_pending");}
+                        tick();
+                    });
+                } else {
+                    JSONObject contacts=new DeviceContacts(this).execute(id,type,params);
+                    postTask(id,RepairPolicy.ST_SUCCESS,"contacts-complete",new JSONObject().put("stage","contacts").put("action",type).put("contacts",contacts));
+                }
+                return;
+            }
             if (RepairPolicy.TYPE_LOCATE_NOW.equals(type)) {
                 if (dailyLocation == null) throw new java.io.IOException("location-unavailable");
                 locatingTask = id;
@@ -742,14 +764,18 @@ public final class ReportService extends Service {
             android.util.Log.i("elfRemote", "task pull_logs bytes=" + pack.size
                     + " truncated=" + pack.truncated + " sha=" + pack.sha256);
         } catch (Exception e) {
+            String taskError=Protocol.formatNetError(e);
+            if(RepairPolicy.configType(offer.optString("type"))) {
+                String code=e.getMessage();taskError=code!=null && code.matches("[a-z][a-z-]{1,79}")?code:"configuration-operation-failed";
+            }
             try {
-                postTask(id, RepairPolicy.ST_FAILED, Protocol.formatNetError(e), null);
+                postTask(id, RepairPolicy.ST_FAILED, taskError, null);
             } catch (Exception e2) {
                 android.util.Log.w("elfRemote", "task fail-post " + e2.getMessage());
             }
             writeLastTaskId(id);
             writeTaskPhase(RepairPolicy.PHASE_DONE);
-            android.util.Log.w("elfRemote", "task failed " + e.getMessage());
+            android.util.Log.w("elfRemote", "task failed " + taskError);
         }
     }
 

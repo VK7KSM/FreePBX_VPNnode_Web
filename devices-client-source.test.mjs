@@ -60,9 +60,9 @@ test("设备组合筛选不改变原列表，未接通能力不制造成功记�
   assert.equal(context.matchesDevice(d),true);
   context.LIST_FILTER.state='offline';assert.equal(context.matchesDevice(d),false);
   const before=JSON.stringify(context.uiOf());
-  for(const name of ['wifiConnect','contactAdd','contactDel','lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
+  for(const name of ['lostRec','lostPhoto','lostVideo','lostTalk','lostLock','lostUnlock']) context[name]();
   assert.equal(JSON.stringify(context.uiOf()),before);
-  assert.equal(alerts.length,9);
+  assert.equal(alerts.length,6);
 });
 
 test('警报页面只显示设备实报状态并下发真实任务',()=>{
@@ -74,6 +74,18 @@ test('警报页面只显示设备实报状态并下发真实任务',()=>{
   let type='';context.enqueueRepair=value=>{type=value;};context.alarmPlay();assert.equal(type,'play_alarm');
   assert.equal(context.DEV[0].alarm.state,'interrupted');
   context.locNow();assert.equal(type,'locate_now');
+});
+
+test('通信录显示真实号码，操作传递稳定编号且不提前伪造修改',()=>{
+  const fields={cName:{value:'测试'},cPhone:{value:'000'},wifiSsid:{value:'fixture'},wifiPw:{value:'fixture-pass'}};
+  const context=vm.createContext({document:{getElementById:id=>fields[id]},prompt:(_,v)=>v,adminSession:{check(){}},setTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);
+  context.DEV=[{id:'a',contacts:{sampled_at_ms:1000,items:[{id:42,name:'<x>',phone:'000'}]}}];context.selDev='a';
+  assert.doesNotMatch(context.pageContacts(''),/<x>/);
+  const sent=[];context.enqueueRepair=(type,params)=>sent.push({type,params});
+  context.contactRefresh();context.contactAdd();context.contactEdit(0);context.contactDel(0);context.wifiConnect();
+  assert.equal(sent[0].type,'contacts_read');assert.equal(sent[2].params.id,42);assert.equal(sent[3].params.id,42);
+  assert.equal(sent[4].params.password,'fixture-pass');assert.equal(context.DEV[0].contacts.items.length,1);
 });
 
 test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {

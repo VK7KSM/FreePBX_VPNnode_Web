@@ -548,18 +548,22 @@ function pageWifi(dis){
   h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+dis+'>';
   h += '<button class="btn-green" onclick="wifiConnect()"'+dis+'>连接</button>';
   h += "</div>";
+  h += '<p class="muted">已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。</p>';
+  h += configTaskStatus(device);
   return h;
 }
 
 function pageContacts(dis){
-  var u = uiOf();
-  var list = u ? u.contacts : [];
+  var device=currentDev(), snapshot=device && device.contacts;
+  var list = snapshot ? snapshot.items : [];
   var h = '<div class="ops-actions">';
   h += '<input id="cName" class="inp" placeholder="姓名" style="max-width:160px"'+dis+'>';
   h += '<input id="cPhone" class="inp" placeholder="号码" style="max-width:160px"'+dis+'>';
   h += '<button class="btn-green" onclick="contactAdd()"'+dis+'>添加</button>';
   h += '<button class="btn-gray" onclick="contactRefresh()"'+dis+'>刷新</button>';
   h += "</div>";
+  h += configTaskStatus(device);
+  if(snapshot) h += '<p class="muted">上次读取：'+sydney(snapshot.sampled_at_ms)+(snapshot.truncated?' · 仅显示前1000个号码':'')+'</p>';
   h += '<table style="margin-top:.55rem"><thead><tr><th>姓名</th><th>号码</th><th></th></tr></thead><tbody>';
   if(!list.length) h += '<tr><td colspan="3" class="muted">暂无联系人</td></tr>';
   else for(var i=0;i<list.length;i++){
@@ -811,10 +815,10 @@ function assignUpdate(){
       requestDeviceStatus(d.id);
     });
 }
-function enqueueRepair(type){
+function enqueueRepair(type,params){
   var d = currentDev();
   if(!d) return;
-  return fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type})})
+  return fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type,params:params||{}})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }
@@ -835,18 +839,28 @@ function wifiPick(ssid){
   renderOps();
 }
 function wifiConnect(){
-  unavailableAction('Wi-Fi 配置');
+  var ssid=$('wifiSsid').value,password=$('wifiPw').value;
+  return enqueueRepair('connect_wifi',{ssid:ssid,password:password});
 }
 function unavailableAction(name){alert(name+'尚未接通，未发送到设备');}
-function contactRefresh(){ unavailableAction('读取通信录'); }
+function contactRefresh(){return enqueueRepair('contacts_read');}
 function contactAdd(){
-  unavailableAction('添加通信录');
+  return enqueueRepair('contact_add',{name:$('cName').value,phone:$('cPhone').value});
 }
 function contactEdit(i){
-  unavailableAction('修改通信录');
+  var d=currentDev(),c=d && d.contacts && d.contacts.items[i];if(!c) return;
+  var name=prompt('姓名',c.name);if(name==null) return;
+  var phone=prompt('号码',c.phone);if(phone==null) return;
+  return enqueueRepair('contact_update',{id:c.id,name:name,phone:phone});
 }
 function contactDel(i){
-  unavailableAction('删除通信录');
+  var d=currentDev(),c=d && d.contacts && d.contacts.items[i];if(c) return enqueueRepair('contact_delete',{id:c.id});
+}
+function configTaskStatus(d){
+  var t=d && d.task;if(!t || !/^(connect_wifi|contacts_read|contact_add|contact_update|contact_delete)$/.test(t.type)) return '';
+  var labels={'wifi-connected':'连接成功','wifi-timeout-rolled-back':'连接超时，已恢复原网络','wifi-connect-failed-rolled-back':'连接失败，已恢复原网络','wifi-interrupted-rolled-back':'操作中断，已恢复原网络','wifi-saved-use-empty-password':'该网络已保存，请将密码留空以复用原配置','wifi-disabled':'设备 Wi-Fi 已关闭','wifi-no-fallback-connection':'缺少可回退的原 Wi-Fi 连接','contacts-complete':'已完成并读取最新通信录'};
+  var detail=(t.detail||'').replace(/^[A-Za-z]+Exception: /,'');
+  return '<p class="muted">'+esc(t.type_label)+' · '+esc(t.label)+' · '+esc(labels[detail]||detail)+'</p>';
 }
 function locNow(){
   return enqueueRepair('locate_now');
