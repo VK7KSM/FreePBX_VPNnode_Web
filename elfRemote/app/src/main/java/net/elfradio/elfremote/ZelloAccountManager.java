@@ -19,7 +19,7 @@ final class ZelloAccountManager {
         JSONObject p=ZelloAccountConfig.normalize(params);long began=System.currentTimeMillis();
         File marker=new File(folder,"zello-ui-restore.json");boolean ok=false;String output="";
         try {
-            String info=run(folder,"package","dumpsys package com.loudtalks");
+            String info=run(folder,"package","dumpsys package com.loudtalks | grep -E 'versionName=|android.permission.RECORD_AUDIO: granted='");
             if(!info.contains("versionName=7.11.1\n")&&!info.contains("versionName=7.11.1\r"))throw new IOException("当前仅适配官方Zello 7.11.1");
             String power=run(folder,"screen","dumpsys power");
             if(!power.contains("mWakefulness=Asleep")&&!power.contains("mWakefulness=Awake"))throw new IOException("无法确认原屏幕状态");
