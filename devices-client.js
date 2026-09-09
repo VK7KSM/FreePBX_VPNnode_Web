@@ -563,11 +563,13 @@ async function startSendFile(){
     if(s.stop)throw Error('上传已停止，再次发送可继续');
     var sha=Array.from(hash.digest(),function(b){return b.toString(16).padStart(2,'0');}).join('');
     await fileApi('/api/elfremote/files/'+m.id+'/complete',{sha256:sha});
+    var jobKey=JSON.stringify([m.id,s.path,s.cellular,s.overwrite]);
+    if(s.job_key!==jobKey){s.job_id='';s.job_key=jobKey;}
     s.job_id=s.job_id||('file-'+crypto.randomUUID());
     var assigned=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'send_file',id:s.job_id,params:{transfer_id:m.id,path:s.path,allow_cellular:s.cellular,overwrite:s.overwrite}});
     s.task_id=assigned.task.id;localStorage.removeItem(resumeKey);fileSendMessage(s,'文件已上传，等待设备接收');pollSendFile(s);loadDevices();
   }catch(e){fileSendMessage(s,e.message);}
-  finally{s.busy=false;if(FILE_VIEW===s.device_id&&$('sendFileStart'))$('sendFileStart').disabled=false;}
+  finally{s.busy=false;if(FILE_VIEW===s.device_id)['sendFileStart','sendFilePick','sendFilePath','sendFileCell','sendFileOverwrite'].forEach(function(id){if($(id))$(id).disabled=false;});}
 }
 async function pollSendFile(s){
   clearTimeout(FILE_POLL);if(FILE_VIEW!==s.device_id||!s.task_id)return;

@@ -47,6 +47,7 @@ final class FileTransfer {
                     long size=p.getLong("size");int chunk=m.getInt("chunk_size");
                     if(size<0||size>FileCommit.MAX_BYTES||size!=m.getLong("size")||!p.getString("sha256").equals(m.getString("sha256"))||chunk!=8*1024*1024)throw new IOException("文件信息不匹配");
                     if(payload.length()>size)throw new IOException("本地临时文件长度异常");
+                    RuntimeLog.event("file_receive_resume local_bytes="+payload.length()+" total_bytes="+size);
                     if(dir.getUsableSpace()<size-payload.length()+32L*1024*1024)throw new IOException("接收目录剩余空间不足");
                     reporter.send(id,"running","正在接收文件",null);
                     long lastProgress=0;
@@ -76,7 +77,7 @@ final class FileTransfer {
                     Thread.sleep(1000);
                 }
                 if(core==null||"running".equals(core.optString("state")))throw new IOException("等待文件保存结果");
-                if(!"committed".equals(core.optString("action")))throw new IOException(core.optString("error","文件保存中断，未自动重试覆盖"));
+                if(!"committed".equals(core.optString("action")))throw new Permanent(core.optString("error","文件保存中断，未自动重试覆盖"));
                 JSONObject result=new JSONObject().put("action","committed").put("stage","file").put("bytes",core.getLong("bytes"))
                         .put("sha256",core.getString("sha256")).put("text",core.optString("output"));
                 reporter.send(id,"success","文件已保存",result);active.delete();payload.delete();dir.delete();
@@ -91,7 +92,7 @@ final class FileTransfer {
                     if(saved!=null){new WakeScheduler(context).schedule("file-transfer",60000);return;}
                     File attempts=new File(dir,"failures");int count=attempts.isFile()?Integer.parseInt(RescueFiles.read(attempts,20).trim()):0;
                     count++;if(dir.isDirectory())RescueFiles.write(attempts,String.valueOf(count));
-                    if(cancelled||count>=3||offer.optLong("expires_at")<=System.currentTimeMillis()){
+                    if(cancelled||error instanceof Permanent||count>=3||offer.optLong("expires_at")<=System.currentTimeMillis()){
                         reporter.send(id,"failed",cancelled?"文件接收已停止":error.getMessage(),null);active.delete();new File(dir,"payload.part").delete();
                     }else{reporter.send(id,"running","接收中断，稍后从断点继续",null);new WakeScheduler(context).schedule("file-transfer",60000L*count);}
                 }catch(Exception pending){RuntimeLog.error("file_result_pending",pending);new WakeScheduler(context).schedule("file-transfer",60000);}
@@ -122,6 +123,7 @@ final class FileTransfer {
             int code=c.getResponseCode();
             if(code!=(have>0?206:200)||c.getContentLengthLong()!=bytes-have)throw new IOException("分块响应长度或状态不匹配");
             if(have>0&&!("bytes "+have+"-"+(bytes-1)+"/"+bytes).equals(c.getHeaderField("Content-Range")))throw new IOException("断点位置不匹配");
+            if(have>0)RuntimeLog.event("file_range_resume chunk_start="+begin+" offset="+have);
             out.seek(begin+have);long received=have;
             try(InputStream in=c.getInputStream()){
                 byte[] buf=new byte[65536];int n;
@@ -139,4 +141,5 @@ final class FileTransfer {
     void stop(){stopped=true;HttpURLConnection c=connection;if(c!=null)c.disconnect();}
     private static String enc(String s)throws Exception{return URLEncoder.encode(s,"UTF-8");}
     private static final class Paused extends IOException {}
+    private static final class Permanent extends IOException {Permanent(String reason){super(reason);}}
 }
