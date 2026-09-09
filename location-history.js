@@ -12,7 +12,7 @@ async function sha(value) {
 }
 function prefix(device) { return "history/" + encodeURIComponent(device) + "/"; }
 
-export async function appendLocationHistory(storage, device, data, ip, loc, now = Date.now()) {
+export async function appendLocationHistory(storage, device, data, ip, loc, now = Date.now(), installation = null) {
   const supplied = data.report_id;
   if (supplied != null && (typeof supplied !== "string" || !/^[a-zA-Z0-9_.:-]{1,96}$/.test(supplied))) throw new Error("上报编号无效");
   const id = supplied || crypto.randomUUID();
@@ -32,7 +32,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
     if (previous.hash !== hash) throw new Error("同一上报编号的内容不一致");
     return { duplicate: true, record: await storage.get(previous.key) };
   }
-  const record = { device_id: device, report_id: id, reported_at: reported, received_at: received,
+  const record = { device_id: device, installation_id: installation, report_id: id, reported_at: reported, received_at: received,
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
     location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic };

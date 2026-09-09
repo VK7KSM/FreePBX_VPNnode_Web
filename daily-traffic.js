@@ -16,10 +16,10 @@ export function sydneyMidnight(day) {
 export function aggregateDailyTraffic(samples,from,to,now=Date.now()) {
   const rows=[];
   for(let day=from;day<=to;day=dateShift(day,1)) rows.push({date:day,start:sydneyMidnight(day),end:sydneyMidnight(dateShift(day,1)),rx_bytes:0,tx_bytes:0,observed_ms:0,estimated:false,gaps:false,available:false});
-  const points=[...new Map(samples.filter(s=>s?.available && s.sampled_at_ms<=now && s.sampled_at_ms>=s.started_at_ms).sort((a,b)=>a.sampled_at_ms-b.sampled_at_ms).map(s=>[s.sampled_at_ms,s])).values()];
+  const points=[...new Map(samples.filter(s=>s?.available && s.sampled_at_ms<=now && s.sampled_at_ms>=s.started_at_ms).sort((a,b)=>a.sampled_at_ms-b.sampled_at_ms).map(s=>[(s.installation_id||'legacy')+':'+s.sampled_at_ms,s])).values()];
   let previous=null;
   for(const sample of points) {
-    if(!previous || previous.started_at_ms!==sample.started_at_ms) {
+    if(!previous || previous.installation_id!==sample.installation_id || previous.started_at_ms!==sample.started_at_ms) {
       previous={...sample,sampled_at_ms:sample.started_at_ms,rx_bytes:0,tx_bytes:0,covered_ms:0,gaps:0};
     }
     const start=previous.sampled_at_ms,end=sample.sampled_at_ms,rx=sample.rx_bytes-previous.rx_bytes,tx=sample.tx_bytes-previous.tx_bytes;
@@ -49,7 +49,7 @@ export async function queryDailyTraffic(storage,url,now=Date.now()) {
     while(true) {
       const options=reverse?{end:cursor||bound}:{start:cursor||bound};
       const entries=[...await storage.list({prefix,...options,reverse,limit:500})];
-      for(const [,row] of entries) if(row.traffic?.available) {samples.push(row.traffic);return;}
+      for(const [,row] of entries) if(row.traffic?.available) {samples.push({...row.traffic,installation_id:row.installation_id});return;}
       if(entries.length<500) return;
       cursor=reverse?entries.at(-1)[0]:entries.at(-1)[0]+'\0';
     }
@@ -58,7 +58,7 @@ export async function queryDailyTraffic(storage,url,now=Date.now()) {
   let cursor;
   while(true) {
     const entries=[...await storage.list({prefix,...(cursor?{startAfter:cursor}:{start:low}),end:high,limit:500})];
-    for(const [,row] of entries) if(row.traffic) samples.push(row.traffic);
+    for(const [,row] of entries) if(row.traffic) samples.push({...row.traffic,installation_id:row.installation_id});
     if(entries.length<500) break;cursor=entries.at(-1)[0];
   }
   if(end<=now) await adjacent(false,high);

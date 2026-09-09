@@ -241,7 +241,7 @@ export async function findRepairTask(storage, device, id) {
   return device.task?.id === id ? device.task : (await repairHistory(storage, device.id)).find(t => t.id === id) || null;
 }
 
-async function archiveRepair(storage, device, nowMs) {
+export async function archiveRepair(storage, device, nowMs) {
   if (!storage || !device.task) return;
   const prefix = "repair-history/" + encodeURIComponent(device.id) + "/";
   const task = {...device.task, archived_at:nowMs};

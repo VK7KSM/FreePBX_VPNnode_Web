@@ -4,6 +4,12 @@ import {sydneyDate,sydneyMidnight,dateShift,aggregateDailyTraffic,queryDailyTraf
 import worker from './worker.js';
 import {fixture,request,login} from './test-support.mjs';
 function sample(start,end,rx,tx=0){return {available:true,started_at_ms:start,sampled_at_ms:end,covered_ms:end-start,gaps:0,rx_bytes:rx,tx_bytes:tx};}
+test('不同安装即使起始时间相同也不跨实例相减',()=>{
+ const a=sydneyMidnight('2026-09-08');
+ const rows=aggregateDailyTraffic([{...sample(a,a+1000,100),installation_id:'old'},
+   {...sample(a,a+2000,150),installation_id:'new'}],'2026-09-08','2026-09-08',a+3000);
+ assert.equal(rows[0].rx_bytes,250);
+});
 test('悉尼自然日正确覆盖夏令时23小时与25小时',()=>{
  for(const [day,hours] of [['2026-10-04',23],['2026-04-05',25],['2026-09-08',24]]){
   const a=sydneyMidnight(day),b=sydneyMidnight(dateShift(day,1));

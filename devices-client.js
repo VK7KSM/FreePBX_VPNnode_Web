@@ -430,7 +430,7 @@ function renderOps(){
   h += '<div class="ops-grid">';
   h += kv("电量", bat);
   h += kv("网络", net);
-  h += kv("IP", d && d.ip ? d.ip : "—");
+  h += kv("IP & MAC", (d && d.ip ? d.ip : "—") + " / " + (d && d.mac ? d.mac : "未获取"));
   h += kv("定位", src);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += kv("客户端版本", d ? managerLabel(d) : "—");

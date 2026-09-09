@@ -36,6 +36,7 @@ import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
+import { normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
 import { queryDailyTraffic } from "./daily-traffic.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk } from "./update-artifacts.js";
@@ -907,6 +908,7 @@ function publicDevice(d, modelName) {
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
+    mac: d.hardware_identity?.value || "",
     os_version: d.os_version || "",
     app_version: d.app_version || "",
     ready: !!d.ready,
@@ -1112,11 +1114,17 @@ async function handleDeviceEnroll(env, request) {
       if (await sha256Hex(data.token) !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
       const devices = await loadDevices(env);
       registered = devices.find(d => d.token_sha256 === tokenSha);
+      const identity = normalizeDeviceIdentity(data.hardware_identity);
+      if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now);
       if (!registered) {
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
           name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
           model_id: "mdl_d22", enabled: true, status_only: true };
         devices.push(registered);
+      }
+      if (identity) registered.hardware_identity=identity;
+      for (const [oldCode,row] of Object.entries(enrolls)) {
+        if (row.device_id===registered.id && row.token_sha256!==tokenSha) delete enrolls[oldCode];
       }
       registered.registration_version = 2;
       registered.device_name = String(data.device_name || registered.device_name || registered.name).slice(0, 80);
@@ -1267,9 +1275,11 @@ async function handleDeviceReport(env, request) {
     const matched = list.find(d => d.id === deviceId);
     if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    const identity = normalizeDeviceIdentity(data.hardware_identity);
+    if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
     const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
-    const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation);
+    const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation, Date.now(), matched.installation_id);
     await acknowledgeStatus(env.__storage, deviceId, data);
     if (history.duplicate) {
       const body = { ok: true, paired: matched.paired !== false, duplicate: true, report_id: history.record.report_id };

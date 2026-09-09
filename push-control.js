@@ -5,7 +5,7 @@ const key = id => "push/request/" + encodeURIComponent(id);
 async function digest(value) {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), b => b.toString(16).padStart(2, "0")).join("");
 }
-async function mqttUsername(id) { return "d_" + await digest(id); }
+async function mqttUsername(id, installation) { return "d_" + await digest(installation ? id+":"+installation : id); }
 function fail(status, msg) { throw authJson({ ok: false, msg }, status); }
 
 export async function pendingStatus(storage, id, now = Date.now()) {
@@ -42,7 +42,7 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
     if (device.enabled === false) fail(409, "设备已停用");
     if (action === "config" || action === "sync") {
       if (typeof data.token !== "string" || !data.token || await digest(data.token) !== device.token_sha256) fail(401, "设备凭证无效");
-      if (action === "config") return authJson({ ok: true, username: await mqttUsername(id) });
+      if (action === "config") return authJson({ ok: true, username: await mqttUsername(id,device.installation_id) });
       const current = await pendingStatus(storage, id, now);
       if (current?.state === "pending" && data.received_request_id === current.request_id && data.received_version === current.version && !current.received_at) {
         current.received_at = new Date(now).toISOString();
@@ -64,7 +64,7 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
         current.last_publish_at_ms = now;
       }
       await storage.put(key(id), current);
-      return authJson({ ok: true, request: current, should_publish: shouldPublish, username: await mqttUsername(id) });
+      return authJson({ ok: true, request: current, should_publish: shouldPublish, username: await mqttUsername(id,device.installation_id) });
     }
     if (action === "delivery") {
       const current = await pendingStatus(storage, id, now);
@@ -146,6 +146,7 @@ export async function pushHttp(env, request, stub) {
       // 外部调用期间可能已经解除配对，返回秘密前再校验一次现有配对关系。
       const stillPaired = await rpc("config");
       if (!stillPaired.ok) return stillPaired;
+      if ((await stillPaired.json()).username !== result.username) return authJson({ok:false,msg:"设备安装已变化，请重试"},409);
       return authJson({ ok: true, connection: reply.connection });
     } catch (error) {
       console.warn("mqtt_config_failure", error?.name || "Error", error?.stack?.split("\n").slice(1, 3).join("\n"));

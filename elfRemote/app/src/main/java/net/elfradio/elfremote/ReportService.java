@@ -27,6 +27,7 @@ public final class ReportService extends Service {
     private HandlerThread workerThread;
     private Handler worker;
     private PairingStore store;
+    private DeviceIdentity identity;
     private NetworkHealer healer;
     private boolean loopStarted;
     private boolean reporting;
@@ -314,6 +315,7 @@ public final class ReportService extends Service {
         body.put("model_hint", "D22");
         body.put("app_version", Protocol.appVersion());
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
+        putIdentity(body);
         JSONObject reply = new JSONObject(HttpJson.post(Protocol.enrollPath(), body.toString()));
         if (!reply.optBoolean("ok") || reply.optString("device_id").isEmpty()) throw new java.io.IOException("registration failed");
         store.saveEnroll(reply.getString("code"), reply.getString("enroll_id"), Protocol.parseIsoMillis(reply.getString("expires_at")));
@@ -324,6 +326,12 @@ public final class ReportService extends Service {
     private void reportCurrent() throws Exception {
         if (BuildConfig.STATUS_ONLY) reportStatus();
         else report();
+    }
+
+    private void putIdentity(JSONObject body) throws Exception {
+        if (identity==null) identity=new DeviceIdentity(this);
+        JSONObject value=identity.read();
+        if (value!=null) body.put("hardware_identity",value);
     }
 
     private void ensureMaintenance() {
@@ -344,6 +352,7 @@ public final class ReportService extends Service {
         time.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
         body.put("reported_at", time.format(new java.util.Date(now)));
         body.put("queued_at_ms", now);
+        putIdentity(body);
         body.put("app_version", Protocol.appVersion());
         body.put("os_version", "Android " + Build.VERSION.RELEASE);
         body.put("network", networkType());

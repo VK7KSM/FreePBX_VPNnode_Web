@@ -10,6 +10,7 @@ on:
       - "admin-auth.js"
       - "admin-session.js"
       - "location-history.js"
+      - "device-identity.js"
       - "traffic.js"
       - "daily-traffic.js"
       - "push-control.js"
