@@ -111,15 +111,15 @@ public final class SystemSettings {
         if(group.equals("sound")) {
             AudioManager a=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);JSONObject max=new JSONObject();
             for(int i=0;i<VOLUMES.length;i++){out.put(VOLUMES[i],a.getStreamVolume(STREAMS[i]));max.put(VOLUMES[i],a.getStreamMaxVolume(STREAMS[i]));}
-            out.put("maximum",max).put("brightness",Settings.System.getInt(resolver,"screen_brightness",102)).put("brightness_auto",Settings.System.getInt(resolver,"screen_brightness_mode",0)==1).put("font_scale",Settings.System.getFloat(resolver,"font_scale",1));
+            out.put("maximum",max).put("brightness",settingInt("system","screen_brightness",102)).put("brightness_auto",settingInt("system","screen_brightness_mode",0)==1).put("font_scale",configuration().fontScale);
         }else if(group.equals("time")){
             Configuration config=configuration();out.put("locale",config.getLocales().get(0).toLanguageTag()).put("timezone",property("persist.sys.timezone"))
-                .put("auto_time",Settings.Global.getInt(resolver,"auto_time",1)==1).put("auto_time_zone",Settings.Global.getInt(resolver,"auto_time_zone",1)==1);
+                .put("auto_time",settingInt("global","auto_time",1)==1).put("auto_time_zone",settingInt("global","auto_time_zone",1)==1);
             JSONArray locales=new JSONArray();for(String locale:context.getAssets().getLocales())if(!locale.equals("en-XA")&&!locale.equals("ar-XB"))locales.put(locale.replace('_','-'));out.put("locales",locales);
         }else if(group.equals("apps")) {
             String pkg=p.optString("package");PackageManager pm=context.getPackageManager();
             if(pkg.isEmpty()) {
-                List<ApplicationInfo> apps=pm.getInstalledApplications(0);apps.sort(Comparator.comparing(a->a.packageName));JSONArray rows=new JSONArray();int offset=p.optInt("offset");
+                List<ApplicationInfo> apps=pm.getInstalledApplications(0);apps.sort(Comparator.comparingInt((ApplicationInfo a)->(a.flags&ApplicationInfo.FLAG_SYSTEM)!=0?1:0).thenComparing(a->a.packageName));JSONArray rows=new JSONArray();int offset=p.optInt("offset");
                 for(int i=offset;i<Math.min(apps.size(),offset+15);i++){ApplicationInfo a=apps.get(i);rows.put(new JSONObject().put("package",a.packageName).put("name",a.loadLabel(pm).toString()).put("enabled",a.enabled).put("system",(a.flags&ApplicationInfo.FLAG_SYSTEM)!=0));}
                 out.put("apps",rows).put("offset",offset).put("total",apps.size()).put("next",offset+15<apps.size()?offset+15:-1);
             } else {
@@ -128,14 +128,14 @@ public final class SystemSettings {
                     permissions.put(new JSONObject().put("name",name).put("label",info.loadLabel(pm)).put("granted",pm.checkPermission(name,pkg)==PackageManager.PERMISSION_GRANTED));}catch(PackageManager.NameNotFoundException ignored){}
                 out.put("package",pkg).put("name",app.applicationInfo.loadLabel(pm)).put("version",app.versionName).put("enabled",app.applicationInfo.enabled).put("permissions",permissions)
                     .put("notifications",Class.forName("android.app.INotificationManager").getMethod("areNotificationsEnabledForPackage",String.class,int.class).invoke(notificationService(),pkg,uid))
-                    .put("background",((AppOpsManager)context.getSystemService(Context.APP_OPS_SERVICE)).checkOpNoThrow("android:run_in_background",uid,pkg)!=AppOpsManager.MODE_IGNORED);
+                    .put("background",backgroundMode(uid,pkg)!=AppOpsManager.MODE_IGNORED);
             }
         }else {
             ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);Network n=cm.getActiveNetwork();LinkProperties link=n==null?null:cm.getLinkProperties(n);
             WifiInfo current=wifi.getConnectionInfo();JSONArray saved=new JSONArray();List<WifiConfiguration> configs=wifi.getConfiguredNetworks();if(configs!=null)for(WifiConfiguration c:configs)saved.put(new JSONObject().put("id",c.networkId).put("ssid",unquote(c.SSID)));
             out.put("wifi_enabled",wifi.isWifiEnabled()).put("ssid",current==null?"":unquote(current.getSSID())).put("network_id",current==null?-1:current.getNetworkId()).put("saved",saved);
             if(group.equals("network")){
-                out.put("mobile_data",Settings.Global.getInt(resolver,"mobile_data",0)==1).put("usb",property("sys.usb.state"));
+                out.put("mobile_data",settingInt("global","mobile_data",0)==1).put("mobile_available",hasSim()).put("usb",property("sys.usb.state"));
                 BluetoothAdapter bt=BluetoothAdapter.getDefaultAdapter();out.put("bluetooth_supported",bt!=null).put("bluetooth",bt!=null&&bt.isEnabled());JSONArray paired=new JSONArray();if(bt!=null&&bt.isEnabled())for(BluetoothDevice d:bt.getBondedDevices())paired.put(new JSONObject().put("name",d.getName()).put("address",d.getAddress()));out.put("paired",paired);
                 WifiConfiguration ap=(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi);int state=(Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi);
                 out.put("hotspot",new JSONObject().put("enabled",state==13).put("ssid",ap==null?"":unquote(ap.SSID)));
@@ -151,19 +151,19 @@ public final class SystemSettings {
         if(group.equals("sound")) {
             int i=Arrays.asList(VOLUMES).indexOf(key);if(i>=0){AudioManager a=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);int v=((Number)value).intValue();if(v>a.getStreamMaxVolume(STREAMS[i]))throw new IOException("音量超出设备范围");a.setStreamVolume(STREAMS[i],v,0);}
             else if(key.equals("font_scale")){Configuration c=configuration();c.fontScale=((Number)value).floatValue();updateConfiguration(c);}
-            else if(!Settings.System.putInt(resolver,key.equals("brightness_auto")?"screen_brightness_mode":"screen_brightness",key.equals("brightness_auto")?((Boolean)value?1:0):((Number)value).intValue()))throw new IOException("设置写入失败");
+            else if(!putSetting("system",key.equals("brightness_auto")?"screen_brightness_mode":"screen_brightness",key.equals("brightness_auto")?((Boolean)value?1:0):((Number)value).intValue()))throw new IOException("设置写入失败");
         }else if(group.equals("time")) {
             if(key.equals("timezone"))((AlarmManager)context.getSystemService(Context.ALARM_SERVICE)).setTimeZone((String)value);
             else if(key.equals("locale")){Configuration c=configuration();c.setLocales(LocaleList.forLanguageTags((String)value));Configuration.class.getField("userSetLocale").setBoolean(c,true);updateConfiguration(c);}
-            else if(!Settings.Global.putInt(resolver,key,(Boolean)value?1:0))throw new IOException("设置写入失败");
+            else if(!putSetting("global",key,(Boolean)value?1:0))throw new IOException("设置写入失败");
         }else if(group.equals("apps")) {
             String pkg=p.getString("package");PackageManager pm=context.getPackageManager();int uid=pm.getApplicationInfo(pkg,0).uid;
             if(key.equals("enabled"))pm.setApplicationEnabledSetting(pkg,(Boolean)value?PackageManager.COMPONENT_ENABLED_STATE_ENABLED:PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER,0);
             else if(key.equals("permission")){JSONObject v=(JSONObject)value;PermissionInfo info=pm.getPermissionInfo(v.getString("name"),0);if((info.protectionLevel&PermissionInfo.PROTECTION_MASK_BASE)!=PermissionInfo.PROTECTION_DANGEROUS)throw new IOException("此权限不是可调整的运行时权限");
                 pm.getClass().getMethod(v.getBoolean("granted")?"grantRuntimePermission":"revokeRuntimePermission",String.class,String.class,UserHandle.class).invoke(pm,pkg,v.getString("name"),UserHandle.getUserHandleForUid(uid));}
             else if(key.equals("notifications")){Object service=notificationService();Class.forName("android.app.INotificationManager").getMethod("setNotificationsEnabledForPackage",String.class,int.class,boolean.class).invoke(service,pkg,uid,(Boolean)value);}
-            else {AppOpsManager ops=(AppOpsManager)context.getSystemService(Context.APP_OPS_SERVICE);ops.getClass().getMethod("setMode",String.class,int.class,String.class,int.class).invoke(ops,"android:run_in_background",uid,pkg,(Boolean)value?AppOpsManager.MODE_ALLOWED:AppOpsManager.MODE_IGNORED);}
-        }else if(key.equals("mobile_data"))shell("svc data "+((Boolean)value?"enable":"disable"));
+            else {AppOpsManager ops=(AppOpsManager)context.getSystemService(Context.APP_OPS_SERVICE);ops.getClass().getMethod("setMode",int.class,int.class,String.class,int.class).invoke(ops,backgroundOperation(),uid,pkg,(Boolean)value?AppOpsManager.MODE_ALLOWED:AppOpsManager.MODE_IGNORED);}
+        }else if(key.equals("mobile_data")){if(!hasSim())throw new IOException("设备没有就绪的SIM卡");shell("svc data "+((Boolean)value?"enable":"disable"));}
         else if(key.equals("bluetooth")){BluetoothAdapter b=BluetoothAdapter.getDefaultAdapter();if(b==null)throw new IOException("设备没有蓝牙适配器");if((Boolean)value)b.enable();else b.disable();for(int i=0;i<30&&b.isEnabled()!=(Boolean)value;i++)Thread.sleep(200);}
         else if(key.equals("hotspot")){JSONObject v=(JSONObject)value;WifiConfiguration c=null;if(v.getBoolean("enabled")){c=new WifiConfiguration();c.SSID=v.getString("ssid");c.preSharedKey=v.getString("password");c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);}
             if(!(Boolean)wifi.getClass().getMethod("setWifiApEnabled",WifiConfiguration.class,boolean.class).invoke(wifi,c,v.getBoolean("enabled")))throw new IOException("系统拒绝热点设置");}
@@ -207,7 +207,7 @@ public final class SystemSettings {
     private void armGuard(JSONObject p)throws Exception {
         JSONArray configs=new JSONArray();List<WifiConfiguration> all=(List<WifiConfiguration>)wifi.getClass().getMethod("getPrivilegedConfiguredNetworks").invoke(wifi);
         if(all==null)throw new IOException("无法保存Wi-Fi恢复依据");for(WifiConfiguration c:all)configs.put(parcel(c));
-        WifiConfiguration ap=(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi);JSONObject backup=new JSONObject().put("configs",configs).put("wifi",wifi.isWifiEnabled()).put("network_id",wifi.getConnectionInfo().getNetworkId()).put("mobile_data",Settings.Global.getInt(resolver,"mobile_data",0)==1)
+        WifiConfiguration ap=(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi);JSONObject backup=new JSONObject().put("configs",configs).put("wifi",wifi.isWifiEnabled()).put("network_id",wifi.getConnectionInfo().getNetworkId()).put("mobile_data",settingInt("global","mobile_data",0)==1)
             .put("ap",ap==null?JSONObject.NULL:parcel(ap)).put("ap_enabled",(Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi)==13);
         RescueFiles.write(new File(folder,"settings-network-before.json"),backup.toString());
         java.lang.Process guard=new ProcessBuilder("/system/bin/setsid","/system/bin/app_process","/system/bin",SystemSettings.class.getName(),folder.getPath(),"rollback").redirectErrorStream(true).redirectOutput(new File(folder,"settings-guard.log")).start();
@@ -222,7 +222,7 @@ public final class SystemSettings {
     private void restoreNetwork()throws Exception {
         JSONObject b=new JSONObject(RescueFiles.read(new File(folder,"settings-network-before.json"),300000));
         wifi.getClass().getMethod("setWifiApEnabled",WifiConfiguration.class,boolean.class).invoke(wifi,b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
-        shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
+        if((settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
         Set<Integer> old=new HashSet<>();JSONArray saved=b.getJSONArray("configs");for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));old.add(c.networkId);if(wifi.updateNetwork(c)<0)throw new IOException("Wi-Fi原配置恢复被拒绝");}
         List<WifiConfiguration> all=wifi.getConfiguredNetworks();if(all!=null)for(WifiConfiguration c:all)if(!old.contains(c.networkId))wifi.removeNetwork(c.networkId);
         for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(c.networkId,false);}
@@ -232,6 +232,18 @@ public final class SystemSettings {
     private static final class HttpsURLConnectionWrapper {boolean ok(){javax.net.ssl.HttpsURLConnection c=null;try{c=(javax.net.ssl.HttpsURLConnection)new URL(BuildConfig.CONTROL_URL+"/").openConnection();c.setSSLSocketFactory(CoreTraffic.factory());c.setConnectTimeout(2500);c.setReadTimeout(2500);c.setRequestMethod("HEAD");c.setInstanceFollowRedirects(false);int code=c.getResponseCode();return code>=200&&code<400;}catch(Exception ignored){return false;}finally{if(c!=null)c.disconnect();}}}
     private static String parcel(WifiConfiguration c){Parcel p=Parcel.obtain();try{c.writeToParcel(p,0);return android.util.Base64.encodeToString(p.marshall(),android.util.Base64.NO_WRAP);}finally{p.recycle();}}
     private static WifiConfiguration unparcel(String s)throws Exception {Parcel p=Parcel.obtain();try{byte[] b=android.util.Base64.decode(s,0);p.unmarshall(b,0,b.length);p.setDataPosition(0);return ((Parcelable.Creator<WifiConfiguration>)WifiConfiguration.class.getField("CREATOR").get(null)).createFromParcel(p);}finally{p.recycle();}}
+    private static int backgroundOperation()throws Exception {return AppOpsManager.class.getField("OP_RUN_IN_BACKGROUND").getInt(null);}
+    private int backgroundMode(int uid,String pkg)throws Exception {AppOpsManager ops=(AppOpsManager)context.getSystemService(Context.APP_OPS_SERVICE);return (Integer)ops.getClass().getMethod("checkOpNoThrow",int.class,int.class,String.class).invoke(ops,backgroundOperation(),uid,pkg);}
+    private boolean hasSim(){return ((android.telephony.TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE)).getSimState()==android.telephony.TelephonyManager.SIM_STATE_READY;}
+    private static String setting(String... args)throws Exception {
+        List<String> command=new ArrayList<>(Arrays.asList("/system/bin/settings","--user","0"));Collections.addAll(command,args);
+        java.lang.Process process=new ProcessBuilder(command).redirectErrorStream(true).start();
+        if(!process.waitFor(10,TimeUnit.SECONDS)){process.destroy();throw new IOException("系统设置读写超时");}
+        ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buffer=new byte[512];int n;try(InputStream in=process.getInputStream()){while((n=in.read(buffer))!=-1){if(out.size()+n>4096)throw new IOException("系统设置返回异常");out.write(buffer,0,n);}}
+        String value=out.toString("UTF-8").trim();if(process.exitValue()!=0||value.startsWith("Error")||value.startsWith("Exception"))throw new IOException("系统设置接口拒绝请求");return value;
+    }
+    private static int settingInt(String space,String key,int fallback)throws Exception {String value=setting("get",space,key);return value.equals("null")||value.isEmpty()?fallback:Integer.parseInt(value);}
+    private static boolean putSetting(String space,String key,int value)throws Exception {setting("put",space,key,Integer.toString(value));return settingInt(space,key,-999)==value;}
     private static String property(String key)throws Exception{return (String)Class.forName("android.os.SystemProperties").getMethod("get",String.class).invoke(null,key);}
     private static String unquote(String v){if(v==null||v.equals("<unknown ssid>"))return "";return v.length()>1&&v.startsWith("\"")&&v.endsWith("\"")?v.substring(1,v.length()-1):v;}
     private static Object activityService()throws Exception{return ActivityManager.class.getMethod("getService").invoke(null);}
