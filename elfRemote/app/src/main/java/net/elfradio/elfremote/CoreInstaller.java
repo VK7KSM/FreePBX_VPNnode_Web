@@ -21,6 +21,9 @@ final class CoreInstaller {
         new Thread(() -> {
             boolean before = ready;
             try {
+                File stage = new File(app.getFilesDir(), "core-stage");
+                if (!stage.isDirectory() && !stage.mkdirs()) throw new IOException("core-stage");
+                su(stage, loopbackRule(android.os.Process.myUid()));
                 JSONObject health = null;
                 try { health = CoreClient.health(); } catch (Exception unavailable) { }
                 if (health == null || health.optInt("version_code") != BuildConfig.VERSION_CODE) install(app);
@@ -56,7 +59,7 @@ final class CoreInstaller {
             su(stage, "if [ -f " + DIR + "/launch.sh ]; then cat " + DIR + "/launch.sh > "
                     + RescueFiles.quote(oldLauncher.getPath()) + "; chmod 0644 " + RescueFiles.quote(oldLauncher.getPath()) + "; fi\n");
             if (oldLauncher.isFile()) previous = RescueFiles.read(oldLauncher, 16000);
-            String launcher = launchScript(target);
+            String launcher = launchScript(target) .replace("# LOCAL_RULE\n", loopbackRule(android.os.Process.myUid()));
             File stagedLauncher = new File(stage, "launch.sh");
             RescueFiles.write(stagedLauncher, launcher);
             su(stage, "cp " + RescueFiles.quote(apk) + " " + target + ".new\n"
@@ -84,8 +87,14 @@ final class CoreInstaller {
         } finally { su(stage, "rm -f " + DIR + "/upgrading\n"); }
     }
 
+    static String loopbackRule(int uid) {
+        if (uid < 10000) throw new IllegalArgumentException("应用UID无效");
+        String rule = "OUTPUT -o lo -d 127.0.0.1/32 -p tcp --dport 8765 -m owner --uid-owner " + uid + " -j ACCEPT";
+        return "iptables -C " + rule + " 2>/dev/null || iptables -I " + rule.replace("OUTPUT ", "OUTPUT 1 ") + "\n";
+    }
+
     static String launchScript(String apk) {
-        return "#!/system/bin/sh\nset -e\nD=" + DIR + "\n"
+        return "#!/system/bin/sh\nset -e\n# LOCAL_RULE\nD=" + DIR + "\n"
                 + "p=$(cat \"$D/daemon.pid\" 2>/dev/null || true)\n"
                 + "case \"$p\" in ''|*[!0-9]*) ;; *) if [ -r /proc/$p/cmdline ] && tr '\\000' ' ' < /proc/$p/cmdline | grep -q 'net.elfradio.elfremote.RescueDaemon'; then exit 0; fi;; esac\n"
                 + "[ -f \"$D/generation\" ] || exit 1\n"

@@ -12,6 +12,14 @@ import static org.junit.Assert.*;
 public class RescueTest {
     @Rule public TemporaryFolder temp = new TemporaryFolder();
 
+    @Test public void coreLoopbackExceptionIsLimitedToOwnUidAndPort() {
+        String command=CoreInstaller.loopbackRule(10123);
+        assertTrue(command.contains("-o lo -d 127.0.0.1/32 -p tcp --dport 8765 -m owner --uid-owner 10123"));
+        assertTrue(command.contains("iptables -C OUTPUT"));
+        assertTrue(command.contains("iptables -I OUTPUT 1"));
+        assertThrows(IllegalArgumentException.class,()->CoreInstaller.loopbackRule(0));
+    }
+
     @Test public void rejectsUnsafeIdsAndInvalidLimits() {
         String[] ids = {"../x", "", "x/y", "a.b"};
         for (String id : ids) assertThrows(IllegalArgumentException.class,
