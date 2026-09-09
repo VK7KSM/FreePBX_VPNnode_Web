@@ -41,6 +41,8 @@ public final class ReportService extends Service {
     private PushConnection push;
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
+    private BatteryReports batteryReports;
+    private android.content.BroadcastReceiver batteryReceiver;
     private AlarmPlayer alarm;
     private String locatingTask = "";
     private WifiConnector wifiConnector;
@@ -123,6 +125,19 @@ public final class ReportService extends Service {
         worker.post(wifiConnector::recover);
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
+        if(BuildConfig.STATUS_ONLY){
+            try{batteryReports=new BatteryReports(new java.io.File(getFilesDir(),"battery-reports.json"));}
+            catch(Exception error){RuntimeLog.error("battery_report_state_failed",error);}
+            batteryReceiver=new android.content.BroadcastReceiver(){
+                @Override public void onReceive(Context context,Intent intent){
+                    int raw=intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE,100);
+                    int level=raw<0||scale<=0?-1:Math.round(raw*100f/scale);
+                    boolean charging=intent.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED,0)>0;
+                    Handler target=worker;if(target!=null)target.post(()->batteryChanged(level,charging));
+                }
+            };
+            registerReceiver(batteryReceiver,new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        }
         if (BuildConfig.STATUS_ONLY) {
             lastNetwork = networkType();
             connectivity = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -209,6 +224,7 @@ public final class ReportService extends Service {
 
     @Override
     public void onDestroy() {
+        if(batteryReceiver!=null){unregisterReceiver(batteryReceiver);batteryReceiver=null;}
         destroyed = true;
         if(fileTransfer!=null)fileTransfer.stop();
         RuntimeLog.event("service_stop");
@@ -472,12 +488,40 @@ public final class ReportService extends Service {
     private void reportStatus() throws Exception {
         if (push != null) push.ensure();
         StatusOutbox outbox = statusOutbox();
-        outbox.add(statusBody(null));
+        String urgent=queueBatteryReport(outbox);
+        if(urgent==null)outbox.add(statusBody(null));
         RuntimeLog.event("status_queued network=" + networkType() + " count=" + outbox.entries().length + " log_failed=" + RuntimeLog.failed());
-        flushStatus(outbox, null);
+        flushStatus(outbox, null,urgent);
+    }
+
+    private String queueBatteryReport(StatusOutbox outbox)throws Exception{
+        if(batteryReports==null)return null;
+        JSONObject pending=batteryReports.pending();if(pending==null)return null;
+        JSONObject body=statusBody(null).put("report_id",pending.getString("id")).put("queued_at_ms",pending.getLong("at"))
+                .put("report_event",BatteryReports.event(pending));
+        outbox.add(body);
+        batteryReports.queued(pending.getString("id"));
+        RuntimeLog.event("battery_report_queued thresholds="+body.getJSONObject("report_event").getJSONArray("thresholds"));
+        return pending.getString("id");
+    }
+
+    private void batteryChanged(int level,boolean charging){
+        if(batteryReports==null)return;
+        try{
+            if(!batteryReports.observe(level,charging)||!store.registered())return;
+            WakeScheduler.hold(this,"battery-report",45000L);
+            StatusOutbox outbox=statusOutbox();String urgent=queueBatteryReport(outbox);
+            if(urgent!=null)flushStatus(outbox,null,urgent);
+            scheduleReport(outbox.entries().length>0?60000L:
+                    ("cellular".equals(networkType())&&push!=null&&push.connected()?3600000L:900000L));
+        }catch(Exception error){RuntimeLog.error("battery_report_pending",error);scheduleReport(60000L);}
+        finally{WakeScheduler.release("battery-report");}
     }
 
     private void flushStatus(StatusOutbox outbox, String priorityRequest) throws Exception {
+        flushStatus(outbox,priorityRequest,null);
+    }
+    private void flushStatus(StatusOutbox outbox,String priorityRequest,String priorityReport)throws Exception{
         int sent = new StatusReporter(outbox, json -> {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
@@ -529,7 +573,7 @@ public final class ReportService extends Service {
                 try { receiveStatusRequest(notice, () -> {}); }
                 catch (Exception error) { RuntimeLog.error("push_fallback_failed", error); }
             });
-        }).flush(store.token(), priorityRequest);
+        }).flush(store.token(), priorityRequest,priorityReport);
         traffic.sample();
         store.setLastStatus(sent > 0 ? "已上报" : "等待上报");
     }

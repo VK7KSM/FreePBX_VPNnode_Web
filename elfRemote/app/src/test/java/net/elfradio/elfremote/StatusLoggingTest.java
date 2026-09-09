@@ -13,6 +13,15 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class StatusLoggingTest {
+    @Test public void lowBatteryReportIsRetriedAheadOfOrdinaryBacklog()throws Exception{
+        StatusOutbox outbox=new StatusOutbox(temporary.newFolder(),10);
+        outbox.add(sample("old-1",1));outbox.add(sample("old-2",2));
+        outbox.add(sample("urgent",3).put("report_event",new JSONObject().put("type","low_battery")));
+        List<String> sent=new ArrayList<>();
+        new StatusReporter(outbox,raw->{String id=new JSONObject(raw).getString("report_id");sent.add(id);
+            return new JSONObject().put("ok",true).put("report_id",id).toString();}).flush("fixture-token");
+        assertEquals(java.util.Arrays.asList("urgent","old-1"),sent);assertEquals(1,outbox.entries().length);
+    }
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
     private JSONObject sample(String id, long at) throws Exception {

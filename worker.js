@@ -913,6 +913,7 @@ function publicDevice(d, modelName) {
     report_due_at: contact.report_due_at,
     battery: d.battery == null ? null : d.battery,
     charging: typeof d.charging === "boolean" ? d.charging : null,
+    last_report_event: d.last_report_event || null,
     traffic: d.traffic || null,
     wifi_scan: d.wifi_scan || null,
     alarm: d.alarm || null,
@@ -1344,6 +1345,7 @@ async function handleDeviceReport(env, request) {
         list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
       }
       list[i].charging = typeof data.charging === "boolean" ? data.charging : null;
+      if(history.record.report_event)list[i].last_report_event={...history.record.report_event,report_id:history.record.report_id,received_at:history.record.received_at};
       if (data.ready != null) list[i].ready = !!data.ready;
       const ip = observedIp;
       if (ip && !isPrivateIp(ip)) list[i].ip = ip;

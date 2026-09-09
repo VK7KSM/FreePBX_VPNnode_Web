@@ -21,11 +21,18 @@ final class StatusReporter {
     }
 
     int flush(String token, String priorityRequest) throws Exception {
+        return flush(token,priorityRequest,null);
+    }
+    int flush(String token, String priorityRequest,String priorityReport) throws Exception {
         int sent = 0;
         File[] entries = outbox.entries();
-        if (priorityRequest != null) {
+        {
             for (int i = 0; i < entries.length; i++) {
-                if (priorityRequest.equals(outbox.read(entries[i]).optString("status_request_id"))) {
+                JSONObject entry=outbox.read(entries[i]);
+                if ((priorityRequest!=null&&priorityRequest.equals(entry.optString("status_request_id")))
+                        ||(priorityReport!=null&&priorityReport.equals(entry.optString("report_id")))
+                        ||(priorityRequest==null&&priorityReport==null&&entry.optJSONObject("report_event")!=null
+                        &&"low_battery".equals(entry.getJSONObject("report_event").optString("type")))) {
                     File urgent = entries[i];
                     System.arraycopy(entries, 0, entries, 1, i);
                     entries[0] = urgent;

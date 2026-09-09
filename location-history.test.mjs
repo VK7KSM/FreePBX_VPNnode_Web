@@ -8,6 +8,26 @@ import { pickLocation } from "./remote-location.js";
 const token = "test-device-token";
 const hash = createHash("sha256").update(token).digest("hex");
 
+test('低电量事件保存历史及最近事件，同号重试去重且不允许篡改事件',async()=>{
+  const f=setup(),c=await login(f),at='2026-09-09T03:00:00Z';
+  const event={type:'low_battery',level:1,thresholds:[10,5,2],at:Date.parse(at)};
+  assert.equal((await report(f,'battery-event',at,null,{battery:1,report_event:event})).status,200);
+  assert.equal((await report(f,'battery-event',at,null,{battery:1,report_event:event})).status,200);
+  assert.equal((await history(f,c)).records.length,1);
+  assert.deepEqual((await history(f,c)).records[0].report_event,{...event,at:'2026-09-09T03:00:00.000Z'});
+  assert.deepEqual(f.data.get('remote_devices')[0].last_report_event.thresholds,[10,5,2]);
+  assert.equal((await report(f,'battery-event',at,null,{battery:1,report_event:{...event,thresholds:[2]}})).status,400);
+  await report(f,'normal-after','2026-09-09T03:01:00Z',null,{battery:100});
+  assert.equal(f.data.get('remote_devices')[0].last_report_event.report_id,'battery-event');
+});
+test('拒绝没有实际跨过阈值或字段异常的低电事件',async()=>{
+  const f=setup(),c=await login(f),at='2026-09-09T03:00:00Z',event={type:'low_battery',level:1,thresholds:[2],at};
+  for(const invalid of [{...event,level:2},{...event,thresholds:[2,2]},{...event,thresholds:[3]},{...event,at:null},{...event,level:-1}]){
+    assert.equal((await report(f,'bad-event',at,null,{report_event:invalid})).status,400);
+  }
+  assert.equal((await history(f,c)).records.length,0);
+});
+
 test('未来设备时间保留原件但不冻结最新报告，已有未来状态自动恢复',async()=>{
   const f=setup(),c=await login(f);
   const future='2098-01-01T00:00:00Z';

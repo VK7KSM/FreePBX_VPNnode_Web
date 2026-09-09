@@ -12,6 +12,16 @@ async function sha(value) {
 }
 function prefix(device) { return "history/" + encodeURIComponent(device) + "/"; }
 
+export function normalizeReportEvent(value) {
+  if(value==null)return null;
+  if(value.type!=="low_battery"||!Number.isInteger(value.level)||value.level<0||value.level>100
+    ||!Array.isArray(value.thresholds)||!value.thresholds.length||value.thresholds.length>3
+    ||value.thresholds.some(t=>![10,5,2].includes(t)||value.level>=t)
+    ||new Set(value.thresholds).size!==value.thresholds.length)throw new Error("低电量事件无效");
+  const at=timestamp(value.at);if(!at)throw new Error("低电量事件缺少时间");
+  return {type:"low_battery",thresholds:[...value.thresholds].sort((a,b)=>b-a),level:value.level,at};
+}
+
 export async function appendLocationHistory(storage, device, data, ip, loc, now = Date.now(), installation = null) {
   const supplied = data.report_id;
   if (supplied != null && (typeof supplied !== "string" || !/^[a-zA-Z0-9_.:-]{1,96}$/.test(supplied))) throw new Error("上报编号无效");
@@ -22,10 +32,11 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const timeline = reported && reported <= received ? reported : received;
   const dedupKey = "history-id/" + encodeURIComponent(device) + "/" + id;
   const traffic = normalizeTraffic(data.traffic);
+  const event=normalizeReportEvent(data.report_event);
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,
     cell: data.cell || null, network: data.network || "unknown", battery: data.battery ?? null,
     app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null,
-    status_request_id: data.status_request_id || null, ...(traffic == null ? {} : { traffic }) });
+    status_request_id: data.status_request_id || null, ...(traffic == null ? {} : { traffic }),...(event?{report_event:event}:{}) });
   const hash = await sha(content);
   const previous = await storage.get(dedupKey);
   if (previous) {
@@ -35,7 +46,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const record = { device_id: device, installation_id: installation, report_id: id, reported_at: reported, received_at: received,
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
-    location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic };
+    location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };
   const key = prefix(device) + timeline + "/" + id;
   await storage.put(key, record);
   await storage.put(dedupKey, { key, hash });
