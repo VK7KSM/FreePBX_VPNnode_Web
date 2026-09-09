@@ -39,6 +39,7 @@ final class FileReturn {
                 String url=Protocol.BASE_URL+"/api/elfremote/file-return?device_id="+java.net.URLEncoder.encode(device,"UTF-8")+"&task_id="+id;
                 JSONObject m=json(url,token,p,new JSONObject().put("action","init").put("size",size).put("sha256",hash)).getJSONObject("file");
                 if(m.getLong("size")!=size||!hash.equals(m.getString("sha256")))throw new Permanent("服务器文件快照不一致");
+                RuntimeLog.event("file_return_resume task="+id+" completed_parts="+m.getJSONObject("parts").length()+" bytes="+size);
                 long sent=0,last=0;java.security.MessageDigest complete=java.security.MessageDigest.getInstance("SHA-256");
                 try(InputStream in=new FileInputStream(snapshot)){
                     for(int index=0;sent<size;index++){
@@ -48,6 +49,7 @@ final class FileReturn {
                         JSONObject old=m.getJSONObject("parts").optJSONObject(String.valueOf(index));
                         if(old!=null&&!partHash.equals(old.optString("sha256")))throw new Permanent("已上传分块与快照不一致");
                         if(old==null)upload(url+"&part="+index+"&sha256="+partHash,token,p,bytes,offer);
+                        else RuntimeLog.event("file_return_reuse task="+id+" part="+index+" bytes="+count);
                         sent+=count;if(System.currentTimeMillis()-last>30000){reporter.send(id,"running","上传到服务器 "+sent*100/Math.max(1,size)+"%",null);last=System.currentTimeMillis();}
                     }
                 }
@@ -61,6 +63,7 @@ final class FileReturn {
                     if(receipts.read(id)!=null){new WakeScheduler(context).schedule("file-return",60000L);return;}
                     File failures=new File(dir,"failures");int count=failures.isFile()?Integer.parseInt(RescueFiles.read(failures,20)):0;count++;if(dir.isDirectory())RescueFiles.write(failures,String.valueOf(count));
                     if(cancelled||error instanceof Permanent||count>=3||offer.optLong("expires_at")<=System.currentTimeMillis()){
+                        stopSnapshot(id);
                         reporter.send(id,"failed",cancelled?"文件取回已停止":error.getMessage(),null);cleanup(active,dir);
                     }else{reporter.send(id,"running","上传中断，稍后继续取回",null);new WakeScheduler(context).schedule("file-return",count*60000L);}
                 }catch(Exception pending){RuntimeLog.error("file_return_result_pending",pending);new WakeScheduler(context).schedule("file-return",60000L);}
@@ -82,7 +85,24 @@ final class FileReturn {
         Network n=network(p);HttpURLConnection c=open(url,token,p,"PUT",bytes.length);try{c.setRequestProperty("Content-Type","application/octet-stream");try(OutputStream out=c.getOutputStream()){for(int offset=0;offset<bytes.length;offset+=8192){check(offer);if(n==null||!n.equals(network(p)))throw new Paused();out.write(bytes,offset,Math.min(8192,bytes.length-offset));}}response(c);}finally{c.disconnect();connection=null;}
     }
     private void check(JSONObject offer)throws Exception{if(stopped)throw new IOException("客户端正在退出");if(cancelled)throw new Permanent("文件取回已停止");if(offer.getLong("expires_at")<=System.currentTimeMillis())throw new Permanent("文件取回任务已过期");}
-    private void cleanup(File active,File dir){active.delete();File[] files=dir.listFiles();if(files!=null)for(File f:files)f.delete();dir.delete();}
+    private void stopSnapshot(String id)throws Exception{
+        JSONObject job=CoreClient.request("/jobs/"+id,null);
+        if(job==null||!"running".equals(job.optString("state")))return;
+        CoreClient.request("/jobs/"+id+"/cancel",new JSONObject());
+        long end=android.os.SystemClock.elapsedRealtime()+30000L;
+        do{
+            if(stopped)throw new IOException("客户端正在退出");
+            Thread.sleep(250);job=CoreClient.request("/jobs/"+id,null);
+            if(job!=null&&!"running".equals(job.optString("state")))return;
+        }while(android.os.SystemClock.elapsedRealtime()<end);
+        // 未确认快照结束时保留现场，由重试继续收尾，不能提前报停止成功。
+        throw new IOException("等待文件快照停止，稍后继续清理");
+    }
+    private void cleanup(File active,File dir)throws IOException{
+        File[] files=dir.listFiles();if(files!=null)for(File f:files)if(!f.delete()&&f.exists())throw new IOException("文件快照清理待重试");
+        if(dir.exists()&&!dir.delete())throw new IOException("文件快照目录清理待重试");
+        if(active.exists()&&!active.delete())throw new IOException("文件任务清理待重试");
+    }
     void stop(){stopped=true;HttpURLConnection c=connection;if(c!=null)c.disconnect();}
     private static final class Paused extends IOException{}
     private static final class Permanent extends IOException{Permanent(String text){super(text);}}
