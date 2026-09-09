@@ -27,7 +27,8 @@ final class RescueJobs {
                 try {
                 JSONObject obj = new JSONObject(RescueFiles.read(state, 600000));
                 if ("running".equals(obj.optString("state"))) {
-                    JSONObject recovered=FileCommit.recover(dir);
+                    JSONObject recovered=SipAccountManager.recover(dir);
+                    if(recovered==null)recovered=FileCommit.recover(dir);
                     if(recovered==null)recovered=FileSnapshot.recover(dir);
                     if(recovered!=null){recovered.put("id",dir.getName());RescueFiles.write(state,recovered.toString());continue;}
                     obj.put("state", "interrupted").put("error", "救援进程已重启，任务不会自动重放");
@@ -67,6 +68,12 @@ final class RescueJobs {
     synchronized JSONObject submitFileOperation(String id,JSONObject params)throws Exception {
         JSONObject p=FileOperations.normalize(params);
         return submit(id,"file-manage:"+p.toString(),120,(folder,command,timeout)->FileOperations.run(folder,p));
+    }
+
+    synchronized JSONObject submitSipAccount(String id,JSONObject params)throws Exception {
+        JSONObject p=SipAccountConfig.normalize(params);
+        String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return submit(id,"configure-sip:"+fingerprint,120,(folder,command,timeout)->SipAccountManager.apply(folder,p));
     }
 
     private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {

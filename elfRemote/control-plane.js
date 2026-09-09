@@ -122,7 +122,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -135,6 +135,7 @@ export const REPAIR_STATE_LABELS = {
 };
 
 export const REPAIR_TYPE_LABELS = {
+  configure_sip: "配置Linphone账号",
   root_exec: "执行命令",
   file_manage: "管理文件",
   send_file: "发送文件",
@@ -210,19 +211,36 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["root_exec","send_file","get_file","file_manage"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  if(["root_exec","send_file","get_file","file_manage","configure_sip"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
   return {
     id,
     type,
-    params: type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
     detail: ""
   };
+}
+
+export function sipAccountParams(value={}) {
+  const {server,username,password}=value,auth_username=value.auth_username??username,transport=String(value.transport??'tls').toLowerCase(),port=value.port??(transport==='tls'?5061:5060);
+  if(typeof server!=='string'||!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(server)||typeof username!=='string'||!/^[A-Za-z0-9_.+-]{1,128}$/.test(username)
+    ||typeof auth_username!=='string'||!/^[A-Za-z0-9_.+@-]{1,128}$/.test(auth_username)||typeof password!=='string'||!password||password.length>256||password!==password.trim()||/[\x00-\x1f\x7f]/.test(password)
+    ||!['tls','tcp','udp'].includes(transport)||!Number.isInteger(port)||port<1||port>65535)throw Error('SIP账号参数无效');
+  return {server:server.toLowerCase(),username,auth_username,password,transport,port};
+}
+
+export async function queueSipRestore(device,storage,now) {
+  const saved=device.account_configs?.linphone;
+  if(!saved||device.enabled===false||!device.managed_sip_account||saved.applied_token_sha===device.token_sha256||saved.attempted_token_sha===device.token_sha256||repairInflight(device.task))return false;
+  const result=await enqueueRepairTask(device,{type:'configure_sip',id:'sip-restore-'+crypto.randomUUID(),params:saved.params},now,storage);
+  if(!result.ok)return false;
+  device.task.managed_exec_v1=true;saved.attempted_token_sha=device.token_sha256;
+  return true;
 }
 
 export function commandParams(value={}) {
@@ -344,6 +362,7 @@ export function canAdvanceRepair(from, to) {
 export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
+  if(device.task.type==='configure_sip' && state==='success' && (!result||result.registered!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少SIP注册成功证据');
   if(['root_exec','file_manage'].includes(device.task.type) && state === 'success'
       && (!result || result.exit_code !== 0 || result.action !== 'completed')) throw new Error('缺少命令成功证据');
   if(device.task.type === 'send_file' && state === 'success' && (!result || result.action!=='committed'
@@ -353,6 +372,9 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
   if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending")) throw new Error("缺少丢失模式完成状态");
+  if(device.task.type==='configure_sip' && state==='success' && device.task.params?.password){
+    device.account_configs={...device.account_configs,linphone:{params:sipAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
+  }
   if (device.task.state !== state) {
     device.task.updated_at = new Date(nowMs).toISOString();
     if (state === "claimed") device.task.claimed_at = device.task.updated_at;
@@ -365,7 +387,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (contacts) device.contacts = contacts;
   if (lost) device.lost_mode = lost;
   if(device.task.type==="set_lost_mode" && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
-  if(CONFIG_TYPES.includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
+  if((CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
     if (alarm) device.alarm = alarm;
@@ -377,8 +399,8 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       bytes: Math.max(0, Number(result.bytes) || 0),
       truncated: !!result.truncated,
       artifact: result.artifact || null,
-      text: String(result.text || "").slice(0, ["root_exec","file_manage"].includes(device.task.type) ? 16000 : 2048),
-      ...(["root_exec","file_manage"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
+      text: String(result.text || "").slice(0, ["root_exec","file_manage","configure_sip"].includes(device.task.type) ? 16000 : 2048),
+      ...(["root_exec","file_manage","configure_sip"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
       reason: String(result.reason || "").slice(0, 80)
@@ -468,7 +490,7 @@ export function publicRepair(task) {
       truncated: !!r.truncated,
       artifact: r.artifact || null,
       text: r.text || "",
-      ...(["root_exec","file_manage"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
+      ...(["root_exec","file_manage","configure_sip"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""

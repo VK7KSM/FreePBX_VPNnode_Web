@@ -477,7 +477,7 @@ function pageModel(){
   return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
 }
 var MAINTENANCE_RUN={};
-var MAINTENANCE_CAPS={get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+var MAINTENANCE_CAPS={configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
@@ -485,7 +485,7 @@ function maintenanceAvailable(d,type){
   return !(t && ['pending','claimed','running'].includes(t.state) && !(Number.isFinite(expires)&&Date.now()>=expires));
 }
 function pageAdb(dis){
-  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file'].includes(t.type)?{}:t.result||{};
+  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file','configure_sip'].includes(t.type)?{}:t.result||{};
   var ready=!!(d&&d.managed_exec_tasks),blocked=!!(dis||!ready||(u&&u.shell.pending));
   var run= d && MAINTENANCE_RUN[d.id];
   var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
@@ -932,12 +932,28 @@ function selectTrafficBar(i){
   document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);if(n===i){var chart=$('trafficChart'),bar=b.getBoundingClientRect(),view=chart.getBoundingClientRect();chart.scrollLeft+=bar.left-view.left-(chart.clientWidth-bar.width)/2;}});
 }
 var SYSTEM_TAB='Wi-Fi';
-var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
+var SYSTEM_GROUPS={'Wi-Fi':[],'Linphone':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();}
 function pageSystem(dis){
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
+  if(SYSTEM_TAB==='Linphone')return h+pageSipAccount(dis)+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
   return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div></section></div>';
+}
+
+function pageSipAccount(dis){
+  var d=currentDev(),saved=d&&d.sip_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_sip_account||!maintenanceAvailable(d,'configure_sip')?' disabled':'');
+  var h='<form id="sipAccountForm" class="account-fields" onsubmit="configureSipAccount(event)"><label>服务器<input id="sipAccountServer" class="inp" required autocomplete="off" placeholder="sip.example.com" value="'+esc(saved.server||'')+'"'+blocked+'></label><label>账号<input id="sipAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label><label>认证账号<input id="sipAccountAuth" class="inp" autocomplete="off" placeholder="留空时使用账号" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label><label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存并登录</button><span id="sipAccountFeedback" role="status">'+esc(t.type==='configure_sip'?(t.detail||t.label):saved.updated_at?'上次注册成功 · '+sydney(saved.updated_at):d&&!d.managed_sip_account?'请更新客户端后使用':'尚未配置账号')+'</span></div></form>';
+  return h;
+}
+async function configureSipAccount(event){
+  event.preventDefault();var d=currentDev();if(!d||!d.managed_sip_account)return;
+  var params={server:$('sipAccountServer').value.trim(),username:$('sipAccountUser').value.trim(),password:$('sipAccountPassword').value,transport:$('sipAccountTransport').value,port:Number($('sipAccountPort').value)};
+  var auth=$('sipAccountAuth').value.trim();if(auth)params.auth_username=auth;
+  var button=$('sipAccountForm').querySelector('button[type=submit]');button.disabled=true;
+  try{await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_sip',id:'sip-'+crypto.randomUUID(),params:params});if(selDev===d.id&&$('sipAccountPassword')){$('sipAccountPassword').value='';$('sipAccountFeedback').textContent='已发送，等待设备登录';}loadDevices();}
+  catch(e){if(selDev===d.id&&$('sipAccountFeedback'))$('sipAccountFeedback').textContent=e.message;}
+  finally{params.password='';if(button.isConnected)button.disabled=false;}
 }
 
 function pageAlarm(dis){

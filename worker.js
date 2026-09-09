@@ -20,6 +20,7 @@ import {
   applyUpdateProgress,
   updateStateLabel,
   enqueueRepairTask,
+  queueSipRestore,
   repairHistory,
   findRepairTask,
   shouldOfferRepair,
@@ -951,6 +952,8 @@ function publicDevice(d, modelName) {
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
     managed_file_operations: d.managed_file_operations === true,
+    managed_sip_account: d.managed_sip_account === true,
+    sip_account: d.account_configs?.linphone ? {server:d.account_configs.linphone.params.server,username:d.account_configs.linphone.params.username,auth_username:d.account_configs.linphone.params.auth_username,transport:d.account_configs.linphone.params.transport,port:d.account_configs.linphone.params.port,updated_at:d.account_configs.linphone.updated_at} : null,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1351,6 +1354,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_file_tasks = data.managed_file_tasks === true;
       list[i].managed_file_return = data.managed_file_return === true;
       list[i].managed_file_operations = data.managed_file_operations === true;
+      list[i].managed_sip_account = data.managed_sip_account === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1388,12 +1392,13 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
-      if(CONFIG_TYPES.includes(found.task.type) || found.task.type==="set_lost_mode") found.task.params={};
+      if(CONFIG_TYPES.includes(found.task.type) || ["configure_sip","set_lost_mode"].includes(found.task.type)) found.task.params={};
     }
+    await queueSipRestore(found,env.__storage,now);
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
@@ -1625,7 +1630,8 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
   if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
-      || (report.managed_file_operations === true && device.task?.type === 'file_manage'))
+      || (report.managed_file_operations === true && device.task?.type === 'file_manage')
+      || (report.managed_sip_account === true && device.task?.type === 'configure_sip'))
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
   if (device.enabled !== false && report.managed_file_tasks === true && device.task?.type === 'send_file'
@@ -1680,7 +1686,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage','configure_sip'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1694,6 +1700,7 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
         || (data.type==="file_manage" && found.managed_file_operations===true)
+        || (data.type==="configure_sip" && found.managed_sip_account===true)
         || (data.type==="get_file" && found.managed_file_return===true)
         || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
@@ -1705,6 +1712,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    if(data.type==="configure_sip" && !found.managed_sip_account)return json({ok:false,msg:"客户端尚未支持Linphone账号配置"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
     if(data.type==='get_file'){
@@ -1732,7 +1740,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
-    if(!queued.duplicate && ['root_exec','file_manage'].includes(data.type)) found.task.managed_exec_v1=true;
+    if(!queued.duplicate && ['root_exec','file_manage','configure_sip'].includes(data.type)) found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
@@ -2530,6 +2538,7 @@ function renderDevicesHtml() {
     '.monitor .adb-term{scrollbar-width:none;-ms-overflow-style:none}.monitor .adb-term::-webkit-scrollbar{display:none}.monitor-footer a.log-download{display:inline;padding:0;border:0;border-radius:0;background:none;color:#93c5fd;font-size:12px;text-decoration:none}.monitor-footer a.log-download:hover{text-decoration:underline}',
     '.terminal-status{display:flex;align-items:center;gap:10px;padding-top:6px;font-size:11px;line-height:18px}.terminal-status .log-download{font-size:11px;color:#93c5fd;text-decoration:none}.terminal-status .log-download:hover{text-decoration:underline}',
     '.monitor .monitor-heading{overflow:visible;padding:8px 12px}.file-send-dialog .traffic-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.file-send-dialog .btn-close{position:static;flex-shrink:0;margin:0;width:28px;height:28px;padding:0;background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:18px;line-height:26px}.file-send-fields input[type=file]{font-size:12px;max-width:100%}.file-send-fields input[type=file]::file-selector-button{background:#334155;color:#d4deec;border:0;border-radius:5px;padding:6px 10px;margin-right:10px}',
+    '.account-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px;max-width:680px}.account-fields>label{display:grid;gap:5px;color:#aebcce}.account-fields .inp{width:100%;font-size:12px;height:34px}.account-fields .ops-actions{grid-column:1/-1;flex-wrap:wrap}.account-fields [role=status]{color:#aebcce}@media(max-width:600px){.account-fields{grid-template-columns:1fr}}',
     '.file-manager-page{font-size:12px;line-height:1.8;min-width:0}.file-manager-page button{font-size:12px;font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px;white-space:nowrap}.file-manager-toolbar,.file-manager-path,.file-manager-edit,.file-manager-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.file-manager-count{color:#94a3b8;margin-left:auto;overflow-wrap:anywhere}.file-manager-path{margin:14px 0 8px}.file-manager-page input.inp{font-size:12px;height:32px;min-width:0;padding:5px 10px}.file-manager-path input{flex:1}.file-manager-table{width:100%;table-layout:fixed;border-collapse:collapse}.file-manager-table th,.file-manager-table td{font-size:12px;font-weight:400;text-align:left;border-bottom:1px solid #29364a;padding:8px 10px}.file-manager-table th{color:#94a3b8}.file-manager-table th:first-child,.file-select{width:34px}.file-manager-table .file-size{text-align:right;width:110px;white-space:nowrap}.file-manager-table .file-name{overflow-wrap:anywhere}.file-manager-table .selected{background:rgba(96,165,250,.12)}.file-manager-table .file-empty{text-align:center;padding:22px 10px;color:#94a3b8}.file-manager-footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;margin-top:14px}.file-manager-edit input{width:220px;max-width:100%}.file-manager-pagination{margin-left:auto}.file-manager-page .log-download{font-size:12px}@media(max-width:600px){.file-manager-page button{padding:5px 8px}.file-manager-table th,.file-manager-table td{padding:7px 5px}.file-manager-table .file-size{width:80px}.file-manager-count{width:100%;margin-left:0}.file-manager-edit input{width:100%}}',
     '.function-content select.release-select{font-size:12px;line-height:1.8;height:34px;padding:5px 10px;width:360px;max-width:100%;min-width:0;color-scheme:dark}.function-content select:disabled{opacity:.6}',
     '.fn-page textarea.inp{min-height:72px;resize:vertical}',
