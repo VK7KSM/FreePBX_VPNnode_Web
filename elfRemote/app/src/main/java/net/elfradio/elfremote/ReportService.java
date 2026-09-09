@@ -1080,6 +1080,8 @@ public final class ReportService extends Service {
             }
             java.util.LinkedHashMap<String, String> files = new java.util.LinkedHashMap<String, String>();
             boolean incomplete = false;
+            try{JSONObject coreLog=CoreClient.request("/push/log",null);if(coreLog!=null)files.put("独立核心日志",coreLog.getString("text"));}
+            catch(Exception unavailable){incomplete=true;}
             String[] paths = RepairPolicy.LOG_PATHS;
             for (int i = 0; i < paths.length; i++) {
                 incomplete |= addLogFile(files, new java.io.File(paths[i]));
@@ -1421,7 +1423,8 @@ public final class ReportService extends Service {
             h.identityOk = store.registered() && store.deviceId().length() > 0;
             h.reportOk = healthReportConfirmed;
             int coreCode=0;
-            if(CoreInstaller.ready())try{coreCode=CoreClient.health().optInt("version_code");}catch(Exception unavailable){}
+            if(CoreInstaller.ready())try{JSONObject core=CoreClient.health();if(core.optBoolean("independent_push"))coreCode=core.optInt("version_code");}catch(Exception unavailable){}
+            if(push!=null)push.ensure();
             if (!UpdatePolicy.maintenanceHealthy(h, wantName, want,WatchdogInstaller.ready(),coreCode)) {
                 RuntimeLog.event("update_health_wait version=" + h.versionCode
                         + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk+" core="+coreCode);

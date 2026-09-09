@@ -13,6 +13,8 @@ final class RescueHttpServer extends NanoHTTPD {
     private final Status status;
     private final int uid;
     private AdbSessions adb;
+    private CorePush push;
+    void setPush(CorePush value){push=value;}
     void setAdb(AdbSessions value){adb=value;}
 
     RescueHttpServer(int port, RescueJobs jobs, Status status) {
@@ -63,10 +65,13 @@ final class RescueHttpServer extends NanoHTTPD {
                         .put("version_code", BuildConfig.VERSION_CODE)
                         .put("service", "elfremote-root-rescue").put("busy", jobs.isBusy())
                         .put("uid", uid)
+                        .put("independent_push",push!=null)
                         .put("diagnostics",true).put("history_days",30)
                         .put("uptime_ms", System.nanoTime() / 1000000L));
             if (session.getMethod() == Method.GET && "/".equals(path))
                 return response(Response.Status.OK, status.get());
+            if(session.getMethod()==Method.GET && "/push/status".equals(path) && push!=null)return json(Response.Status.OK,push.status());
+            if(session.getMethod()==Method.GET && "/push/log".equals(path) && push!=null)return json(Response.Status.OK,push.logs());
             if (session.getMethod() == Method.GET && path.startsWith("/jobs/")) {
                 JSONObject result = jobs.get(path.substring(6));
                 return result == null ? response(Response.Status.NOT_FOUND, "任务不存在")
@@ -77,7 +82,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 JSONObject result=jobs.cancel(path.substring(6,path.length()-7));
                 return result==null ? response(Response.Status.NOT_FOUND,"任务不存在") : json(Response.Status.ACCEPTED,result);
             }
-            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)||("/adb/open".equals(path)&&adb!=null)))
+            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)||("/adb/open".equals(path)&&adb!=null)||(push!=null&&("/push/config".equals(path)||"/push/hint".equals(path)||"/push/disable".equals(path)))))
                 return response(Response.Status.NOT_FOUND, "使用 POST /exec 或 GET /jobs/任务号");
             // 本批仅开放本机回环，云端复用既有管理员登录与设备凭据。
             String contentType = session.getHeaders().get("content-type");
@@ -97,6 +102,9 @@ final class RescueHttpServer extends NanoHTTPD {
                 offset += count;
             }
             JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            if("/push/config".equals(path))return json(Response.Status.OK,push.configure(request));
+            if("/push/hint".equals(path)){push.hint();return json(Response.Status.OK,push.status());}
+            if("/push/disable".equals(path)){push.disable();return json(Response.Status.OK,push.status());}
             if("/adb/open".equals(path))return json(Response.Status.ACCEPTED,adb.open(request));
             if("/zello-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitZelloAccount(request.getString("id"),request.getJSONObject("params")));
             if("/sip-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitSipAccount(request.getString("id"),request.getJSONObject("params")));

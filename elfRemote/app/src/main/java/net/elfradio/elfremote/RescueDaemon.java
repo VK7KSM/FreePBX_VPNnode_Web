@@ -30,12 +30,16 @@ public final class RescueDaemon {
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
+            RuntimeLog.initialize(new File(root,"runtime-log"),BuildConfig.VERSION_NAME);
+            CorePush push=null;
+            try{push=new CorePush(root);server.setPush(push);}catch(Exception failure){RuntimeLog.error("core_push_start_failed",failure);}
             server.start(3000, true);
             System.out.println("CORE_HTTP_READY version="+BuildConfig.VERSION_CODE);
             try {
                 while (guard.isFile() && generation.equals(RescueFiles.read(guard, 128)))
                     Thread.sleep(2000);
             } finally {
+                if(push!=null)push.close();
                 adb.close();
                 killGroup(activeGroup);
                 server.stop();

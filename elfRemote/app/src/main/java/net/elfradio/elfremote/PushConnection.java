@@ -3,226 +3,51 @@ package net.elfradio.elfremote;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
-import org.eclipse.paho.client.mqttv3.*;
-import org.eclipse.paho.client.mqttv3.persist.MqttDefaultFilePersistence;
 import org.json.JSONObject;
-import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import javax.net.ssl.SSLSocketFactory;
 
+/** 应用只交付身份与领取通知；MQTT连接由独立维护核心持有。 */
 final class PushConnection {
-    interface Receiver { void receive(JSONObject notification, Runnable acknowledge) throws Exception; }
+    interface Receiver { void receive(JSONObject notification,Runnable acknowledge)throws Exception; }
     private final Context context;
-    private final Handler worker;
     private final PairingStore pairing;
     private final Receiver receiver;
-    private MqttAsyncClient client;
+    private final WakeScheduler legacyWake;
     private SharedPreferences prefs;
-    private String identity = "";
-    private String topic = "";
-    private boolean connecting, subscribed, closed;
-    private int failures;
-    private String network = "";
-    private final WakeScheduler wake;
-    private AlarmPingSender ping;
-
-    PushConnection(Context context, Handler worker, PairingStore pairing, Receiver receiver) {
-        this.context = context; this.worker = worker; this.pairing = pairing; this.receiver = receiver; this.wake = new WakeScheduler(context);
+    private String identity="";
+    private boolean connected,closed;
+    PushConnection(Context context,Handler worker,PairingStore pairing,Receiver receiver){
+        this.context=context;this.pairing=pairing;this.receiver=receiver;legacyWake=new WakeScheduler(context);
+        // 升级后清除原应用连接遗留的闹钟，新核心使用系统所有者监听器。
+        for(String key:new String[]{"retry","connect-timeout","ping"})legacyWake.cancel(key);
     }
-
-    void ensure() {
-        if (closed) return;
-        if (!pairing.registered()) {
-            disposeClient(); wake.cancel("retry"); identity = ""; prefs = null; return;
-        }
-        String next = PairingStore.sha256Hex(Protocol.BASE_URL + ":" + pairing.deviceId());
-        if (!next.equals(identity)) {
-            disposeClient();
-            wake.cancel("retry");
-            identity = next;
-            prefs = context.getSharedPreferences("push-" + identity, Context.MODE_PRIVATE);
-            failures = 0;
-            connect();
-        }
-    }
-
-    long lastVersion() { return prefs == null ? 0 : prefs.getLong("queued_version", 0); }
-    void recordQueued(JSONObject value) throws Exception {
-        if (!prefs.edit().putLong("queued_version", value.getLong("version")).commit()) throw new IOException("push receipt persistence failed");
-    }
-    boolean connected() { return subscribed && client != null && client.isConnected(); }
-    private String activeNetwork() {
-        android.net.ConnectivityManager manager = (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-        android.net.Network active = manager == null ? null : manager.getActiveNetwork();
-        return active == null ? "" : active.toString();
-    }
-    void networkHint() {
-        if (closed || prefs == null) return;
-        String current = activeNetwork();
-        boolean changed = !network.equals(current);
-        if (changed) {
-            disposeClient();
-            network = current;
-            RuntimeLog.event("mqtt_network_changed");
-        }
-        if (!current.isEmpty() && !connecting && !connected() && (changed || failures == 0)) connect();
-    }
-
-    private JSONObject identityBody() throws Exception {
-        return new JSONObject().put("device_id", pairing.deviceId()).put("token", pairing.token());
-    }
-
-    private void connect() {
-        if (closed || !pairing.registered() || connecting || connected()) return;
-        wake.cancel("retry");
-        connecting = true;
-        WakeScheduler.hold(context, "connect", 60000L);
-        wake.schedule("connect-timeout", 45000L);
+    void ensure(){
+        if(closed)return;
         try {
-            network = activeNetwork();
-            if (network.isEmpty()) throw new IOException("network unavailable");
-            String saved = prefs.getString("connection", "");
-            JSONObject config;
-            if (saved.isEmpty()) {
-                JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushConfigPath(), identityBody().toString()));
-                if (!reply.optBoolean("ok")) throw new IOException("push config unavailable");
-                config = reply.getJSONObject("connection");
-            } else config = new JSONObject(saved);
-            String host = config.getString("host");
-            String username = config.getString("username");
-            int port = config.getInt("port");
-            if (!config.optBoolean("tls") || !host.matches("[a-zA-Z0-9.-]+") || port < 1 || port > 65535
-                    || !username.matches("d_[a-f0-9]{64}") || !username.equals(config.getString("client_id"))
-                    || !("elfremote/" + username + "/notify").equals(config.getString("topic"))) throw new IOException("push config invalid");
-            if (!prefs.edit().putString("connection", config.toString()).commit()) throw new IOException("push config persistence failed");
-            topic = config.getString("topic");
-            if (client == null) {
-                File directory = new File(context.getFilesDir(), "mqtt/" + identity);
-                if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("mqtt storage unavailable");
-                ping = new AlarmPingSender(context);
-                client = new MqttAsyncClient("ssl://" + host + ":" + port, username,
-                        new MqttDefaultFilePersistence(directory.getPath()), ping, null,
-                        android.os.SystemClock::elapsedRealtimeNanos);
-                client.setManualAcks(true);
-                final MqttAsyncClient source = client;
-                client.setCallback(new MqttCallback() {
-                    public void connectionLost(Throwable error) {
-                        worker.post(() -> { if (client == source && !closed) schedule(error); });
-                    }
-                    public void deliveryComplete(IMqttDeliveryToken token) {}
-                    public void messageArrived(String receivedTopic, MqttMessage message) {
-                        byte[] bytes = message.getPayload();
-                        WakeScheduler.hold(context, "mqtt-dispatch", 120000L);
-                        worker.post(() -> {
-                            if (client != source || closed) { WakeScheduler.release("mqtt-dispatch"); return; }
-                            Runnable ack = () -> {
-                                try { source.messageArrivedComplete(message.getId(), message.getQos()); }
-                                catch (Exception error) { RuntimeLog.error("mqtt_ack_failed", error); }
-                            };
-                            try {
-                                if (!topic.equals(receivedTopic) || bytes.length > 4096) { ack.run(); return; }
-                                JSONObject notice;
-                                try { notice = new JSONObject(new String(bytes, StandardCharsets.UTF_8)); }
-                                catch (Exception invalid) { RuntimeLog.event("mqtt_invalid_notice"); ack.run(); return; }
-                                receiver.receive(notice, ack);
-                            } catch (Exception error) {
-                                RuntimeLog.error("mqtt_notice_failed", error);
-                                disposeClient();
-                                schedule(error);
-                            } finally { WakeScheduler.release("mqtt-dispatch"); }
-                        });
-                    }
-                });
+            if(!pairing.registered()){
+                CoreClient.request("/push/disable",new JSONObject());connected=false;identity="";prefs=null;return;
             }
-            MqttConnectOptions options = new MqttConnectOptions();
-            options.setMqttVersion(MqttConnectOptions.MQTT_VERSION_3_1_1);
-            options.setCleanSession(false);
-            options.setAutomaticReconnect(false);
-            options.setConnectionTimeout(15);
-            options.setKeepAliveInterval(Math.max(60, Math.min(1800, config.optInt("keepalive_seconds", 900))));
-            options.setMaxInflight(4);
-            options.setUserName(username);
-            options.setPassword(config.getString("password").toCharArray());
-            options.setSocketFactory(SSLSocketFactory.getDefault());
-            options.setHttpsHostnameVerificationEnabled(true);
-            RuntimeLog.event("mqtt_connect_start");
-            final MqttAsyncClient source = client;
-            client.connect(options, null, new IMqttActionListener() {
-                public void onSuccess(IMqttToken token) { worker.post(() -> subscribe(source)); }
-                public void onFailure(IMqttToken token, Throwable error) { worker.post(() -> {
-                    if (client != source || closed) return;
-                    if (error instanceof MqttException && (((MqttException) error).getReasonCode() == 4 || ((MqttException) error).getReasonCode() == 5)) {
-                        prefs.edit().remove("connection").commit();
-                        disposeClient();
-                    }
-                    schedule(error);
-                }); }
-            });
-        } catch (Exception error) { schedule(error); }
+            String next=PairingStore.sha256Hex(Protocol.BASE_URL+":"+pairing.deviceId());
+            if(!next.equals(identity)){identity=next;prefs=context.getSharedPreferences("push-"+identity,Context.MODE_PRIVATE);}
+            JSONObject health=CoreClient.health();
+            if(!health.optBoolean("independent_push")){connected=false;return;}
+            JSONObject request=identityBody().put("queued_version",lastVersion());
+            String saved=prefs.getString("connection","");if(!saved.isEmpty())request.put("connection",new JSONObject(saved));
+            JSONObject status=CoreClient.request("/push/config",request);
+            connected=status!=null&&status.optBoolean("connected");
+            JSONObject notice=status==null?null:status.optJSONObject("notification");
+            if(notice!=null)receiver.receive(notice,()->{});
+        }catch(Exception error){connected=false;RuntimeLog.error("core_push_handoff_pending",error);}
     }
-
-    private void subscribe(MqttAsyncClient source) {
-        if (closed || client != source) return;
-        try {
-            source.subscribe(topic, 1, null, new IMqttActionListener() {
-                public void onSuccess(IMqttToken token) { worker.post(() -> {
-                    if (closed || client != source) return;
-                    if (token.getGrantedQos().length != 1 || token.getGrantedQos()[0] == 128) {
-                        disposeClient(); schedule(new IOException("subscription refused")); return;
-                    }
-                    connecting = false; subscribed = true; failures = 0;
-                    wake.cancel("connect-timeout");
-                    RuntimeLog.event("mqtt_subscribed");
-                    try { sync(); } finally { WakeScheduler.release("connect"); }
-                }); }
-                public void onFailure(IMqttToken token, Throwable error) { worker.post(() -> {
-                    if (client == source && !closed) { disposeClient(); schedule(error); }
-                }); }
-            });
-        } catch (Exception error) { disposeClient(); schedule(error); }
+    private JSONObject identityBody()throws Exception{return new JSONObject().put("device_id",pairing.deviceId()).put("token",pairing.token());}
+    long lastVersion(){return prefs==null?0:prefs.getLong("queued_version",0);}
+    void recordQueued(JSONObject notice)throws Exception {
+        if(prefs==null||!prefs.edit().putLong("queued_version",notice.getLong("version")).commit())throw new IOException("push receipt persistence failed");
+        try{CoreClient.request("/push/config",identityBody().put("queued_version",lastVersion()));}
+        catch(Exception pending){RuntimeLog.error("core_push_queue_ack_pending",pending);}
     }
-
-    void sync() {
-        if (closed || !pairing.registered()) return;
-        try {
-            JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushSyncPath(), identityBody().toString()));
-            if (!reply.optBoolean("ok")) throw new IOException("push sync failed");
-            JSONObject notification = reply.optJSONObject("status_request");
-            if (notification != null) receiver.receive(notification, () -> {});
-            RuntimeLog.event("push_sync_complete");
-        } catch (Exception error) { RuntimeLog.error("push_sync_failed", error); }
-    }
-
-    private void schedule(Throwable error) {
-        wake.cancel("connect-timeout");
-        connecting = false; subscribed = false;
-        if (closed) return;
-        long delay = PushPolicy.retryDelay(failures++, Math.random());
-        wake.cancel("retry");
-        wake.schedule("retry", delay);
-        WakeScheduler.release("connect");
-        RuntimeLog.event("mqtt_retry delay_ms=" + delay);
-        if (error != null) RuntimeLog.error("mqtt_failed", error);
-    }
-
-    private void disposeClient() {
-        wake.cancel("connect-timeout");
-        if (ping != null) { ping.stop(); ping = null; }
-        WakeScheduler.release("connect");
-        MqttAsyncClient previous = client;
-        client = null; connecting = false; subscribed = false;
-        if (previous != null) {
-            try { previous.disconnectForcibly(0, 500, false); } catch (Exception ignored) {}
-            try { previous.close(true); } catch (Exception ignored) {}
-        }
-    }
-    void wake(String key) {
-        if ("retry".equals(key)) connect();
-        else if ("connect-timeout".equals(key) && connecting) {
-            disposeClient(); schedule(new IOException("MQTT handshake timeout"));
-        }
-        else if ("ping".equals(key) && ping != null) ping.fire();
-    }
-    void close() { closed = true; wake.cancel("retry"); disposeClient(); }
+    boolean connected(){return connected;}
+    void networkHint(){if(closed)return;try{CoreClient.request("/push/hint",new JSONObject());}catch(Exception ignored){}ensure();}
+    void wake(String key){ensure();}
+    void close(){closed=true;connected=false;}
 }
