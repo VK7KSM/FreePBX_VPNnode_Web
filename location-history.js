@@ -18,7 +18,8 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const id = supplied || crypto.randomUUID();
   const reported = timestamp(data.reported_at);
   const received = new Date(now).toISOString();
-  const timeline = reported || received;
+  // 原始设备时间照常保留；错误的未来时钟不能冻结最新状态或把历史送到未来。
+  const timeline = reported && reported <= received ? reported : received;
   const dedupKey = "history-id/" + encodeURIComponent(device) + "/" + id;
   const traffic = normalizeTraffic(data.traffic);
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,

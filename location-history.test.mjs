@@ -7,6 +7,23 @@ import { pickLocation } from "./remote-location.js";
 
 const token = "test-device-token";
 const hash = createHash("sha256").update(token).digest("hex");
+
+test('未来设备时间保留原件但不冻结最新报告，已有未来状态自动恢复',async()=>{
+  const f=setup(),c=await login(f);
+  const future='2098-01-01T00:00:00Z';
+  await report(f,'future',future,null,{battery:10});
+  const saved=f.data.get('remote_devices')[0];
+  assert.ok(Date.parse(saved.last_reported_at)<=Date.now());
+  await report(f,'corrected',new Date().toISOString(),null,{battery:90});
+  assert.equal(f.data.get('remote_devices')[0].battery,90);
+  const rows=(await history(f,c)).records;
+  const record=rows.find(r=>r.report_id==='future');
+  assert.equal(record.reported_at,'2098-01-01T00:00:00.000Z');
+  assert.equal(record.timeline_at,record.received_at);
+  const legacy=f.data.get('remote_devices');legacy[0].last_reported_at=future;f.data.set('remote_devices',legacy);
+  await report(f,'legacy-recovery',new Date().toISOString(),null,{battery:80});
+  assert.equal(f.data.get('remote_devices')[0].battery,80);
+});
 const traffic = { available: true, scope: "application_uid", source: "qtaguid_uid",
   started_at_ms: 1000, sampled_at_ms: 2000, covered_ms: 1000, gaps: 0,
   rx_bytes: 123, tx_bytes: 456, interfaces: { wlan0: { rx_bytes: 123, tx_bytes: 456 } } };

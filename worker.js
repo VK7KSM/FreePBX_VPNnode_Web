@@ -20,6 +20,8 @@ import {
   applyUpdateProgress,
   updateStateLabel,
   enqueueRepairTask,
+  repairHistory,
+  findRepairTask,
   shouldOfferRepair,
   applyRepairProgress,
   publicRepair,
@@ -248,6 +250,7 @@ const app = {
         const saved = await stub.fetch(request);
         if (!saved.ok || !payload?.device_id) return saved;
         const result = await saved.json();
+        if (result.duplicate && result.task && ["success","failed","rejected","expired"].includes(result.task.state)) return json(result,saved.status);
         try {
           const notified = await pushHttp(env, new Request(new URL("/api/devices/request-status", request.url), {
             method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
@@ -485,6 +488,16 @@ const app = {
     }
     if (pathname === "/api/elfremote/task" && method === "POST") {
       return handleElfEnqueueTask(env, request);
+    }
+    if (pathname === "/api/elfremote/tasks" && method === "GET") {
+      const device = (await loadDevices(env)).find(d => d.id === url.searchParams.get("device_id"));
+      if (!device) return json({ok:false,msg:"未找到该设备"},404);
+      const id = url.searchParams.get("task_id");
+      if (id) {
+        const task = await findRepairTask(env.__storage, device, id);
+        return task ? json({ok:true,task:publicRepair(task)}) : json({ok:false,msg:"未找到该任务"},404);
+      }
+      return json({ok:true,tasks:[device.task,...await repairHistory(env.__storage,device.id)].filter(Boolean).map(publicRepair)});
     }
     if (pathname === "/api/elfremote/task-progress" && method === "POST") {
       return handleElfTaskProgress(env, request);
@@ -1263,7 +1276,9 @@ async function handleDeviceReport(env, request) {
       addManagedTaskOffer(body, matched, data, Date.now());
       return json(body);
     }
-    const fresh = !matched.last_reported_at || history.record.timeline_at >= matched.last_reported_at;
+    const previousTime = Date.parse(matched.last_reported_at);
+    const fresh = matched.last_report_clock_invalid === true || !Number.isFinite(previousTime) || previousTime > Date.now()
+      || history.record.timeline_at >= matched.last_reported_at;
     let found = null;
     for (let i = 0; i < list.length; i++) {
       if (list[i].id !== deviceId) continue;
@@ -1274,6 +1289,7 @@ async function handleDeviceReport(env, request) {
       list[i].online = true;
       if (fresh) {
       list[i].last_reported_at = history.record.timeline_at;
+      list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
       list[i].status_only = data.status_only === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
@@ -1604,17 +1620,18 @@ async function handleElfEnqueueTask(env, request) {
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
-    const queued = enqueueRepairTask(found, {
+    const queued = await enqueueRepairTask(found, {
       type: data.type,
       params,
       id: data.id,
       idempotency_key: data.idempotency_key,
       expires_at: data.expires_at
-    }, Date.now());
+    }, Date.now(), env.__storage);
     if (!queued.ok) {
       const msg = queued.reason === "unknown-type" ? "未开通该任务类型"
         : queued.reason === "inflight" ? "已有任务进行中"
         : queued.reason === "expired" ? "任务已过期"
+        : queued.reason === "idempotency-conflict" ? "该任务编号已用于不同的操作，请创建新任务"
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
@@ -1628,7 +1645,7 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="set_lost_mode") found.task.managed_lost_v1=true;
     if(!queued.duplicate && found.status_only && CONFIG_TYPES.includes(data.type)) found.task.managed_config_v1=true;
     await saveDevices(env, list);
-    return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(found.task) });
+    return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(queued.task) });
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
@@ -1651,6 +1668,10 @@ async function handleElfTaskProgress(env, request) {
       if (list[i].id !== deviceId) continue;
       if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      if (list[i].task?.id !== taskId) {
+        const previous = await findRepairTask(env.__storage,list[i],taskId);
+        return previous ? json({ok:true,task:publicRepair(previous)}) : json({ok:false,msg:"未找到该任务"},404);
       }
       if (data.result && typeof data.result === "object") {
         delete data.result.artifact;

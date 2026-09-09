@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {configParams,normalizeContacts,enqueueRepairTask,applyRepairProgress,publicRepair} from './control-plane.js';
-test('配置参数保留原文并拒绝非法边界，密码不进入公开任务且完成后清除',()=>{
+test('配置参数保留原文并拒绝非法边界，密码不进入公开任务且完成后清除',async()=>{
   const params={ssid:'测试"$(id)',password:'fixture-pass'};
   assert.deepEqual(configParams('connect_wifi',params),params);
   assert.throws(()=>configParams('connect_wifi',{ssid:'测'.repeat(11)}));
   assert.throws(()=>configParams('connect_wifi',{ssid:'a',password:'bad'}));
   assert.throws(()=>configParams('contact_update',{id:-1,name:'a',phone:'b'}));
-  const d={};enqueueRepairTask(d,{type:'connect_wifi',params},1000);
+  const d={};await enqueueRepairTask(d,{type:'connect_wifi',params},1000);
   assert.equal(JSON.stringify(publicRepair(d.task)).includes('fixture-pass'),false);
   applyRepairProgress(d,d.task.id,'failed','rolled-back',{});
   assert.deepEqual(d.task.params,{});

@@ -196,31 +196,31 @@ test("未过期的拉取日志任务才会发给设备", () => {
   assert.equal(shouldOfferRepair(d, now), true);
 });
 
-test("未知类型不得入队，进行中不得插队", () => {
+test("未知类型不得入队，进行中不得插队", async () => {
   const now = 1_000_000;
   const d = {};
-  const bad = enqueueRepairTask(d, { type: "shell" }, now);
+  const bad = await enqueueRepairTask(d, { type: "shell" }, now);
   assert.equal(bad.ok, false);
   assert.equal(bad.reason, "unknown-type");
   assert.equal(d.task, undefined);
-  const first = enqueueRepairTask(d, { type: "pull_logs", id: "t1", idempotency_key: "k1" }, now);
+  const first = await enqueueRepairTask(d, { type: "pull_logs", id: "t1", idempotency_key: "k1" }, now);
   assert.equal(first.ok, true);
   assert.equal(first.duplicate, false);
   assert.equal(d.task.id, "t1");
-  const blocked = enqueueRepairTask(d, { type: "pull_logs", id: "t2", idempotency_key: "k2" }, now);
+  const blocked = await enqueueRepairTask(d, { type: "pull_logs", id: "t2", idempotency_key: "k2" }, now);
   assert.equal(blocked.ok, false);
   assert.equal(blocked.reason, "inflight");
   assert.equal(d.task.id, "t1");
-  const dup = enqueueRepairTask(d, { type: "pull_logs", id: "t9", idempotency_key: "k1" }, now);
+  const dup = await enqueueRepairTask(d, { type: "pull_logs", id: "t9", idempotency_key: "k1" }, now);
   assert.equal(dup.ok, true);
   assert.equal(dup.duplicate, true);
   assert.equal(d.task.id, "t1");
 });
 
-test("修机阶段必须领取后执行，成功要带制品哈希", () => {
+test("修机阶段必须领取后执行，成功要带制品哈希", async () => {
   const now = 1_000_000;
   const d = {};
-  enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
+  await enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
   applyRepairProgress(d, "t1", "success", "skip", { sha256: "a".repeat(64), bytes: 12 });
   assert.equal(d.task.state, "pending");
   applyRepairProgress(d, "t1", "claimed", "claimed");
@@ -261,16 +261,16 @@ test("覆盖安装参数必须来自已发布清单", () => {
   assert.equal(installParamsFromRelease(null, "https://v.elfradio.net"), null);
 });
 
-test("过期或未知任务可拒绝，不得从成功倒退", () => {
+test("过期或未知任务可拒绝，不得从成功倒退", async () => {
   const now = 1_000_000;
   const d = {};
-  enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
+  await enqueueRepairTask(d, { type: "pull_logs", id: "t1" }, now);
   applyRepairProgress(d, "t1", "rejected", "unknown-type");
   assert.equal(d.task.state, "rejected");
   applyRepairProgress(d, "t1", "claimed", "no");
   assert.equal(d.task.state, "rejected");
   const d2 = {};
-  enqueueRepairTask(d2, { type: "pull_logs", id: "t2" }, now);
+  await enqueueRepairTask(d2, { type: "pull_logs", id: "t2" }, now);
   applyRepairProgress(d2, "t2", "claimed", "claimed");
   applyRepairProgress(d2, "t2", "expired", "expired");
   assert.equal(d2.task.state, "expired");

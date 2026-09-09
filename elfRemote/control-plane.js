@@ -205,7 +205,7 @@ export function makeRepairTask(input, nowMs) {
   const src = input || {};
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
-  const id = String(src.id || "").trim() || ("t" + nowMs.toString(36));
+  const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
@@ -220,16 +220,56 @@ export function makeRepairTask(input, nowMs) {
   };
 }
 
-export function enqueueRepairTask(device, input, nowMs) {
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
+  return value;
+}
+
+async function repairDigest(task) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(canonical({type:task.type,params:task.params || {}}))));
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2,"0")).join("");
+}
+
+// 历史独立存储，不把结果正文塞进所有设备共用的列表记录。
+export async function repairHistory(storage, deviceId) {
+  if (!storage) return [];
+  return [...(await storage.list({prefix:"repair-history/" + encodeURIComponent(deviceId) + "/",limit:128})).values()];
+}
+
+export async function findRepairTask(storage, device, id) {
+  return device.task?.id === id ? device.task : (await repairHistory(storage, device.id)).find(t => t.id === id) || null;
+}
+
+async function archiveRepair(storage, device, nowMs) {
+  if (!storage || !device.task) return;
+  const prefix = "repair-history/" + encodeURIComponent(device.id) + "/";
+  const task = {...device.task, archived_at:nowMs};
+  delete task.params;
+  await storage.put(prefix + encodeURIComponent(task.id), task);
+  const history = (await storage.list({prefix}));
+  const ordered = [...history].sort((a,b) => (b[1].archived_at || 0) - (a[1].archived_at || 0));
+  for (const [key] of ordered.slice(127)) await storage.delete(key);
+}
+
+export async function enqueueRepairTask(device, input, nowMs, storage) {
   if (!device) return { ok: false, reason: "missing-device" };
   const task = makeRepairTask(input || {}, nowMs);
   if (!task) return { ok: false, reason: "unknown-type" };
-  if (repairExpired(task, nowMs)) return { ok: false, reason: "expired" };
+  if (task.id.length > 96 || task.idempotency_key.length > 96) return {ok:false,reason:"invalid-id"};
+  task.request_digest = await repairDigest(task);
   const cur = device.task;
-  if (cur && String(cur.idempotency_key || "") === task.idempotency_key) {
-    return { ok: true, duplicate: true, task: cur };
+  const previous = [cur, ...await repairHistory(storage, device.id)].filter(Boolean)
+    .find(t => t.id === task.id || t.idempotency_key === task.idempotency_key);
+  if (previous) {
+    const digest = previous.request_digest || await repairDigest(previous);
+    if (digest !== task.request_digest) return {ok:false,reason:"idempotency-conflict"};
+    return { ok: true, duplicate: true, task: previous };
   }
+  if (repairExpired(task, nowMs)) return { ok: false, reason: "expired" };
   if (repairInflight(cur)) return { ok: false, reason: "inflight" };
+  await archiveRepair(storage, device, nowMs);
+  task.created_at = new Date(nowMs).toISOString();
   device.task = task;
   return { ok: true, duplicate: false, task };
 }
@@ -252,13 +292,19 @@ export function canAdvanceRepair(from, to) {
   return next.indexOf(to) >= 0;
 }
 
-export function applyRepairProgress(device, taskId, state, detail, result) {
+export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
   if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending")) throw new Error("缺少丢失模式完成状态");
+  if (device.task.state !== state) {
+    device.task.updated_at = new Date(nowMs).toISOString();
+    if (state === "claimed") device.task.claimed_at = device.task.updated_at;
+    if (state === "running") device.task.started_at = device.task.updated_at;
+    if (["success","failed","rejected","expired"].includes(state)) device.task.completed_at = device.task.updated_at;
+  }
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
   if (scan) device.wifi_scan = scan;
@@ -356,6 +402,10 @@ export function publicRepair(task) {
     label: repairStateLabel(task.state || ""),
     detail: task.detail || "",
     expires_at: task.expires_at || 0,
+    created_at: task.created_at || null,
+    claimed_at: task.claimed_at || null,
+    started_at: task.started_at || null,
+    completed_at: task.completed_at || null,
     result: r ? {
       sha256: r.sha256 || "",
       bytes: r.bytes || 0,
