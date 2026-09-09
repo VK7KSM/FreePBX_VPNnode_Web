@@ -43,6 +43,8 @@ public final class ReportService extends Service {
     private DailyLocation dailyLocation;
     private ReportPhotos reportPhotos;
     private BatteryReports batteryReports;
+    private MovementReports movementReports;
+    private boolean movementSampling;
     private android.content.BroadcastReceiver batteryReceiver;
     private AlarmPlayer alarm;
     private String locatingTask = "";
@@ -59,6 +61,7 @@ public final class ReportService extends Service {
         RuntimeLog.event("report_network_changed from=" + previous + " to=" + current);
         resumeFileTransfer();
         if(reportPhotos!=null)reportPhotos.resume();
+        scheduleMovement();
         if (!"unknown".equals(current) && !"none".equals(current)) scheduleReport(1000L);
         WakeScheduler.release("network-change");
     };
@@ -140,6 +143,9 @@ public final class ReportService extends Service {
                 }
             };
             registerReceiver(batteryReceiver,new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            try{movementReports=new MovementReports(new java.io.File(getFilesDir(),"movement-reports.json"));}
+            catch(Exception error){RuntimeLog.error("movement_state_failed",error);}
+            worker.post(this::scheduleMovement);
         }
         if (BuildConfig.STATUS_ONLY) {
             lastNetwork = networkType();
@@ -193,8 +199,9 @@ public final class ReportService extends Service {
                 try {
                     RuntimeLog.event("wake_alarm key=" + key + " queue_ms=" + Math.max(0, android.os.SystemClock.elapsedRealtime()-intent.getLongExtra("received_elapsed", android.os.SystemClock.elapsedRealtime())));
                     if ("report".equals(key)) loop.run();
-                    if ("file-transfer".equals(key)) resumeFileTransfer();
+                    else if ("file-transfer".equals(key)) resumeFileTransfer();
                     else if("report-photo".equals(key)&&reportPhotos!=null)reportPhotos.resume();
+                    else if("movement".equals(key))checkMovement();
                     else if (push != null) push.wake(key);
                 } finally { WakeScheduler.release("dispatch-" + key); }
             });
@@ -230,6 +237,7 @@ public final class ReportService extends Service {
     public void onDestroy() {
         if(batteryReceiver!=null){unregisterReceiver(batteryReceiver);batteryReceiver=null;}
         destroyed = true;
+        wake.cancel("movement");WakeScheduler.release("movement");
         if(fileTransfer!=null)fileTransfer.stop();
         if(reportPhotos!=null)reportPhotos.close();
         RuntimeLog.event("service_stop");
@@ -523,6 +531,25 @@ public final class ReportService extends Service {
         finally{WakeScheduler.release("battery-report");}
     }
 
+    private void scheduleMovement(){
+        if(!destroyed&&movementReports!=null&&"cellular".equals(networkType()))wake.schedule("movement",MovementReports.CHECK_MS);
+        else wake.cancel("movement");
+    }
+    private void checkMovement(){
+        if(destroyed||movementSampling||movementReports==null||dailyLocation==null||!store.registered()||!"cellular".equals(networkType())){scheduleMovement();return;}
+        movementSampling=true;WakeScheduler.hold(this,"movement",90000L);
+        RuntimeLog.event("movement_sample_start");
+        dailyLocation.requestMovement(()->{
+            try{
+                if(destroyed||!"cellular".equals(networkType()))return;
+                StatusOutbox outbox=statusOutbox();String id=movementReports.prepare(outbox,statusBody(null),System.currentTimeMillis());
+                if(id!=null){RuntimeLog.event("movement_report_queued");flushStatus(outbox,null,id);scheduleReport(outbox.entries().length>0?60000L:(push!=null&&push.connected()?3600000L:900000L));}
+                else RuntimeLog.event("movement_report_not_due");
+            }catch(Exception error){RuntimeLog.error("movement_report_pending",error);scheduleReport(60000L);}
+            finally{movementSampling=false;WakeScheduler.release("movement");scheduleMovement();}
+        });
+    }
+
     private void flushStatus(StatusOutbox outbox, String priorityRequest) throws Exception {
         flushStatus(outbox,priorityRequest,null);
     }
@@ -533,6 +560,8 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 healthReportConfirmed = true;
+                if(movementReports!=null)try{movementReports.acknowledged(new JSONObject(json));}
+                catch(Exception error){RuntimeLog.error("movement_baseline_save_failed",error);}
                 if(reportPhotos!=null)try{reportPhotos.acknowledged(new JSONObject(json));}
                 catch(Exception error){RuntimeLog.error("report_photo_enqueue_failed",error);}
                 try {

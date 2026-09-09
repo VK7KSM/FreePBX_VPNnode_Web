@@ -14,6 +14,11 @@ function prefix(device) { return "history/" + encodeURIComponent(device) + "/"; 
 
 export function normalizeReportEvent(value) {
   if(value==null)return null;
+  if(value.type==='movement'){
+    if(!Number.isInteger(value.distance_m)||value.distance_m<=3000||value.distance_m>21000000)throw new Error('位移事件无效');
+    const at=timestamp(value.at);if(!at)throw new Error('位移事件缺少时间');
+    return {type:'movement',distance_m:value.distance_m,at};
+  }
   if(value.type!=="low_battery"||!Number.isInteger(value.level)||value.level<0||value.level>100
     ||!Array.isArray(value.thresholds)||!value.thresholds.length||value.thresholds.length>3
     ||value.thresholds.some(t=>![10,5,2].includes(t)||value.level>=t)

@@ -8,6 +8,17 @@ import { pickLocation } from "./remote-location.js";
 const token = "test-device-token";
 const hash = createHash("sha256").update(token).digest("hex");
 
+test('蜂窝位移报告保存原因及距离，同号补报不重复记轨迹',async()=>{
+  const f=setup(),c=await login(f),at='2026-09-09T03:00:00Z',event={type:'movement',distance_m:3500,at};
+  const data={network:'cellular',report_event:event};
+  assert.equal((await report(f,'movement-one',at,null,data)).status,200);
+  assert.equal((await report(f,'movement-one',at,null,data)).status,200);
+  const rows=(await history(f,c)).records;assert.equal(rows.length,1);
+  assert.equal(rows[0].network,'cellular');assert.deepEqual(rows[0].report_event,{...event,at:'2026-09-09T03:00:00.000Z'});
+  for(const distance_m of [0,3000,3500.5,21000001])assert.equal((await report(f,'invalid-movement',at,null,{...data,report_event:{...event,distance_m}})).status,400);
+  assert.equal((await history(f,c)).records.length,1);
+});
+
 test('低电量事件保存历史及最近事件，同号重试去重且不允许篡改事件',async()=>{
   const f=setup(),c=await login(f),at='2026-09-09T03:00:00Z';
   const event={type:'low_battery',level:1,thresholds:[10,5,2],at:Date.parse(at)};

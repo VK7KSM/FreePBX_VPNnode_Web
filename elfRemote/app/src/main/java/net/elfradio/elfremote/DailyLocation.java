@@ -22,6 +22,7 @@ final class DailyLocation {
     private String reason = "not_sampled";
     private boolean gpsRequested;
     private long freshSinceNanos;
+    private long sampleTimeoutMs=TIMEOUT_MS;
 
     DailyLocation(Context context, Handler worker) {
         this.context = context.getApplicationContext();
@@ -51,6 +52,11 @@ final class DailyLocation {
 
     void requestNow(Runnable then) {
         freshSinceNanos = SystemClock.elapsedRealtimeNanos();
+        beforePeriodicReport(then);
+    }
+
+    void requestMovement(Runnable then){
+        if(completion==null){freshSinceNanos=SystemClock.elapsedRealtimeNanos();sampleTimeoutMs=20000L;}
         beforePeriodicReport(then);
     }
 
@@ -114,7 +120,7 @@ final class DailyLocation {
                 }
             };
             // 同一工作线程收取回调，超时移除监听；不持有永久唤醒锁，也不修改定位开关。
-            worker.postDelayed(timeout, TIMEOUT_MS);
+            worker.postDelayed(timeout, sampleTimeoutMs);
             if (gps) manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0, listener, worker.getLooper());
             if (network) manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0, listener, worker.getLooper());
             reason = "sampling";
@@ -130,6 +136,7 @@ final class DailyLocation {
     private void finish(String outcome) {
         reason = outcome;
         freshSinceNanos = 0;
+        sampleTimeoutMs=TIMEOUT_MS;
         worker.removeCallbacks(timeout);
         if (listener != null) {
             try { manager.removeUpdates(listener); }
