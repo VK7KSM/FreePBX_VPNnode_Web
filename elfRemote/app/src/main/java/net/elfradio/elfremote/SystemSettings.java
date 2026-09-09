@@ -252,12 +252,14 @@ public final class SystemSettings {
         throw new IOException("原网络尚未恢复连通");
     }
     private void restoreNetworkValues(JSONObject b)throws Exception {
-        applyHotspot(b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
+        // 先停热点恢复保存网络，最后恢复热点；D22开启Wi-Fi会关闭热点。
+        applyHotspot(null,false);
         if((settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
         Set<Integer> old=new HashSet<>();JSONArray saved=b.getJSONArray("configs");for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));old.add(c.networkId);if(wifi.updateNetwork(c)<0)throw new IOException("Wi-Fi原配置恢复被拒绝");}
         List<WifiConfiguration> all=wifi.getConfiguredNetworks();if(all!=null)for(WifiConfiguration c:all)if(!old.contains(c.networkId))wifi.removeNetwork(c.networkId);
         for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(c.networkId,false);}
         if(b.getBoolean("wifi")){int oldId=b.getInt("network_id");if(oldId>=0)wifi.enableNetwork(oldId,true);wifi.reconnect();}else wifi.setWifiEnabled(false);wifi.saveConfiguration();
+        applyHotspot(b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
     }
     private void applyHotspot(WifiConfiguration config,boolean enabled)throws Exception {
         ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);

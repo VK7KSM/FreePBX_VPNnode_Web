@@ -958,7 +958,7 @@ function pageSystemSettings(dis){
     h+=systemToggle('brightness_auto','自动亮度',data.brightness_auto,blocked)+systemNumber('brightness','屏幕亮度',data.brightness,1,255,1,blocked||(data.brightness_auto?' disabled':''))+systemNumber('font_scale','字体大小',data.font_scale,.85,1.5,.05,blocked)+'</div>';
   }else if(group==='time'){
     h+='<div class="system-settings-grid">'+systemToggle('auto_time','自动时间',data.auto_time,blocked)+systemToggle('auto_time_zone','自动时区',data.auto_time_zone,blocked);
-    var locales=Array.from(new Set([data.locale].concat(data.locales||[]))),names;try{names=new Intl.DisplayNames(['zh-CN'],{type:'language'});}catch(e){}
+    var locales=Array.from(new Set([data.locale].concat(data.locales||[]))).filter(Boolean),names;try{names=new Intl.DisplayNames(['zh-CN'],{type:'language'});}catch(e){}
     h+=systemField('locale','系统语言','<select class="inp" id="setting-locale"'+blocked+'>'+locales.map(function(l){var label=l;try{if(names)label=names.of(l);}catch(e){}return '<option value="'+esc(l)+'"'+(l===data.locale?' selected':'')+'>'+esc(label)+' · '+esc(l)+'</option>';}).join('')+'</select>',blocked);
     var zones;try{zones=Intl.supportedValuesOf('timeZone');}catch(e){zones=['Australia/Sydney','Australia/Brisbane','Australia/Perth','UTC'];}zones=Array.from(new Set([data.timezone,'UTC'].concat(zones))).filter(function(zone){return !data.timezones||data.timezones.includes(zone);});
     var zoneDisabled=blocked||(data.auto_time_zone?' disabled':'');
