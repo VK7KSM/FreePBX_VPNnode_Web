@@ -31,13 +31,17 @@ final class WatchdogInstaller {
             try {
                 File staged = new File(app.getFilesDir(), "watchdog");
                 WatchdogPolicy.stage(staged);
+                File output = new File(staged, "initialize.out");
+                File previous = new File(staged, "initialize-before-" + BuildConfig.VERSION_CODE + ".out");
+                if (output.isFile() && !previous.exists()) {
+                    RescueFiles.write(previous, RescueFiles.read(output, 65536));
+                }
                 File apply = new File(staged, "apply.sh");
                 try (FileOutputStream out = new FileOutputStream(apply)) {
                     out.write(WatchdogPolicy.applyCommands(staged.getAbsolutePath()).getBytes(StandardCharsets.UTF_8));
                     out.getFD().sync();
                 }
                 // 输出仅存应用私有文件，不把root错误正文送入服务器或公开日志。
-                File output = new File(staged, "initialize.out");
                 Process process = new ProcessBuilder("su", "-c", "sh '" + apply.getAbsolutePath() + "'")
                         .redirectErrorStream(true).redirectOutput(output).start();
                 try {
@@ -52,6 +56,13 @@ final class WatchdogInstaller {
                 handoffPending = new File(WatchdogPolicy.DIR, "watchdog.restart").isFile();
                 nextAttempt = SystemClock.elapsedRealtime() + (handoffPending ? 15000L : 3600000L);
             } catch (Exception error) {
+                try {
+                    File staged = new File(app.getFilesDir(), "watchdog");
+                    String detail = error.getClass().getSimpleName() + ": " + error.getMessage() + "\n";
+                    File output = new File(staged, "initialize.out");
+                    if (output.isFile()) detail += RescueFiles.read(output, 65536);
+                    RescueFiles.write(new File(staged, "last-failure.out"), detail);
+                } catch (Exception unavailable) { RuntimeLog.error("bootstrap_diagnostic_failed", unavailable); }
                 ready = false; state = "initialization_failed";
                 nextAttempt = SystemClock.elapsedRealtime() + Math.min(900000L, 60000L << Math.min(4, failures++));
                 RuntimeLog.error("bootstrap_failed", error);
