@@ -251,7 +251,7 @@ final class WatchdogPolicy {
                 + "SCRIPT=/data/local/elfremote/watchdog.sh\n"
                 + "[ \"$(id -u)\" = 0 ] || exit 1\n"
                 + "echo BOOTSTRAP_PERMISSIONS_BEGIN $(date +%s)\n"
-                + secureDirectoryCommands()
+                + startupDirectoryCommands()
                 + "echo BOOTSTRAP_PERMISSIONS_END $(date +%s)\n"
                 + "SCRIPT_CHANGED=0\n"
                 + "STAMP=$(date +%Y%m%d-%H%M%S)-$$\n"
