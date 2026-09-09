@@ -250,13 +250,15 @@ final class WatchdogPolicy {
                 + "DIR=/data/local/elfremote\n"
                 + "SCRIPT=/data/local/elfremote/watchdog.sh\n"
                 + "[ \"$(id -u)\" = 0 ] || exit 1\n"
+                + "echo BOOTSTRAP_PERMISSIONS_BEGIN $(date +%s)\n"
                 + secureDirectoryCommands()
+                + "echo BOOTSTRAP_PERMISSIONS_END $(date +%s)\n"
                 + "SCRIPT_CHANGED=0\n"
                 + "STAMP=$(date +%Y%m%d-%H%M%S)-$$\n"
                 + "BACKUP=\"$DIR/bootstrap-backups/$STAMP\"\n"
                 + "REMOUNTED=0\n"
                 + "restore_mount() { if [ \"$REMOUNTED\" = 1 ]; then mount -o remount,ro /system; fi; }\n"
-                + "trap restore_mount EXIT\n"
+                + "trap 'rc=$?; restore_mount; echo BOOTSTRAP_EXIT $rc $(date +%s)' EXIT\n"
                 + "copy_if_changed() {\n"
                 + "  src=\"$1\"; dst=\"$2\"; mode=\"$3\"\n"
                 + "  if [ -f \"$dst\" ] && cmp -s \"$src\" \"$dst\"; then chmod \"$mode\" \"$dst\"; return; fi\n"
@@ -324,8 +326,8 @@ final class WatchdogPolicy {
                 + "chown 0:0 \"$DIR\" && chmod 0700 \"$DIR\" || exit 1\n"
                 + "[ -z \"$(find \"$DIR\" -type l -print)\" ] || exit 1\n"
                 + "chown -R 0:\"$APP_UID\" \"$DIR\" || exit 1\n"
-                + "find \"$DIR\" -type f -exec chmod 0660 {} \\; || exit 1\n"
-                + "find \"$DIR\" -type d -exec chmod 2770 {} \\; || exit 1\n"
+                + "find \"$DIR\" -type f -exec chmod 0660 {} + || exit 1\n"
+                + "find \"$DIR\" -type d -exec chmod 2770 {} + || exit 1\n"
                 + "umask 007\n";
     }
 

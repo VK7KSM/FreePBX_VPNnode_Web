@@ -41,8 +41,8 @@ mkdir -p "$DIR" || exit 1
 chown 0:0 "$DIR" && chmod 0700 "$DIR" || exit 1
 [ -z "$(find "$DIR" -type l -print)" ] || exit 1
 chown -R 0:"$APP_UID" "$DIR" || exit 1
-find "$DIR" -type f -exec chmod 0660 {} \; || exit 1
-find "$DIR" -type d -exec chmod 2770 {} \; || exit 1
+find "$DIR" -type f -exec chmod 0660 {} + || exit 1
+find "$DIR" -type d -exec chmod 2770 {} + || exit 1
 umask 007
 fi
 if ! mkdir "$LOCK" 2>/dev/null; then

@@ -152,6 +152,25 @@ public class WatchdogPolicyTest {
         assertFalse(script.contains("[ -d /proc/$old ]"));
     }
 
+    @Test public void permissionRepairBatchesFilesAndPropagatesFailures() throws Exception {
+        for (boolean reject : new boolean[]{false, true}) {
+            File root = Files.createTempDirectory("watchdog-permissions-").toFile();
+            File data = new File(root, "data"), bin = new File(root, "bin");
+            assertTrue(data.mkdir()); assertTrue(bin.mkdir());
+            for (int i=0; i<80; i++) Files.write(new File(data, "space ' file "+i).toPath(), new byte[]{1});
+            File shim = new File(bin, "chmod");
+            Files.write(shim.toPath(), ("#!/bin/sh\nmode=$1; shift\nfor p do [ -e \"$p\" ] || exit 9; done\n"
+                    + "echo MODE $mode $#\n" + (reject ? "[ \"$mode\" != 0660 ] || exit 7\n" : "")).getBytes(StandardCharsets.UTF_8));
+            String code = "set -e\nchmod +x " + RescueFiles.quote(shim.getPath().replace('\\','/'))
+                    + "\nPATH=$(cd "+RescueFiles.quote(bin.getPath().replace('\\','/'))+"; pwd):$PATH\nexport PATH\n"
+                    + "stat() { echo 10001; }\nchown() { :; }\nDIR="+RescueFiles.quote(data.getPath().replace('\\','/'))+"\n"
+                    + WatchdogPolicy.secureDirectoryCommands()+"echo COMPLETE\n";
+            String result = RebootPolicyTest.shell(code, reject ? 1 : 0);
+            assertTrue(result, result.contains("MODE 0660 80"));
+            assertEquals(!reject, result.contains("COMPLETE"));
+        }
+    }
+
     private static File repoFile(String name) {
         File[] candidates = new File[] {
                 new File("tools/watchdog/" + name),
