@@ -7,13 +7,15 @@ import source from "./devices-client-source.js";
 import vm from "node:vm";
 import crypto from "node:crypto";
 
-test('文件列表名称只作为文字，点击用索引，切设备后不覆盖当前弹窗',()=>{
+test('文件列表名称只作为文字，点击用索引，切设备后不覆盖当前文件页',()=>{
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({})}});
   vm.runInContext(source,context);
   const state={device_id:'first',path:'/sdcard',selected:0,entries:[{name:"file');alert(1);//<x>",directory:false,bytes:0}]};
   const html=context.fileManagerRows(state);
   assert.match(html,/fileManagerPick\(0\)/);assert.doesNotMatch(html,/<x>/);assert.doesNotMatch(html,/onclick="[^\"]*alert/);
-  context.FILE_VIEW='second';assert.equal(context.fileManagerVisible(state),false);
+  context.selFn='files';context.selDev='second';assert.equal(context.fileManagerVisible(state),false);
+  context.selDev='first';assert.ok(context.fileManagerVisible(state));
+  context.selFn='adb';assert.equal(context.fileManagerVisible(state),false);
   assert.equal(context.fileManagerChild({path:'/'},'test'),'/test');
 });
 
@@ -218,7 +220,8 @@ test('所有功能页均可渲染，型号名称转义且操作使用当前条�
  context.MODELS=[{id:'m',name:'<script>测试</script>',note:'<img>'}];
  for(const item of context.FN_ITEMS){context.selFn=item[0];assert.doesNotThrow(()=>context.fnPageHtml(),item[1]);}
  const html=context.pageModel();assert.doesNotMatch(html,/<script>|<img>/);assert.match(html,/editModel\(MODELS\[0\]\.id\)/);
- const shell=context.pageAdb('');assert.match(shell,/monitor-grid/);assert.match(shell,/id="taskOut"/);assert.match(shell,/id="adbTerm"/);
+ assert.equal(context.FN_ITEMS[5][0],'files');assert.equal(context.FN_ITEMS[5][1],'文件管理');
+ const shell=context.pageAdb('');assert.doesNotMatch(shell,/onclick="openSendFile/);assert.match(shell,/monitor-grid/);assert.match(shell,/id="taskOut"/);assert.match(shell,/id="adbTerm"/);
 });
 
 test('左侧通用终端与右侧ADB保持独立，root能力不冒充ADB连接',()=>{
