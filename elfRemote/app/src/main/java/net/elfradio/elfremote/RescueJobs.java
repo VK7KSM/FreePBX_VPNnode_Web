@@ -121,6 +121,21 @@ final class RescueJobs {
 
     boolean isBusy() { return busy.get(); }
 
+    JSONObject fileHistory() throws Exception {
+        org.json.JSONArray files=new org.json.JSONArray();
+        File[] dirs=root.listFiles(File::isDirectory);
+        if(dirs!=null)for(File dir:dirs)try{
+            JSONObject request=new JSONObject(RescueFiles.read(new File(dir,"request.json"),60000));
+            String command=request.optString("command");if(!command.startsWith("file-commit:"))continue;
+            JSONObject p=new JSONObject(command.substring(12)),r=get(dir.getName());if(r==null)continue;
+            boolean ok="committed".equals(r.optString("action"));
+            files.put(new JSONObject().put("id",dir.getName()).put("path",p.getString("path")).put("bytes",p.getLong("size"))
+                    .put("state",ok?"success":r.optString("state")).put("detail",ok?"文件已保存":"running".equals(r.optString("state"))?"正在保存文件":"文件未保存")
+                    .put("at",r.optLong("finished",r.optLong("started",dir.lastModified()))));
+        }catch(Exception ignored){}
+        return new JSONObject().put("files",files);
+    }
+
     synchronized JSONObject cancel(String id) throws Exception {
         JSONObject state=get(id);
         if (state!=null && "running".equals(state.optString("state")))

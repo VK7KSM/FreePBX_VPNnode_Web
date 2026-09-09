@@ -48,6 +48,7 @@ final class RescueHttpServer extends NanoHTTPD {
             if (!peer.isSiteLocalAddress() && !peer.isLoopbackAddress())
                 return response(Response.Status.FORBIDDEN, "仅开放局域网");
             String path = session.getUri();
+            if(session.getMethod()==Method.GET && "/files/recent".equals(path))return json(Response.Status.OK,jobs.fileHistory());
             if (session.getMethod() == Method.POST && ("/prepare-upgrade".equals(path) || "/resume".equals(path))) {
                 if (session.getHeaders().containsKey("origin")) return response(Response.Status.FORBIDDEN,"不接受浏览器跨站请求");
                 return json(Response.Status.OK, jobs.upgrade("/prepare-upgrade".equals(path)));

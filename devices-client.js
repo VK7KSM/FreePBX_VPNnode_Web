@@ -502,17 +502,17 @@ function pageAdb(dis){
   left+='<div class="adb-row"><span class="adb-prompt">shell&gt;</span><input id="shellCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="pm list packages"'+(blocked?' disabled':'')+'>';
   left+='<button class="btn-green" onclick="shellSend()"'+(blocked?' disabled':'')+'>发送</button>';
   if(u&&u.shell.pending)left+='<button class="btn-gray" onclick="cancelCommand()"'+(u.shell.cancelRequested?' disabled':'')+'>'+(u.shell.cancelRequested?'停止中':'停止')+'</button>';
-  left+='</div><div class="monitor-footer">';
-  if(st)left+='<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
-  if(t.type==='send_file')left+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
-  if(d&&r.artifact)left+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   left+='</div></section>';
+  var foot='';
+  if(st)foot+='<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
+  if(t.type==='send_file')foot+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
+  if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
   var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+dis+'>'+(on?'断开ADB':'连接ADB')+'</button></h4>';
   right+='<div class="adb-box"><pre class="adb-term" id="adbTerm"><span class="adb-sys">'+(on?'ADB 已连接':'ADB 未连接')+'</span>\n';
   for(var j=0;j<adb.lines.length;j++)right+='<span class="adb-sys">'+esc(adb.lines[j])+'</span>\n';
   right+='</pre><div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="shell pm list packages" disabled><button class="btn-gray" disabled>发送</button></div></div></section>';
-  return '<div class="monitor-grid">'+left+right+'</div>';
+  return '<div class="monitor-grid">'+left+right+'</div>'+(foot?'<div class="terminal-status">'+foot+'</div>':'');
 }
 
 var FILE_SEND={},FILE_VIEW='',FILE_POLL=null;
