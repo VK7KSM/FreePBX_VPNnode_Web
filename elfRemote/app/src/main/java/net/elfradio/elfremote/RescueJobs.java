@@ -3,7 +3,6 @@ package net.elfradio.elfremote;
 import org.json.JSONObject;
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class RescueJobs {
@@ -150,12 +149,18 @@ final class RescueJobs {
 
     private void prune() {
         File[] dirs = root.listFiles(File::isDirectory);
-        if (dirs == null || dirs.length < 32) return;
-        Arrays.sort(dirs, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i <= dirs.length - 32; i++) {
-            File[] files = dirs[i].listFiles();
-            if (files != null) for (File file : files) if (file.isFile()) file.delete();
-            dirs[i].delete();
+        if (dirs == null) return;
+        long cutoff=System.currentTimeMillis()-30L*24*60*60*1000;
+        for (File dir : dirs) {
+            try {
+                JSONObject result=get(dir.getName());
+                if(result==null||"running".equals(result.optString("state")))continue;
+                long finished=result.optLong("finished",new File(dir,"result.json").lastModified());
+                if(finished<=0||finished>=cutoff)continue;
+                File[] files=dir.listFiles();
+                if(files!=null)for(File file:files)if(file.isFile())file.delete();
+                dir.delete();
+            } catch(Exception unreadable) { /* 无法核对的记录保留，不按数量删除去重依据。 */ }
         }
     }
 }

@@ -21,6 +21,8 @@ public final class RescueDaemon {
              FileLock lock = lockFile.getChannel().tryLock()) {
             if (lock == null) return;
             RescueFiles.write(new File(root,"daemon.pid"),Integer.toString(android.os.Process.myPid()));
+            try { RescueFiles.write(new File(root,"started.json"),RescueDiagnostics.collect().toString()); }
+            catch(Exception unavailable) { System.err.println("核心启动诊断暂不可用，继续启动命令服务"); }
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             server.start(3000, true);
@@ -134,8 +136,7 @@ public final class RescueDaemon {
         String report = "elfRemote 独立root维护 " + BuildConfig.VERSION_NAME
                 + "\n本机维护端口：8765\n运行毫秒：" + SystemClock.elapsedRealtime()
                 + "\n命令入口：POST /exec；结果入口：GET /jobs/任务号\n";
-        File cached = new File(guard.getParentFile(), "status.txt");
-        try { return report + RescueFiles.read(cached, 300000); }
-        catch (Exception ignored) { return report + "客户端尚未更新缓存，命令服务可独立使用。\n"; }
+        try { return report + "本机实时诊断：\n" + RescueDiagnostics.collect().toString(2) + "\n"; }
+        catch (Exception ignored) { return report + "诊断读取失败，命令服务仍可独立使用。\n"; }
     }
 }

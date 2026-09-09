@@ -158,6 +158,30 @@ public class RescueTest {
         assertEquals("interrupted",jobs.submit("partial","id",30).getString("state"));
     }
 
+    @Test public void recentHistorySurvivesMoreThan32JobsAndRestart() throws Exception {
+        File root=temp.newFolder();
+        java.util.concurrent.atomic.AtomicInteger executions=new java.util.concurrent.atomic.AtomicInteger();
+        RescueJobs.Runner runner=(f,c,t)->{executions.incrementAndGet();return new JSONObject().put("state","completed").put("exit_code",0);};
+        RescueJobs jobs=new RescueJobs(root,runner);
+        for(int i=0;i<40;i++){
+            jobs.submit("history-"+i,"true",30);
+            long end=System.currentTimeMillis()+3000;
+            while(jobs.isBusy()&&System.currentTimeMillis()<end)Thread.sleep(5);
+            assertFalse(jobs.isBusy());
+        }
+        jobs=new RescueJobs(root,runner);
+        assertEquals("completed",jobs.submit("history-0","true",30).getString("state"));
+        assertEquals(40,executions.get());
+        File old=new File(root,"history-1");
+        JSONObject result=jobs.get("history-1").put("finished",System.currentTimeMillis()-31L*86400000);
+        RescueFiles.write(new File(old,"result.json"),result.toString());
+        jobs.submit("after-expiry","true",30);
+        long end=System.currentTimeMillis()+3000;
+        while(jobs.isBusy()&&System.currentTimeMillis()<end)Thread.sleep(5);
+        assertFalse(old.exists());
+        assertNotNull(jobs.get("history-0"));
+    }
+
     private int http(RescueHttpServer server, String path, String body, String origin) throws Exception {
         try (java.net.Socket connection = new java.net.Socket("127.0.0.1", server.getListeningPort())) {
             connection.setSoTimeout(2000);

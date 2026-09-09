@@ -48,6 +48,8 @@ final class RescueHttpServer extends NanoHTTPD {
             if (!peer.isSiteLocalAddress() && !peer.isLoopbackAddress())
                 return response(Response.Status.FORBIDDEN, "仅开放局域网");
             String path = session.getUri();
+            if(session.getMethod()==Method.GET && "/diagnostics".equals(path))
+                return json(Response.Status.OK,RescueDiagnostics.collect());
             if(session.getMethod()==Method.GET && "/files/recent".equals(path))return json(Response.Status.OK,jobs.fileHistory());
             if (session.getMethod() == Method.POST && ("/prepare-upgrade".equals(path) || "/resume".equals(path))) {
                 if (session.getHeaders().containsKey("origin")) return response(Response.Status.FORBIDDEN,"不接受浏览器跨站请求");
@@ -58,6 +60,7 @@ final class RescueHttpServer extends NanoHTTPD {
                         .put("version_code", BuildConfig.VERSION_CODE)
                         .put("service", "elfremote-root-rescue").put("busy", jobs.isBusy())
                         .put("uid", uid)
+                        .put("diagnostics",true).put("history_days",30)
                         .put("uptime_ms", System.nanoTime() / 1000000L));
             if (session.getMethod() == Method.GET && "/".equals(path))
                 return response(Response.Status.OK, status.get());
