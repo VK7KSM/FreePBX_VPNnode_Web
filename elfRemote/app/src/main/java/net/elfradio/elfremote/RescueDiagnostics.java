@@ -11,6 +11,8 @@ final class RescueDiagnostics {
     static JSONObject collect() throws Exception {
         JSONObject result=new JSONObject().put("sampled_at_ms",System.currentTimeMillis())
                 .put("core_version",BuildConfig.VERSION_CODE);
+        try{result.put("elapsed_ms",android.os.SystemClock.elapsedRealtime()).put("awake_ms",android.os.SystemClock.uptimeMillis());}
+        catch(RuntimeException unavailable){result.put("elapsed_ms",JSONObject.NULL).put("awake_ms",JSONObject.NULL);}
         JSONObject properties=new JSONObject();
         for(String key:new String[]{"ro.product.model","ro.product.manufacturer","ro.product.device",
                 "ro.build.version.release","ro.build.version.sdk","ro.build.version.security_patch",

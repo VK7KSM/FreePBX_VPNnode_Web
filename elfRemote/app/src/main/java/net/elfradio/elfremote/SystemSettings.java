@@ -62,7 +62,13 @@ public final class SystemSettings {
         String command="CLASSPATH="+RescueFiles.quote(System.getProperty("java.class.path"))+" app_process /system/bin net.elfradio.elfremote.SystemSettings "+RescueFiles.quote(folder.getPath());
         JSONObject result=RescueDaemon.execute(folder,command,120);
         // 密码不进入命令记录或结果，任务结束移除临时参数。
-        request.delete();return result;
+        request.delete();
+        if("completed".equals(result.optString("state"))&&result.optInt("exit_code",-1)==0){
+            JSONObject snapshot=new JSONObject(RescueFiles.read(new File(folder,"settings-result.json"),16000));
+            if(!p.getString("group").equals(snapshot.optString("group"))||("set".equals(p.getString("action"))&&!snapshot.optBoolean("applied")))throw new IOException("系统配置结果文件不匹配，请重新读取设置");
+            result.put("output",snapshot.toString()).put("truncated",false);
+        }
+        return result;
     }
 
     public static void main(String[] args) {
@@ -73,7 +79,7 @@ public final class SystemSettings {
             if(!tool.folder.getCanonicalPath().startsWith(CoreInstaller.DIR+"/jobs/"))throw new IOException("配置任务目录无效");
             tool.context=CoreWake.systemContext();tool.resolver=tool.context.getContentResolver();tool.wifi=(WifiManager)tool.context.getSystemService(Context.WIFI_SERVICE);
             if(args.length==2&&args[1].equals("rollback")){tool.guard();exit=0;}
-            else {JSONObject p=normalize(new JSONObject(RescueFiles.read(new File(tool.folder,"settings-request.json"),16000)));JSONObject result=tool.perform(p);System.out.println(result);exit=0;}
+            else {JSONObject p=normalize(new JSONObject(RescueFiles.read(new File(tool.folder,"settings-request.json"),16000)));JSONObject result=tool.perform(p);RescueFiles.write(new File(tool.folder,"settings-result.json"),result.toString());System.out.println("系统配置结果已保存");exit=0;}
         }catch(Throwable failure){Throwable e=failure;while(e instanceof InvocationTargetException&&e.getCause()!=null)e=e.getCause();System.out.println("系统配置未完成："+e.getClass().getSimpleName()+" · "+String.valueOf(e.getMessage()));}
         System.exit(exit);
     }
@@ -97,7 +103,7 @@ public final class SystemSettings {
         }catch(Exception error){
             boolean restored=false;
             try{if(network)restoreNetwork();else {change(p,old);if(!matches(new JSONObject(p.toString()).put("value",old),snapshot(p)))throw new IOException("原值读回不符");}restored=true;if(network)RescueFiles.write(new File(folder,"settings-commit"),"restored");}catch(Exception restore){ }
-            throw new IOException((restored?"修改失败，已执行原设置恢复":"修改失败，原设置恢复尚未完成")+"（"+rootType(error)+"）");
+            throw new IOException((restored?"修改失败，已恢复原设置并确认":"修改失败，原设置恢复尚未完成")+"（"+rootType(error)+"）");
         }
     }
     private static String rootType(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.getClass().getSimpleName()+": "+e.getMessage();}
@@ -184,7 +190,7 @@ public final class SystemSettings {
         String key=p.getString("key");Object value=p.get("value");
         if(key.equals("connect")){WifiInfo info=wifi.getConnectionInfo();return info!=null&&info.getIpAddress()!=0&&unquote(info.getSSID()).equals(p.getJSONObject("value").getString("ssid"));}
         if(key.equals("hotspot")){JSONObject v=(JSONObject)value,got=after.getJSONObject("hotspot");return got.getBoolean("enabled")==v.getBoolean("enabled")&&(!v.getBoolean("enabled")||got.getString("ssid").equals(v.getString("ssid")));}
-        if(key.equals("dns")){JSONObject want=(JSONObject)value,got=after.getJSONObject("dns");if(!want.getString("mode").equals(got.getString("mode")))return false;if(want.getString("mode").equals("auto"))return true;return want.getJSONArray("servers").toString().equals(got.getJSONArray("servers").toString());}
+        if(key.equals("dns")){JSONObject want=(JSONObject)value,got=after.getJSONObject("dns");if(!want.getString("mode").equals(got.getString("mode")))return false;if(want.getString("mode").equals("auto"))return true;JSONArray expected=want.getJSONArray("servers"),actual=got.getJSONArray("servers");if(expected.length()!=actual.length())return false;for(int i=0;i<expected.length();i++)if(!InetAddress.getByName(expected.getString(i)).equals(InetAddress.getByName(actual.getString(i))))return false;return true;}
         if(key.equals("permission")){JSONObject v=(JSONObject)value;return (context.getPackageManager().checkPermission(v.getString("name"),p.getString("package"))==PackageManager.PERMISSION_GRANTED)==v.getBoolean("granted");}
         if(value instanceof Number&&p.getString("group").equals("apps"))return ((Number)value).intValue()==after.getInt(key.equals("enabled")?"enabled_state":"background_mode");
         if(value instanceof Number)return Math.abs(((Number)value).doubleValue()-after.getDouble(key))<.001;
@@ -233,6 +239,9 @@ public final class SystemSettings {
     private void restoreNetwork()throws Exception {
         JSONObject b=new JSONObject(RescueFiles.read(new File(folder,"settings-network-before.json"),300000));
         asSystem(()->{restoreNetworkValues(b);return null;});
+        long end=SystemClock.elapsedRealtime()+20000;
+        do {Thread.sleep(700);if(asSystem(()->networkRestored(b))&&reachesServer())return;}while(SystemClock.elapsedRealtime()<end);
+        throw new IOException("原网络尚未恢复连通");
     }
     private void restoreNetworkValues(JSONObject b)throws Exception {
         wifi.getClass().getMethod("setWifiApEnabled",WifiConfiguration.class,boolean.class).invoke(wifi,b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
@@ -241,6 +250,18 @@ public final class SystemSettings {
         List<WifiConfiguration> all=wifi.getConfiguredNetworks();if(all!=null)for(WifiConfiguration c:all)if(!old.contains(c.networkId))wifi.removeNetwork(c.networkId);
         for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(c.networkId,false);}
         if(b.getBoolean("wifi")){int oldId=b.getInt("network_id");if(oldId>=0)wifi.enableNetwork(oldId,true);wifi.reconnect();}else wifi.setWifiEnabled(false);wifi.saveConfiguration();
+    }
+    private boolean networkRestored(JSONObject b)throws Exception {
+        if(wifi.isWifiEnabled()!=b.getBoolean("wifi")||(settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data"))return false;
+        if(((Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi)==13)!=b.getBoolean("ap_enabled"))return false;
+        if(b.getBoolean("wifi")&&b.getInt("network_id")>=0){
+            WifiInfo info=wifi.getConnectionInfo();if(info==null||info.getNetworkId()!=b.getInt("network_id")||info.getIpAddress()==0)return false;
+            JSONArray configs=b.getJSONArray("configs");for(int i=0;i<configs.length();i++){WifiConfiguration old=unparcel(configs.getString(i));if(old.networkId!=info.getNetworkId())continue;
+                WifiConfiguration current=findConfig(info.getNetworkId(),true);if(current==null)return false;
+                Object a=old.getClass().getMethod("getIpConfiguration").invoke(old),c=current.getClass().getMethod("getIpConfiguration").invoke(current);if(!a.equals(c))return false;
+            }
+        }
+        return true;
     }
     private boolean reachesServer(){HttpsURLConnectionWrapper check=new HttpsURLConnectionWrapper();return check.ok();}
     private static final class HttpsURLConnectionWrapper {boolean ok(){javax.net.ssl.HttpsURLConnection c=null;try{c=(javax.net.ssl.HttpsURLConnection)new URL(BuildConfig.CONTROL_URL+"/").openConnection();c.setSSLSocketFactory(CoreTraffic.factory());c.setConnectTimeout(2500);c.setReadTimeout(2500);c.setRequestMethod("HEAD");c.setInstanceFollowRedirects(false);int code=c.getResponseCode();return code>=200&&code<400;}catch(Exception ignored){return false;}finally{if(c!=null)c.disconnect();}}}

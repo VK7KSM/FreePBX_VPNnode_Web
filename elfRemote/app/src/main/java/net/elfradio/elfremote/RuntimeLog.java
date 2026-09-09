@@ -14,9 +14,11 @@ final class RuntimeLog {
 
     static void event(String event) {
         RollingLog current = log;
-        if (current != null) current.write(System.currentTimeMillis() + " mono_ns=" + System.nanoTime()
+        if (current != null) current.write(System.currentTimeMillis() + " mono_ns=" + System.nanoTime() + elapsedStamp()
                 + " run=" + SESSION + " " + event);
     }
+
+    private static String elapsedStamp(){try{return " elapsed_ms="+android.os.SystemClock.elapsedRealtime();}catch(RuntimeException unavailable){return "";}}
 
     static void error(String event, Throwable error) {
         // 不写异常消息、请求正文或 URL 查询串，避免令牌进入诊断日志。
