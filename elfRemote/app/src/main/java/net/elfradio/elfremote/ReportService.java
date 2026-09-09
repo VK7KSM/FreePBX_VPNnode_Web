@@ -1095,37 +1095,54 @@ public final class ReportService extends Service {
             JSONObject previous = raw.isEmpty() ? null : new JSONObject(raw);
             if (previous != null && id.equals(previous.optString("task_id"))) {
                 if (!store.deviceId().equals(previous.optString("device_id"))) throw new java.io.IOException("reboot identity mismatch");
-                if (!boot.equals(previous.getString("boot"))) {
-                    postTask(id, RepairPolicy.ST_SUCCESS, "reboot-confirmed",
-                            new JSONObject().put("stage", "reboot").put("action", "confirmed"));
-                    RuntimeLog.event("task_reboot_confirmed");
-                } else RuntimeLog.event("task_reboot_waiting_same_boot");
+                String marker = rebootMarker(id);
+                String outcome = RebootPolicy.outcome(previous, boot, readTaskState(marker),
+                        new java.io.File(marker + ".failed").isFile(), System.currentTimeMillis());
+                if ("waiting".equals(outcome)) { scheduleReport(5000L); return; }
+                boolean confirmed = "confirmed".equals(outcome);
+                postTask(id, confirmed ? RepairPolicy.ST_SUCCESS : RepairPolicy.ST_FAILED,
+                        confirmed ? "设备已重启并重新上线" : "未能确认本次重启完成，请重新下发",
+                        new JSONObject().put("stage", "reboot").put("action", outcome));
+                RuntimeLog.event("task_reboot_result " + outcome);
                 return;
             }
             String reason = RepairPolicy.rejectReason(offer, System.currentTimeMillis());
             if (!reason.isEmpty()) { postTask(id, RepairPolicy.ST_REJECTED, reason, null); return; }
-            if (new java.io.File("/data/local/elfremote/heal.cmd").exists()) {
-                postTask(id, RepairPolicy.ST_FAILED, "root-command-busy", null); return;
-            }
+            ensureHealIdle();
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, "reboot", null);
-            writeSmall(path, new JSONObject().put("task_id", id).put("device_id", store.deviceId()).put("boot", boot).toString());
-            long deadline = offer.optLong("expires_at");
-            armHealCmd(RepairPolicy.expiringRebootCommand(deadline));
+            long deadline = Math.min(offer.optLong("expires_at"), System.currentTimeMillis() + RebootPolicy.WINDOW_MS);
+            writeSmall(path, new JSONObject().put("format", 2).put("task_id", id).put("device_id", store.deviceId())
+                    .put("boot", boot).put("deadline", deadline).toString());
+            armHealCmd(RebootPolicy.command(deadline, boot, rebootMarker(id)));
             RuntimeLog.event("task_reboot_armed");
+            scheduleReport(5000L);
         } catch (Exception error) {
             RuntimeLog.error("task_reboot_pending", error);
+            // 留下的意图最多等待到截止时间；领取或武装失败也必须给出实际失败结果。
+            try { postTask(id, RepairPolicy.ST_FAILED, "重启命令准备失败：" + error.getMessage(),
+                    new JSONObject().put("stage", "reboot").put("action", "prepare-failed")); }
+            catch (Exception pending) { scheduleReport(5000L); }
         }
+    }
+
+    private String rebootMarker(String id) {
+        return new java.io.File(WatchdogPolicy.DIR, "reboot-" + RepairPolicy.sha256Hex(id.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".executed").getPath();
     }
 
     private void armReboot() throws Exception {
         armHealCmd(RepairPolicy.rebootCommand());
     }
 
-    private void armHealCmd(String cmd) throws Exception {
+    private void ensureHealIdle() throws java.io.IOException {
         java.io.File dir = new java.io.File("/data/local/elfremote");
         if (new java.io.File(dir, "heal.cmd").exists() || new java.io.File(dir, "heal.running").exists()
                 || new java.io.File(dir, "update.running").exists()) throw new java.io.IOException("root-command-busy");
+    }
+
+    private void armHealCmd(String cmd) throws Exception {
+        ensureHealIdle();
+        java.io.File dir = new java.io.File("/data/local/elfremote");
         java.io.File tmp = new java.io.File(dir, "heal.cmd.tmp");
         java.io.FileOutputStream out = new java.io.FileOutputStream(tmp);
         try {

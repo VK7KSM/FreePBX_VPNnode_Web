@@ -36,7 +36,8 @@ public class WatchdogPolicyTest {
         assertFalse(script.contains("am start\t"));
         assertTrue(script.contains("skip duplicate start"));
         assertTrue(script.contains("sys.boot_completed"));
-        assertFalse(script.contains("/proc/[0-9]*/cmdline"));
+        assertTrue(script.indexOf("recover_heal\n") < script.indexOf("while true; do"));
+        assertTrue(script.indexOf("sh /data/local/elfremote/core/launch.sh") < script.indexOf("then run_heal; run_update; fi"));
         assertTrue(script.contains("SLEEP=" + WatchdogPolicy.SLEEP_SEC));
         assertTrue(script.contains("run_heal"));
         assertTrue(script.contains("heal.rc.tmp"));

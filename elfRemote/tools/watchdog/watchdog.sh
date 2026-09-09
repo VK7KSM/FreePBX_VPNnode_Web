@@ -107,13 +107,16 @@ start_app() {
 run_heal() {
   cmdf="$DIR/heal.cmd"
   [ -f "$cmdf" ] || return
+  [ ! -f "$DIR/heal.running" ] || return
+  cat /proc/sys/kernel/random/boot_id > "$DIR/heal.boot.tmp" || return
+  mv "$DIR/heal.boot.tmp" "$DIR/heal.boot" || return
   mv "$cmdf" "$DIR/heal.running" 2>/dev/null || return
   log "heal run"
   /system/bin/sh "$DIR/heal.running" > "$DIR/heal.out" 2>&1
   echo $? > "$DIR/heal.rc.tmp"
   chmod 0660 "$DIR/heal.out" "$DIR/heal.rc.tmp" 2>/dev/null || true
   mv "$DIR/heal.rc.tmp" "$DIR/heal.rc"
-  rm -f "$DIR/heal.running"
+  rm -f "$DIR/heal.running" "$DIR/heal.boot"
 }
 
 run_update() {
@@ -155,14 +158,39 @@ run_update() {
 }
 
 log "start pid=$$"
+recover_heal() {
+  [ -f "$DIR/heal.running" ] || return 0
+  current=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+  [ -n "$current" ] || return 0
+  previous=$(cat "$DIR/heal.boot" 2>/dev/null || true)
+  if [ -n "$previous" ]; then
+    [ "$previous" != "$current" ] || return 0
+  else
+    [ "$(wc -l < "$DIR/heal.running")" -eq 1 ] || return 0
+    grep -Eq '^set -e; test \$\(date \+%s\) -lt [0-9]+; sync; reboot$' "$DIR/heal.running" || return 0
+    modified=$(stat -c %Y "$DIR/heal.running") || return 0
+    read up rest < /proc/uptime || return 0
+    boot_at=$(($(date +%s) - ${up%%.*}))
+    [ "$modified" -lt $((boot_at - 2)) ] || return 0
+    for process in /proc/[0-9]*/cmdline; do
+      if tr '\000' '\n' < "$process" 2>/dev/null | grep -Fxq "$DIR/heal.running"; then return 0; fi
+    done
+  fi
+  archive="$DIR/heal-archive/$(date +%s)-$$"
+  mkdir -p "$archive" || return 1
+  for item in heal.running heal.boot heal.rc heal.out; do
+    [ ! -f "$DIR/$item" ] || cp -p "$DIR/$item" "$archive/$item" || return 1
+  done
+  cmp -s "$DIR/heal.running" "$archive/heal.running" || return 1
+  rm -f "$DIR/heal.running" "$DIR/heal.boot"
+}
+recover_heal
 if [ -f "$DIR/update.managed" ] && [ -f "$DIR/update.running" ] && [ ! -f "$DIR/update.job" ]; then
   mv "$DIR/update.running" "$DIR/update.job"
   log "resume managed update"
 fi
 loop=0
 while true; do
-  run_heal
-  run_update
   loop=$((loop + 1))
   if [ $((loop % SLEEP)) -eq 1 ]; then
     [ ! -f /data/local/elfremote/core/launch.sh ] || sh /data/local/elfremote/core/launch.sh
@@ -172,6 +200,7 @@ while true; do
       start_app
     fi
   fi
+  if [ "$(getprop sys.boot_completed)" = 1 ]; then run_heal; run_update; fi
   if [ $((loop % (STATS_EVERY * SLEEP))) -eq 0 ]; then
     pid=$(pkg_pid)
     echo "ts=$(date +%s) wd_rss_kb=$(rss_kb $$) app_rss_kb=$(rss_kb $pid) app_pid=$pid wd_pid=$$" > "$STATS"
