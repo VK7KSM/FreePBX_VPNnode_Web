@@ -1,5 +1,17 @@
 apply plugin: 'com.android.application'
 
+def releaseVersion = new Properties()
+rootProject.file('version.properties').withInputStream { releaseVersion.load(it) }
+if (project.hasProperty('elfVerCode') != project.hasProperty('elfVerName')) {
+    throw new GradleException('覆盖构建版本时必须同时指定elfVerCode和elfVerName')
+}
+def codeText = (project.findProperty('elfVerCode') ?: releaseVersion.getProperty('versionCode'))?.toString()
+def nameText = (project.findProperty('elfVerName') ?: releaseVersion.getProperty('versionName'))?.toString()
+if (!codeText || !(codeText ==~ /[1-9][0-9]{0,9}/) || codeText.toLong() > 2100000000L
+        || !nameText || nameText.trim() != nameText || nameText.length() > 100 || nameText.contains('\n') || nameText.contains('\r')) {
+    throw new GradleException('构建版本无效，请检查version.properties或显式版本参数')
+}
+
 android {
     namespace "net.elfradio.elfremote"
     compileSdkVersion 34
@@ -9,8 +21,8 @@ android {
         applicationId "net.elfradio.elfremote"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode project.hasProperty("elfVerCode") ? Integer.parseInt("$elfVerCode") : 12
-        versionName project.hasProperty("elfVerName") ? "$elfVerName" : "0.1.11-d22xx-upda"
+        versionCode codeText.toInteger()
+        versionName nameText
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         buildConfigField "boolean", "STATUS_ONLY", project.hasProperty("elfStatusOnly") ? Boolean.parseBoolean("$elfStatusOnly").toString() : "true"
         def controlUrl = project.findProperty("elfControlUrl") ?: "https://v.elfradio.net"

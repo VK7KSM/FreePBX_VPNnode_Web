@@ -244,13 +244,39 @@ async function repairDigest(task) {
 }
 
 // 历史独立存储，不把结果正文塞进所有设备共用的列表记录。
-export async function repairHistory(storage, deviceId) {
+export const REPAIR_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+
+function repairHistoryExpired(task, nowMs) {
+  // 缺失时间、未来时间及未结束的任务不能因数量或猜测而被清除。
+  if (repairInflight(task)) return false;
+  const completed = Date.parse(task.completed_at || "");
+  const at = Number.isFinite(completed) ? completed : task.archived_at;
+  return Number.isFinite(at) && at <= nowMs && nowMs - at > REPAIR_HISTORY_MS;
+}
+
+async function* repairHistoryPages(storage, deviceId) {
+  const prefix = "repair-history/" + encodeURIComponent(deviceId) + "/";
+  let startAfter;
+  while (true) {
+    const page = await storage.list({prefix, limit:1000, ...(startAfter ? {startAfter} : {})});
+    yield page;
+    if (page.size < 1000) return;
+    startAfter = [...page.keys()].at(-1);
+  }
+}
+
+export async function repairHistory(storage, deviceId, nowMs = Date.now()) {
   if (!storage) return [];
-  return [...(await storage.list({prefix:"repair-history/" + encodeURIComponent(deviceId) + "/",limit:128})).values()];
+  const tasks = [];
+  for await (const page of repairHistoryPages(storage, deviceId))
+    for (const task of page.values()) if (!repairHistoryExpired(task, nowMs)) tasks.push(task);
+  return tasks.sort((a,b) => (b.archived_at || 0) - (a.archived_at || 0));
 }
 
 export async function findRepairTask(storage, device, id) {
-  return device.task?.id === id ? device.task : (await repairHistory(storage, device.id)).find(t => t.id === id) || null;
+  if (device.task?.id === id) return device.task;
+  const task = storage ? await storage.get("repair-history/" + encodeURIComponent(device.id) + "/" + encodeURIComponent(id)) : null;
+  return task && !repairHistoryExpired(task, Date.now()) ? task : null;
 }
 
 export async function archiveRepair(storage, device, nowMs) {
@@ -259,9 +285,8 @@ export async function archiveRepair(storage, device, nowMs) {
   const task = {...device.task, archived_at:nowMs};
   delete task.params;
   await storage.put(prefix + encodeURIComponent(task.id), task);
-  const history = (await storage.list({prefix}));
-  const ordered = [...history].sort((a,b) => (b[1].archived_at || 0) - (a[1].archived_at || 0));
-  for (const [key] of ordered.slice(127)) await storage.delete(key);
+  for await (const page of repairHistoryPages(storage, device.id))
+    for (const [key, old] of page) if (repairHistoryExpired(old, nowMs)) await storage.delete(key);
 }
 
 export async function enqueueRepairTask(device, input, nowMs, storage) {
@@ -271,7 +296,7 @@ export async function enqueueRepairTask(device, input, nowMs, storage) {
   if (task.id.length > 96 || task.idempotency_key.length > 96) return {ok:false,reason:"invalid-id"};
   task.request_digest = await repairDigest(task);
   const cur = device.task;
-  const previous = [cur, ...await repairHistory(storage, device.id)].filter(Boolean)
+  const previous = [cur, ...await repairHistory(storage, device.id, nowMs)].filter(Boolean)
     .find(t => t.id === task.id || t.idempotency_key === task.idempotency_key);
   if (previous) {
     const digest = previous.request_digest || await repairDigest(previous);

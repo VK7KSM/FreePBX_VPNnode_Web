@@ -1,5 +1,7 @@
 # elfRemote
 
+> 2026-09-09 构建说明更正：默认版本读取`version.properties`，当前为119；下文12版及“第一刀”内容保留为历史记录，不代表当前能力或发布版本。发布新版须同步更新该文件。临时覆盖必须同时传入`-PelfVerCode=…`与`-PelfVerName=…`，缺一项会明确失败；具体功能和已验收范围以`开发进度.md`最新条目为准。
+
 D22 / H13 / D31 / Pixel 3 的远程配置客户端。第一刀只做一件事：设备和 `v.elfradio.net/devices` 控制面通信。
 
 包名：`net.elfradio.elfremote`  
