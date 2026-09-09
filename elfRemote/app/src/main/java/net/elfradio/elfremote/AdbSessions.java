@@ -58,6 +58,7 @@ final class AdbSessions implements Closeable {
                 public void onError(Exception error){finish(null,"ADB网络连接失败");}
             };
             websocket.setConnectionLostTimeout(30);
+            websocket.setSocketFactory(CoreTraffic.factory());
         }
         void connect(){
             try{
