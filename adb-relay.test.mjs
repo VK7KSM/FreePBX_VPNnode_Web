@@ -9,6 +9,14 @@ class Socket {
 }
 function fixture(){let time=1000;const relay=new AdbRelay({now:()=>time,schedule:()=>1,cancel:()=>{}});return {relay,advance:n=>time+=n};}
 function create(relay){return relay.create({id:'fixture-device',enabled:true,managed_adb_session:true});}
+test('原生定时器不会以会话对象作为this调用',t=>{
+  let scheduled=0,cancelled=0;
+  t.mock.method(globalThis,'setTimeout',function(fn,ms){assert.ok(this===undefined||this===globalThis);assert.equal(ms,10000);scheduled++;return 17;});
+  t.mock.method(globalThis,'clearTimeout',function(id){assert.ok(this===undefined||this===globalThis);assert.equal(id,17);cancelled++;});
+  const relay=new AdbRelay(),created=create(relay);
+  relay.close(relay.sessions.get(created.session_id),'测试结束');
+  assert.equal(scheduled,1);assert.equal(cancelled,1);
+});
 test('终端分别验证管理员入口会话与设备一次性连接凭据',()=>{
   const {relay}=fixture(),created=create(relay),offer=relay.offer('fixture-device','https://example.test');
   assert.equal(relay.offer('unrelated','https://example.test'),null);assert.equal(created.token,undefined);

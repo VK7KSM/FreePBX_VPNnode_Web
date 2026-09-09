@@ -175,7 +175,10 @@ export class ElfStore {
         if(url.pathname==='/api/elfremote/adb/session'&&request.method==='POST') {
           const raw=await request.text();if(raw.length>4096)return json({ok:false,msg:'请求过大'},400);
           const data=JSON.parse(raw);
-          return await this.ctx.blockConcurrencyWhile(async()=>json(this.adb.create((await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id))));
+          return await this.ctx.blockConcurrencyWhile(async()=>{
+            try{return json(this.adb.create((await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id)));}
+            catch(error){return json({ok:false,msg:error.message},400);}
+          });
         }
         const role=url.pathname==='/api/elfremote/adb/browser'?'browser':url.pathname==='/api/elfremote/adb/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);

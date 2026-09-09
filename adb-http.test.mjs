@@ -1,5 +1,11 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';import worker from './worker.js';import {fixture,request,login} from './test-support.mjs';
+test('创建失败在并发锁内部返回JSON而不令Durable Object重置',async()=>{
+  const f=fixture();let escaped=false;
+  f.store.ctx.blockConcurrencyWhile=async fn=>{try{return await fn();}catch(e){escaped=true;throw e;}};
+  const response=await f.store.fetch(request('/api/elfremote/adb/session','POST',{device_id:'missing'}));
+  assert.equal(response.status,400);assert.equal((await response.json()).ok,false);assert.equal(escaped,false);
+});
 test('只有已登录管理员能创建会话，设备报告领取绑定目标的短期凭据',async()=>{
   const token='adb-device-fixture',f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'adb-fixture',enabled:true,paired:true,status_only:true,managed_adb_session:true,token_sha256:createHash('sha256').update(token).digest('hex')}]});
   const cookie=await login(f);

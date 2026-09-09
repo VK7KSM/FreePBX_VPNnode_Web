@@ -1,6 +1,6 @@
 // 仅在管理员打开终端期间中继；设备与浏览器均向Worker发起连接。
 export class AdbRelay {
-  constructor({now=Date.now,schedule=setTimeout,cancel=clearTimeout}={}) {
+  constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id)}={}) {
     this.now=now;this.schedule=schedule;this.cancel=cancel;this.sessions=new Map();
   }
   create(device) {
