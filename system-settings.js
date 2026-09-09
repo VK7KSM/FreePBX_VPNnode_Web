@@ -1,0 +1,30 @@
+// 系统配置复用既有设备任务与回执；不提供第二套管理入口。
+const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot','dns'],wifi:['connect'],apps:['enabled','permission','notifications','background']};
+export function systemSettingsParams(p={}){
+  const group=p.group,action=p.action??'read',pkg=p.package??'',offset=p.offset??0;
+  if(!Object.hasOwn(keys,group)||!['read','set'].includes(action)||typeof pkg!=='string'||(pkg&&!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(pkg))||!Number.isInteger(offset)||offset<0||offset>10000)throw Error('系统配置参数无效');
+  const out={group,action,package:pkg,offset};if(action==='read')return out;
+  const key=p.key,v=p.value;if(!keys[group].includes(key))throw Error('该分类没有此设置');
+  if(['brightness_auto','auto_time','auto_time_zone','mobile_data','bluetooth','enabled','notifications','background'].includes(key)&&typeof v!=='boolean')throw Error('开关值无效');
+  if(['media','ring','alarm','call','brightness','font_scale'].includes(key)&&(!Number.isFinite(v)||(key==='font_scale'?(v<.85||v>1.5):(!Number.isInteger(v)||v<0||v>255))))throw Error('数值超出范围');
+  if(key==='locale'&&(typeof v!=='string'||!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(v)))throw Error('语言无效');
+  if(key==='timezone'){try{if(typeof v!=='string')throw Error();new Intl.DateTimeFormat('en',{timeZone:v});}catch{throw Error('时区无效');}}
+  if(group==='apps'&&!pkg)throw Error('请先选择应用');
+  if(key==='permission'&&(!v||typeof v.granted!=='boolean'||typeof v.name!=='string'||!/^[A-Za-z0-9_.]+$/.test(v.name)))throw Error('权限参数无效');
+  if(key==='connect'||key==='hotspot'){
+    if(!v||typeof v!=='object')throw Error('网络参数无效');
+    if(key==='hotspot'&&typeof v.enabled!=='boolean')throw Error('热点开关无效');
+    if(key==='connect'||v.enabled){if(typeof v.ssid!=='string'||!v.ssid||new TextEncoder().encode(v.ssid).length>32||v.ssid.includes('\0'))throw Error('网络名称无效');const password=v.password??'';
+      if(typeof password!=='string'||(password!==''&&!/^[0-9a-fA-F]{64}$/.test(password)&&!/^[\x20-\x7e]{8,63}$/.test(password))||(key==='hotspot'&&!password))throw Error('网络密码格式无效');}
+  }
+  if(key==='dns'&&(!v||!['auto','manual'].includes(v.mode)||(v.mode==='manual'&&(!Array.isArray(v.servers)||v.servers.length<1||v.servers.length>2||v.servers.some(s=>typeof s!=='string'||!/^[0-9a-fA-F:.]{3,45}$/.test(s))))))throw Error('DNS地址无效');
+  out.key=key;out.value=v;if(JSON.stringify(out).length>6000)throw Error('设置参数过大');return out;
+}
+
+export function applySystemSettingsResult(device,result,now){
+  if(device.task.state==='success')return;
+  if(result?.exit_code!==0||result.action!=='completed'||result.truncated)throw Error('缺少系统配置完成证据');
+  let snapshot;try{snapshot=JSON.parse(result.text);}catch{throw Error('系统配置结果无法读取');}
+  const p=device.task.params;if(snapshot.group!==p.group||!Number.isFinite(snapshot.sampled_at)||(p.action==='set'&&snapshot.applied!==true))throw Error('系统配置结果与任务不匹配');
+  device.system_settings={...device.system_settings,[p.group]:{...snapshot,received_at:now}};
+}

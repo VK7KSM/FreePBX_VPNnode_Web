@@ -1,3 +1,4 @@
+import {systemSettingsParams,applySystemSettingsResult} from "../system-settings.js";
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
 
@@ -122,7 +123,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -135,6 +136,7 @@ export const REPAIR_STATE_LABELS = {
 };
 
 export const REPAIR_TYPE_LABELS = {
+  system_config: "系统配置",
   configure_sip: "配置Linphone账号",
   configure_zello: "配置Zello账号",
   root_exec: "执行命令",
@@ -212,14 +214,14 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["root_exec","send_file","get_file","file_manage","configure_sip","configure_zello"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
   return {
     id,
     type,
-    params: type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -378,6 +380,7 @@ export function canAdvanceRepair(from, to) {
 export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
+  if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
   if(device.task.type==='configure_zello' && state==='success' && (!result||result.logged_in!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少Zello登录成功证据');
   if(device.task.type==='configure_sip' && state==='success' && (!result||result.registered!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少SIP注册成功证据');
   if(['root_exec','file_manage'].includes(device.task.type) && state === 'success'
@@ -405,7 +408,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (contacts) device.contacts = contacts;
   if (lost) device.lost_mode = lost;
   if(device.task.type==="set_lost_mode" && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
-  if((CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
+  if((device.task.type==="system_config"||CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
     if (alarm) device.alarm = alarm;
@@ -417,8 +420,8 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       bytes: Math.max(0, Number(result.bytes) || 0),
       truncated: !!result.truncated,
       artifact: result.artifact || null,
-      text: String(result.text || "").slice(0, ["root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? 16000 : 2048),
-      ...(["root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
+      text: String(result.text || "").slice(0, ["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? 16000 : 2048),
+      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
       reason: String(result.reason || "").slice(0, 80)
@@ -508,7 +511,7 @@ export function publicRepair(task) {
       truncated: !!r.truncated,
       artifact: r.artifact || null,
       text: r.text || "",
-      ...(["root_exec","file_manage","configure_sip","configure_zello"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
+      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""

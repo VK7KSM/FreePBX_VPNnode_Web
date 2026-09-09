@@ -49,7 +49,7 @@ final class RepairPolicy {
     }
 
     static boolean allowedType(String type) {
-        if("root_exec".equals(type) || "send_file".equals(type) || "get_file".equals(type) || "file_manage".equals(type) || "configure_sip".equals(type) || "configure_zello".equals(type)) return true;
+        if("system_config".equals(type) || "root_exec".equals(type) || "send_file".equals(type) || "get_file".equals(type) || "file_manage".equals(type) || "configure_sip".equals(type) || "configure_zello".equals(type)) return true;
         if("set_lost_mode".equals(type)) return true;
         if (configType(type)) return true;
         return TYPE_PULL_LOGS.equals(type)

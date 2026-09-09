@@ -5,6 +5,7 @@ on:
     branches: [master, main]
     paths:
       - "worker.js"
+      - "system-settings.js"
       - "sip-client.js"
       - "sip-client-source.js"
       - "admin-auth.js"

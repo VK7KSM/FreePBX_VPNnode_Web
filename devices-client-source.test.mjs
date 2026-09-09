@@ -196,7 +196,11 @@ test('今日流量使用KB，无数据不冒充零；系统配置保留原Wi-Fi�
  assert.equal(context.dailyTrafficHtml(null),'无数据');
  assert.doesNotMatch(context.dailyTrafficHtml({available:true,rx_bytes:1000,tx_bytes:2000,estimated:true}),/估算|KiB/);
  assert.match(context.pageSystem(''),/wifiScan/);
- context.SYSTEM_TAB='语言与时间';assert.match(context.pageSystem(''),/自动时间/);
+ context.SYSTEM_TAB='语言与时间';assert.match(context.pageSystem(''),/请更新客户端后使用/);
+ context.DEV[0].managed_system_settings=true;
+ context.DEV[0].system_settings={time:{sampled_at:1,locale:'zh-CN',locales:['zh-CN','en-AU'],timezone:'Australia/Sydney',auto_time:true,auto_time_zone:true}};
+ assert.match(context.pageSystem(''),/自动时间/);
+ assert.match(context.pageSystem(''),/id="setting-timezone" disabled/);
  assert.doesNotMatch(context.pageSystem(''),/type="checkbox"/);
 });
 test('流量历史过期请求不覆盖新的范围，柱子选择显示收发明细',async()=>{

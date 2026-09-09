@@ -397,6 +397,7 @@ function pickFn(id){
   renderOps();
   if(id==='update')loadReleases();
   if(id==='files')loadFileManagerOnEntry();
+  if(id==='wifi'&&SYSTEM_TAB!=='账号配置')readSystemSettings();
 }
 
 function onFnClick(ev){
@@ -777,7 +778,8 @@ function pageWifi(dis){
   h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+dis+'>';
   h += '<button class="btn-green" onclick="wifiConnect()"'+dis+'>连接</button>';
   h += "</div>";
-  h += '<p class="muted">已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。</p>';
+  h += '<p class="muted">'+(device&&device.managed_system_settings?'已保存网络留空则沿用密码，填写新密码则修改。连接失败自动恢复原网络。':'已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。')+'</p>';
+  if(device&&device.managed_system_settings){var ws=systemSettingsState();h+='<span role="status">'+esc(ws.message||'')+'</span>';}
   h += configTaskStatus(device);
   return h;
 }
@@ -932,14 +934,75 @@ function selectTrafficBar(i){
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
-function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();}
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置')readSystemSettings();}
 function pageSystem(dis){
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
-  return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div></section></div>';
+  return h+pageSystemSettings(dis)+'</section></div>';
 }
 
+var SYSTEM_GROUP_IDS={'Wi-Fi':'wifi','网络与连接':'network','应用':'apps','声音与显示':'sound','语言与时间':'time'};
+function systemSettingsState(){var u=uiOf();return u.systemSettings||(u.systemSettings={pending:false,message:'',package:'',offset:0});}
+function systemSnapshot(){var d=currentDev();return d&&d.system_settings&&d.system_settings[SYSTEM_GROUP_IDS[SYSTEM_TAB]];}
+function systemField(key,label,control,blocked){return '<form class="system-setting-row" onsubmit="event.preventDefault();saveSystemField(\''+key+'\')"><label for="setting-'+key+'">'+esc(label)+'</label>'+control+'<button class="btn-green" type="submit"'+blocked+'>保存</button></form>';}
+function systemNumber(key,label,value,min,max,step,blocked){return systemField(key,label,'<input class="inp" id="setting-'+key+'" type="number" value="'+esc(value)+'" min="'+min+'" max="'+max+'" step="'+step+'" required'+blocked+'>',blocked);}
+function systemToggle(key,label,value,blocked){return systemField(key,label,'<select class="inp" id="setting-'+key+'"'+blocked+'><option value="true"'+(value?' selected':'')+'>开启</option><option value="false"'+(!value?' selected':'')+'>关闭</option></select>',blocked);}
+function pageSystemSettings(dis){
+  var d=currentDev();if(!d)return '<p class="muted">请先选择设备</p>';
+  var state=systemSettingsState(),data=systemSnapshot(),group=SYSTEM_GROUP_IDS[SYSTEM_TAB],blocked=dis||(!d.managed_system_settings||state.pending?' disabled':'');
+  var h='<div class="ops-actions"><button class="btn-gray" onclick="readSystemSettings()"'+blocked+'>读取当前设置</button><span role="status">'+esc(state.message||(!d.managed_system_settings?'请更新客户端后使用':data?'读取于 '+sydney(data.sampled_at):'尚未读取设备设置'))+'</span></div>';
+  if(!data)return h;
+  if(group==='sound'){
+    h+='<div class="system-settings-grid">';[['media','媒体音量'],['ring','铃声音量'],['alarm','闹钟音量'],['call','通话音量']].forEach(function(item){h+=systemNumber(item[0],item[1],data[item[0]],0,data.maximum[item[0]],1,blocked);});
+    h+=systemToggle('brightness_auto','自动亮度',data.brightness_auto,blocked)+systemNumber('brightness','屏幕亮度',data.brightness,1,255,1,blocked||(data.brightness_auto?' disabled':''))+systemNumber('font_scale','字体大小',data.font_scale,.85,1.5,.05,blocked)+'</div>';
+  }else if(group==='time'){
+    h+='<div class="system-settings-grid">'+systemToggle('auto_time','自动时间',data.auto_time,blocked)+systemToggle('auto_time_zone','自动时区',data.auto_time_zone,blocked);
+    var locales=Array.from(new Set([data.locale].concat(data.locales||[]))),names;try{names=new Intl.DisplayNames(['zh-CN'],{type:'language'});}catch(e){}
+    h+=systemField('locale','系统语言','<select class="inp" id="setting-locale"'+blocked+'>'+locales.map(function(l){var label=l;try{if(names)label=names.of(l);}catch(e){}return '<option value="'+esc(l)+'"'+(l===data.locale?' selected':'')+'>'+esc(label)+' · '+esc(l)+'</option>';}).join('')+'</select>',blocked);
+    var zones;try{zones=Intl.supportedValuesOf('timeZone');}catch(e){zones=['Australia/Sydney','Australia/Brisbane','Australia/Perth','UTC'];}zones=Array.from(new Set([data.timezone].concat(zones)));
+    var zoneDisabled=blocked||(data.auto_time_zone?' disabled':'');
+    h+=systemField('timezone','时区','<select class="inp" id="setting-timezone"'+zoneDisabled+'>'+zones.map(function(z){return '<option value="'+esc(z)+'"'+(z===data.timezone?' selected':'')+'>'+esc(z)+'</option>';}).join('')+'</select>',zoneDisabled)+'</div>';
+  }else if(group==='network'){
+    h+='<div class="system-settings-grid">'+systemToggle('mobile_data','移动数据',data.mobile_data,blocked)+systemToggle('bluetooth',data.bluetooth_supported?'蓝牙':'设备无蓝牙',data.bluetooth,blocked||(!data.bluetooth_supported?' disabled':''))+'</div>';
+    h+='<div class="system-setting-section"><h4>热点</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemHotspot(true)"><input class="inp" id="setting-hotspot-name" aria-label="热点名称" placeholder="热点名称" value="'+esc(data.hotspot.ssid||'')+'" required'+blocked+'><input class="inp" id="setting-hotspot-password" type="password" aria-label="热点密码" placeholder="热点密码" minlength="8" maxlength="63" autocomplete="new-password" required'+blocked+'><button class="btn-green"'+blocked+'>保存并开启</button><button type="button" class="btn-gray" onclick="saveSystemHotspot(false)"'+(blocked||(!data.hotspot.enabled?' disabled':''))+'>关闭热点</button><span>'+esc(data.hotspot.enabled?'已开启':'已关闭')+'</span></form></div>';
+    var dnsDisabled=blocked||(!data.dns_editable?' disabled':'');
+    h+='<div class="system-setting-section"><h4>Wi-Fi DNS</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemDns()"><select class="inp" id="setting-dns-mode"'+dnsDisabled+'><option value="auto"'+(data.dns.mode==='auto'?' selected':'')+'>自动获取</option><option value="manual"'+(data.dns.mode==='manual'?' selected':'')+'>手动设置</option></select><input class="inp" id="setting-dns-servers" aria-label="DNS地址" placeholder="DNS地址，以空格分隔" value="'+esc(data.dns.servers.join(' '))+'"'+dnsDisabled+'><button class="btn-green"'+dnsDisabled+'>保存</button></form></div>';
+    h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((data.paired||[]).length?'<div class="system-items">'+data.paired.map(function(p){return '<div><span>'+esc(p.name||'蓝牙设备')+'</span><span>'+esc(p.address)+'</span></div>';}).join('')+'</div>':'<p class="muted">'+(data.bluetooth?'暂无已配对设备':'蓝牙已关闭')+'</p>')+'</div><div class="system-items"><div><span>USB状态</span><span>'+esc(data.usb||'未连接')+'</span></div></div>';
+  }else if(group==='apps'){
+    if(data.package){
+      h+='<div class="system-setting-section"><div class="ops-actions"><button class="btn-gray" onclick="systemChooseApp(\'\')"'+blocked+'>返回应用列表</button><span>'+esc(data.name)+' · '+esc(data.version||'')+'</span></div><p class="muted">'+esc(data.package)+'</p></div><div class="system-settings-grid">'+systemToggle('enabled','应用启用',data.enabled,blocked)+systemToggle('notifications','允许通知',data.notifications,blocked)+systemToggle('background','允许后台运行',data.background,blocked)+'</div><div class="system-setting-section"><h4>运行时权限</h4><div class="system-items">';
+      (data.permissions||[]).forEach(function(p,i){h+='<div><span>'+esc(p.label||p.name)+'</span><button class="'+(p.granted?'btn-gray':'btn-green')+'" onclick="systemPermission('+i+')"'+blocked+'>'+esc(p.granted?'撤销':'允许')+'</button></div>';});h+=data.permissions.length?'':'<p class="muted">该应用没有可调整的运行时权限</p>';h+='</div></div>';
+    }else{
+      h+='<div class="system-setting-section function-table"><table><thead><tr><th>应用</th><th>状态</th><th></th></tr></thead><tbody>'+(data.apps||[]).map(function(a){return '<tr><td>'+esc(a.name)+'<br><span class="muted">'+esc(a.package)+'</span></td><td>'+esc(a.enabled?'已启用':'已停用')+'</td><td><button class="btn-gray" data-package="'+esc(a.package)+'" onclick="systemChooseApp(this.dataset.package)"'+blocked+'>设置</button></td></tr>';}).join('')+'</tbody></table></div><div class="ops-actions"><button class="btn-gray" onclick="systemAppsPage(-1)"'+(blocked||data.offset===0?' disabled':'')+'>上一页</button><span>共 '+data.total+' 个应用</span><button class="btn-gray" onclick="systemAppsPage(1)"'+(blocked||data.next<0?' disabled':'')+'>下一页</button></div>';
+    }
+  }
+  return h;
+}
+async function runSystemSettings(params){
+  var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(state.pending)return;
+  state.pending=true;state.message=params.action==='set'?'正在应用设置':'正在读取设备设置';renderOps();
+  try{
+    var r=await fileApi('/api/elfremote/task',{device_id:d.id,type:'system_config',id:'settings-'+crypto.randomUUID(),params:params}),task;
+    for(var start=Date.now();Date.now()-start<150000;){
+      var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:d.id,task_id:r.task.id}));task=x.task;
+      if(task&&['success','failed','rejected','expired'].includes(task.state))break;
+      await new Promise(function(resolve){setTimeout(resolve,1200);});
+    }
+    if(!task||task.state!=='success')throw Error(task&&task.result&&task.result.text||task&&task.detail||'尚未收到完成结果，请稍后重新读取');
+    if(task.result.truncated)throw Error('设备结果不完整，请重新读取');
+    var snapshot=JSON.parse(task.result.text),current=DEV.find(function(x){return x.id===d.id;});if(current)current.system_settings=Object.assign({},current.system_settings,{[params.group]:snapshot});
+    state.message=params.action==='set'?'设置已生效':'已读取 · '+sydney(snapshot.sampled_at);
+    if(params.group==='wifi'&&$('wifiPw'))$('wifiPw').value='';
+  }catch(e){state.message=e.message;}finally{state.pending=false;if(selDev===d.id&&selFn==='wifi')renderOps();}
+}
+function readSystemSettings(){var d=currentDev();if(!d||!d.managed_system_settings)return;var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],s=systemSettingsState();if(group)runSystemSettings({group:group,action:'read',package:group==='apps'?s.package:'',offset:group==='apps'?s.offset:0});}
+function saveSystemField(key){var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],el=$('setting-'+key),v=el.value;if(el.type==='number')v=Number(v);else if(v==='true'||v==='false')v=v==='true';runSystemSettings({group:group,action:'set',key:key,value:v,package:group==='apps'?systemSnapshot().package:''});}
+function saveSystemHotspot(enabled){runSystemSettings({group:'network',action:'set',key:'hotspot',value:{enabled:enabled,ssid:$('setting-hotspot-name').value.trim(),password:$('setting-hotspot-password').value}});}
+function saveSystemDns(){runSystemSettings({group:'network',action:'set',key:'dns',value:{mode:$('setting-dns-mode').value,servers:$('setting-dns-servers').value.trim().split(/[\s,]+/).filter(Boolean)}});}
+function systemChooseApp(pkg){var s=systemSettingsState();s.package=pkg;s.offset=0;readSystemSettings();}
+function systemAppsPage(direction){var s=systemSettingsState(),d=systemSnapshot();s.offset=direction>0?d.next:Math.max(0,d.offset-15);readSystemSettings();}
+function systemPermission(i){var d=systemSnapshot(),p=d.permissions[i];runSystemSettings({group:'apps',action:'set',package:d.package,key:'permission',value:{name:p.name,granted:!p.granted}});}
 var ACCOUNT_TAB='Linphone';
 function selectAccountTab(name){ACCOUNT_TAB=name;renderOps();}
 function pageAccountSettings(dis){
@@ -1203,6 +1266,7 @@ function wifiPick(ssid){
   renderOps();
 }
 function wifiConnect(){
+  if(currentDev()&&currentDev().managed_system_settings)return runSystemSettings({group:'wifi',action:'set',key:'connect',value:{ssid:$('wifiSsid').value.trim(),password:$('wifiPw').value}});
   var ssid=$('wifiSsid').value,password=$('wifiPw').value;
   return enqueueRepair('connect_wifi',{ssid:ssid,password:password});
 }

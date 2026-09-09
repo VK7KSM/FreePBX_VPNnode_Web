@@ -71,6 +71,12 @@ final class RescueJobs {
         return submit(id,"file-manage:"+p.toString(),120,(folder,command,timeout)->FileOperations.run(folder,p));
     }
 
+    synchronized JSONObject submitSettings(String id,JSONObject params)throws Exception {
+        JSONObject p=SystemSettings.normalize(params);
+        String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return submit(id,"system-settings:"+fingerprint,120,(folder,command,timeout)->SystemSettings.execute(folder,p));
+    }
+
     synchronized JSONObject submitSipAccount(String id,JSONObject params)throws Exception {
         JSONObject p=SipAccountConfig.normalize(params);
         String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));

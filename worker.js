@@ -979,6 +979,8 @@ function publicDevice(d, modelName) {
     managed_zello_account: d.managed_zello_account === true,
     zello_account: d.account_configs?.zello ? {username:d.account_configs.zello.params.username,type:"regular",updated_at:d.account_configs.zello.updated_at}:null,
     managed_sip_account: d.managed_sip_account === true,
+    managed_system_settings: d.managed_system_settings === true,
+    system_settings: d.system_settings || null,
     sip_account: d.account_configs?.linphone ? {server:d.account_configs.linphone.params.server,username:d.account_configs.linphone.params.username,auth_username:d.account_configs.linphone.params.auth_username,transport:d.account_configs.linphone.params.transport,port:d.account_configs.linphone.params.port,updated_at:d.account_configs.linphone.updated_at} : null,
     contacts: d.contacts || null,
     network: d.network || "unknown",
@@ -1382,6 +1384,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_file_operations = data.managed_file_operations === true;
       list[i].managed_zello_account = data.managed_zello_account === true;
       list[i].managed_sip_account = data.managed_sip_account === true;
+      list[i].managed_system_settings = data.managed_system_settings === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1661,6 +1664,7 @@ function addManagedTaskOffer(body, device, report, now) {
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
   if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
       || (report.managed_file_operations === true && device.task?.type === 'file_manage')
+      || (report.managed_system_settings === true && device.task?.type === 'system_config')
       || (report.managed_sip_account === true && device.task?.type === 'configure_sip')
       || (report.managed_zello_account === true && device.task?.type === 'configure_zello'))
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
@@ -1717,7 +1721,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1731,6 +1735,7 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
         || (data.type==="file_manage" && found.managed_file_operations===true)
+        || (data.type==="system_config" && found.managed_system_settings===true)
         || (data.type==="configure_sip" && found.managed_sip_account===true)
         || (data.type==="configure_zello" && found.managed_zello_account===true)
         || (data.type==="get_file" && found.managed_file_return===true)
@@ -1744,6 +1749,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
     if(data.type==="configure_sip" && !found.managed_sip_account)return json({ok:false,msg:"客户端尚未支持Linphone账号配置"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
@@ -1773,7 +1779,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
-    if(!queued.duplicate && ['root_exec','file_manage','configure_sip','configure_zello'].includes(data.type)) found.task.managed_exec_v1=true;
+    if(!queued.duplicate && ['system_config','root_exec','file_manage','configure_sip','configure_zello'].includes(data.type)) found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
@@ -2563,6 +2569,7 @@ function renderDevicesHtml() {
     '@media(max-width:1100px){.fn-btn{font-size:.72rem;padding:.38rem .2rem;gap:.28rem}.fn-ico{width:16px;height:16px}}',
     '@media(max-width:800px){.fn-menu{overflow-x:auto}}',
     '.fn-page{background:rgba(15,23,42,.45);border:1px solid #1e293b;border-radius:.7rem;padding:.9rem 1rem;min-height:160px}',
+    '.system-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 22px;margin-top:18px}.system-setting-row{display:grid;grid-template-columns:minmax(72px,1fr) minmax(80px,1.4fr) auto;gap:8px;align-items:center;min-width:0}.system-setting-row .inp{width:100%;min-width:0}.system-setting-section{margin-top:22px;padding-top:16px;border-top:1px solid #29364a}.system-setting-section h4{font-size:12px;font-weight:500;margin:0 0 10px;color:#cbd5e1}.system-content select.inp{font-size:12px;height:34px;padding:4px 8px}.system-setting-section .ops-actions{flex-wrap:wrap}@media(max-width:950px){.system-settings-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:600px){.system-setting-row{grid-template-columns:1fr auto}.system-setting-row label{grid-column:1/-1}.system-content select.inp{max-width:100%}.system-setting-section table{min-width:0}}',
     '.system-layout{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;min-height:230px}.system-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;padding-right:16px;border-right:1px solid #334155}.system-tabs .btn-gray{font-size:12px;font-weight:400;text-align:left;line-height:18px;padding:8px 10px;border-radius:6px;background:transparent;color:#aebcce}.system-tabs .btn-gray:hover{background:#233148}.system-tabs .btn-gray.active{background:#253e60;color:#b9d8ff}.system-content{min-width:0;font-size:12px;line-height:1.8;color:#d4deec}.system-content .muted,.system-content button,.system-content input,.system-content td,.system-content th{font-size:12px;line-height:1.8}.system-content .ops-actions{gap:8px;align-items:center}.system-content .btn-gray,.system-content .btn-green{padding:5px 10px;font-weight:400;min-height:30px}.system-content input.inp{padding:6px 10px;min-width:0;height:34px}.system-content table{width:100%;border-collapse:collapse}.system-content th,.system-content td{padding:8px 10px;font-weight:400;text-align:left}.system-content th{color:#94a3b8}.system-content td:first-child{overflow-wrap:anywhere}.system-content p{margin:10px 0 0}.system-items>div{padding:10px 0;border-bottom:1px solid #29364a;min-height:42px;align-items:center}.system-table-scroll{overflow-x:auto}.system-content table{min-width:420px}.system-content td:first-child{min-width:130px}.system-content .ops-actions input{flex:1 1 120px}@media(max-width:600px){.system-layout{grid-template-columns:92px minmax(0,1fr);gap:12px}.system-tabs{padding-right:10px}.system-tabs .btn-gray{padding:7px 4px;font-size:11px}.system-content th,.system-content td{padding:7px 5px}.system-content .ops-actions{flex-wrap:wrap}.system-content .ops-actions input{width:100%;max-width:none!important;flex-basis:100%}}',
     '.fn-page h4{margin:0 0 .35rem;font-size:.95rem}',
     '.fn-page{font-size:12px;line-height:1.8;color:#d4deec}.function-section{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;padding:0 0 18px;margin-bottom:18px;border-bottom:1px solid #29364a}.function-section:last-child{margin:0;padding-bottom:0;border-bottom:0}.function-section>h4{font-size:12px;font-weight:400;color:#aebcce;margin:0;padding:8px 16px 8px 10px;border-right:1px solid #334155}.function-content{min-width:0}.function-content .muted,.function-content button,.function-content input,.function-content label,.function-content td,.function-content th{font-size:12px;line-height:1.8}.function-content .ops-actions{gap:8px;margin-top:0!important;align-items:center}.function-content button,.function-content a.btn-gray{font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px}.function-content input.inp{font-size:12px;height:34px;padding:6px 10px;min-width:0}.function-content p{margin:10px 0}.function-content table{width:100%;border-collapse:collapse;min-width:380px}.function-content th,.function-content td{padding:8px 10px;text-align:left;font-weight:400;overflow-wrap:anywhere}.function-content th{color:#94a3b8}.function-table{overflow:auto;margin-top:12px}.function-content td button{white-space:nowrap}.update-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.update-facts .kv{background:transparent;border:0;border-bottom:1px solid #29364a;border-radius:0;padding:8px 0}.update-facts .kv .v{font-size:12px;font-weight:400;overflow-wrap:anywhere}.function-content .adb-term{height:150px;font-size:12px;line-height:1.8;background:#101827;color:#d4deec}.function-content .task-result{height:auto;max-height:180px;margin:10px 0;border:1px solid #29364a;border-radius:6px}.function-content .adb-row{background:#111c2c}.function-content .adb-cmd{height:30px!important}.function-content .adb-prompt{font-size:12px;color:#93c5fd}.function-extra{margin-top:18px;border-top:1px solid #29364a;padding-top:12px}.function-extra summary{color:#94a3b8;cursor:pointer;margin-bottom:12px}.function-content .fn-live{min-height:70px;font-size:12px}.function-content .ops-actions label{display:flex;align-items:center;gap:6px;white-space:nowrap;width:auto;flex-shrink:0}.function-content .ops-actions label input{width:190px;flex-shrink:0}.function-content #mName{max-width:200px}.function-content #mNote{max-width:260px}.function-content .ops-actions label input{max-width:200px}.function-content #lostMessage{flex:1;min-width:160px}@media(max-width:600px){.function-section{grid-template-columns:92px minmax(0,1fr);gap:12px}.function-section>h4{font-size:11px;padding:7px 10px 7px 4px}.update-facts{grid-template-columns:1fr}.function-content .ops-actions input{width:100%;max-width:none!important}.function-content .ops-actions label{flex-wrap:wrap;max-width:100%}.function-content .ops-actions label input{width:100%;max-width:100%}.function-content .adb-row{flex-wrap:wrap}.function-content #lostMessage{min-width:0;flex-basis:100%}}',
