@@ -950,7 +950,7 @@ function systemNumber(key,label,value,min,max,step,blocked){return systemField(k
 function systemToggle(key,label,value,blocked){return systemField(key,label,'<select class="inp" id="setting-'+key+'"'+blocked+'><option value="true"'+(value?' selected':'')+'>开启</option><option value="false"'+(!value?' selected':'')+'>关闭</option></select>',blocked);}
 function pageSystemSettings(dis){
   var d=currentDev();if(!d)return '<p class="muted">请先选择设备</p>';
-  var state=systemSettingsState(),data=systemSnapshot(),group=SYSTEM_GROUP_IDS[SYSTEM_TAB],blocked=dis||(!d.managed_system_settings||state.pending?' disabled':'');
+  var state=systemSettingsState(),data=systemSnapshot(),group=SYSTEM_GROUP_IDS[SYSTEM_TAB],blocked=dis||(!d.managed_system_settings||d.enabled===false||state.pending?' disabled':'');
   var h='<div class="ops-actions"><button class="btn-gray" onclick="readSystemSettings()"'+blocked+'>读取当前设置</button><span role="status">'+esc(state.message||(!d.managed_system_settings?'请更新客户端后使用':data?'读取于 '+sydney(data.sampled_at):'尚未读取设备设置'))+'</span></div>';
   if(!data)return h;
   if(group==='sound'){
@@ -980,7 +980,7 @@ function pageSystemSettings(dis){
   return h;
 }
 async function runSystemSettings(params){
-  var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(state.pending)return;
+  var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(state.pending){if(params.action==='read')state.nextRead=params;return;}
   state.pending=true;state.message=params.action==='set'?'正在应用设置':'正在读取设备设置';renderOps();
   try{
     var r=await fileApi('/api/elfremote/task',{device_id:d.id,type:'system_config',id:'settings-'+crypto.randomUUID(),params:params}),task;
@@ -994,7 +994,7 @@ async function runSystemSettings(params){
     var snapshot=JSON.parse(task.result.text),current=DEV.find(function(x){return x.id===d.id;});if(current)current.system_settings=Object.assign({},current.system_settings,{[params.group]:snapshot});
     state.message=params.action==='set'?'设置已生效':'已读取 · '+sydney(snapshot.sampled_at);
     if(params.group==='wifi'&&$('wifiPw'))$('wifiPw').value='';
-  }catch(e){state.message=e.message;}finally{state.pending=false;if(selDev===d.id&&selFn==='wifi')renderOps();}
+  }catch(e){state.message=e.message;}finally{state.pending=false;var next=state.nextRead;state.nextRead=null;if(selDev===d.id&&selFn==='wifi'){renderOps();if(next&&next.group===SYSTEM_GROUP_IDS[SYSTEM_TAB])runSystemSettings(next);}}
 }
 function readSystemSettings(){var d=currentDev();if(!d||!d.managed_system_settings)return;var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],s=systemSettingsState();if(group)runSystemSettings({group:group,action:'read',package:group==='apps'?s.package:'',offset:group==='apps'?s.offset:0});}
 function saveSystemField(key){var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],el=$('setting-'+key),v=el.value;if(el.type==='number')v=Number(v);else if(v==='true'||v==='false')v=v==='true';runSystemSettings({group:group,action:'set',key:key,value:v,package:group==='apps'?systemSnapshot().package:''});}

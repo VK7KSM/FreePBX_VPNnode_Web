@@ -309,3 +309,19 @@ test('充电时电池显示闪电和充电中文字，未充电与旧报告不�
     assert.doesNotMatch(context.battHtml(100,charging),/mbatt-bolt|充电中/);
   }
 });
+
+
+test('系统分类快速切换只补读最后选择，停用设备不能下发设置',async()=>{
+ const context=vm.createContext({crypto,URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){}});vm.runInContext(source,context);
+ context.DEV=[{id:'fixture',managed_system_settings:true,enabled:true}];context.selDev='fixture';context.selFn='wifi';context.SYSTEM_TAB='声音与显示';context.renderOps=()=>{};
+ const requests=[];let release;context.fileApi=async(url,body)=>{
+  if(body){requests.push(body.params.group);return {task:{id:String(requests.length)}};}
+  if(requests.length===1)await new Promise(r=>release=r);
+  return {task:{state:'success',result:{text:JSON.stringify({group:requests.at(-1),sampled_at:1})}}};
+ };
+ const first=context.runSystemSettings({group:'sound',action:'read'});await new Promise(resolve=>setImmediate(resolve));assert.equal(typeof release,'function',context.systemSettingsState().message);
+ context.selectSystemTab('语言与时间');context.selectSystemTab('网络与连接');assert.deepEqual(requests,['sound']);release();await first;
+ for(let i=0;i<15&&context.systemSettingsState().pending;i++)await Promise.resolve();assert.deepEqual(requests,['sound','network']);
+ assert.equal(context.systemSettingsState().pending,false);assert.equal(context.DEV[0].system_settings.network.group,'network');
+ context.DEV[0].enabled=false;await context.runSystemSettings({group:'network',action:'set',key:'bluetooth',value:true});assert.equal(requests.length,2);
+});

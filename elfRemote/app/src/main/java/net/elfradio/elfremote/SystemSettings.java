@@ -209,6 +209,11 @@ public final class SystemSettings {
         String password=v.optString("password","");int id;
         if(found!=null&&password.isEmpty())id=found.networkId;
         else {WifiConfiguration c=found==null?new WifiConfiguration():findConfig(found.networkId,true);if(c==null)throw new IOException("无法备份原Wi-Fi配置");
+            if(found!=null){
+                if(!wifi.disableNetwork(found.networkId)||!wifi.disconnect())throw new IOException("无法断开原Wi-Fi会话");
+                for(int i=0;i<40&&wifi.getConnectionInfo().getNetworkId()>=0;i++)Thread.sleep(150);
+                if(wifi.getConnectionInfo().getNetworkId()>=0)throw new IOException("原Wi-Fi会话尚未断开，未修改密码");
+            }
             c.SSID=ConfigPolicy.quoteWifi(v.getString("ssid"));c.allowedKeyManagement.clear();if(password.isEmpty()){c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);c.preSharedKey=null;}else{c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);c.preSharedKey=password.matches("[0-9a-fA-F]{64}")?password:ConfigPolicy.quoteWifi(password);}
             id=found==null?wifi.addNetwork(c):wifi.updateNetwork(c);if(id<0)throw new IOException("系统拒绝Wi-Fi配置");}
         if(!wifi.enableNetwork(id,true)||!wifi.reconnect())throw new IOException("系统拒绝连接Wi-Fi");wifi.saveConfiguration();
