@@ -79,6 +79,9 @@ final class RescueJobs {
 
     synchronized JSONObject submitZelloAccount(String id,JSONObject params)throws Exception {
         JSONObject p=ZelloAccountConfig.normalize(params);
+        String previous=params.optString("previous_username","");
+        if(!previous.isEmpty()&&!previous.matches("[A-Za-z0-9_.@+-]{1,128}"))throw new IOException("原账号参数无效");
+        p.put("previous_username",previous);
         String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return submit(id,"configure-zello:"+fingerprint,120,(folder,command,timeout)->ZelloAccountManager.apply(folder,p));
     }

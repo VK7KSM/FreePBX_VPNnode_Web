@@ -25,8 +25,11 @@ test('Zello任务需要能力与登录证据，秘密不回传且失败不覆盖
  const saved=f.data.get('remote_devices')[0];assert.equal(saved.account_configs.zello.params.password,params.password);assert.deepEqual(saved.task.params,{});
  assert.ok(!(await (await call('/api/devices')).text()).includes(params.password));assert.ok(!(await (await call('/api/elfremote/tasks?device_id=test')).text()).includes(params.password));
  const old=structuredClone(saved.account_configs.zello);
- await call('/api/elfremote/task',{...input,id:'zello-failed',params:{...params,password:'bad'}});
- const current=f.data.get('remote_devices')[0];applyRepairProgress(current,'zello-failed','failed','登录失败',{},Date.now());
+ const badTask={...input,id:'zello-failed',params:{...params,password:'bad',previous_username:'untrusted-input'}};
+ await call('/api/elfremote/task',badTask);
+ const current=f.data.get('remote_devices')[0];assert.equal(current.task.params.previous_username,params.username);
+ assert.equal((await (await call('/api/elfremote/task',badTask)).json()).duplicate,true);
+ applyRepairProgress(current,'zello-failed','failed','登录失败',{},Date.now());
  assert.deepEqual(current.account_configs.zello,old);assert.deepEqual(current.task.params,{});
 });
 test('Zello安装恢复等待其他任务结束，每个新凭据只尝试一次',async()=>{

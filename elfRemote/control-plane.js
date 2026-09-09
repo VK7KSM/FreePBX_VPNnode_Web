@@ -350,6 +350,8 @@ export async function enqueueRepairTask(device, input, nowMs, storage) {
   if (repairExpired(task, nowMs)) return { ok: false, reason: "expired" };
   if (repairInflight(cur)) return { ok: false, reason: "inflight" };
   await archiveRepair(storage, device, nowMs);
+  if(task.type==='configure_zello'&&device.account_configs?.zello?.params?.username)
+    task.params.previous_username=device.account_configs.zello.params.username;
   task.created_at = new Date(nowMs).toISOString();
   device.task = task;
   return { ok: true, duplicate: false, task };
