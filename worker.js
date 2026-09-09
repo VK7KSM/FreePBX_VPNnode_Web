@@ -4,6 +4,8 @@
 // =========================================================================
 
 import { LOGO_PNG_B64 } from "./logo.js";
+import { AdbRelay } from "./adb-relay.js";
+import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
@@ -164,9 +166,25 @@ export class ElfStore {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    this.adb = new AdbRelay();
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname.startsWith('/api/elfremote/adb/')) {
+      try {
+        if(url.pathname==='/api/elfremote/adb/session'&&request.method==='POST') {
+          const raw=await request.text();if(raw.length>4096)return json({ok:false,msg:'请求过大'},400);
+          const data=JSON.parse(raw);
+          return await this.ctx.blockConcurrencyWhile(async()=>json(this.adb.create((await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id))));
+        }
+        const role=url.pathname==='/api/elfremote/adb/browser'?'browser':url.pathname==='/api/elfremote/adb/device'?'device':null;
+        if(!role||request.method!=='GET')return json({ok:false},404);
+        if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false,msg:'需要WebSocket连接'},426);
+        const session=this.adb.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        const pair=new WebSocketPair();this.adb.attach(session,role,pair[1]);
+        return new Response(null,{status:101,webSocket:pair[0]});
+      }catch(error){return json({ok:false,msg:error.message},400);}
+    }
     if(url.pathname==='/__returns'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
@@ -213,7 +231,7 @@ export class ElfStore {
           return await this.ctx.storage.transaction(async storage => {
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
-              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "" });
+              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb });
             if (!response.ok) throw response;
             return response;
           });
@@ -246,6 +264,7 @@ const app = {
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
+    if(pathname==='/terminal.js'||pathname==='/terminal.css')return new Response(pathname.endsWith('.js')?terminalScript:terminalCss,{headers:{'Content-Type':pathname.endsWith('.js')?'application/javascript; charset=utf-8':'text/css; charset=utf-8','Cache-Control':'public, max-age=3600'}});
     if(pathname==='/file-hash.js')return new Response(fileHashSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
     if (pathname === "/admin-session.js") {
@@ -288,7 +307,7 @@ const app = {
         }
         return response;
       }
-      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign"].includes(pathname)) {
+      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session"].includes(pathname)) {
         const payload = await request.clone().json().catch(() => null);
         const saved = await stub.fetch(request);
         if (!saved.ok || !payload?.device_id) return saved;
@@ -950,6 +969,7 @@ function publicDevice(d, modelName) {
     lost_mode: d.lost_mode || null,
     managed_lost_tasks: d.managed_lost_tasks === true,
     managed_exec_tasks: d.managed_exec_tasks === true,
+    managed_adb_session: d.managed_adb_session === true,
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
     managed_file_operations: d.managed_file_operations === true,
@@ -1363,6 +1383,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
       list[i].managed_adbd_tasks = data.managed_adbd_tasks === true;
+      list[i].managed_adb_session = data.managed_adb_session === true;
       list[i].managed_wifi_scan_tasks = data.managed_wifi_scan_tasks === true;
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
@@ -1406,6 +1427,7 @@ async function handleDeviceReport(env, request) {
     await queueZelloRestore(found,env.__storage,now);
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
+    if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     addManagedTaskOffer(body, found, data, now);
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
@@ -2477,6 +2499,8 @@ function renderDevicesHtml() {
     '<title>elfRadio SIP/VPN Manage</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">',
+    '<link rel="stylesheet" href="/terminal.css">',
+    '<script src="/terminal.js"><\/script>',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"><\/script>',
     '<style>',

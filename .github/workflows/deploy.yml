@@ -8,6 +8,8 @@ on:
       - "sip-client.js"
       - "sip-client-source.js"
       - "admin-auth.js"
+      - "adb-relay.js"
+      - "terminal-assets.js"
       - "admin-session.js"
       - "location-history.js"
       - "device-identity.js"

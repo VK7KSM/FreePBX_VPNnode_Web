@@ -23,7 +23,7 @@ test("打包后的会话脚本可在浏览器独立执行", async () => {
 
 test("管理路由匿名与伪造标记均不能绕过登录，未知 API 默认保护", async () => {
   const f = fixture();
-  const routes = ["/api/data", "/api/save", "/api/sip", "/api/sip/live", "/api/sip/save", "/api/devices", "/api/device-models", "/api/devices/update", "/api/devices/delete", "/api/devices/pair", "/api/elfremote/task", "/api/elfremote/releases", "/api/elfremote/assign", "/api/new-admin-route"];
+  const routes = ["/api/data", "/api/save", "/api/sip", "/api/sip/live", "/api/sip/save", "/api/devices", "/api/device-models", "/api/devices/update", "/api/devices/delete", "/api/devices/pair", "/api/elfremote/task", "/api/elfremote/releases", "/api/elfremote/assign", "/api/elfremote/adb/session", "/api/elfremote/adb/browser", "/api/new-admin-route"];
   for (const path of routes) for (const method of ["GET", "POST"]) {
     const r = await worker.fetch(request(path, method, undefined, "_pt=1; elf_admin=fake"), f.env);
     assert.equal(r.status, 401, method + " " + path);

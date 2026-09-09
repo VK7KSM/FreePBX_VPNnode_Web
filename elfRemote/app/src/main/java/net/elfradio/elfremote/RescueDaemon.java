@@ -25,11 +25,13 @@ public final class RescueDaemon {
             catch(Exception unavailable) { System.err.println("核心启动诊断暂不可用，继续启动命令服务"); }
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
+            AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
             server.start(3000, true);
             try {
                 while (guard.isFile() && generation.equals(RescueFiles.read(guard, 128)))
                     Thread.sleep(2000);
             } finally {
+                adb.close();
                 killGroup(activeGroup);
                 server.stop();
                 new File(root,"daemon.pid").delete();

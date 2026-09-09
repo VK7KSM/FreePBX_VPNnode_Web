@@ -452,8 +452,8 @@ function renderOps(){
   }
   h += "</div>";
   h += '<div class="fn-page">'+fnPageHtml()+"</div>";
-  box.innerHTML = h;
-  terminalBind();
+  disposeAdbView();box.innerHTML = h;
+  terminalBind();bindAdbView();
 }
 
 function fnPageHtml(){
@@ -510,10 +510,9 @@ function pageAdb(dis){
   if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
-  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+dis+'>'+(on?'断开ADB':'连接ADB')+'</button></h4>';
-  right+='<div class="adb-box"><pre class="adb-term" id="adbTerm"><span class="adb-sys">'+(on?'ADB 已连接':'ADB 未连接')+'</span>\n';
-  for(var j=0;j<adb.lines.length;j++)right+='<span class="adb-sys">'+esc(adb.lines[j])+'</span>\n';
-  right+='</pre><div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="shell pm list packages" disabled><button class="btn-gray" disabled>发送</button></div></div></section>';
+  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
+  right+='<div class="adb-box"><div class="adb-term" id="adbTerm" style="padding:8px;overflow:hidden">'+(on?'ADB 已连接':'ADB 未连接')+'</div>';
+  right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="btn-gray" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>Ctrl-C</button></div></div></section>';
   return '<div class="monitor-grid">'+left+right+'</div>'+(foot?'<div class="terminal-status">'+foot+'</div>':'');
 }
 
@@ -1079,13 +1078,46 @@ function shellHist(dir){
   u.shell.histI = i;
   inp.value = i<h.length ? h[i] : "";
 }
-function adbConnect(){
-  var u=uiOf();if(!u)return;
-  u.adb.lines=['ADB 未连接：客户端尚未接通网页 ADB 会话。'];renderOps();
+var ADB_VIEW=null;
+function disposeAdbView(){if(ADB_VIEW){ADB_VIEW.resize.disconnect();ADB_VIEW.terminal.dispose();ADB_VIEW=null;}}
+function bindAdbView(){
+  var u=uiOf(),el=$('adbTerm');if(!u||!el)return;
+  if(typeof Terminal==='undefined'||typeof FitAddon==='undefined'){el.textContent='终端资源未加载，请刷新页面';return;}
+  var adb=u.adb,terminal=new Terminal({fontSize:12,fontFamily:'Consolas, monospace',cursorBlink:true,disableStdin:!adb.connected,scrollback:1000,theme:{background:'#101827',foreground:'#d4deec'}}),fit=new FitAddon.FitAddon();
+  el.textContent='';terminal.loadAddon(fit);terminal.open(el);fit.fit();
+  terminal.write(adb.output||((adb.connecting?'ADB 连接中':'ADB 未连接')+'\r\n'));
+  terminal.onData(function(data){adbWrite(u,data);});
+  var resize=new ResizeObserver(function(){fit.fit();if(adb.connected&&adb.socket&&adb.socket.readyState===1)adb.socket.send(JSON.stringify({type:'resize',rows:terminal.rows,columns:terminal.cols}));});resize.observe(el);
+  ADB_VIEW={u:u,terminal:terminal,resize:resize};
+  var input=$('adbCmd');if(input)input.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();adbSendCommand();}if(e.ctrlKey&&e.key.toLowerCase()==='c'){e.preventDefault();adbWrite(u,'\x03');}};
 }
-function adbDisconnect(){
-  var u=uiOf();if(!u)return;u.adb.connected=false;u.adb.lines=['ADB 已断开。'];renderOps();
+function adbWrite(u,text){
+  if(!u.adb.connected||!u.adb.socket||u.adb.socket.readyState!==1)return;
+  var bytes=new TextEncoder().encode(text);if(bytes.length>65536)return;
+  var encoded='';for(var i=0;i<bytes.length;i++)encoded+=String.fromCharCode(bytes[i]);
+  u.adb.socket.send(JSON.stringify({type:'input',data:btoa(encoded)}));
 }
+function adbSendCommand(){var u=uiOf(),input=$('adbCmd');if(u&&input){adbWrite(u,input.value+'\n');input.value='';}}
+function adbInterrupt(){var u=uiOf();if(u)adbWrite(u,'\x03');}
+function adbAppend(u,text){u.adb.output=((u.adb.output||'')+text).slice(-131072);if(ADB_VIEW&&ADB_VIEW.u===u)ADB_VIEW.terminal.write(text);}
+async function adbConnect(){
+  var u=uiOf(),d=currentDev();if(!u||!d||u.adb.connecting||!d.managed_adb_session||d.enabled===false)return;
+  var a=u.adb;a.connecting=true;a.connected=false;a.output='ADB 连接中\r\n';renderOps();
+  try{
+    var response=await fetch('/api/elfremote/adb/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:d.id})}),result=await response.json();
+    if(!response.ok||!result.ok)throw Error(result.msg||'ADB连接失败');
+    var socket=new WebSocket(location.origin.replace(/^http/,'ws')+'/api/elfremote/adb/browser?session_id='+encodeURIComponent(result.session_id)),decoder=new TextDecoder();a.socket=socket;
+    socket.onmessage=function(event){if(a.socket!==socket)return;try{
+      var message=JSON.parse(event.data);
+      if(message.type==='ready'){a.connected=true;a.connecting=false;adbAppend(u,'ADB 已连接\r\n');if(selDev===d.id)renderOps();}
+      else if(message.type==='output'){var raw=atob(message.data),bytes=Uint8Array.from(raw,function(c){return c.charCodeAt(0);});adbAppend(u,decoder.decode(bytes,{stream:true}));}
+      else if(message.type==='closed'){a.connected=false;a.connecting=false;adbAppend(u,'\r\n'+(message.message||'ADB 已断开')+(message.exit!=null?' · 退出码 '+message.exit:'')+'\r\n');socket.close();if(selDev===d.id)renderOps();}
+    }catch{socket.close();}};
+    socket.onclose=function(){if(a.socket!==socket)return;var was=a.connected||a.connecting;a.connected=false;a.connecting=false;if(was)adbAppend(u,'\r\nADB连接已关闭\r\n');if(selDev===d.id)renderOps();};
+    socket.onerror=function(){socket.close();};
+  }catch(error){a.connected=false;a.connecting=false;adbAppend(u,error.message+'\r\n');if(selDev===d.id)renderOps();}
+}
+function adbDisconnect(){var u=uiOf();if(!u)return;var a=u.adb;if(a.socket)a.socket.close();a.connected=false;a.connecting=false;adbAppend(u,'\r\nADB 已断开\r\n');renderOps();}
 async function shellSend(){
   var u=uiOf(),d=currentDev(),inp=$('shellCmd');if(!u||!d)return;
   var raw=shellNorm(inp?inp.value:'');if(!raw||d.enabled===false||u.shell.pending||!d.managed_exec_tasks)return;

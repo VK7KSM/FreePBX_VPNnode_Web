@@ -436,6 +436,7 @@ public final class ReportService extends Service {
         body.put("maintenance", WatchdogInstaller.snapshot());
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
+        body.put("managed_adb_session", CoreInstaller.ready());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
         body.put("managed_file_operations", CoreInstaller.ready());
@@ -586,6 +587,10 @@ public final class ReportService extends Service {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
             JSONObject managed = response.optJSONObject("managed_task");
+            if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
+                JSONObject adb=response.optJSONObject("adb_session");
+                if(adb!=null&&CoreInstaller.ready())worker.post(()->openAdb(adb));
+            }
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 healthReportConfirmed = true;
                 if(movementReports!=null)try{movementReports.acknowledged(new JSONObject(json));}
@@ -642,6 +647,12 @@ public final class ReportService extends Service {
         }).flush(store.token(), priorityRequest,priorityReport);
         traffic.sample();
         store.setLastStatus(sent > 0 ? "已上报" : "等待上报");
+    }
+
+    private void openAdb(JSONObject offer) {
+        if(destroyed||offer.optLong("expires_at")<=System.currentTimeMillis())return;
+        try{CoreClient.request("/adb/open",offer);}
+        catch(Exception error){RuntimeLog.error("adb_open_pending",error);if(worker!=null)worker.postDelayed(()->openAdb(offer),5000L);}
     }
 
     private void report() throws Exception {

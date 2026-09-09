@@ -24,7 +24,7 @@ export function fixture(initial = { admin_pass: "fixture-password" }) {
   const env = {};
   const store = new ElfStore(ctx, env);
   env.ELF_DO = { idFromName: x => x, get: () => ({ fetch: (url, init) => store.fetch(url instanceof Request ? url : new Request(url, init)) }) };
-  return { data, storage, env };
+  return { data, storage, env, store };
 }
 export function request(path, method = "GET", body, cookie, extra = {}) {
   return new Request("https://example.test" + path, { method, headers: {

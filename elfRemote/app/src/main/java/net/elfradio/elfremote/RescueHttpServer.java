@@ -12,6 +12,8 @@ final class RescueHttpServer extends NanoHTTPD {
     private final RescueJobs jobs;
     private final Status status;
     private final int uid;
+    private AdbSessions adb;
+    void setAdb(AdbSessions value){adb=value;}
 
     RescueHttpServer(int port, RescueJobs jobs, Status status) {
         this(port, jobs, status, -1);
@@ -53,6 +55,7 @@ final class RescueHttpServer extends NanoHTTPD {
             if(session.getMethod()==Method.GET && "/files/recent".equals(path))return json(Response.Status.OK,jobs.fileHistory());
             if (session.getMethod() == Method.POST && ("/prepare-upgrade".equals(path) || "/resume".equals(path))) {
                 if (session.getHeaders().containsKey("origin")) return response(Response.Status.FORBIDDEN,"不接受浏览器跨站请求");
+                if(adb!=null&&"/prepare-upgrade".equals(path))adb.close();
                 return json(Response.Status.OK, jobs.upgrade("/prepare-upgrade".equals(path)));
             }
             if (session.getMethod() == Method.GET && "/health".equals(path))
@@ -74,7 +77,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 JSONObject result=jobs.cancel(path.substring(6,path.length()-7));
                 return result==null ? response(Response.Status.NOT_FOUND,"任务不存在") : json(Response.Status.ACCEPTED,result);
             }
-            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)))
+            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)||("/adb/open".equals(path)&&adb!=null)))
                 return response(Response.Status.NOT_FOUND, "使用 POST /exec 或 GET /jobs/任务号");
             // 本批仅开放本机回环，云端复用既有管理员登录与设备凭据。
             String contentType = session.getHeaders().get("content-type");
@@ -94,6 +97,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 offset += count;
             }
             JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            if("/adb/open".equals(path))return json(Response.Status.ACCEPTED,adb.open(request));
             if("/zello-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitZelloAccount(request.getString("id"),request.getJSONObject("params")));
             if("/sip-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitSipAccount(request.getString("id"),request.getJSONObject("params")));
             if("/file-manage".equals(path))return json(Response.Status.ACCEPTED,jobs.submitFileOperation(request.getString("id"),request.getJSONObject("params")));
