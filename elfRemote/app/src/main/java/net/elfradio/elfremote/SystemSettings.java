@@ -68,19 +68,22 @@ public final class SystemSettings {
             if(!p.getString("group").equals(snapshot.optString("group"))||("set".equals(p.getString("action"))&&!snapshot.optBoolean("applied")))throw new IOException("系统配置结果文件不匹配，请重新读取设置");
             result.put("output",snapshot.toString()).put("truncated",false);
         }
+        else if(new File(folder,"settings-error.txt").isFile())result.put("output",RescueFiles.read(new File(folder,"settings-error.txt"),16000));
         return result;
     }
 
     public static void main(String[] args) {
-        int exit=1;
+        int exit=1;SystemSettings tool=null;
         try {
             if(android.os.Process.myUid()!=0||args.length<1)throw new IOException("需要独立维护权限");
-            SystemSettings tool=new SystemSettings();tool.folder=new File(args[0]);
+            tool=new SystemSettings();tool.folder=new File(args[0]);
             if(!tool.folder.getCanonicalPath().startsWith(CoreInstaller.DIR+"/jobs/"))throw new IOException("配置任务目录无效");
             tool.context=CoreWake.systemContext();tool.resolver=tool.context.getContentResolver();tool.wifi=(WifiManager)tool.context.getSystemService(Context.WIFI_SERVICE);
             if(args.length==2&&args[1].equals("rollback")){tool.guard();exit=0;}
             else {JSONObject p=normalize(new JSONObject(RescueFiles.read(new File(tool.folder,"settings-request.json"),16000)));JSONObject result=tool.perform(p);RescueFiles.write(new File(tool.folder,"settings-result.json"),result.toString());System.out.println("系统配置结果已保存");exit=0;}
-        }catch(Throwable failure){Throwable e=failure;while(e instanceof InvocationTargetException&&e.getCause()!=null)e=e.getCause();System.out.println("系统配置未完成："+e.getClass().getSimpleName()+" · "+String.valueOf(e.getMessage()));}
+        }catch(Throwable failure){Throwable e=failure;while(e instanceof InvocationTargetException&&e.getCause()!=null)e=e.getCause();String message="系统配置未完成："+String.valueOf(e.getMessage());
+            try{if(tool!=null&&tool.folder!=null&&tool.folder.getCanonicalPath().startsWith(CoreInstaller.DIR+"/jobs/"))RescueFiles.write(new File(tool.folder,"settings-error.txt"),message);}catch(Exception saveFailure){}
+            System.out.println(message);}
         System.exit(exit);
     }
 
@@ -188,7 +191,7 @@ public final class SystemSettings {
     }
     private boolean matches(JSONObject p,JSONObject after)throws Exception {
         String key=p.getString("key");Object value=p.get("value");
-        if(key.equals("connect")){WifiInfo info=wifi.getConnectionInfo();return info!=null&&info.getIpAddress()!=0&&unquote(info.getSSID()).equals(p.getJSONObject("value").getString("ssid"));}
+        if(key.equals("connect"))return asSystem(()->{WifiInfo info=wifi.getConnectionInfo();return info!=null&&info.getIpAddress()!=0&&unquote(info.getSSID()).equals(p.getJSONObject("value").getString("ssid"));});
         if(key.equals("hotspot")){JSONObject v=(JSONObject)value,got=after.getJSONObject("hotspot");return got.getBoolean("enabled")==v.getBoolean("enabled")&&(!v.getBoolean("enabled")||got.getString("ssid").equals(v.getString("ssid")));}
         if(key.equals("dns")){JSONObject want=(JSONObject)value,got=after.getJSONObject("dns");if(!want.getString("mode").equals(got.getString("mode")))return false;if(want.getString("mode").equals("auto"))return true;JSONArray expected=want.getJSONArray("servers"),actual=got.getJSONArray("servers");if(expected.length()!=actual.length())return false;for(int i=0;i<expected.length();i++)if(!InetAddress.getByName(expected.getString(i)).equals(InetAddress.getByName(actual.getString(i))))return false;return true;}
         if(key.equals("permission")){JSONObject v=(JSONObject)value;return (context.getPackageManager().checkPermission(v.getString("name"),p.getString("package"))==PackageManager.PERMISSION_GRANTED)==v.getBoolean("granted");}
