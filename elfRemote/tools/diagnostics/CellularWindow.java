@@ -56,9 +56,13 @@ public final class CellularWindow {
         System.exit(status);
     }
     private static void capture(File folder, String name, int uid) throws Exception {
-        String command = "date -u; cat /proc/uptime; cat /proc/sys/kernel/random/boot_id; "
+        String command = "set -e\ndate -u; cat /proc/uptime; cat /proc/sys/kernel/random/boot_id; "
                 + "settings get global wifi_on; settings get global mobile_data; dumpsys battery; "
-                + "awk 'NR==1 || $4==" + uid + "' /proc/net/xt_qtaguid/stats; cat /proc/net/dev";
+                + "count=0\nwhile IFS= read -r line; do set -- $line; "
+                + "if [ \"$1\" = idx ]; then printf '%s\\n' \"$line\"; "
+                + "elif [ \"$4\" = " + uid + " ]; then printf '%s\\n' \"$line\"; count=$((count+1)); fi; "
+                + "done < /proc/net/xt_qtaguid/stats\n"
+                + "[ \"$count\" -gt 0 ] || exit 2\ncat /proc/net/dev";
         Process p = new ProcessBuilder("/system/bin/sh", "-c", command).redirectErrorStream(true)
                 .redirectOutput(new File(folder, name)).start();
         try { if (!p.waitFor(20, TimeUnit.SECONDS) || p.exitValue() != 0) throw new IllegalStateException("采样失败"); }
