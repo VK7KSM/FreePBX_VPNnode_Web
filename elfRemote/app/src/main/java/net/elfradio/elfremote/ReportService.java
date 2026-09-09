@@ -438,6 +438,7 @@ public final class ReportService extends Service {
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
+        body.put("managed_file_operations", CoreInstaller.ready());
         body.put("managed_heal_tasks", WatchdogInstaller.ready());
         body.put("managed_reboot_tasks", WatchdogInstaller.ready());
         body.put("managed_adbd_tasks", WatchdogInstaller.ready());
@@ -601,6 +602,7 @@ public final class ReportService extends Service {
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_exec_v1") && "root_exec".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_exec_v1") && "file_manage".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_file_v1") && "send_file".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_file_return_v1") && "get_file".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
@@ -761,15 +763,19 @@ public final class ReportService extends Service {
                 }
             }
             JSONObject params = offer.getJSONObject("params");
-            String command = params.getString("command"), cwd = params.optString("cwd", "/");
-            int timeout = params.optInt("timeout", 30);
+            boolean fileOperation="file_manage".equals(offer.optString("type"));
+            String command = fileOperation?"file-manage:"+FileOperations.normalize(params):params.getString("command"), cwd = params.optString("cwd", "/");
+            int timeout = fileOperation?120:params.optInt("timeout", 30);
             RescueJobs.validate(id, command, timeout);
             if (!cwd.startsWith("/") || cwd.length() > 1024 || cwd.indexOf('\0') >= 0) throw new IllegalArgumentException("工作目录无效");
             RescueFiles.write(new java.io.File(getFilesDir(), "core-active.json"), offer.toString());
             postTask(id, "claimed", "设备已接收命令", null);
             postTask(id, "running", "设备正在执行命令", null);
-            if (existing == null) CoreClient.request("/exec", new JSONObject().put("id", id)
+            if (existing == null) {
+                if(fileOperation)CoreClient.request("/file-manage",new JSONObject().put("id",id).put("params",params));
+                else CoreClient.request("/exec", new JSONObject().put("id", id)
                     .put("command", "cd " + RescueFiles.quote(cwd) + " || exit 125\n" + command).put("timeout", timeout));
+            }
             if (offer.optBoolean("cancel_requested")) CoreClient.request("/jobs/" + id + "/cancel", new JSONObject());
             executingCommand = id;
             WakeScheduler.hold(this, "core-command", (timeout + 15L) * 1000L);
@@ -798,6 +804,7 @@ public final class ReportService extends Service {
                                 .put("truncated", outcome.optBoolean("truncated") || output.length() > 16000)
                                 .put("exit_code", outcome.opt("exit_code")).put("elapsed_ms", outcome.optLong("elapsed_ms"))
                                 .put("stage", "command").put("action", state);
+                        if(fileOperation)detail=ok?"文件操作完成":"文件操作未完成";
                         postTask(id, ok ? "success" : "failed", detail, report);
                         new java.io.File(getFilesDir(), "core-active.json").delete();
                     } catch (Exception error) { RuntimeLog.error("core_receipt_pending", error); scheduleReport(15000L); }
@@ -834,7 +841,7 @@ public final class ReportService extends Service {
             }catch(Exception error){RuntimeLog.error("file_task_pending",error);}
             return;
         }
-        if ("root_exec".equals(offer.optString("type"))) {
+        if ("root_exec".equals(offer.optString("type")) || "file_manage".equals(offer.optString("type"))) {
             runCoreCommand(offer);
             return;
         }

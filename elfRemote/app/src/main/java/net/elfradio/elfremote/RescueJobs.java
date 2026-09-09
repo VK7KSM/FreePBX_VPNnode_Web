@@ -64,6 +64,11 @@ final class RescueJobs {
         return submit(id,"file-snapshot:"+p.toString(),120,(folder,command,timeout)->FileSnapshot.run(folder,p));
     }
 
+    synchronized JSONObject submitFileOperation(String id,JSONObject params)throws Exception {
+        JSONObject p=FileOperations.normalize(params);
+        return submit(id,"file-manage:"+p.toString(),120,(folder,command,timeout)->FileOperations.run(folder,p));
+    }
+
     private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {
         if (persistenceFailure != null) throw new IOException("任务结果持久化失败，停止接受新任务", persistenceFailure);
         validate(id, command, timeout);

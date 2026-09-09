@@ -950,6 +950,7 @@ function publicDevice(d, modelName) {
     managed_exec_tasks: d.managed_exec_tasks === true,
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
+    managed_file_operations: d.managed_file_operations === true,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1349,6 +1350,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_exec_tasks = data.managed_exec_tasks === true;
       list[i].managed_file_tasks = data.managed_file_tasks === true;
       list[i].managed_file_return = data.managed_file_return === true;
+      list[i].managed_file_operations = data.managed_file_operations === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1622,7 +1624,8 @@ async function handleElfUpdateProgress(env, request) {
 function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
-  if (device.enabled !== false && report.managed_exec_tasks === true && device.task?.type === 'root_exec'
+  if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
+      || (report.managed_file_operations === true && device.task?.type === 'file_manage'))
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
   if (device.enabled !== false && report.managed_file_tasks === true && device.task?.type === 'send_file'
@@ -1677,7 +1680,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1690,6 +1693,7 @@ async function handleElfEnqueueTask(env, request) {
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
+        || (data.type==="file_manage" && found.managed_file_operations===true)
         || (data.type==="get_file" && found.managed_file_return===true)
         || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
@@ -1728,7 +1732,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
-    if(!queued.duplicate && data.type==="root_exec") found.task.managed_exec_v1=true;
+    if(!queued.duplicate && ['root_exec','file_manage'].includes(data.type)) found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;

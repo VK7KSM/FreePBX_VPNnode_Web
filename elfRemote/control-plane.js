@@ -122,7 +122,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -136,6 +136,7 @@ export const REPAIR_STATE_LABELS = {
 
 export const REPAIR_TYPE_LABELS = {
   root_exec: "执行命令",
+  file_manage: "管理文件",
   send_file: "发送文件",
   get_file: "取回文件",
   pull_logs: "拉取日志",
@@ -209,14 +210,14 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["root_exec","send_file","get_file"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  if(["root_exec","send_file","get_file","file_manage"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
   return {
     id,
     type,
-    params: type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -252,6 +253,17 @@ function repairHistoryExpired(task, nowMs) {
   const completed = Date.parse(task.completed_at || "");
   const at = Number.isFinite(completed) ? completed : task.archived_at;
   return Number.isFinite(at) && at <= nowMs && nowMs - at > REPAIR_HISTORY_MS;
+}
+
+export function fileOperationParams(value={}) {
+  const {action,path,target}=value;
+  if(!['list','mkdir','copy','move','trash'].includes(action))throw new Error('不支持的文件操作');
+  const valid=p=>typeof p==='string'&&p.startsWith('/')&&p.length<=1024&&!p.includes('\0')&&!p.split('/').some(x=>x==='.'||x==='..');
+  if(!valid(path))throw new Error('设备路径无效');
+  const result={action,path,offset:value.offset??0};
+  if(!Number.isInteger(result.offset)||result.offset<0||result.offset>1000000)throw new Error('列表页码无效');
+  if(['copy','move'].includes(action)) {if(!valid(target))throw new Error('目标路径无效');result.target=target;}
+  return result;
 }
 
 async function* repairHistoryPages(storage, deviceId) {
@@ -332,7 +344,7 @@ export function canAdvanceRepair(from, to) {
 export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
-  if(device.task.type === 'root_exec' && state === 'success'
+  if(['root_exec','file_manage'].includes(device.task.type) && state === 'success'
       && (!result || result.exit_code !== 0 || result.action !== 'completed')) throw new Error('缺少命令成功证据');
   if(device.task.type === 'send_file' && state === 'success' && (!result || result.action!=='committed'
       || result.sha256!==device.task.params.sha256 || result.bytes!==device.task.params.size)) throw Error('缺少文件完整接收证据');
@@ -365,8 +377,8 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       bytes: Math.max(0, Number(result.bytes) || 0),
       truncated: !!result.truncated,
       artifact: result.artifact || null,
-      text: String(result.text || "").slice(0, device.task.type === "root_exec" ? 16000 : 2048),
-      ...(device.task.type === "root_exec" ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
+      text: String(result.text || "").slice(0, ["root_exec","file_manage"].includes(device.task.type) ? 16000 : 2048),
+      ...(["root_exec","file_manage"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
       reason: String(result.reason || "").slice(0, 80)
@@ -456,7 +468,7 @@ export function publicRepair(task) {
       truncated: !!r.truncated,
       artifact: r.artifact || null,
       text: r.text || "",
-      ...(task.type === "root_exec" ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
+      ...(["root_exec","file_manage"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""

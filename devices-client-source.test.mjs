@@ -7,6 +7,16 @@ import source from "./devices-client-source.js";
 import vm from "node:vm";
 import crypto from "node:crypto";
 
+test('文件列表名称只作为文字，点击用索引，切设备后不覆盖当前弹窗',()=>{
+  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({})}});
+  vm.runInContext(source,context);
+  const state={device_id:'first',path:'/sdcard',selected:0,entries:[{name:"file');alert(1);//<x>",directory:false,bytes:0}]};
+  const html=context.fileManagerRows(state);
+  assert.match(html,/fileManagerPick\(0\)/);assert.doesNotMatch(html,/<x>/);assert.doesNotMatch(html,/onclick="[^\"]*alert/);
+  context.FILE_VIEW='second';assert.equal(context.fileManagerVisible(state),false);
+  assert.equal(context.fileManagerChild({path:'/'},'test'),'/test');
+});
+
 test('丢失模式使用真实回执并将失主文字转义为文本',()=>{
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({value:'测试'})}});
   vm.runInContext(source,context);
