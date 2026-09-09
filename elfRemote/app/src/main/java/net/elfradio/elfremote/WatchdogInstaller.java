@@ -42,12 +42,7 @@ final class WatchdogInstaller {
                     out.getFD().sync();
                 }
                 // 输出仅存应用私有文件，不把root错误正文送入服务器或公开日志。
-                Process process = new ProcessBuilder("su", "-c", "sh '" + apply.getAbsolutePath() + "'")
-                        .redirectErrorStream(true).redirectOutput(output).start();
-                try {
-                    if (!process.waitFor(45, TimeUnit.SECONDS)) throw new java.io.IOException("bootstrap-timeout");
-                    if (process.exitValue() != 0) throw new java.io.IOException("bootstrap-not-ready");
-                } finally { process.destroy(); }
+                BootstrapRoot.run(apply, output, 45);
                 File check = new File(WatchdogPolicy.DIR, "app-write-check.tmp");
                 try (FileOutputStream out = new FileOutputStream(check)) { out.write(1); out.getFD().sync(); }
                 if (!check.delete()) throw new java.io.IOException("bootstrap-write-check");

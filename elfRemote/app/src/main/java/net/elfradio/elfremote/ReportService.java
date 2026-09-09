@@ -1152,6 +1152,7 @@ public final class ReportService extends Service {
     }
 
     private void armHealCmd(String cmd) throws Exception {
+        synchronized (BootstrapRoot.QUEUE_LOCK) {
         ensureHealIdle();
         java.io.File dir = new java.io.File("/data/local/elfremote");
         java.io.File tmp = new java.io.File(dir, "heal.cmd.tmp");
@@ -1170,6 +1171,7 @@ public final class ReportService extends Service {
         if (boot.isEmpty()) throw new java.io.IOException("boot identity unavailable");
         writeSmall(new java.io.File(dir, "heal.boot").getPath(), boot);
         if (!tmp.renameTo(cmdf)) throw new Exception("heal-arm-fail");
+        }
     }
 
     private String waitHealRc(long timeoutMs) {

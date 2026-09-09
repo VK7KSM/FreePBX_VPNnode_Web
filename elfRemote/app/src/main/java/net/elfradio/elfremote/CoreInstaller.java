@@ -111,18 +111,15 @@ final class CoreInstaller {
         File script = new File(stage, "apply.sh");
         RescueFiles.write(script, "#!/system/bin/sh\nset -e\n" + commands);
         File output=new File(stage,"apply.out");
-        Process p = new ProcessBuilder("su", "-c", "sh " + RescueFiles.quote(script.getPath()))
-                .redirectErrorStream(true).redirectOutput(output).start();
         try {
-            boolean exited=p.waitFor(20,TimeUnit.SECONDS);
-            if(!exited||p.exitValue()!=0){
-                String result="finished="+exited+" exit="+(exited?p.exitValue():-1)+"\n";
+            BootstrapRoot.run(script, output, 20);
+        } catch (Exception error) {
+                String result=error.getClass().getSimpleName()+": "+error.getMessage()+"\n";
                 try{result+=RescueFiles.read(output,16384);}catch(Exception unavailable){result+="启动输出暂不可读\n";}
                 RescueFiles.write(new File(stage,"last-failure.out"),result);
-                RuntimeLog.event("core_apply_failed finished="+exited+" exit="+(exited?p.exitValue():-1));
+                RuntimeLog.error("core_apply_failed", error);
                 throw new IOException("core-apply-failed");
-            }
-        } finally { p.destroy(); }
+        }
     }
     private CoreInstaller() {}
 }
