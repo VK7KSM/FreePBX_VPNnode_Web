@@ -1075,6 +1075,8 @@ public final class ReportService extends Service {
             }
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "heal.log"));
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "core-stage/last-failure.out"));
+            incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "core-stage/initialize-failure.out"));
+            incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "core-stage/startup-"+BuildConfig.VERSION_CODE+".out"));
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "watchdog/initialize.out"));
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "watchdog/last-failure.out"));
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "watchdog/root-probe.out"));

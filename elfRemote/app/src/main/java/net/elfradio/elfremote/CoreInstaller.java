@@ -35,6 +35,16 @@ final class CoreInstaller {
                 retryAt = SystemClock.elapsedRealtime() + (ready ? 60000 : 15000);
             } catch (Exception error) {
                 ready = false; retryAt = SystemClock.elapsedRealtime() + Math.min(900000L,15000L << Math.min(6,failures++));
+                try {
+                    File stage = new File(app.getFilesDir(), "core-stage");
+                    RescueFiles.write(new File(stage,"initialize-failure.out"),error.getClass().getSimpleName()+": "+error.getMessage()+"\n");
+                    File diagnostic = new File(stage,"startup-"+BuildConfig.VERSION_CODE+".out");
+                    if(!diagnostic.exists()) {
+                        su(stage,"date +%s\nls -ld "+DIR+"\nls -l "+DIR+"/daemon.pid "+DIR+"/generation "+DIR+"/launch.sh || true\n"
+                                + "tail -c 12288 "+DIR+"/daemon.log 2>/dev/null || true\n");
+                        RescueFiles.write(diagnostic,RescueFiles.read(new File(stage,"apply.out"),16384));
+                    }
+                }catch(Exception diagnosticError){RuntimeLog.error("core_diagnostic_failed",diagnosticError);}
                 RuntimeLog.error("core_initialize_failed", error);
             } finally {
                 running = false;
