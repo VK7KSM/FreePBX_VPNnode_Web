@@ -390,7 +390,15 @@ public final class ReportService extends Service {
         CoreInstaller.ensure(this, this::coreMaintenanceFinished);
         WatchdogInstaller.ensure(this, () -> {
             Handler target = worker;
-            if (target != null) target.post(() -> { CoreInstaller.ensure(this, this::coreMaintenanceFinished); scheduleReport(1000L); });
+            if (target != null && !destroyed) target.post(() -> {
+                if (destroyed) return;
+                CoreInstaller.ensure(this, this::coreMaintenanceFinished);
+                if (WatchdogInstaller.needsRetry()) {
+                    long delay = WatchdogInstaller.retryDelayMs();
+                    RuntimeLog.event("watchdog_retry_scheduled delay_ms=" + delay);
+                    target.postDelayed(() -> { if (!destroyed) ensureMaintenance(); }, delay);
+                } else scheduleReport(1000L);
+            });
         });
     }
 
@@ -1155,6 +1163,9 @@ public final class ReportService extends Service {
         if (rcf.exists()) rcf.delete();
         java.io.File cmdf = new java.io.File(dir, "heal.cmd");
         if (cmdf.exists()) throw new java.io.IOException("root-command-busy");
+        String boot = readBootId();
+        if (boot.isEmpty()) throw new java.io.IOException("boot identity unavailable");
+        writeSmall(new java.io.File(dir, "heal.boot").getPath(), boot);
         if (!tmp.renameTo(cmdf)) throw new Exception("heal-arm-fail");
     }
 

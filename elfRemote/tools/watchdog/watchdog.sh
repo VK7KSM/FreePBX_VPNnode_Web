@@ -30,6 +30,12 @@ fi
 APP_UID=$(stat -c %u /data/user/0/net.elfradio.elfremote) || exit 1
 case "$APP_UID" in ''|*[!0-9]*) exit 1;; esac
 [ "$APP_UID" -ge 10000 ] || exit 1
+if [ -d "$DIR" ] && [ ! -L "$DIR" ] && [ "$(stat -c %u:%g:%a "$DIR")" = "0:$APP_UID:2770" ]; then
+  umask 007
+else
+APP_UID=$(stat -c %u /data/user/0/net.elfradio.elfremote) || exit 1
+case "$APP_UID" in ''|*[!0-9]*) exit 1;; esac
+[ "$APP_UID" -ge 10000 ] || exit 1
 [ ! -L "$DIR" ] || exit 1
 mkdir -p "$DIR" || exit 1
 chown 0:0 "$DIR" && chmod 0700 "$DIR" || exit 1
@@ -38,9 +44,10 @@ chown -R 0:"$APP_UID" "$DIR" || exit 1
 find "$DIR" -type f -exec chmod 0660 {} \; || exit 1
 find "$DIR" -type d -exec chmod 2770 {} \; || exit 1
 umask 007
+fi
 if ! mkdir "$LOCK" 2>/dev/null; then
   old=$(cat "$PIDF" 2>/dev/null)
-  if [ -n "$old" ] && [ -d /proc/$old ]; then
+  if [ -n "$old" ] && [ "$old" != "$$" ] && [ -r /proc/$old/cmdline ] && tr '\000' '\n' < /proc/$old/cmdline | grep -Fxq "$SCRIPT"; then
     exit 0
   fi
   rm -rf "$LOCK"
@@ -157,7 +164,7 @@ run_update() {
   fi
 }
 
-log "start pid=$$"
+log "start pid=$$ uptime=$(cat /proc/uptime)"
 recover_heal() {
   [ -f "$DIR/heal.running" ] || return 0
   current=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)

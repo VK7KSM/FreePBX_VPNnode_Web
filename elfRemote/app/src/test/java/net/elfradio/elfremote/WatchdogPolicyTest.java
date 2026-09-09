@@ -135,6 +135,23 @@ public class WatchdogPolicyTest {
         assertIndependent(script + rc + magisk);
     }
 
+    @Test public void initializedDirectorySkipsRecursivePermissionRepairAtBoot() throws Exception {
+        File dir = Files.createTempDirectory("watchdog-boot-").toFile();
+        String script = "set -e\nDIR=" + RescueFiles.quote(dir.getPath().replace('\\', '/'))
+                + "\nstat() { case $2 in %u) echo 10001;; *) echo 0:10001:2770;; esac; }\n"
+                + "chown() { echo UNEXPECTED_REPAIR; return 7; }\nfind() { echo UNEXPECTED_REPAIR; return 7; }\n"
+                + WatchdogPolicy.startupDirectoryCommands() + "echo READY\n";
+        String result = RebootPolicyTest.shell(script, 0);
+        assertTrue(result.contains("READY")); assertFalse(result.contains("UNEXPECTED_REPAIR"));
+    }
+
+    @Test public void reusedPidCannotStandInForTheOldWatchdog() {
+        String script = WatchdogPolicy.script();
+        assertTrue(script.contains("[ \"$old\" != \"$$\" ]"));
+        assertTrue(script.contains("/proc/$old/cmdline | grep -Fxq \"$SCRIPT\""));
+        assertFalse(script.contains("[ -d /proc/$old ]"));
+    }
+
     private static File repoFile(String name) {
         File[] candidates = new File[] {
                 new File("tools/watchdog/" + name),

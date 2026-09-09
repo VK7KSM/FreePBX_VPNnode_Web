@@ -67,10 +67,11 @@ final class WatchdogPolicy {
                 + "  exit 0\n"
                 + "fi\n"
                 + "\n"
-                + secureDirectoryCommands()
+                + startupDirectoryCommands()
                 + "if ! mkdir \"$LOCK\" 2>/dev/null; then\n"
                 + "  old=$(cat \"$PIDF\" 2>/dev/null)\n"
-                + "  if [ -n \"$old\" ] && [ -d /proc/$old ]; then\n"
+                + "  if [ -n \"$old\" ] && [ \"$old\" != \"$$\" ] && [ -r /proc/$old/cmdline ]"
+                + " && tr '\\000' '\\n' < /proc/$old/cmdline | grep -Fxq \"$SCRIPT\"; then\n"
                 + "    exit 0\n"
                 + "  fi\n"
                 + "  rm -rf \"$LOCK\"\n"
@@ -187,7 +188,7 @@ final class WatchdogPolicy {
                 + "  fi\n"
                 + "}\n"
                 + "\n"
-                + "log \"start pid=$$\"\n"
+                + "log \"start pid=$$ uptime=$(cat /proc/uptime)\"\n"
                 + HealRecovery.script()
                 + "if [ -f \"$DIR/update.managed\" ] && [ -f \"$DIR/update.running\" ] && [ ! -f \"$DIR/update.job\" ]; then\n"
                 + "  mv \"$DIR/update.running\" \"$DIR/update.job\"\n"
@@ -326,6 +327,17 @@ final class WatchdogPolicy {
                 + "find \"$DIR\" -type f -exec chmod 0660 {} \\; || exit 1\n"
                 + "find \"$DIR\" -type d -exec chmod 2770 {} \\; || exit 1\n"
                 + "umask 007\n";
+    }
+
+    static String startupDirectoryCommands() {
+        return "APP_UID=$(stat -c %u /data/user/0/" + PKG + ") || exit 1\n"
+                + "case \"$APP_UID\" in ''|*[!0-9]*) exit 1;; esac\n"
+                + "[ \"$APP_UID\" -ge 10000 ] || exit 1\n"
+                + "if [ -d \"$DIR\" ] && [ ! -L \"$DIR\" ] && [ \"$(stat -c %u:%g:%a \"$DIR\")\" = \"0:$APP_UID:2770\" ]; then\n"
+                + "  umask 007\n"
+                + "else\n"
+                + secureDirectoryCommands()
+                + "fi\n";
     }
 
     static void stage(File dir) throws IOException {

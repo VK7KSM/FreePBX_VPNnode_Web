@@ -10,12 +10,14 @@ import java.util.concurrent.TimeUnit;
 
 /** 生产客户端首次启动也部署独立守护；通过应用自己的root通道核验。 */
 final class WatchdogInstaller {
-    private static volatile boolean running, ready;
+    private static volatile boolean running, ready, handoffPending;
     private static volatile String state = "pending";
     private static long nextAttempt;
     private static int failures;
 
     static boolean ready() { return ready; }
+    static boolean needsRetry() { return !ready || handoffPending; }
+    static long retryDelayMs() { return Math.max(1000L, nextAttempt - SystemClock.elapsedRealtime()); }
     static JSONObject snapshot() throws Exception {
         return new JSONObject().put("state", state).put("ready", ready);
     }
@@ -25,6 +27,7 @@ final class WatchdogInstaller {
         final Context app = ctx.getApplicationContext();
         new Thread(() -> {
             boolean wasReady = ready;
+            boolean wasPending = handoffPending;
             try {
                 File staged = new File(app.getFilesDir(), "watchdog");
                 WatchdogPolicy.stage(staged);
@@ -46,7 +49,8 @@ final class WatchdogInstaller {
                 if (!check.delete()) throw new java.io.IOException("bootstrap-write-check");
                 ready = true; state = "ready"; failures = 0;
                 PermissionGate.initializeBackground(app);
-                nextAttempt = SystemClock.elapsedRealtime() + 3600000L;
+                handoffPending = new File(WatchdogPolicy.DIR, "watchdog.restart").isFile();
+                nextAttempt = SystemClock.elapsedRealtime() + (handoffPending ? 15000L : 3600000L);
             } catch (Exception error) {
                 ready = false; state = "initialization_failed";
                 nextAttempt = SystemClock.elapsedRealtime() + Math.min(900000L, 60000L << Math.min(4, failures++));
@@ -54,7 +58,7 @@ final class WatchdogInstaller {
             } finally {
                 RuntimeLog.event("bootstrap_ready=" + ready);
                 running = false;
-                if (completed != null && wasReady != ready) completed.run();
+                if (completed != null && (wasReady != ready || wasPending || needsRetry())) completed.run();
             }
         }, "elfremote-bootstrap").start();
     }

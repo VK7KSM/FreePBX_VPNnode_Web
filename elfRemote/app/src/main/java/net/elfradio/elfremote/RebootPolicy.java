@@ -20,7 +20,7 @@ final class RebootPolicy {
         String file = RescueFiles.quote(marker), temp = RescueFiles.quote(marker + ".tmp");
         String failed = RescueFiles.quote(marker + ".failed");
         return "set -e\n"
-                + "trap 'rc=$?; if [ \"$rc\" != 0 ]; then echo \"$rc\" > " + failed + "; fi' EXIT\n"
+                + "trap " + RescueFiles.quote("rc=$?; if [ \"$rc\" != 0 ]; then echo \"$rc\" > " + failed + "; fi") + " EXIT\n"
                 + "test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + RescueFiles.quote(boot) + "\n"
                 + "test $(date +%s) -lt " + deadline / 1000L + "\nsync\n"
                 + "printf '%s\\n' " + RescueFiles.quote(boot) + " > " + temp + "\nmv " + temp + " " + file + "\nsync\n"
