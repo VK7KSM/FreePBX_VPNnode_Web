@@ -14,6 +14,8 @@ public class ZelloAccountConfigTest {
     @Test public void authenticationNeedsFreshPasswordTokenAndServerResponse(){
         String auth="(LOGIN) Authenticating with a password\n(LOGIN) Received a new token\n(LOGIN) Server returned a buddy list";
         assertTrue(ZelloAccountConfig.authenticated(auth));
+        assertTrue(ZelloAccountConfig.authenticated(auth.replace("Server returned a buddy list","Buddy list is up to date")));
+        assertFalse(ZelloAccountConfig.authenticated("(LOGIN) Buddy list is up to date"));
         assertFalse(ZelloAccountConfig.authenticated("(LOGIN) Received a new token"));
         assertFalse(ZelloAccountConfig.authenticated(auth+"\n(LOGIN) Error: invalid password"));
     }

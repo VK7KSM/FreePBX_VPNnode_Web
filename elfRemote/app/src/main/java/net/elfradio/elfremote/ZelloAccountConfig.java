@@ -13,7 +13,7 @@ final class ZelloAccountConfig {
     }
     static boolean authenticated(String fresh){
         return fresh.contains("(LOGIN) Authenticating with a password")&&fresh.contains("(LOGIN) Received a new token")
-                &&fresh.contains("(LOGIN) Server returned a buddy list")&&!fresh.contains("(LOGIN) Error:");
+                &&(fresh.contains("(LOGIN) Server returned a buddy list")||fresh.contains("(LOGIN) Buddy list is up to date"))&&!fresh.contains("(LOGIN) Error:");
     }
     private ZelloAccountConfig(){}
 }
