@@ -7,6 +7,8 @@ import java.util.*;
 
 /** 最近收件在本机持久保存；更新后仍可查看，不依赖再次连接管理网页。 */
 final class FileInbox {
+    private static android.os.Handler notifications;
+    private static Runnable pendingNotification;
     static JSONArray merge(JSONArray entries,JSONObject entry)throws Exception{
         ArrayList<JSONObject> rows=new ArrayList<>();boolean newer=false;
         for(int i=0;i<entries.length();i++){
@@ -29,7 +31,17 @@ final class FileInbox {
         JSONObject entry=new JSONObject().put("id",id).put("path",path).put("state",state).put("detail",detail)
                 .put("bytes",bytes).put("at",System.currentTimeMillis());
         save(c,entry);
+        queueNotification(c.getApplicationContext(),entry);
+    }
+    private static synchronized void queueNotification(Context c,JSONObject entry){
+        if(notifications==null)notifications=new android.os.Handler(android.os.Looper.getMainLooper());
+        if(pendingNotification!=null)notifications.removeCallbacks(pendingNotification);
+        pendingNotification=()->showNotification(c,entry);
+        notifications.postDelayed(pendingNotification,500);
+    }
+    private static void showNotification(Context c,JSONObject entry){
         try{
+            String path=entry.getString("path"),detail=entry.getString("detail"),state=entry.getString("state");
             NotificationManager manager=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
             if(android.os.Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(new NotificationChannel("file-receive","文件接收",NotificationManager.IMPORTANCE_LOW));
             Intent intent=new Intent(c,MainActivity.class).putExtra("show_files",true).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -39,6 +51,13 @@ final class FileInbox {
             manager.notify(104,b.setSmallIcon(done?android.R.drawable.stat_sys_download_done:android.R.drawable.stat_sys_download)
                     .setContentTitle(new java.io.File(path).getName()).setContentText(detail).setContentIntent(tap)
                     .setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE).setOngoing(!done).setAutoCancel(done).build());
+            notifications.postDelayed(()->{
+                try{
+                    boolean visible=false;
+                    for(android.service.notification.StatusBarNotification n:manager.getActiveNotifications())if(n.getId()==104)visible=true;
+                    RuntimeLog.event("file_notification_result visible="+visible+" enabled="+manager.areNotificationsEnabled()+" state="+state);
+                }catch(Exception error){RuntimeLog.error("file_notification_check_failed",error);}
+            },1000);
         }catch(Exception error){RuntimeLog.error("file_notification_failed",error);}
     }
     static void restore(Context context){
