@@ -41,6 +41,7 @@ final class CoreInstaller {
                     File diagnostic = new File(stage,"startup-"+BuildConfig.VERSION_CODE+".out");
                     if(!diagnostic.exists()) {
                         su(stage,"date +%s\nls -ld "+DIR+"\nls -l "+DIR+"/daemon.pid "+DIR+"/generation "+DIR+"/launch.sh || true\n"
+                                + "ps -A | grep -E 'RescueDaemon|app_process' || true\nnetstat -tln | grep ':8765' || true\n"
                                 + "tail -c 12288 "+DIR+"/daemon.log 2>/dev/null || true\n");
                         RescueFiles.write(diagnostic,RescueFiles.read(new File(stage,"apply.out"),16384));
                     }
@@ -114,7 +115,8 @@ final class CoreInstaller {
                 + "[ -f \"$D/generation\" ] || exit 1\n"
                 + "cd \"$D\"\n"
                 + "[ ! -f daemon.log ] || [ $(wc -c < daemon.log) -lt 262144 ] || mv daemon.log daemon.previous.log\n"
-                + "CLASSPATH=" + RescueFiles.quote(apk) + " /system/bin/app_process /system/bin net.elfradio.elfremote.RescueDaemon \"$D\" \"$D/generation\" </dev/null >>daemon.log 2>&1 &\n";
+                + "echo \"CORE_LAUNCH at=$(date +%s)\" >>daemon.log\n"
+                + "CLASSPATH=" + RescueFiles.quote(apk) + " /system/bin/setsid /system/bin/app_process /system/bin net.elfradio.elfremote.RescueDaemon \"$D\" \"$D/generation\" </dev/null >>daemon.log 2>&1 &\n";
     }
 
     private static void su(File stage, String commands) throws Exception {

@@ -11,15 +11,19 @@ public final class RescueDaemon {
     private static final int OUTPUT_LIMIT = 65536;
     private static volatile int activeGroup;
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
+        try{run(args);}catch(Throwable failure){failure.printStackTrace(System.err);System.exit(1);}
+    }
+    private static void run(String[] args) throws Exception {
         if (Os.getuid() != 0 || args.length != 2) return;
+        System.out.println("CORE_BOOT_BEGIN version="+BuildConfig.VERSION_CODE);
         File root = new File(args[0]);
         File guard = new File(args[1]);
         if (!guard.isFile()) return;
         String generation = RescueFiles.read(guard, 128);
         try (RandomAccessFile lockFile = new RandomAccessFile(new File(root, "daemon.lock"), "rw");
              FileLock lock = lockFile.getChannel().tryLock()) {
-            if (lock == null) return;
+            if (lock == null) {System.out.println("CORE_ALREADY_RUNNING");return;}
             RescueFiles.write(new File(root,"daemon.pid"),Integer.toString(android.os.Process.myPid()));
             try { RescueFiles.write(new File(root,"started.json"),RescueDiagnostics.collect().toString()); }
             catch(Exception unavailable) { System.err.println("核心启动诊断暂不可用，继续启动命令服务"); }
@@ -27,6 +31,7 @@ public final class RescueDaemon {
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
             server.start(3000, true);
+            System.out.println("CORE_HTTP_READY version="+BuildConfig.VERSION_CODE);
             try {
                 while (guard.isFile() && generation.equals(RescueFiles.read(guard, 128)))
                     Thread.sleep(2000);
