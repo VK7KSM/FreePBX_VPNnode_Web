@@ -102,3 +102,24 @@ test('一次任务提交即通知且发布发生在任务保存之后',async()=>
   const result=await (await worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'pull_logs'},cookie),f.env)).json();
   assert.equal(calls,1);assert.equal(result.notification.published,true);
 });
+
+test('初始化失败仍能用已有成功更新器领取修复包，不能凭新客户端标记伪造能力',async()=>{
+  const token='bootstrap-fixture-token';
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,
+    managed_update:false,managed_update_v2:true,token_sha256:createHash('sha256').update(token).digest('hex')}]});
+  const cookie=await login(f),rel={job_id:'repair-release',manifest_raw:'{}',signature:'fixture',expires_at:0,versionCode:117,versionName:'repair'};
+  f.data.set('elfremote_rel_117',rel);
+  const assign=()=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:117,request_id:'repair-request'},cookie),f.env);
+  assert.equal((await assign()).status,400);
+  const list=f.data.get('remote_devices');list[0].update={job_id:'previous-update',state:'success',versionCode:116};f.data.set('remote_devices',list);
+  assert.equal((await assign()).status,200);
+  assert.equal(f.data.get('remote_devices')[0].update.recovery_updater_verified,true);
+  const report=()=>worker.fetch(request('/api/devices/report','POST',{device_id:'device',token,status_only:true,
+    managed_update:false,managed_update_v2:true,app_version:'old',report_id:'bootstrap-report',reported_at:new Date().toISOString()}),f.env);
+  const response=await report();assert.equal(response.status,200);
+  const body=await response.json();assert.equal(body.managed_update.manifest_raw,rel.manifest_raw);assert.match(body.managed_update.task_id,/^update-/);
+  assert.equal((await assign()).status,200);
+  const current=f.data.get('remote_devices');current[0].enabled=false;f.data.set('remote_devices',current);
+  assert.equal((await assign()).status,400);
+  assert.equal((await (await report()).json()).managed_update,undefined);
+});

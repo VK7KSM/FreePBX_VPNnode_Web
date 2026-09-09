@@ -1533,6 +1533,11 @@ async function handleElfAssign(env, request) {
   }
 }
 
+function verifiedManagedUpdater(device) {
+  return device.managed_update_v2 === true && (device.update?.recovery_updater_verified === true
+    || (device.update?.job_id && ["success", "recovered"].includes(device.update.state)));
+}
+
 async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
   const list = await loadDevices(env);
   let found = null;
@@ -1541,7 +1546,8 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     if (list[i].enabled === false) throw new Error("设备已停用");
     const manifest = JSON.parse(rel.manifest_raw);
     if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
-    if (list[i].status_only && list[i].managed_update !== true) throw new Error("当前客户端尚未接通更新");
+    const recoveryUpdater = verifiedManagedUpdater(list[i]);
+    if (list[i].status_only && list[i].managed_update !== true && !recoveryUpdater) throw new Error("当前客户端尚未接通更新");
     if (Number(rel.expires_at) > 0 && Number(rel.expires_at) <= Date.now()) throw new Error("该发布清单已过期，请重新发布有效版本");
     const modern = list[i].managed_update_v2 === true;
     const requestId = String(input.request_id || "");
@@ -1564,6 +1570,7 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
       release_job_id: rel.job_id,
       request_id: requestId,
       managed_update_v2: modern,
+      recovery_updater_verified: !!recoveryUpdater,
       state: "pending",
       updated_at: new Date().toISOString(),
       versionCode: rel.versionCode,
@@ -1621,7 +1628,8 @@ function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.managed_file_tasks === true && device.task?.type === 'send_file'
       && device.task.managed_file_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_v1:true};
-  if (device.enabled !== false && report.status_only === true && report.managed_update === true
+  if (device.enabled !== false && report.status_only === true
+      && (report.managed_update === true || (report.managed_update_v2 === true && verifiedManagedUpdater(device)))
       && device.update?.managed_update_v1 === true && shouldOfferUpdate(device, now))
     body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true,
       ...(device.update.managed_update_v2 ? {task_id:device.update.job_id,task_expires_at:device.update.expires_at,task_device_id:device.id} : {})};
