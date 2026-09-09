@@ -9,7 +9,7 @@ const sha=v=>createHash('sha256').update(v).digest('hex');
 test('文件传输保留64位长度并拒绝无效目标',()=>{
   assert.ok(FILE_MAX>0x7fffffff);
   assert.equal(Math.ceil(FILE_MAX/FILE_CHUNK),512);
-  assert.equal(fileParams({transfer_id:'a'.repeat(32),path:'/sdcard/文件'}).allow_cellular,false);
+  assert.equal(fileParams({transfer_id:'a'.repeat(32),path:'/sdcard/文件'}).allow_cellular,true);
   for(const path of ['relative','/a/../b','/a/','/a\0b'])assert.throws(()=>fileParams({transfer_id:'a'.repeat(32),path}));
 });
 
@@ -46,6 +46,7 @@ test('私有分块、重试、封存、任务绑定、Range和取消闭环',asyn
   await progress('claimed');await progress('running');
   assert.equal((await progress('success',{action:'committed',bytes:content.length,sha256:'0'.repeat(64)})).status,400);
   assert.equal((await progress('success',{action:'committed',bytes:content.length,sha256:sha(content)})).status,200);
+  assert.equal(objects.size,0);assert.equal(f.data.get('file-transfer/'+id).purged,true);
   const m=f.data.get('file-transfer/'+id);m.expires_at=1;
   await cleanupFiles(f.env,f.env.ELF_DO.get('main'));
   assert.equal(objects.size,0);assert.equal(f.data.has('file-transfer/'+id),false);

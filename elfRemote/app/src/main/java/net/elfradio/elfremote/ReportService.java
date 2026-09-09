@@ -31,6 +31,7 @@ public final class ReportService extends Service {
     private DeviceIdentity identity;
     private String executingCommand = "";
     private FileTransfer fileTransfer;
+    private FileReturn fileReturn;
     private volatile boolean destroyed;
     private NetworkHealer healer;
     private boolean loopStarted;
@@ -202,6 +203,7 @@ public final class ReportService extends Service {
                     else if ("file-transfer".equals(key)) resumeFileTransfer();
                     else if("report-photo".equals(key)&&reportPhotos!=null)reportPhotos.resume();
                     else if("movement".equals(key))checkMovement();
+                    else if("file-return".equals(key))resumeFileTransfer();
                     else if (push != null) push.wake(key);
                 } finally { WakeScheduler.release("dispatch-" + key); }
             });
@@ -239,6 +241,7 @@ public final class ReportService extends Service {
         destroyed = true;
         wake.cancel("movement");WakeScheduler.release("movement");
         if(fileTransfer!=null)fileTransfer.stop();
+        if(fileReturn!=null)fileReturn.stop();
         if(reportPhotos!=null)reportPhotos.close();
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
@@ -413,6 +416,7 @@ public final class ReportService extends Service {
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_file_tasks", CoreInstaller.ready());
+        body.put("managed_file_return", CoreInstaller.ready());
         body.put("managed_heal_tasks", WatchdogInstaller.ready());
         body.put("managed_reboot_tasks", WatchdogInstaller.ready());
         body.put("managed_adbd_tasks", WatchdogInstaller.ready());
@@ -577,6 +581,7 @@ public final class ReportService extends Service {
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_exec_v1") && "root_exec".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_file_v1") && "send_file".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_file_return_v1") && "get_file".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
@@ -785,6 +790,9 @@ public final class ReportService extends Service {
     }
 
     private void resumeFileTransfer() {
+        java.io.File exporting=new java.io.File(getFilesDir(),"file-return-active.json");
+        if(exporting.isFile())try{maybeRunTask(new JSONObject(RescueFiles.read(exporting,16000)));}
+        catch(Exception error){RuntimeLog.error("file_return_resume_pending",error);}
         java.io.File active=new java.io.File(getFilesDir(),"file-active.json");
         if(active.isFile())try{maybeRunTask(new JSONObject(RescueFiles.read(active,16000)));}
         catch(Exception error){RuntimeLog.error("file_resume_pending",error);}
@@ -794,6 +802,10 @@ public final class ReportService extends Service {
         if (offer == null) return;
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
+        if("get_file".equals(offer.optString("type"))){
+            try{if(fileReturn==null)fileReturn=new FileReturn(this,this::postTask,taskReceipts());fileReturn.receive(offer,store.deviceId(),store.token());}
+            catch(Exception error){RuntimeLog.error("file_return_task_pending",error);}return;
+        }
         if("send_file".equals(offer.optString("type"))) {
             try{
                 if(fileTransfer==null)fileTransfer=new FileTransfer(this,this::postTask,taskReceipts());

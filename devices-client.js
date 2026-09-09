@@ -506,6 +506,7 @@ function pageAdb(dis){
   var foot='';
   if(st)foot+='<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
   if(t.type==='send_file')foot+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
+  if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
   var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+dis+'>'+(on?'断开ADB':'连接ADB')+'</button></h4>';
@@ -525,8 +526,37 @@ function openSendFile(){
   var state=FILE_SEND[d.id]||(FILE_SEND[d.id]={device_id:d.id,message:''});
   if(d.task&&d.task.type==='send_file'&&!state.task_id)state.task_id=d.task.id;
   $('fileSendWrap').innerHTML='<div class="file-send-dialog"><div class="traffic-header"><h3>发送文件</h3><button class="btn-close" onclick="closeSendFile()" aria-label="关闭发送文件">&times;</button></div><div class="file-send-fields"><label>选择文件<input id="sendFilePick" type="file" onchange="pickSendFile()"'+(state.busy?' disabled':'')+'></label><label>设备保存路径<input id="sendFilePath" class="inp" placeholder="/sdcard/Download/文件名" value="'+esc(state.path||'')+'"'+(state.busy?' disabled':'')+'></label><div class="file-options"><label><input id="sendFileCell" type="checkbox"'+(state.cellular?' checked':'')+(state.busy?' disabled':'')+'>允许本次使用移动数据</label><label><input id="sendFileOverwrite" type="checkbox"'+(state.overwrite?' checked':'')+(state.busy?' disabled':'')+'>替换同名文件（保留原件）</label></div><div class="ops-actions"><button id="sendFileStart" class="btn-green" onclick="startSendFile()"'+(state.busy?' disabled':'')+'>发送</button><button class="btn-gray" onclick="stopSendFile()">停止</button></div><p id="fileStatus" role="status">'+esc(state.message||'默认通过 Wi-Fi 接收文件')+'</p></div></div>';
+  if($('sendFileCell'))$('sendFileCell').closest('label').remove();
+  if(!state.message)$('fileStatus').textContent='等待发送文件';
+  var take=document.createElement('button');take.className=d.managed_file_return?'btn-green':'btn-gray';take.disabled=!d.managed_file_return;take.textContent='取回设备文件';take.onclick=openReturnFile;$('fileSendWrap').querySelector('.ops-actions').appendChild(take);
   show('fileSendWrap');if(state.task_id)pollSendFile(state);
 }
+var FILE_RETURN={};
+function returnUrl(s){return '/api/elfremote/file-return?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id,download:'1'});}
+function openReturnFile(){
+  var d=currentDev();if(!d||!d.managed_file_return)return;
+  if(!$('fileSendWrap'))openSendFile();clearTimeout(FILE_POLL);FILE_VIEW=d.id;
+  var s=FILE_RETURN[d.id]||(FILE_RETURN[d.id]={device_id:d.id,path:'',message:''});
+  if(d.task&&d.task.type==='get_file'&&!s.task_id){s.task_id=d.task.id;s.path=d.task.params.path;s.cellular=d.task.params.allow_cellular;s.busy=['pending','claimed','running'].includes(d.task.state);}
+  $('fileSendWrap').innerHTML='<div class="file-send-dialog"><div class="traffic-header"><h3>取回文件</h3><button class="btn-close" onclick="closeSendFile()" aria-label="关闭取回文件">&times;</button></div><div class="file-send-fields"><label>设备文件路径<input class="inp" id="returnFilePath" value="'+esc(s.path)+'" placeholder="/sdcard/Download/文件名"'+(s.busy?' disabled':'')+'></label><div class="file-options"><label><input type="checkbox" id="returnFileCell"'+(s.cellular?' checked':'')+(s.busy?' disabled':'')+'>允许本次使用移动数据</label></div><div class="ops-actions"><button class="btn-green" id="returnFileStart" onclick="startReturnFile()"'+(s.busy?' disabled':'')+'>取回</button><button class="btn-gray" onclick="cancelReturnFile()">停止</button><button class="btn-gray" onclick="openSendFile()">发送文件</button></div><p id="returnFileStatus" role="status">'+esc(s.message||'默认通过 Wi-Fi 取回文件')+'</p><a id="returnFileDownload" class="log-download" style="display:none">下载文件</a></div></div>';
+  show('fileSendWrap');if(s.task_id)pollReturnFile(s);
+}
+async function startReturnFile(){
+  var s=FILE_RETURN[FILE_VIEW];if(!s||s.busy)return;s.path=$('returnFilePath').value.trim();s.cellular=$('returnFileCell').checked;
+  if(!s.path.startsWith('/')||s.path.endsWith('/')){$('returnFileStatus').textContent='请填写完整文件路径';return;}
+  s.busy=true;s.message='正在下发取回任务';openReturnFile();
+  try{var x=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'get_file',id:'return-'+crypto.randomUUID(),params:{path:s.path,allow_cellular:s.cellular}});s.task_id=x.task.id;pollReturnFile(s);loadDevices();}
+  catch(e){s.busy=false;s.message=e.message;if(FILE_VIEW===s.device_id)openReturnFile();}
+}
+async function pollReturnFile(s){
+  clearTimeout(FILE_POLL);if(FILE_VIEW!==s.device_id||!$('returnFileStatus')||!s.task_id)return;
+  try{var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id})),t=x.task;
+    if(t){s.message=t.detail||'等待设备取回';$('returnFileStatus').textContent=s.message;s.busy=['pending','claimed','running'].includes(t.state);
+      if(!s.busy){['returnFileStart','returnFilePath','returnFileCell'].forEach(function(id){$(id).disabled=false;});if(t.state==='success'){$('returnFileDownload').href=returnUrl(s);$('returnFileDownload').style.display='inline';}return;}}
+  }catch(e){$('returnFileStatus').textContent=e.message;}
+  FILE_POLL=setTimeout(function(){pollReturnFile(s);},5000);
+}
+async function cancelReturnFile(){var s=FILE_RETURN[FILE_VIEW];if(!s||!s.task_id)return;try{await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:s.task_id});pollReturnFile(s);}catch(e){$('returnFileStatus').textContent=e.message;}}
 function pickSendFile(){var s=FILE_SEND[FILE_VIEW],f=$('sendFilePick').files[0];if(s&&f){s.file=f;if(!s.path||s.path.startsWith('/sdcard/Download/'))s.path='/sdcard/Download/'+f.name;$('sendFilePath').value=s.path;}}
 async function fileApi(path,body,method){
   var r=await fetch(path,body===undefined?{}:{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -534,7 +564,7 @@ async function fileApi(path,body,method){
 }
 async function startSendFile(){
   var s=FILE_SEND[FILE_VIEW];if(!s||s.busy)return;
-  var f=s.file;s.path=$('sendFilePath').value.trim();s.cellular=$('sendFileCell').checked;s.overwrite=$('sendFileOverwrite').checked;
+  var f=s.file;s.path=$('sendFilePath').value.trim();s.cellular=true;s.overwrite=$('sendFileOverwrite').checked;
   if(!f||!s.path.startsWith('/')||s.path.endsWith('/')){fileSendMessage(s,'请选择文件并填写完整保存路径');return;}
   if(f.size>4*1024*1024*1024){fileSendMessage(s,'文件最大支持4 GB');return;}
   s.busy=true;s.stop=false;openSendFile();
@@ -542,6 +572,7 @@ async function startSendFile(){
   try{
     var id=localStorage.getItem(resumeKey),m;
     if(id){try{m=(await fileApi('/api/elfremote/files/'+id)).file;}catch(e){if(/过期/.test(e.message))localStorage.removeItem(resumeKey);else throw e;}}
+    if(m&&m.state==='delivered'){localStorage.removeItem(resumeKey);m=null;}
     if(!m){m=(await fileApi('/api/elfremote/files',{device_id:s.device_id,name:f.name,size:f.size})).file;localStorage.setItem(resumeKey,m.id);}
     var hash=(await import('/file-hash.js')).sha256.create();
     for(var i=0,offset=0;offset<f.size;i++,offset+=m.chunk_size){

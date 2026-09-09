@@ -29,6 +29,7 @@ final class RescueJobs {
                 JSONObject obj = new JSONObject(RescueFiles.read(state, 600000));
                 if ("running".equals(obj.optString("state"))) {
                     JSONObject recovered=FileCommit.recover(dir);
+                    if(recovered==null)recovered=FileSnapshot.recover(dir);
                     if(recovered!=null){recovered.put("id",dir.getName());RescueFiles.write(state,recovered.toString());continue;}
                     obj.put("state", "interrupted").put("error", "救援进程已重启，任务不会自动重放");
                     RescueFiles.write(state, obj.toString());
@@ -58,6 +59,10 @@ final class RescueJobs {
         JSONObject p=new JSONObject().put("source",params.getString("source")).put("path",params.getString("path"))
                 .put("size",params.getLong("size")).put("sha256",params.getString("sha256")).put("overwrite",params.optBoolean("overwrite"));
         return submit(id,"file-commit:"+p.toString(),120,(folder,command,timeout)->FileCommit.run(folder,p));
+    }
+    synchronized JSONObject submitSnapshot(String id,JSONObject params)throws Exception{
+        JSONObject p=new JSONObject().put("source",params.getString("source")).put("target",params.getString("target")).put("uid",params.getInt("uid"));
+        return submit(id,"file-snapshot:"+p.toString(),120,(folder,command,timeout)->FileSnapshot.run(folder,p));
     }
 
     private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {

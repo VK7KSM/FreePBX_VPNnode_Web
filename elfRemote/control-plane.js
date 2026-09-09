@@ -122,7 +122,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -137,6 +137,7 @@ export const REPAIR_STATE_LABELS = {
 export const REPAIR_TYPE_LABELS = {
   root_exec: "执行命令",
   send_file: "发送文件",
+  get_file: "取回文件",
   pull_logs: "拉取日志",
   heal_network: "强制自愈",
   reboot: "受控重启",
@@ -208,7 +209,7 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["root_exec","send_file"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  if(["root_exec","send_file","get_file"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
@@ -310,6 +311,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       && (!result || result.exit_code !== 0 || result.action !== 'completed')) throw new Error('缺少命令成功证据');
   if(device.task.type === 'send_file' && state === 'success' && (!result || result.action!=='committed'
       || result.sha256!==device.task.params.sha256 || result.bytes!==device.task.params.size)) throw Error('缺少文件完整接收证据');
+  if(device.task.type==='get_file'&&state==='success'&&(!result||result.action!=='uploaded'||!Number.isSafeInteger(result.bytes)||result.bytes<0||!/^[a-f0-9]{64}$/.test(result.sha256||'')))throw Error('缺少文件取回证据');
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
@@ -417,6 +419,7 @@ export function publicRepair(task) {
     state: task.state || "",
     label: repairStateLabel(task.state || ""),
     detail: task.detail || "",
+    ...(['send_file','get_file'].includes(task.type)&&task.params?{params:{path:task.params.path,allow_cellular:task.params.allow_cellular,...(task.type==='send_file'?{transfer_id:task.params.transfer_id,overwrite:task.params.overwrite}:{})}}:{}),
     expires_at: task.expires_at || 0,
     created_at: task.created_at || null,
     claimed_at: task.claimed_at || null,

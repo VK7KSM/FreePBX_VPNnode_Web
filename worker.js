@@ -42,9 +42,10 @@ import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
-import { fileMetadata, fileHttp, validateFileTask, cleanupFiles } from "./file-transfer.js";
+import { fileMetadata, fileHttp, validateFileTask, cleanupFiles, cleanupDeliveredFile } from "./file-transfer.js";
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
+import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -164,6 +165,10 @@ export class ElfStore {
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname==='/__returns'&&request.method==='POST'){
+      const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
+      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+    }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>{
@@ -234,7 +239,7 @@ export class ElfStore {
 }
 
 const app = {
-  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); await cleanupPhotos(env,elfDoStub(env)); },
+  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); await cleanupPhotos(env,elfDoStub(env)); await cleanupReturns(env,elfDoStub(env)); },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -261,6 +266,9 @@ const app = {
     if(!env.__storage&&pathname==='/api/elfremote/report-photo'){
       const stub=elfDoStub(env);return stub?photoHttp(env,request,stub):json({ok:false},503);
     }
+    if(!env.__storage&&pathname==='/api/elfremote/file-return'){
+      const stub=elfDoStub(env);return stub?returnHttp(env,request,stub):json({ok:false},503);
+    }
     if (!env.__storage && isPushHttp(pathname)) {
       const stub = elfDoStub(env);
       if (!stub) return authJson({ ok: false, msg: "设备存储不可用" }, 503);
@@ -270,6 +278,14 @@ const app = {
         || pathname.startsWith("/api/elfremote/"))) {
       const stub = elfDoStub(env);
       if (!stub) return json({ ok: false, msg: "设备存储不可用" }, 503);
+      if(method==='POST'&&pathname==='/api/elfremote/task-progress'){
+        const response=await stub.fetch(request);if(!response.ok)return response;
+        const result=await response.clone().json();
+        if(result.task?.type==='send_file'&&result.task.state==='success'&&result.task.params?.transfer_id){
+          try{await cleanupDeliveredFile(env,stub,result.task.params.transfer_id);}catch{console.error('file_cleanup_pending');}
+        }
+        return response;
+      }
       if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign"].includes(pathname)) {
         const payload = await request.clone().json().catch(() => null);
         const saved = await stub.fetch(request);
@@ -933,6 +949,7 @@ function publicDevice(d, modelName) {
     managed_lost_tasks: d.managed_lost_tasks === true,
     managed_exec_tasks: d.managed_exec_tasks === true,
     managed_file_tasks: d.managed_file_tasks === true,
+    managed_file_return: d.managed_file_return === true,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1331,6 +1348,7 @@ async function handleDeviceReport(env, request) {
       list[i].status_only = data.status_only === true;
       list[i].managed_exec_tasks = data.managed_exec_tasks === true;
       list[i].managed_file_tasks = data.managed_file_tasks === true;
+      list[i].managed_file_return = data.managed_file_return === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1595,6 +1613,8 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
   if (device.enabled !== false && report.managed_exec_tasks === true && device.task?.type === 'root_exec'
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
@@ -1649,7 +1669,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['root_exec','send_file'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1662,6 +1682,7 @@ async function handleElfEnqueueTask(env, request) {
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
+        || (data.type==="get_file" && found.managed_file_return===true)
         || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
         || (data.type==="heal_network" && found.managed_heal_tasks===true)
@@ -1674,9 +1695,14 @@ async function handleElfEnqueueTask(env, request) {
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
+    if(data.type==='get_file'){
+      if(!found.managed_file_return)return json({ok:false,msg:'客户端尚未支持取回文件'},409);
+      params=returnParams(params);data.expires_at=Math.min(Date.now()+86400000,Number(data.expires_at)||Infinity);
+    }
     if(data.type==='send_file') {
       if(!found.managed_file_tasks)return json({ok:false,msg:'客户端尚未支持文件接收'},409);
-      params=await validateFileTask(env.__storage,deviceId,params);
+      const old=data.id?await findRepairTask(env.__storage,found,data.id):null;
+      params=await validateFileTask(env.__storage,deviceId,params,old?.type==='send_file'&&old.state==='success');
       data.expires_at=Math.min(Date.now()+86400000,Number(data.expires_at)||Infinity);
     }
     const queued = await enqueueRepairTask(found, {
@@ -1696,6 +1722,7 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(!queued.duplicate && data.type==="root_exec") found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
+    if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="heal_network") found.task.managed_heal_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="reboot") found.task.managed_reboot_v1=true;
@@ -1742,7 +1769,15 @@ async function handleElfTaskProgress(env, request) {
           data.result.artifact=await saveTaskLog(env,deviceId,taskId,data.result);
         }
       }
+      if(list[i].task?.type==='get_file'&&state==='success'){
+        const m=await env.__storage.get('file-return/'+deviceId+'/'+taskId);
+        if(!m||m.state!=='ready'||m.sha256!==data.result?.sha256||m.size!==data.result?.bytes)return json({ok:false,msg:'文件尚未完整取回'},409);
+      }
       applyRepairProgress(list[i], taskId, state, data.detail, data.result);
+      if(list[i].task?.type==='send_file'&&list[i].task.state==='success'){
+        const fileKey='file-transfer/'+list[i].task.params.transfer_id,m=await env.__storage.get(fileKey);
+        if(m){m.state='delivered';m.delivered_at=Date.now();await env.__storage.put(fileKey,m);}
+      }
       found = list[i];
       break;
     }

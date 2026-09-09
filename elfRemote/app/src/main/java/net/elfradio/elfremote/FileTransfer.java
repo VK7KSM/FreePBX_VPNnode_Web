@@ -84,7 +84,7 @@ final class FileTransfer {
                         .put("sha256",core.getString("sha256")).put("text",core.optString("output"));
                 progress(id,"success","文件已保存",result);active.delete();payload.delete();dir.delete();
             }catch(Paused pause){
-                try{progress(id,"running","已暂停，等待 Wi-Fi 后继续接收",null);}catch(Exception e){RuntimeLog.error("file_pause_report_pending",e);}
+                try{progress(id,"running","已暂停，联网后继续接收",null);}catch(Exception e){RuntimeLog.error("file_pause_report_pending",e);}
                 new WakeScheduler(context).schedule("file-transfer",15*60*1000L);
             }catch(Exception error){
                 RuntimeLog.error("file_receive_pending",error);
@@ -104,7 +104,8 @@ final class FileTransfer {
     private Network allowedNetwork(boolean cellular){
         ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
         Network n=cm.getActiveNetwork();NetworkCapabilities caps=n==null?null:cm.getNetworkCapabilities(n);
-        return caps!=null&&(cellular||caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)||caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))?n:null;
+        // 管理员发送即授权接收，Wi-Fi和移动数据都立即下载。
+        return caps!=null?n:null;
     }
     private void progress(String id,String state,String detail,JSONObject result)throws Exception{
         JSONObject p=currentOffer.getJSONObject("params");

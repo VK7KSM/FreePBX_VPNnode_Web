@@ -13,7 +13,7 @@ export function fileParams(p = {}) {
   if (!validId(p.transfer_id)) throw Error('文件编号无效');
   if (typeof p.path !== 'string' || !p.path.startsWith('/') || p.path.endsWith('/') || p.path.length > 512
       || /[\x00-\x1f\x7f]/.test(p.path) || p.path.split('/').some(s => s === '.' || s === '..')) throw Error('请填写设备上的完整文件路径');
-  return {transfer_id:p.transfer_id,path:p.path,allow_cellular:p.allow_cellular===true,overwrite:p.overwrite===true};
+  return {transfer_id:p.transfer_id,path:p.path,allow_cellular:true,overwrite:p.overwrite===true};
 }
 
 // 这里只处理小型元数据；二进制正文永远不进入设备共用事务。
@@ -22,7 +22,7 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
     const data = await request.json();
     if (data.action === 'cleanup') {
       const entries = await storage.list({prefix:'file-transfer/'}), removed=[];
-      for (const [k,m] of entries) if (m.expires_at <= now && removed.length < 4) {
+      for (const [k,m] of entries) if ((m.expires_at <= now || (m.state==='delivered'&&!m.purged)) && removed.length < 4) {
         removed.push(m);
       }
       return json({ok:true,removed});
@@ -40,7 +40,11 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
     const m=await storage.get(key(data.id));
     if(data.action==='cleanup_done') {
       if(m && m.expires_at<=now)await storage.delete(key(data.id));
+      else if(m?.state==='delivered'){m.purged=true;m.parts={};await storage.put(key(data.id),m);}
       return json({ok:true});
+    }
+    if(data.action==='delivered'){
+      if(m){m.state='delivered';m.delivered_at=now;await storage.put(key(data.id),m);}return json({ok:true,file:m});
     }
     if (!m || m.expires_at<=now) return json({ok:false,msg:'文件已过期，请重新上传'},404);
     if (data.action==='authorize') {
@@ -68,10 +72,17 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
   } catch(error) {return json({ok:false,msg:error.message},400);}
 }
 
-export async function validateFileTask(storage, deviceId, params) {
+export async function validateFileTask(storage, deviceId, params,completedRetry=false) {
   const p=fileParams(params), m=await storage.get(key(p.transfer_id));
-  if(!m || m.state!=='ready' || m.device_id!==deviceId || m.expires_at<=Date.now()) throw Error('文件尚未上传完整或已过期');
+  if(!m || !(m.state==='ready'||(completedRetry&&m.state==='delivered')) || m.device_id!==deviceId || m.expires_at<=Date.now()) throw Error('文件尚未上传完整或已过期');
   return {...p,size:m.size,sha256:m.sha256,chunk_size:m.chunk_size};
+}
+
+export async function cleanupDeliveredFile(env,stub,id){
+  if(!env.ELF_ARTIFACTS||!validId(id))return;
+  const result=await rpc(stub,{action:'delivered',id});if(!result.ok)throw Error('文件清理状态未保存');
+  let cursor;do{const listed=await env.ELF_ARTIFACTS.list({prefix:`device-files/${id}/`,cursor,limit:1000});if(listed.objects.length)await env.ELF_ARTIFACTS.delete(listed.objects.map(o=>o.key));cursor=listed.truncated?listed.cursor:undefined;}while(cursor);
+  await rpc(stub,{action:'cleanup_done',id});
 }
 
 async function rpc(stub, data) {

@@ -36,7 +36,8 @@ export function isMachineRoute(path, method) {
     "GET /api/sip/pull", "POST /api/sip/heartbeat",
     "POST /api/devices/enroll", "GET /api/devices/enroll-status", "POST /api/devices/report",
     "POST /api/devices/push-config", "POST /api/devices/push-sync",
-    "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo"
+    "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo",
+    "POST /api/elfremote/file-return", "PUT /api/elfremote/file-return"
   ]).has(`${method} ${path}`) || (method === "GET" && /^\/api\/elfremote\/apk\/[^/]+$/.test(path));
 }
 async function jsonInput(request) {
