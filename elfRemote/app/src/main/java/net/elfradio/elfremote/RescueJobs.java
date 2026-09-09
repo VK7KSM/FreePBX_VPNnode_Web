@@ -28,6 +28,7 @@ final class RescueJobs {
                 JSONObject obj = new JSONObject(RescueFiles.read(state, 600000));
                 if ("running".equals(obj.optString("state"))) {
                     JSONObject recovered=SipAccountManager.recover(dir);
+                    if(recovered==null)recovered=ZelloAccountManager.recover(dir);
                     if(recovered==null)recovered=FileCommit.recover(dir);
                     if(recovered==null)recovered=FileSnapshot.recover(dir);
                     if(recovered!=null){recovered.put("id",dir.getName());RescueFiles.write(state,recovered.toString());continue;}
@@ -74,6 +75,12 @@ final class RescueJobs {
         JSONObject p=SipAccountConfig.normalize(params);
         String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return submit(id,"configure-sip:"+fingerprint,120,(folder,command,timeout)->SipAccountManager.apply(folder,p));
+    }
+
+    synchronized JSONObject submitZelloAccount(String id,JSONObject params)throws Exception {
+        JSONObject p=ZelloAccountConfig.normalize(params);
+        String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return submit(id,"configure-zello:"+fingerprint,120,(folder,command,timeout)->ZelloAccountManager.apply(folder,p));
     }
 
     private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {

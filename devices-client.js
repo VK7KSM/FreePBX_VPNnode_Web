@@ -477,7 +477,7 @@ function pageModel(){
   return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
 }
 var MAINTENANCE_RUN={};
-var MAINTENANCE_CAPS={configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
@@ -485,7 +485,7 @@ function maintenanceAvailable(d,type){
   return !(t && ['pending','claimed','running'].includes(t.state) && !(Number.isFinite(expires)&&Date.now()>=expires));
 }
 function pageAdb(dis){
-  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file','configure_sip'].includes(t.type)?{}:t.result||{};
+  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file','configure_sip','configure_zello'].includes(t.type)?{}:t.result||{};
   var ready=!!(d&&d.managed_exec_tasks),blocked=!!(dis||!ready||(u&&u.shell.pending));
   var run= d && MAINTENANCE_RUN[d.id];
   var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
@@ -945,7 +945,18 @@ var ACCOUNT_TAB='Linphone';
 function selectAccountTab(name){ACCOUNT_TAB=name;renderOps();}
 function pageAccountSettings(dis){
   var h='<div class="account-tabs" role="group" aria-label="账号类型">'+['Linphone','Zello'].map(function(name){return '<button class="btn-gray'+(ACCOUNT_TAB===name?' active':'')+'" aria-pressed="'+(ACCOUNT_TAB===name)+'" onclick="selectAccountTab(\''+name+'\')">'+name+'</button>';}).join('')+'</div>';
-  return h+(ACCOUNT_TAB==='Linphone'?pageSipAccount(dis):'<p class="muted">Zello账号配置正在接入</p>');
+  return h+(ACCOUNT_TAB==='Linphone'?pageSipAccount(dis):pageZelloAccount(dis));
+}
+function pageZelloAccount(dis){
+  var d=currentDev(),saved=d&&d.zello_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_zello_account||!maintenanceAvailable(d,'configure_zello')?' disabled':'');
+  return '<form id="zelloAccountForm" class="account-fields" onsubmit="configureZelloAccount(event)"><label>普通Zello账号<input id="zelloAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label><label>密码<input id="zelloAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存并登录</button><span id="zelloAccountFeedback" role="status">'+esc(t.type==='configure_zello'?(t.detail||t.label):saved.updated_at?'上次登录成功 · '+sydney(saved.updated_at):d&&!d.managed_zello_account?'请更新客户端后使用':'尚未配置账号')+'</span></div></form>';
+}
+async function configureZelloAccount(event){
+  event.preventDefault();var d=currentDev();if(!d||!d.managed_zello_account)return;
+  var params={username:$('zelloAccountUser').value.trim(),password:$('zelloAccountPassword').value,type:'regular'},button=$('zelloAccountForm').querySelector('button[type=submit]');button.disabled=true;
+  try{await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_zello',id:'zello-'+crypto.randomUUID(),params:params});if(selDev===d.id&&$('zelloAccountPassword')){$('zelloAccountPassword').value='';$('zelloAccountFeedback').textContent='已发送，等待设备登录';}loadDevices();}
+  catch(e){if(selDev===d.id&&$('zelloAccountFeedback'))$('zelloAccountFeedback').textContent=e.message;}
+  finally{params.password='';if(button.isConnected)button.disabled=false;}
 }
 function pageSipAccount(dis){
   var d=currentDev(),saved=d&&d.sip_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_sip_account||!maintenanceAvailable(d,'configure_sip')?' disabled':'');

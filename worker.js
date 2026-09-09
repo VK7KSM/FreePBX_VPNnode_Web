@@ -21,6 +21,7 @@ import {
   updateStateLabel,
   enqueueRepairTask,
   queueSipRestore,
+  queueZelloRestore,
   repairHistory,
   findRepairTask,
   shouldOfferRepair,
@@ -952,6 +953,8 @@ function publicDevice(d, modelName) {
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
     managed_file_operations: d.managed_file_operations === true,
+    managed_zello_account: d.managed_zello_account === true,
+    zello_account: d.account_configs?.zello ? {username:d.account_configs.zello.params.username,type:"regular",updated_at:d.account_configs.zello.updated_at}:null,
     managed_sip_account: d.managed_sip_account === true,
     sip_account: d.account_configs?.linphone ? {server:d.account_configs.linphone.params.server,username:d.account_configs.linphone.params.username,auth_username:d.account_configs.linphone.params.auth_username,transport:d.account_configs.linphone.params.transport,port:d.account_configs.linphone.params.port,updated_at:d.account_configs.linphone.updated_at} : null,
     contacts: d.contacts || null,
@@ -1354,6 +1357,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_file_tasks = data.managed_file_tasks === true;
       list[i].managed_file_return = data.managed_file_return === true;
       list[i].managed_file_operations = data.managed_file_operations === true;
+      list[i].managed_zello_account = data.managed_zello_account === true;
       list[i].managed_sip_account = data.managed_sip_account === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
@@ -1396,9 +1400,10 @@ async function handleDeviceReport(env, request) {
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
-      if(CONFIG_TYPES.includes(found.task.type) || ["configure_sip","set_lost_mode"].includes(found.task.type)) found.task.params={};
+      if(CONFIG_TYPES.includes(found.task.type) || ["configure_sip","configure_zello","set_lost_mode"].includes(found.task.type)) found.task.params={};
     }
     await queueSipRestore(found,env.__storage,now);
+    await queueZelloRestore(found,env.__storage,now);
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
@@ -1631,7 +1636,8 @@ function addManagedTaskOffer(body, device, report, now) {
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
   if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
       || (report.managed_file_operations === true && device.task?.type === 'file_manage')
-      || (report.managed_sip_account === true && device.task?.type === 'configure_sip'))
+      || (report.managed_sip_account === true && device.task?.type === 'configure_sip')
+      || (report.managed_zello_account === true && device.task?.type === 'configure_zello'))
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
   if (device.enabled !== false && report.managed_file_tasks === true && device.task?.type === 'send_file'
@@ -1686,7 +1692,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage','configure_sip'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1701,6 +1707,7 @@ async function handleElfEnqueueTask(env, request) {
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
         || (data.type==="file_manage" && found.managed_file_operations===true)
         || (data.type==="configure_sip" && found.managed_sip_account===true)
+        || (data.type==="configure_zello" && found.managed_zello_account===true)
         || (data.type==="get_file" && found.managed_file_return===true)
         || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
@@ -1712,6 +1719,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
     if(data.type==="configure_sip" && !found.managed_sip_account)return json({ok:false,msg:"客户端尚未支持Linphone账号配置"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
@@ -1740,7 +1748,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
-    if(!queued.duplicate && ['root_exec','file_manage','configure_sip'].includes(data.type)) found.task.managed_exec_v1=true;
+    if(!queued.duplicate && ['root_exec','file_manage','configure_sip','configure_zello'].includes(data.type)) found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;

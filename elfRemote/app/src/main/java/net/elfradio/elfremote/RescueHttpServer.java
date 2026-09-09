@@ -74,7 +74,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 JSONObject result=jobs.cancel(path.substring(6,path.length()-7));
                 return result==null ? response(Response.Status.NOT_FOUND,"任务不存在") : json(Response.Status.ACCEPTED,result);
             }
-            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)))
+            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)))
                 return response(Response.Status.NOT_FOUND, "使用 POST /exec 或 GET /jobs/任务号");
             // 本批仅开放本机回环，云端复用既有管理员登录与设备凭据。
             String contentType = session.getHeaders().get("content-type");
@@ -94,6 +94,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 offset += count;
             }
             JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            if("/zello-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitZelloAccount(request.getString("id"),request.getJSONObject("params")));
             if("/sip-account".equals(path))return json(Response.Status.ACCEPTED,jobs.submitSipAccount(request.getString("id"),request.getJSONObject("params")));
             if("/file-manage".equals(path))return json(Response.Status.ACCEPTED,jobs.submitFileOperation(request.getString("id"),request.getJSONObject("params")));
             if("/file-commit".equals(path))return json(Response.Status.ACCEPTED,jobs.submitFile(request.getString("id"),request.getJSONObject("params")));
