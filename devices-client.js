@@ -796,7 +796,8 @@ function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
   var h='<div class="remote-head"><h3>远程音视频</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
-  h+='<div class="remote-preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span></div><div class="remote-controls">';
+  var photo=d&&d.report_photo;
+  h+='<div class="remote-preview" style="position:relative">'+(photo?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:photo.report_id}).toString())+'" alt="设备最新照片" title="'+esc(photo.captured_at)+'" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain">':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span>')+'</div><div class="remote-controls">';
   ['PTT','麦克风','前置摄像头','后置摄像头'].forEach(function(label){h+='<button type="button" disabled>'+label+'</button>';});
   h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;

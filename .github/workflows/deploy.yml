@@ -18,6 +18,7 @@ on:
       - "task-artifacts.js"
       - "update-artifacts.js"
       - "file-transfer.js"
+      - "report-photo.js"
       - "file-hash-source.js"
       - "logo.js"
       - "logo.png"

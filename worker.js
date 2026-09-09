@@ -44,6 +44,7 @@ import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, stat
 import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
 import { fileMetadata, fileHttp, validateFileTask, cleanupFiles } from "./file-transfer.js";
 import fileHashSource from './file-hash-source.js';
+import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -163,6 +164,13 @@ export class ElfStore {
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname==='/__photos'&&request.method==='POST'){
+      const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
+      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>{
+        const scoped={...this.env,__storage:storage};
+        return photoMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices(scoped),list=>saveDevices(scoped,list));
+      }));
+    }
     if (url.pathname === '/__files' && request.method === 'POST') {
       const raw=await request.text();
       if(raw.length>8192)return json({ok:false,msg:'文件元数据过大'},400);
@@ -226,7 +234,7 @@ export class ElfStore {
 }
 
 const app = {
-  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); },
+  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); await cleanupPhotos(env,elfDoStub(env)); },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -249,6 +257,9 @@ const app = {
     if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
       const stub=elfDoStub(env);
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
+    }
+    if(!env.__storage&&pathname==='/api/elfremote/report-photo'){
+      const stub=elfDoStub(env);return stub?photoHttp(env,request,stub):json({ok:false},503);
     }
     if (!env.__storage && isPushHttp(pathname)) {
       const stub = elfDoStub(env);
@@ -914,6 +925,7 @@ function publicDevice(d, modelName) {
     battery: d.battery == null ? null : d.battery,
     charging: typeof d.charging === "boolean" ? d.charging : null,
     last_report_event: d.last_report_event || null,
+    report_photo: d.report_photo || null,
     traffic: d.traffic || null,
     wifi_scan: d.wifi_scan || null,
     alarm: d.alarm || null,

@@ -41,6 +41,7 @@ public final class ReportService extends Service {
     private PushConnection push;
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
+    private ReportPhotos reportPhotos;
     private BatteryReports batteryReports;
     private android.content.BroadcastReceiver batteryReceiver;
     private AlarmPlayer alarm;
@@ -57,6 +58,7 @@ public final class ReportService extends Service {
         String previous = lastNetwork; lastNetwork = current;
         RuntimeLog.event("report_network_changed from=" + previous + " to=" + current);
         resumeFileTransfer();
+        if(reportPhotos!=null)reportPhotos.resume();
         if (!"unknown".equals(current) && !"none".equals(current)) scheduleReport(1000L);
         WakeScheduler.release("network-change");
     };
@@ -125,6 +127,7 @@ public final class ReportService extends Service {
         worker.post(wifiConnector::recover);
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
+        if(BuildConfig.STATUS_ONLY){reportPhotos=new ReportPhotos(this,store);reportPhotos.resume();}
         if(BuildConfig.STATUS_ONLY){
             try{batteryReports=new BatteryReports(new java.io.File(getFilesDir(),"battery-reports.json"));}
             catch(Exception error){RuntimeLog.error("battery_report_state_failed",error);}
@@ -191,6 +194,7 @@ public final class ReportService extends Service {
                     RuntimeLog.event("wake_alarm key=" + key + " queue_ms=" + Math.max(0, android.os.SystemClock.elapsedRealtime()-intent.getLongExtra("received_elapsed", android.os.SystemClock.elapsedRealtime())));
                     if ("report".equals(key)) loop.run();
                     if ("file-transfer".equals(key)) resumeFileTransfer();
+                    else if("report-photo".equals(key)&&reportPhotos!=null)reportPhotos.resume();
                     else if (push != null) push.wake(key);
                 } finally { WakeScheduler.release("dispatch-" + key); }
             });
@@ -227,6 +231,7 @@ public final class ReportService extends Service {
         if(batteryReceiver!=null){unregisterReceiver(batteryReceiver);batteryReceiver=null;}
         destroyed = true;
         if(fileTransfer!=null)fileTransfer.stop();
+        if(reportPhotos!=null)reportPhotos.close();
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
         if (connectivity != null && networkCallback != null) {
@@ -528,6 +533,8 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 healthReportConfirmed = true;
+                if(reportPhotos!=null)try{reportPhotos.acknowledged(new JSONObject(json));}
+                catch(Exception error){RuntimeLog.error("report_photo_enqueue_failed",error);}
                 try {
                     if (healer == null) healer = new NetworkHealer(this, store);
                     healer.saveSnapshot(healer.observe());
