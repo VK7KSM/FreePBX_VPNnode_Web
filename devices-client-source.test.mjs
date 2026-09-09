@@ -211,14 +211,18 @@ test('所有功能页均可渲染，型号名称转义且操作使用当前条�
  const shell=context.pageAdb('');assert.match(shell,/monitor-grid/);assert.match(shell,/id="taskOut"/);assert.match(shell,/id="adbTerm"/);
 });
 
-test('终端以设备执行能力为准，未就绪不伪造成功且保留维护布局',()=>{
+test('左侧通用终端与右侧ADB保持独立，root能力不冒充ADB连接',()=>{
  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
  vm.runInContext(source,context);context.DEV=[{id:'fixture'}];context.selDev='fixture';context.renderOps=()=>{};
  context.adbConnect();assert.equal(context.uiOf().adb.connected,false);
- const html=context.pageAdb('');assert.match(html,/维护核心尚未就绪/);assert.match(html,/monitor-heading.*启用终端/);
- assert.doesNotMatch(html,/断开终端/);assert.ok(html.indexOf('id="taskOut"')<html.indexOf("enqueueRepair"));
- context.DEV[0].managed_exec_tasks=true;context.adbConnect();assert.equal(context.uiOf().adb.connected,true);assert.match(context.pageAdb(''),/断开终端/);
- context.adbDisconnect();assert.equal(context.uiOf().adb.connected,false);
+ const html=context.pageAdb(''),panels=html.split('</section>');
+ assert.match(panels[0],/通用终端/);assert.match(panels[0],/id="shellCmd"/);assert.match(panels[0],/enqueueRepair/);
+ assert.match(panels[1],/ADB终端/);assert.match(panels[1],/连接ADB/);assert.doesNotMatch(panels[1],/shellSend/);
+ context.DEV[0].managed_exec_tasks=true;
+ const ready=context.pageAdb('');assert.match(ready,/onclick="shellSend\(\)"[^>]*>发送/);
+ assert.match(ready,/ADB 未连接/);assert.equal(context.uiOf().adb.connected,false);
+ context.commandResult(context.uiOf(),{id:'test',state:'success',detail:'成功',result:{text:'GENERAL_ONLY',exit_code:0}});
+ const result=context.pageAdb('').split('</section>');assert.match(result[0],/GENERAL_ONLY/);assert.doesNotMatch(result[1],/GENERAL_ONLY/);
 });
 
 test('维护按钮遵循能力和任务占用，历史成功不冒充本次结果',()=>{
