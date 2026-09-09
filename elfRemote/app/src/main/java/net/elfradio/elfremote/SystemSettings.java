@@ -130,7 +130,7 @@ public final class SystemSettings {
         }else if(group.equals("time")){
             Configuration config=configuration();out.put("locale",config.getLocales().get(0).toLanguageTag()).put("timezone",property("persist.sys.timezone"))
                 .put("auto_time",settingInt("global","auto_time",1)==1).put("auto_time_zone",settingInt("global","auto_time_zone",1)==1);
-            JSONArray locales=new JSONArray();for(String locale:context.getAssets().getLocales())if(!locale.equals("en-XA")&&!locale.equals("ar-XB"))locales.put(locale.replace('_','-'));out.put("locales",locales);
+            JSONArray locales=new JSONArray();for(String locale:context.getAssets().getLocales())if(!locale.equals("en-XA")&&!locale.equals("ar-XB"))locales.put(locale.replace('_','-'));out.put("locales",locales).put("timezones",new JSONArray(Arrays.asList(TimeZone.getAvailableIDs())));
         }else if(group.equals("apps")) {
             String pkg=p.optString("package");PackageManager pm=context.getPackageManager();
             if(pkg.isEmpty()) {
@@ -143,7 +143,7 @@ public final class SystemSettings {
                     permissions.put(new JSONObject().put("name",name).put("label",info.loadLabel(pm)).put("granted",pm.checkPermission(name,pkg)==PackageManager.PERMISSION_GRANTED));}catch(PackageManager.NameNotFoundException ignored){}
                 out.put("package",pkg).put("name",app.applicationInfo.loadLabel(pm)).put("version",app.versionName).put("enabled",app.applicationInfo.enabled).put("permissions",permissions)
                     .put("notifications",Class.forName("android.app.INotificationManager").getMethod("areNotificationsEnabledForPackage",String.class,int.class).invoke(notificationService(),pkg,uid))
-                    .put("background",backgroundMode(uid,pkg)!=AppOpsManager.MODE_IGNORED).put("background_mode",backgroundMode(uid,pkg)).put("enabled_state",pm.getApplicationEnabledSetting(pkg));
+                    .put("background",backgroundMode(uid,pkg)!=AppOpsManager.MODE_IGNORED&&backgroundMode(uid,pkg)!=AppOpsManager.MODE_ERRORED).put("background_mode",backgroundMode(uid,pkg)).put("enabled_state",pm.getApplicationEnabledSetting(pkg));
             }
         }else {
             ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);Network n=cm.getActiveNetwork();LinkProperties link=n==null?null:cm.getLinkProperties(n);
@@ -185,7 +185,7 @@ public final class SystemSettings {
         }else if(key.equals("mobile_data")){if(!hasSim())throw new IOException("设备没有就绪的SIM卡");shell("svc data "+((Boolean)value?"enable":"disable"));}
         else if(key.equals("bluetooth")){BluetoothAdapter b=BluetoothAdapter.getDefaultAdapter();if(b==null)throw new IOException("设备没有蓝牙适配器");if((Boolean)value)b.enable();else b.disable();for(int i=0;i<30&&b.isEnabled()!=(Boolean)value;i++)Thread.sleep(200);}
         else if(key.equals("hotspot")){JSONObject v=(JSONObject)value;WifiConfiguration c=null;if(v.getBoolean("enabled")){c=new WifiConfiguration();c.SSID=v.getString("ssid");c.preSharedKey=v.getString("password");c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);}
-            if(!(Boolean)wifi.getClass().getMethod("setWifiApEnabled",WifiConfiguration.class,boolean.class).invoke(wifi,c,v.getBoolean("enabled")))throw new IOException("系统拒绝热点设置");}
+            applyHotspot(c,v.getBoolean("enabled"));}
         else if(key.equals("connect"))connectWifi((JSONObject)value);
         else if(key.equals("dns"))setDns((JSONObject)value);
     }
@@ -252,12 +252,26 @@ public final class SystemSettings {
         throw new IOException("原网络尚未恢复连通");
     }
     private void restoreNetworkValues(JSONObject b)throws Exception {
-        wifi.getClass().getMethod("setWifiApEnabled",WifiConfiguration.class,boolean.class).invoke(wifi,b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
+        applyHotspot(b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
         if((settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
         Set<Integer> old=new HashSet<>();JSONArray saved=b.getJSONArray("configs");for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));old.add(c.networkId);if(wifi.updateNetwork(c)<0)throw new IOException("Wi-Fi原配置恢复被拒绝");}
         List<WifiConfiguration> all=wifi.getConfiguredNetworks();if(all!=null)for(WifiConfiguration c:all)if(!old.contains(c.networkId))wifi.removeNetwork(c.networkId);
         for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(c.networkId,false);}
         if(b.getBoolean("wifi")){int oldId=b.getInt("network_id");if(oldId>=0)wifi.enableNetwork(oldId,true);wifi.reconnect();}else wifi.setWifiEnabled(false);wifi.saveConfiguration();
+    }
+    private void applyHotspot(WifiConfiguration config,boolean enabled)throws Exception {
+        ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        // 使用Android 8网络共享服务及真实结果回调，避免已不支持的旧热点入口。
+        if(!enabled)cm.getClass().getMethod("stopTethering",int.class).invoke(cm,0);
+        if(config!=null&&!(Boolean)wifi.getClass().getMethod("setWifiApConfiguration",WifiConfiguration.class).invoke(wifi,config))throw new IOException("热点配置未保存");
+        if(enabled){
+            IBinder binder=(IBinder)Class.forName("android.os.ServiceManager").getMethod("getService",String.class).invoke(null,"connectivity");
+            Object service=Class.forName("android.net.IConnectivityManager$Stub").getMethod("asInterface",IBinder.class).invoke(null,binder);
+            CountDownLatch finished=new CountDownLatch(1);int[] status={-1};
+            ResultReceiver receiver=new ResultReceiver(null){protected void onReceiveResult(int code,Bundle data){status[0]=code;finished.countDown();}};
+            Class.forName("android.net.IConnectivityManager").getMethod("startTethering",int.class,ResultReceiver.class,boolean.class,String.class).invoke(service,0,receiver,false,"android");
+            if(!finished.await(10,TimeUnit.SECONDS)||status[0]!=0)throw new IOException("热点未能启动，系统结果="+status[0]);
+        }
     }
     private boolean networkRestored(JSONObject b)throws Exception {
         if(wifi.isWifiEnabled()!=b.getBoolean("wifi")||(settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data"))return false;

@@ -202,6 +202,8 @@ test('今日流量使用KB，无数据不冒充零；系统配置保留原Wi-Fi�
  assert.match(context.pageSystem(''),/自动时间/);
  assert.match(context.pageSystem(''),/id="setting-timezone" disabled/);
  assert.doesNotMatch(context.pageSystem(''),/type="checkbox"/);
+ context.DEV[0].system_settings.time.timezones=['Australia/Sydney','UTC'];
+ const compatible=context.pageSystem('');assert.match(compatible,/value="UTC"/);assert.match(compatible,/value="Australia\/Sydney"/);assert.doesNotMatch(compatible,/value="America\/New_York"/);
 });
 test('流量历史过期请求不覆盖新的范围，柱子选择显示收发明细',async()=>{
  const nodes={trafficFrom:{value:'2026-09-01'},trafficTo:{value:'2026-09-08'},trafficChart:{innerHTML:''},trafficY:{innerHTML:''},trafficDetail:{textContent:''}};
