@@ -17,6 +17,8 @@ on:
       - "report-recovery.js"
       - "task-artifacts.js"
       - "update-artifacts.js"
+      - "file-transfer.js"
+      - "file-hash-source.js"
       - "logo.js"
       - "logo.png"
       - "wrangler.toml"

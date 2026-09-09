@@ -12,5 +12,8 @@
   "devDependencies": {
     "esbuild": "0.28.1",
     "wrangler": "^4.127.1"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
   }
 }

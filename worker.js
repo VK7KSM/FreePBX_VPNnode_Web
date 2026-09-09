@@ -42,6 +42,8 @@ import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
+import { fileMetadata, fileHttp, validateFileTask, cleanupFiles } from "./file-transfer.js";
+import fileHashSource from './file-hash-source.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -161,6 +163,12 @@ export class ElfStore {
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/__files' && request.method === 'POST') {
+      const raw=await request.text();
+      if(raw.length>8192)return json({ok:false,msg:'文件元数据过大'},400);
+      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>fileMetadata(storage,
+        new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+    }
     if (url.pathname === "/__recovery" && request.method === "POST") {
       return this.ctx.blockConcurrencyWhile(() => this.ctx.storage.transaction(async storage => {
         const scoped = { ...this.env, __storage: storage };
@@ -218,11 +226,12 @@ export class ElfStore {
 }
 
 const app = {
-  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); },
+  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
+    if(pathname==='/file-hash.js')return new Response(fileHashSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
     if (pathname === "/admin-session.js") {
       return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
@@ -236,6 +245,10 @@ const app = {
       }
       const session = await adminRpc(env, request, "session");
       if (!session.ok) return session;
+    }
+    if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
+      const stub=elfDoStub(env);
+      return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
     }
     if (!env.__storage && isPushHttp(pathname)) {
       const stub = elfDoStub(env);
@@ -906,6 +919,7 @@ function publicDevice(d, modelName) {
     lost_mode: d.lost_mode || null,
     managed_lost_tasks: d.managed_lost_tasks === true,
     managed_exec_tasks: d.managed_exec_tasks === true,
+    managed_file_tasks: d.managed_file_tasks === true,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1303,6 +1317,7 @@ async function handleDeviceReport(env, request) {
       list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
       list[i].status_only = data.status_only === true;
       list[i].managed_exec_tasks = data.managed_exec_tasks === true;
+      list[i].managed_file_tasks = data.managed_file_tasks === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1569,6 +1584,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.managed_exec_tasks === true && device.task?.type === 'root_exec'
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
+  if (device.enabled !== false && report.managed_file_tasks === true && device.task?.type === 'send_file'
+      && device.task.managed_file_v1 && shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_file_v1:true};
   if (device.enabled !== false && report.status_only === true && report.managed_update === true
       && device.update?.managed_update_v1 === true && shouldOfferUpdate(device, now))
     body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true,
@@ -1617,7 +1635,7 @@ async function handleElfEnqueueTask(env, request) {
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || found.task?.type!=='root_exec') return json({ok:false,msg:'未找到该命令'},404);
+      if(found.task?.id!==data.task_id || !['root_exec','send_file'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -1630,6 +1648,7 @@ async function handleElfEnqueueTask(env, request) {
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
     if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
+        || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
         || (data.type==="heal_network" && found.managed_heal_tasks===true)
         || (data.type==="reboot" && found.managed_reboot_tasks===true)
@@ -1641,6 +1660,11 @@ async function handleElfEnqueueTask(env, request) {
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
+    if(data.type==='send_file') {
+      if(!found.managed_file_tasks)return json({ok:false,msg:'客户端尚未支持文件接收'},409);
+      params=await validateFileTask(env.__storage,deviceId,params);
+      data.expires_at=Math.min(Date.now()+86400000,Number(data.expires_at)||Infinity);
+    }
     const queued = await enqueueRepairTask(found, {
       type: data.type,
       params,
@@ -1657,6 +1681,7 @@ async function handleElfEnqueueTask(env, request) {
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
     if(!queued.duplicate && data.type==="root_exec") found.task.managed_exec_v1=true;
+    if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="heal_network") found.task.managed_heal_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="reboot") found.task.managed_reboot_v1=true;
@@ -2440,6 +2465,7 @@ function renderDevicesHtml() {
     '.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.monitor{min-width:0;display:flex;flex-direction:column;border:1px solid #334155;border-radius:9px;overflow:hidden;background:#111c2c}.monitor h4{font-size:12px;font-weight:400;line-height:20px;margin:0;padding:10px 12px;border-bottom:1px solid #29364a;color:#b9c8da}.monitor>.ops-actions{box-sizing:border-box;min-height:76px;margin:0!important;padding:10px 12px;align-content:center;gap:6px}.monitor .ops-actions button,.monitor .adb-row button{font-size:12px;font-weight:400;padding:5px 9px;min-height:30px}.monitor .ops-actions .muted{font-size:11px}.monitor .adb-box{display:contents}.monitor .adb-term{height:340px;min-height:340px;max-height:340px;flex-shrink:0;box-sizing:border-box;background:#080f1c;color:#cbd5e1;font-size:12px;line-height:1.8;padding:12px;border-top:1px solid #29364a}.monitor .adb-row,.monitor-footer{margin:0;min-height:46px;box-sizing:border-box;background:#111c2c;border-top:1px solid #29364a;padding:6px 12px;display:flex;align-items:center;gap:8px}.monitor-footer a{font-size:12px;color:#93c5fd}.monitor .adb-prompt{font-size:12px;color:#93c5fd}.monitor input.adb-cmd{font-size:12px;line-height:1.8;height:30px}.monitor .adb-row button{flex-shrink:0}@media(max-width:900px){.monitor-grid{grid-template-columns:1fr}}',
     '.monitor h4{box-sizing:border-box;height:48px;display:flex;align-items:center}.monitor .monitor-heading{justify-content:space-between;gap:8px}.monitor-heading button{font-size:12px;font-weight:400;padding:4px 9px;min-height:28px}.monitor-footer{flex-wrap:wrap;min-height:50px}.monitor-footer .ops-actions{margin:0!important;gap:6px}.monitor-footer button{font-size:12px;font-weight:400;min-height:30px;padding:4px 9px}.monitor-footer .muted{font-size:11px}.monitor .adb-row{min-height:50px}',
     '.monitor-footer button:disabled{background:#334155;color:#e2e8f0;opacity:1;cursor:default}.maintenance-status{font-size:11px;color:#94a3b8;margin-left:4px}.maintenance-status.maintenance-success{color:#34d399}',
+    '.terminal-title{white-space:nowrap;flex-shrink:0}.terminal-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;margin-left:auto}.terminal-actions button{white-space:nowrap;font-size:11px;padding:4px 7px;min-height:28px}.terminal-actions button:disabled{background:#334155;color:#aebcce;opacity:1}.monitor-heading{overflow-x:auto}.file-send-wrap{display:none;position:fixed;inset:0;z-index:2200;background:rgba(2,6,23,.72);align-items:center;justify-content:center;padding:20px}.file-send-dialog{box-sizing:border-box;width:530px;max-width:100%;background:#111c2c;border:1px solid #334155;border-radius:10px;padding:20px;color:#d4deec;font-size:12px;line-height:1.8}.file-send-dialog h3{font-size:15px;font-weight:400;margin:0}.file-send-fields{display:grid;gap:14px;margin-top:18px}.file-send-fields>label{display:grid;gap:6px}.file-send-fields input.inp{font-size:12px;height:34px;width:100%}.file-options{display:flex;gap:14px;flex-wrap:wrap}.file-options label{display:flex;align-items:center;gap:5px}.file-send-fields button{font-size:12px;font-weight:400;padding:5px 12px}.file-send-fields p{margin:0;color:#aebcce;overflow-wrap:anywhere}',
     '.monitor-footer a.log-download{display:inline;padding:0;border:0;border-radius:0;background:none;color:#93c5fd;font-size:12px;text-decoration:none}.monitor-footer a.log-download:hover{text-decoration:underline}',
     '.function-content select.release-select{font-size:12px;line-height:1.8;height:34px;padding:5px 10px;width:360px;max-width:100%;min-width:0;color-scheme:dark}.function-content select:disabled{opacity:.6}',
     '.fn-page textarea.inp{min-height:72px;resize:vertical}',

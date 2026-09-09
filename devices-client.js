@@ -475,7 +475,7 @@ function pageModel(){
   return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
 }
 var MAINTENANCE_RUN={};
-var MAINTENANCE_CAPS={pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+var MAINTENANCE_CAPS={send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
@@ -487,22 +487,24 @@ function pageAdb(dis){
   var ready=!!(d&&d.managed_exec_tasks),blocked=!!(dis||!ready||(u&&u.shell.pending));
   var run= d && MAINTENANCE_RUN[d.id];
   var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
-  var h = '<div class="ops-actions" style="margin:.55rem 0">';
+  var h = '<span class="terminal-actions">';
+  h += '<button class="'+(maintenanceAvailable(d,'send_file')?'btn-green':'btn-gray')+'" onclick="openSendFile()"'+(maintenanceAvailable(d,'send_file')?'':' disabled')+'>发送文件</button>';
   h += '<button class="'+(maintenanceAvailable(d,'pull_logs')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'pull_logs\')"'+(maintenanceAvailable(d,'pull_logs')?'':' disabled')+'>拉取日志</button>';
   h += '<button class="'+(maintenanceAvailable(d,'heal_network')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'heal_network\')"'+(maintenanceAvailable(d,'heal_network')?'':' disabled')+'>强制自愈</button>';
   h += '<button class="'+(maintenanceAvailable(d,'reboot')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'reboot\')"'+(maintenanceAvailable(d,'reboot')?'':' disabled')+'>受控重启</button>';
   h += '<button class="'+(maintenanceAvailable(d,'restart_adbd')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'restart_adbd\')"'+(maintenanceAvailable(d,'restart_adbd')?'':' disabled')+'>重启adbd</button>';
-  if(st) h += '<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
-  h += "</div>";
+  h += '</span>';
 
   var lines=u?u.shell.lines:[], output=esc(r.text||'');
   for(var i=0;i<lines.length;i++) output+='<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+'\n</span>';
   if(!output)output='<span class="adb-sys">'+(ready?'等待输入命令':'客户端维护核心未就绪')+'</span>';
-  var left='<section class="monitor"><h4>通用终端</h4><pre class="adb-term task-result" id="taskOut">'+output+'</pre>';
+  var left='<section class="monitor"><h4 class="monitor-heading"><span class="terminal-title">通用终端</span>'+h+'</h4><pre class="adb-term task-result" id="taskOut">'+output+'</pre>';
   left+='<div class="adb-row"><span class="adb-prompt">shell&gt;</span><input id="shellCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="pm list packages"'+(blocked?' disabled':'')+'>';
   left+='<button class="btn-green" onclick="shellSend()"'+(blocked?' disabled':'')+'>发送</button>';
   if(u&&u.shell.pending)left+='<button class="btn-gray" onclick="cancelCommand()"'+(u.shell.cancelRequested?' disabled':'')+'>'+(u.shell.cancelRequested?'停止中':'停止')+'</button>';
-  left+='</div><div class="monitor-footer">'+h;
+  left+='</div><div class="monitor-footer">';
+  if(st)left+='<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
+  if(t.type==='send_file')left+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
   if(d&&r.artifact)left+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   left+='</div></section>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
@@ -511,6 +513,71 @@ function pageAdb(dis){
   for(var j=0;j<adb.lines.length;j++)right+='<span class="adb-sys">'+esc(adb.lines[j])+'</span>\n';
   right+='</pre><div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="shell pm list packages" disabled><button class="btn-gray" disabled>发送</button></div></div></section>';
   return '<div class="monitor-grid">'+left+right+'</div>';
+}
+
+var FILE_SEND={},FILE_VIEW='',FILE_POLL=null;
+function fileSendMessage(state,text){state.message=text;if(FILE_VIEW===state.device_id&&$('fileStatus'))$('fileStatus').textContent=text;}
+function closeSendFile(){hide('fileSendWrap');clearTimeout(FILE_POLL);FILE_VIEW='';}
+function openSendFile(){
+  var d=currentDev();if(!d)return;
+  if(!$('fileSendWrap')){var wrap=document.createElement('div');wrap.id='fileSendWrap';wrap.className='file-send-wrap';wrap.onclick=function(e){if(e.target===wrap)closeSendFile();};document.body.appendChild(wrap);}
+  FILE_VIEW=d.id;
+  var state=FILE_SEND[d.id]||(FILE_SEND[d.id]={device_id:d.id,message:''});
+  if(d.task&&d.task.type==='send_file'&&!state.task_id)state.task_id=d.task.id;
+  $('fileSendWrap').innerHTML='<div class="file-send-dialog"><div class="traffic-header"><h3>发送文件</h3><button class="btn-close" onclick="closeSendFile()" aria-label="关闭发送文件">&times;</button></div><div class="file-send-fields"><label>选择文件<input id="sendFilePick" type="file" onchange="pickSendFile()"'+(state.busy?' disabled':'')+'></label><label>设备保存路径<input id="sendFilePath" class="inp" placeholder="/sdcard/Download/文件名" value="'+esc(state.path||'')+'"'+(state.busy?' disabled':'')+'></label><div class="file-options"><label><input id="sendFileCell" type="checkbox"'+(state.cellular?' checked':'')+(state.busy?' disabled':'')+'>允许本次使用移动数据</label><label><input id="sendFileOverwrite" type="checkbox"'+(state.overwrite?' checked':'')+(state.busy?' disabled':'')+'>替换同名文件（保留原件）</label></div><div class="ops-actions"><button id="sendFileStart" class="btn-green" onclick="startSendFile()"'+(state.busy?' disabled':'')+'>发送</button><button class="btn-gray" onclick="stopSendFile()">停止</button></div><p id="fileStatus" role="status">'+esc(state.message||'默认通过 Wi-Fi 接收文件')+'</p></div></div>';
+  show('fileSendWrap');if(state.task_id)pollSendFile(state);
+}
+function pickSendFile(){var s=FILE_SEND[FILE_VIEW],f=$('sendFilePick').files[0];if(s&&f){s.file=f;if(!s.path||s.path.startsWith('/sdcard/Download/'))s.path='/sdcard/Download/'+f.name;$('sendFilePath').value=s.path;}}
+async function fileApi(path,body,method){
+  var r=await fetch(path,body===undefined?{}:{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var x=await r.json();if(!r.ok||!x.ok)throw Error(x.msg||'文件请求失败');return x;
+}
+async function startSendFile(){
+  var s=FILE_SEND[FILE_VIEW];if(!s||s.busy)return;
+  var f=s.file;s.path=$('sendFilePath').value.trim();s.cellular=$('sendFileCell').checked;s.overwrite=$('sendFileOverwrite').checked;
+  if(!f||!s.path.startsWith('/')||s.path.endsWith('/')){fileSendMessage(s,'请选择文件并填写完整保存路径');return;}
+  if(f.size>4*1024*1024*1024){fileSendMessage(s,'文件最大支持4 GB');return;}
+  s.busy=true;s.stop=false;openSendFile();
+  var resumeKey='elf-file-upload:'+s.device_id+':'+f.name+':'+f.size+':'+f.lastModified;
+  try{
+    var id=localStorage.getItem(resumeKey),m;
+    if(id){try{m=(await fileApi('/api/elfremote/files/'+id)).file;}catch(e){if(/过期/.test(e.message))localStorage.removeItem(resumeKey);else throw e;}}
+    if(!m){m=(await fileApi('/api/elfremote/files',{device_id:s.device_id,name:f.name,size:f.size})).file;localStorage.setItem(resumeKey,m.id);}
+    var hash=(await import('/file-hash.js')).sha256.create();
+    for(var i=0,offset=0;offset<f.size;i++,offset+=m.chunk_size){
+      if(s.stop)throw Error('上传已停止，再次发送可继续');
+      var bytes=new Uint8Array(await f.slice(offset,offset+m.chunk_size).arrayBuffer());hash.update(bytes);
+      var partSha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),function(b){return b.toString(16).padStart(2,'0');}).join('');
+      if(m.parts[i]&&m.parts[i].sha256!==partSha)throw Error('所选文件内容已变化，请重新选择原文件');
+      if(!m.parts[i]){
+        var failure;
+        for(var attempt=0;attempt<3;attempt++){
+          if(s.stop)throw Error('上传已停止，再次发送可继续');
+          try{var r=await fetch('/api/elfremote/files/'+m.id+'/parts/'+i+'?sha256='+partSha,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:bytes});var x=await r.json();if(!r.ok||!x.ok)throw Error(x.msg||'分块上传失败');failure=null;break;}
+          catch(e){failure=e;await new Promise(function(resolve){setTimeout(resolve,1000*(attempt+1));});}
+        }
+        if(failure)throw failure;
+      }
+      fileSendMessage(s,'上传到服务器 '+Math.floor(Math.min(f.size,offset+bytes.length)*100/Math.max(1,f.size))+'%');
+    }
+    if(s.stop)throw Error('上传已停止，再次发送可继续');
+    var sha=Array.from(hash.digest(),function(b){return b.toString(16).padStart(2,'0');}).join('');
+    await fileApi('/api/elfremote/files/'+m.id+'/complete',{sha256:sha});
+    s.job_id=s.job_id||('file-'+crypto.randomUUID());
+    var assigned=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'send_file',id:s.job_id,params:{transfer_id:m.id,path:s.path,allow_cellular:s.cellular,overwrite:s.overwrite}});
+    s.task_id=assigned.task.id;localStorage.removeItem(resumeKey);fileSendMessage(s,'文件已上传，等待设备接收');pollSendFile(s);loadDevices();
+  }catch(e){fileSendMessage(s,e.message);}
+  finally{s.busy=false;if(FILE_VIEW===s.device_id&&$('sendFileStart'))$('sendFileStart').disabled=false;}
+}
+async function pollSendFile(s){
+  clearTimeout(FILE_POLL);if(FILE_VIEW!==s.device_id||!s.task_id)return;
+  try{var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id}));
+    if(x.task){fileSendMessage(s,x.task.detail||x.task.label||'等待设备接收');if(['success','failed','rejected','expired'].includes(x.task.state)){s.job_id='';return;}}
+  }catch(e){fileSendMessage(s,e.message);}
+  FILE_POLL=setTimeout(function(){pollSendFile(s);},5000);
+}
+async function stopSendFile(){var s=FILE_SEND[FILE_VIEW];if(!s)return;s.stop=true;if(s.busy){fileSendMessage(s,'当前分块完成后停止上传');return;}
+  if(s.task_id)try{await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:s.task_id});fileSendMessage(s,'正在通知设备停止接收');pollSendFile(s);}catch(e){fileSendMessage(s,e.message);}
 }
 
 var RELEASES=[], RELEASE_STATE='idle', RELEASE_REQUEST=null;

@@ -28,6 +28,8 @@ final class RescueJobs {
                 try {
                 JSONObject obj = new JSONObject(RescueFiles.read(state, 600000));
                 if ("running".equals(obj.optString("state"))) {
+                    JSONObject recovered=FileCommit.recover(dir);
+                    if(recovered!=null){recovered.put("id",dir.getName());RescueFiles.write(state,recovered.toString());continue;}
                     obj.put("state", "interrupted").put("error", "救援进程已重启，任务不会自动重放");
                     RescueFiles.write(state, obj.toString());
                 }
@@ -48,6 +50,17 @@ final class RescueJobs {
     }
 
     synchronized JSONObject submit(String id, String command, int timeout) throws Exception {
+        return submit(id,command,timeout,runner);
+    }
+
+    synchronized JSONObject submitFile(String id, JSONObject params) throws Exception {
+        // 固定键序确保回执丢失后的同号重试仍然幂等。
+        JSONObject p=new JSONObject().put("source",params.getString("source")).put("path",params.getString("path"))
+                .put("size",params.getLong("size")).put("sha256",params.getString("sha256")).put("overwrite",params.optBoolean("overwrite"));
+        return submit(id,"file-commit:"+p.toString(),120,(folder,command,timeout)->FileCommit.run(folder,p));
+    }
+
+    private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {
         if (persistenceFailure != null) throw new IOException("任务结果持久化失败，停止接受新任务", persistenceFailure);
         validate(id, command, timeout);
         if (new File(root.getParentFile(),"upgrading").exists()) throw new IllegalStateException("维护核心正在更新");
@@ -70,7 +83,7 @@ final class RescueJobs {
             JSONObject accepted = new JSONObject(state.toString());
             new Thread(() -> {
                 try {
-                    JSONObject result = runner.run(folder, command, timeout);
+                    JSONObject result = execution.run(folder, command, timeout);
                     for (java.util.Iterator<String> it = result.keys(); it.hasNext();) {
                         String key = it.next(); state.put(key, result.get(key));
                     }

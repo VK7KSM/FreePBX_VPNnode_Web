@@ -29,6 +29,7 @@ public final class ReportService extends Service {
     private PairingStore store;
     private DeviceIdentity identity;
     private String executingCommand = "";
+    private FileTransfer fileTransfer;
     private volatile boolean destroyed;
     private NetworkHealer healer;
     private boolean loopStarted;
@@ -52,6 +53,7 @@ public final class ReportService extends Service {
         if (current.equals(lastNetwork)) { WakeScheduler.release("network-change"); return; }
         String previous = lastNetwork; lastNetwork = current;
         RuntimeLog.event("report_network_changed from=" + previous + " to=" + current);
+        resumeFileTransfer();
         if (!"unknown".equals(current) && !"none".equals(current)) scheduleReport(1000L);
         WakeScheduler.release("network-change");
     };
@@ -151,6 +153,7 @@ public final class ReportService extends Service {
         }
         ensureMaintenance();
         worker.post(() -> {
+            resumeFileTransfer();
             java.io.File active = new java.io.File(getFilesDir(), "core-active.json");
             if (active.isFile()) try { maybeRunTask(new JSONObject(RescueFiles.read(active, 40000))); }
             catch (Exception e) { RuntimeLog.error("core_resume_pending", e); }
@@ -165,6 +168,7 @@ public final class ReportService extends Service {
                 try {
                     RuntimeLog.event("wake_alarm key=" + key + " queue_ms=" + Math.max(0, android.os.SystemClock.elapsedRealtime()-intent.getLongExtra("received_elapsed", android.os.SystemClock.elapsedRealtime())));
                     if ("report".equals(key)) loop.run();
+                    if ("file-transfer".equals(key)) resumeFileTransfer();
                     else if (push != null) push.wake(key);
                 } finally { WakeScheduler.release("dispatch-" + key); }
             });
@@ -199,6 +203,7 @@ public final class ReportService extends Service {
     @Override
     public void onDestroy() {
         destroyed = true;
+        if(fileTransfer!=null)fileTransfer.stop();
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
         if (connectivity != null && networkCallback != null) {
@@ -371,6 +376,7 @@ public final class ReportService extends Service {
         body.put("maintenance", WatchdogInstaller.snapshot());
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
+        body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_heal_tasks", WatchdogInstaller.ready());
         body.put("managed_reboot_tasks", WatchdogInstaller.ready());
         body.put("managed_adbd_tasks", WatchdogInstaller.ready());
@@ -483,6 +489,7 @@ public final class ReportService extends Service {
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_exec_v1") && "root_exec".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_file_v1") && "send_file".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
@@ -690,10 +697,23 @@ public final class ReportService extends Service {
         }
     }
 
+    private void resumeFileTransfer() {
+        java.io.File active=new java.io.File(getFilesDir(),"file-active.json");
+        if(active.isFile())try{maybeRunTask(new JSONObject(RescueFiles.read(active,16000)));}
+        catch(Exception error){RuntimeLog.error("file_resume_pending",error);}
+    }
+
     private void maybeRunTask(JSONObject offer) {
         if (offer == null) return;
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
+        if("send_file".equals(offer.optString("type"))) {
+            try{
+                if(fileTransfer==null)fileTransfer=new FileTransfer(this,this::postTask,taskReceipts());
+                fileTransfer.receive(offer,store.deviceId(),store.token());
+            }catch(Exception error){RuntimeLog.error("file_task_pending",error);}
+            return;
+        }
         if ("root_exec".equals(offer.optString("type"))) {
             runCoreCommand(offer);
             return;

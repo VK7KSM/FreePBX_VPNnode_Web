@@ -28,9 +28,14 @@ final class RescueFiles {
         }
         if (File.separatorChar == '\\') {
             // Windows离线测试使用其原子替换；Android仍用同文件系统rename。
-            java.nio.file.Files.move(temp.toPath(), file.toPath(),
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            for(int attempt=0;;attempt++)try {
+                java.nio.file.Files.move(temp.toPath(), file.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);break;
+            }catch(java.nio.file.AccessDeniedException transientLock){
+                if(attempt>=2)throw transientLock;
+                try{Thread.sleep(20L*(attempt+1));}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IOException(interrupted);}
+            }
         } else if (!temp.renameTo(file)) throw new IOException("Atomic rename failed: " + file);
     }
 

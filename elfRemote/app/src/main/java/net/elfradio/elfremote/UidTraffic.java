@@ -30,6 +30,7 @@ final class UidTraffic {
             // tag=0 已包含带标签子流量，不能把子标签再次相加。
             if (!values[columns.get("acct_tag_hex")].matches("0x0+")) continue;
             String iface = values[columns.get("iface")];
+            if("lo".equals(iface))continue;
             if (!iface.matches("[A-Za-z0-9_.:-]{1,32}") || !seen.add(iface + ":" + values[columns.get("cnt_set")]))
                 throw new IOException("traffic row duplicated or invalid");
             long rx = Long.parseLong(values[columns.get("rx_bytes")]), tx = Long.parseLong(values[columns.get("tx_bytes")]);
