@@ -22,3 +22,13 @@ test('配置读回不接受截断结果或仅任务受理',()=>{
   assert.throws(()=>applySystemSettingsResult(device,{exit_code:0,action:'completed',truncated:true,text:'{}'},1));
   assert.throws(()=>applySystemSettingsResult(device,{exit_code:0,action:'completed',text:JSON.stringify({group:'sound',sampled_at:1})},1));
 });
+
+
+test('兼容D22系统HTTP调试行但拒绝其他错误输出，公开回执仍为纯JSON',()=>{
+ const d={task:{type:'system_config',id:'compat',state:'running',params:{group:'network',action:'set'}}};
+ const text='port:443\n[OkHttp] sendRequest>>\n[OkHttp] sendRequest<<\n'+JSON.stringify({group:'network',sampled_at:5,applied:true});
+ const result={exit_code:0,action:'completed',text};applyRepairProgress(d,'compat','success','完成',result,6);
+ assert.equal(JSON.parse(d.task.result.text).applied,true);assert.equal(d.system_settings.network.sampled_at,5);
+ applyRepairProgress(d,'compat','success','完成',{exit_code:0,action:'completed',text},7);assert.doesNotThrow(()=>JSON.parse(d.task.result.text));
+ assert.throws(()=>applySystemSettingsResult({task:{state:'running',params:{group:'network'}}},{exit_code:0,action:'completed',text:'Error: failed\n'+JSON.stringify({group:'network',sampled_at:5})},6));
+});

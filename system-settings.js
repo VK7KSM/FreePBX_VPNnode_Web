@@ -22,9 +22,13 @@ export function systemSettingsParams(p={}){
 }
 
 export function applySystemSettingsResult(device,result,now){
-  if(device.task.state==='success')return;
   if(result?.exit_code!==0||result.action!=='completed'||result.truncated)throw Error('缺少系统配置完成证据');
-  let snapshot;try{snapshot=JSON.parse(result.text);}catch{throw Error('系统配置结果无法读取');}
+  let snapshot;try{
+    // 兼容134至136版：D22系统HTTP库会在标准输出加入这三类固定调试行。
+    const text=String(result.text||'').split(/\r?\n/).filter(line=>!/^port:[0-9]+$/.test(line)&&!/^\[OkHttp\] sendRequest(?:>>|<<)$/.test(line)).join('\n');
+    snapshot=JSON.parse(text);result.text=JSON.stringify(snapshot);
+  }catch{throw Error('系统配置结果无法读取');}
+  if(device.task.state==='success')return;
   const p=device.task.params;if(snapshot.group!==p.group||!Number.isFinite(snapshot.sampled_at)||(p.action==='set'&&snapshot.applied!==true))throw Error('系统配置结果与任务不匹配');
   device.system_settings={...device.system_settings,[p.group]:{...snapshot,received_at:now}};
 }
