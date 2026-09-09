@@ -211,13 +211,13 @@ test('所有功能页均可渲染，型号名称转义且操作使用当前条�
  const shell=context.pageAdb('');assert.match(shell,/monitor-grid/);assert.match(shell,/id="taskOut"/);assert.match(shell,/id="adbTerm"/);
 });
 
-test('ADB通道未实现时不伪造连接成功，按钮在终端标题内且维护操作在输出之后',()=>{
+test('终端以设备执行能力为准，未就绪不伪造成功且保留维护布局',()=>{
  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
  vm.runInContext(source,context);context.DEV=[{id:'fixture'}];context.selDev='fixture';context.renderOps=()=>{};
  context.adbConnect();assert.equal(context.uiOf().adb.connected,false);
- const html=context.pageAdb('');assert.match(html,/连接未建立/);assert.match(html,/monitor-heading.*连接ADB/);
- assert.doesNotMatch(html,/断开ADB/);assert.ok(html.indexOf('id="taskOut"')<html.indexOf("enqueueRepair"));
- context.uiOf().adb.connected=true;assert.match(context.pageAdb(''),/断开ADB/);
+ const html=context.pageAdb('');assert.match(html,/维护核心尚未就绪/);assert.match(html,/monitor-heading.*启用终端/);
+ assert.doesNotMatch(html,/断开终端/);assert.ok(html.indexOf('id="taskOut"')<html.indexOf("enqueueRepair"));
+ context.DEV[0].managed_exec_tasks=true;context.adbConnect();assert.equal(context.uiOf().adb.connected,true);assert.match(context.pageAdb(''),/断开终端/);
  context.adbDisconnect();assert.equal(context.uiOf().adb.connected,false);
 });
 

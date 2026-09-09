@@ -28,6 +28,8 @@ public final class ReportService extends Service {
     private Handler worker;
     private PairingStore store;
     private DeviceIdentity identity;
+    private String executingCommand = "";
+    private volatile boolean destroyed;
     private NetworkHealer healer;
     private boolean loopStarted;
     private boolean reporting;
@@ -148,6 +150,11 @@ public final class ReportService extends Service {
             worker.post(loop);
         }
         ensureMaintenance();
+        worker.post(() -> {
+            java.io.File active = new java.io.File(getFilesDir(), "core-active.json");
+            if (active.isFile()) try { maybeRunTask(new JSONObject(RescueFiles.read(active, 40000))); }
+            catch (Exception e) { RuntimeLog.error("core_resume_pending", e); }
+        });
     }
 
     @Override
@@ -191,6 +198,7 @@ public final class ReportService extends Service {
 
     @Override
     public void onDestroy() {
+        destroyed = true;
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
         if (connectivity != null && networkCallback != null) {
@@ -335,9 +343,10 @@ public final class ReportService extends Service {
     }
 
     private void ensureMaintenance() {
+        CoreInstaller.ensure(this, () -> { Handler h=worker; if(h!=null) h.post(() -> scheduleReport(1000L)); });
         WatchdogInstaller.ensure(this, () -> {
             Handler target = worker;
-            if (target != null) target.post(() -> scheduleReport(1000L));
+            if (target != null) target.post(() -> { CoreInstaller.ensure(this, () -> target.post(() -> scheduleReport(1000L))); scheduleReport(1000L); });
         });
     }
 
@@ -361,6 +370,7 @@ public final class ReportService extends Service {
         body.put("ready", WatchdogInstaller.ready());
         body.put("maintenance", WatchdogInstaller.snapshot());
         body.put("managed_log_tasks", true);
+        body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_heal_tasks", WatchdogInstaller.ready());
         body.put("managed_reboot_tasks", WatchdogInstaller.ready());
         body.put("managed_adbd_tasks", WatchdogInstaller.ready());
@@ -472,6 +482,7 @@ public final class ReportService extends Service {
             }
             if (response.optBoolean("ok") && response.optString("report_id").equals(new JSONObject(json).optString("report_id"))
                     && managed != null && ((managed.optBoolean("managed_log_v1") && "pull_logs".equals(managed.optString("type")))
+                    || (managed.optBoolean("managed_exec_v1") && "root_exec".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_heal_v1") && "heal_network".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_reboot_v1") && "reboot".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_adbd_v1") && "restart_adbd".equals(managed.optString("type")))
@@ -608,10 +619,85 @@ public final class ReportService extends Service {
         }
     }
 
+    private void runCoreCommand(JSONObject offer) {
+        String id = offer.optString("id");
+        try {
+            JSONObject receipt = taskReceipts().read(id);
+            if (receipt != null) {
+                if (!receipt.optBoolean("acknowledged")) postTask(id, receipt.getString("state"), receipt.optString("detail"), receipt.optJSONObject("result"));
+                new java.io.File(getFilesDir(), "core-active.json").delete();
+                return;
+            }
+            if (id.equals(executingCommand)) {
+                if (offer.optBoolean("cancel_requested")) CoreClient.request("/jobs/" + id + "/cancel", new JSONObject());
+                return;
+            }
+            if (!executingCommand.isEmpty()) return;
+            JSONObject existing = CoreClient.request("/jobs/" + id, null);
+            if (existing == null) {
+                String reason = RepairPolicy.rejectReason(offer, System.currentTimeMillis());
+                if (!reason.isEmpty() || offer.optBoolean("cancel_requested")) {
+                    postTask(id, "rejected", offer.optBoolean("cancel_requested") ? "命令已取消，未执行" : reason, null); return;
+                }
+            }
+            JSONObject params = offer.getJSONObject("params");
+            String command = params.getString("command"), cwd = params.optString("cwd", "/");
+            int timeout = params.optInt("timeout", 30);
+            RescueJobs.validate(id, command, timeout);
+            if (!cwd.startsWith("/") || cwd.length() > 1024 || cwd.indexOf('\0') >= 0) throw new IllegalArgumentException("工作目录无效");
+            RescueFiles.write(new java.io.File(getFilesDir(), "core-active.json"), offer.toString());
+            postTask(id, "claimed", "设备已接收命令", null);
+            postTask(id, "running", "设备正在执行命令", null);
+            if (existing == null) CoreClient.request("/exec", new JSONObject().put("id", id)
+                    .put("command", "cd " + RescueFiles.quote(cwd) + " || exit 125\n" + command).put("timeout", timeout));
+            if (offer.optBoolean("cancel_requested")) CoreClient.request("/jobs/" + id + "/cancel", new JSONObject());
+            executingCommand = id;
+            WakeScheduler.hold(this, "core-command", (timeout + 15L) * 1000L);
+            new Thread(() -> {
+                JSONObject result = null;
+                try {
+                    long end = android.os.SystemClock.elapsedRealtime() + (timeout + 15L) * 1000;
+                    while (!destroyed && android.os.SystemClock.elapsedRealtime() < end) {
+                        result = CoreClient.request("/jobs/" + id, null);
+                        if (result != null && !"running".equals(result.optString("state"))) break;
+                        result = null; Thread.sleep(500);
+                    }
+                } catch (Exception error) { RuntimeLog.error("core_result_pending", error); }
+                final JSONObject outcome = result;
+                Handler h = worker;
+                if (!destroyed && h != null) h.post(() -> {
+                    executingCommand = "";
+                    try {
+                        if (outcome == null) { scheduleReport(15000L); return; }
+                        String state = outcome.optString("state");
+                        boolean ok = "completed".equals(state) && !outcome.isNull("exit_code") && outcome.optInt("exit_code", -1) == 0;
+                        String detail = "cancelled".equals(state) ? "命令已停止" : "timed_out".equals(state) ? "命令执行超时，已停止"
+                                : "interrupted".equals(state) ? "维护核心重启，命令中断且未重跑" : ok ? "命令执行成功" : "命令执行失败";
+                        String output = outcome.optString("output", outcome.optString("error"));
+                        JSONObject report = new JSONObject().put("text", output.substring(0, Math.min(16000, output.length())))
+                                .put("truncated", outcome.optBoolean("truncated") || output.length() > 16000)
+                                .put("exit_code", outcome.opt("exit_code")).put("elapsed_ms", outcome.optLong("elapsed_ms"))
+                                .put("stage", "command").put("action", state);
+                        postTask(id, ok ? "success" : "failed", detail, report);
+                        new java.io.File(getFilesDir(), "core-active.json").delete();
+                    } catch (Exception error) { RuntimeLog.error("core_receipt_pending", error); scheduleReport(15000L); }
+                    finally { WakeScheduler.release("core-command"); }
+                });
+            }, "elfremote-command-result").start();
+        } catch (Exception error) {
+            RuntimeLog.error("core_command_pending", error);
+            scheduleReport(15000L);
+        }
+    }
+
     private void maybeRunTask(JSONObject offer) {
         if (offer == null) return;
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
+        if ("root_exec".equals(offer.optString("type"))) {
+            runCoreCommand(offer);
+            return;
+        }
         if (id.equals(locatingTask)) return;
         if(wifiConnector!=null && wifiConnector.busy()) return;
         try {
@@ -990,7 +1076,7 @@ public final class ReportService extends Service {
             try {
                 JSONObject reply = new JSONObject(HttpJson.post(Protocol.taskProgressPath(), payload));
                 JSONObject task = reply.optJSONObject("task");
-                if (!reply.optBoolean("ok") || task == null || !taskId.equals(task.optString("id")) || !state.equals(task.optString("state")))
+                if (!reply.optBoolean("ok") || task == null || !taskId.equals(task.optString("id")) || !(state.equals(task.optString("state")) || ("claimed".equals(state) && "running".equals(task.optString("state")))))
                     throw new java.io.IOException("task acknowledgment missing");
                 if (TaskReceipts.terminal(state)) taskReceipts().acknowledge(taskId);
                 return;

@@ -165,6 +165,7 @@ while true; do
   run_update
   loop=$((loop + 1))
   if [ $((loop % SLEEP)) -eq 1 ]; then
+    [ ! -f /data/local/elfremote/core/launch.sh ] || sh /data/local/elfremote/core/launch.sh
     pid=$(pkg_pid)
     if [ -z "$pid" ]; then
       log "missing; start service"

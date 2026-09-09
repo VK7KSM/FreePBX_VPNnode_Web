@@ -195,6 +195,7 @@ final class WatchdogPolicy {
                 + "  run_update\n"
                 + "  loop=$((loop + 1))\n"
                 + "  if [ $((loop % SLEEP)) -eq 1 ]; then\n"
+                + "    [ ! -f /data/local/elfremote/core/launch.sh ] || sh /data/local/elfremote/core/launch.sh\n"
                 + "    pid=$(pkg_pid)\n"
                 + "    if [ -z \"$pid\" ]; then\n"
                 + "      log \"missing; start service\"\n"

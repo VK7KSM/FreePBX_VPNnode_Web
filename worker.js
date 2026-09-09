@@ -905,6 +905,7 @@ function publicDevice(d, modelName) {
     alarm: d.alarm || null,
     lost_mode: d.lost_mode || null,
     managed_lost_tasks: d.managed_lost_tasks === true,
+    managed_exec_tasks: d.managed_exec_tasks === true,
     contacts: d.contacts || null,
     network: d.network || "unknown",
     ip: d.ip || "",
@@ -1301,6 +1302,7 @@ async function handleDeviceReport(env, request) {
       list[i].last_reported_at = history.record.timeline_at;
       list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
       list[i].status_only = data.status_only === true;
+      list[i].managed_exec_tasks = data.managed_exec_tasks === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1564,6 +1566,9 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if (device.enabled !== false && report.managed_exec_tasks === true && device.task?.type === 'root_exec'
+      && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
   if (device.enabled !== false && report.status_only === true && report.managed_update === true
       && device.update?.managed_update_v1 === true && shouldOfferUpdate(device, now))
     body.managed_update = {manifest_raw:device.update.manifest_raw,signature:device.update.signature,managed_update_v1:true,
@@ -1611,6 +1616,11 @@ async function handleElfEnqueueTask(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
+    if(data.action==='cancel') {
+      if(found.task?.id!==data.task_id || found.task?.type!=='root_exec') return json({ok:false,msg:'未找到该命令'},404);
+      if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
+      return json({ok:true,task:publicRepair(found.task)});
+    }
     if (String(data.type || "") === "install_apk") {
       const vc = Number(data.params?.versionCode || data.versionCode || 0);
       if (!Number.isInteger(vc) || vc <= 0) return json({ok:false,msg:"缺少有效 versionCode"},400);
@@ -1619,7 +1629,8 @@ async function handleElfEnqueueTask(env, request) {
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
-    if(found.status_only && !((data.type==="pull_logs" && found.managed_log_tasks===true)
+    if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
+        || (data.type==="pull_logs" && found.managed_log_tasks===true)
         || (data.type==="heal_network" && found.managed_heal_tasks===true)
         || (data.type==="reboot" && found.managed_reboot_tasks===true)
         || (data.type==="restart_adbd" && found.managed_adbd_tasks===true)
@@ -1645,6 +1656,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
+    if(!queued.duplicate && data.type==="root_exec") found.task.managed_exec_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="pull_logs") found.task.managed_log_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="heal_network") found.task.managed_heal_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="reboot") found.task.managed_reboot_v1=true;

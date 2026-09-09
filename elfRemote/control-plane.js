@@ -122,7 +122,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -135,6 +135,7 @@ export const REPAIR_STATE_LABELS = {
 };
 
 export const REPAIR_TYPE_LABELS = {
+  root_exec: "执行命令",
   pull_logs: "拉取日志",
   heal_network: "强制自愈",
   reboot: "受控重启",
@@ -206,18 +207,27 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
+  if(type === "root_exec" && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("命令编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
   return {
     id,
     type,
-    params: type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
     detail: ""
   };
+}
+
+export function commandParams(value={}) {
+  const command=value?.command, cwd=value?.cwd??'/', timeout=value?.timeout??30;
+  if(typeof command!=='string' || !command.trim() || command.includes('\0') || new TextEncoder().encode(command).length>7000) throw new Error('命令长度应为1至7000字节');
+  if(typeof cwd!=='string' || !cwd.startsWith('/') || cwd.length>256 || cwd.includes('\0')) throw new Error('工作目录须为绝对路径');
+  if(!Number.isInteger(timeout) || timeout<1 || timeout>120) throw new Error('超时时间应为1至120秒');
+  return {command,cwd,timeout};
 }
 
 function canonical(value) {
@@ -295,6 +305,8 @@ export function canAdvanceRepair(from, to) {
 export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
+  if(device.task.type === 'root_exec' && state === 'success'
+      && (!result || result.exit_code !== 0 || result.action !== 'completed')) throw new Error('缺少命令成功证据');
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
@@ -323,7 +335,8 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       bytes: Math.max(0, Number(result.bytes) || 0),
       truncated: !!result.truncated,
       artifact: result.artifact || null,
-      text: String(result.text || "").slice(0, 2048),
+      text: String(result.text || "").slice(0, device.task.type === "root_exec" ? 16000 : 2048),
+      ...(device.task.type === "root_exec" ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
       reason: String(result.reason || "").slice(0, 80)
@@ -412,6 +425,7 @@ export function publicRepair(task) {
       truncated: !!r.truncated,
       artifact: r.artifact || null,
       text: r.text || "",
+      ...(task.type === "root_exec" ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""
@@ -426,6 +440,7 @@ export function repairOfferPayload(task) {
     type: task.type,
     params: task.params || {},
     expires_at: task.expires_at,
-    idempotency_key: task.idempotency_key
+    idempotency_key: task.idempotency_key,
+    ...(task.cancel_requested ? {cancel_requested:true} : {})
   };
 }
