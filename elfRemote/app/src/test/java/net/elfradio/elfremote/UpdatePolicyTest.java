@@ -130,6 +130,15 @@ public class UpdatePolicyTest {
         assertFalse(UpdatePolicy.healthy(h, "0.1.12-d22xx-updb", 13));
     }
 
+    @Test public void applicationReportAloneCannotConfirmMaintenanceUpdate() {
+        UpdatePolicy.Health h=new UpdatePolicy.Health();h.versionName="test";h.versionCode=132;h.identityOk=true;h.reportOk=true;
+        assertFalse(UpdatePolicy.maintenanceHealthy(h,"test",132,true,0));
+        assertFalse(UpdatePolicy.maintenanceHealthy(h,"test",132,true,131));
+        assertFalse(UpdatePolicy.maintenanceHealthy(h,"test",132,false,132));
+        assertTrue(UpdatePolicy.maintenanceHealthy(h,"test",132,true,132));
+        h.reportOk=false;assertFalse(UpdatePolicy.maintenanceHealthy(h,"test",132,true,132));
+    }
+
     @Test
     public void rsaSignatureRoundTrip() throws Exception {
         KeyPairGenerator g = KeyPairGenerator.getInstance("RSA");

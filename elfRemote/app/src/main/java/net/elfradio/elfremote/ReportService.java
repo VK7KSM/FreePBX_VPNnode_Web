@@ -1420,9 +1420,11 @@ public final class ReportService extends Service {
             h.versionCode = pi.versionCode;
             h.identityOk = store.registered() && store.deviceId().length() > 0;
             h.reportOk = healthReportConfirmed;
-            if (!UpdatePolicy.applicationHealthy(h, wantName, want)) {
+            int coreCode=0;
+            if(CoreInstaller.ready())try{coreCode=CoreClient.health().optInt("version_code");}catch(Exception unavailable){}
+            if (!UpdatePolicy.maintenanceHealthy(h, wantName, want,WatchdogInstaller.ready(),coreCode)) {
                 RuntimeLog.event("update_health_wait version=" + h.versionCode
-                        + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk);
+                        + " target=" + want + " identity=" + h.identityOk + " report=" + h.reportOk+" core="+coreCode);
                 if (worker != null) worker.postDelayed(healthCheck, 5000L);
                 return;
             }
@@ -1430,6 +1432,7 @@ public final class ReportService extends Service {
             if (worker != null) worker.postDelayed(healthCheck, 5000L);
         } catch (Exception e) {
             RuntimeLog.error("update_health_pending", e);
+            if(worker!=null){worker.removeCallbacks(healthCheck);worker.postDelayed(healthCheck,5000L);}
         }
     }
 

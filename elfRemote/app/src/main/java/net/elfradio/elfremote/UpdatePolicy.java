@@ -151,6 +151,10 @@ final class UpdatePolicy {
         return alreadyOnTarget(h.versionName, h.versionCode, wantName, wantCode);
     }
 
+    static boolean maintenanceHealthy(Health h,String wantName,int wantCode,boolean watchdogReady,int coreCode) {
+        return applicationHealthy(h,wantName,wantCode) && watchdogReady && coreCode==wantCode;
+    }
+
     static boolean canAdvance(String from, String to) {
         if (from == null || to == null) return false;
         if (from.equals(to)) return true;
