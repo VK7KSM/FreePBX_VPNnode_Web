@@ -4,6 +4,13 @@ import org.json.*;
 import static org.junit.Assert.*;
 
 public class FileInboxTest {
+    @Test public void openingInboxAcknowledgesResultsButKeepsActiveTransfer()throws Exception{
+        JSONArray rows=new JSONArray();assertNull(FileInbox.unread(rows,0));
+        JSONObject result=new JSONObject().put("state","success").put("at",100);
+        rows.put(result);assertNotNull(FileInbox.unread(rows,99));assertNull(FileInbox.unread(rows,100));
+        result.put("state","running");assertNotNull(FileInbox.unread(rows,100));
+        result.put("state","failed").put("at",101);assertNotNull(FileInbox.unread(rows,100));
+    }
     @Test public void oldCoreHistoryCannotReplaceLiveProgressAndHistoryIsBounded()throws Exception{
         JSONArray rows=new JSONArray();
         for(int i=0;i<25;i++)rows=FileInbox.merge(rows,new JSONObject().put("id","file-"+i).put("at",i).put("detail","保存完成"));

@@ -41,24 +41,18 @@ final class FileInbox {
     }
     private static void showNotification(Context c,JSONObject entry){
         try{
-            String path=entry.getString("path"),detail=entry.getString("detail"),state=entry.getString("state");
-            NotificationManager manager=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
-            if(android.os.Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(new NotificationChannel("file-receive","文件接收",NotificationManager.IMPORTANCE_LOW));
-            Intent intent=new Intent(c,MainActivity.class).putExtra("show_files",true).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            PendingIntent tap=PendingIntent.getActivity(c,4,intent,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
-            boolean done=TaskReceipts.terminal(state);
-            Notification.Builder b=android.os.Build.VERSION.SDK_INT>=26?new Notification.Builder(c,"file-receive"):new Notification.Builder(c);
-            manager.notify(104,b.setSmallIcon(done?android.R.drawable.stat_sys_download_done:android.R.drawable.stat_sys_download)
-                    .setContentTitle(new java.io.File(path).getName()).setContentText(detail).setContentIntent(tap)
-                    .setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE).setOngoing(!done).setAutoCancel(done).build());
-            notifications.postDelayed(()->{
-                try{
-                    boolean visible=false;
-                    for(android.service.notification.StatusBarNotification n:manager.getActiveNotifications())if(n.getId()==104)visible=true;
-                    RuntimeLog.event("file_notification_result visible="+visible+" enabled="+manager.areNotificationsEnabled()+" state="+state);
-                }catch(Exception error){RuntimeLog.error("file_notification_check_failed",error);}
-            },1000);
+            // 部分D22固件丢弃普通通知；复用已经运行的前台服务通知，不额外建第二条。
+            ServiceStarter.start(c,ReportService.ACTION_FILE_NOTIFICATION);
         }catch(Exception error){RuntimeLog.error("file_notification_failed",error);}
+    }
+    static JSONObject unread(JSONArray rows,long seen){
+        JSONObject entry=rows.optJSONObject(0);
+        return entry!=null&&(!TaskReceipts.terminal(entry.optString("state"))||entry.optLong("at")>seen)?entry:null;
+    }
+    static JSONObject unread(Context c){return unread(read(c),c.getSharedPreferences("file-inbox",0).getLong("seen",0));}
+    static void seen(Context c){
+        c.getSharedPreferences("file-inbox",0).edit().putLong("seen",System.currentTimeMillis()).apply();
+        ServiceStarter.start(c,ReportService.ACTION_FILE_NOTIFICATION);
     }
     static void restore(Context context){
         try{JSONObject response=CoreClient.request("/files/recent",null);if(response==null)return;

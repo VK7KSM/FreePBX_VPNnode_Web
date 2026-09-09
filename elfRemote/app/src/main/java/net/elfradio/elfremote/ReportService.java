@@ -21,6 +21,7 @@ import org.json.JSONObject;
 public final class ReportService extends Service {
     static final String ACTION_REPORT_NOW = "net.elfradio.elfremote.REPORT_NOW";
     static final String ACTION_RENEW = "net.elfradio.elfremote.RENEW";
+    static final String ACTION_FILE_NOTIFICATION = "net.elfradio.elfremote.FILE_NOTIFICATION";
     static final String ACTION_LAB_DNS = "net.elfradio.elfremote.LAB_DNS";
     private static final String CHANNEL = WatchdogPolicy.NOTIFY_CHANNEL;
     private final Handler mainHandler = new Handler();
@@ -162,6 +163,12 @@ public final class ReportService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if(intent!=null&&ACTION_FILE_NOTIFICATION.equals(intent.getAction())){
+            startForeground(7,buildNotification());
+            lastNotifyText=notifyText();
+            RuntimeLog.event("file_foreground_notification updated=true");
+            return START_STICKY;
+        }
         if (intent != null && WakeScheduler.ACTION.equals(intent.getAction()) && worker != null) {
             String key = intent.getStringExtra("wake_key");
             worker.post(() -> {
@@ -1373,6 +1380,8 @@ public final class ReportService extends Service {
             if (nm != null) nm.createNotificationChannel(ch);
         }
         String text = notifyText();
+        JSONObject file=FileInbox.unread(this);
+        if(file!=null)text+=" · "+file.optString("detail")+" · "+new java.io.File(file.optString("path")).getName();
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
@@ -1384,7 +1393,12 @@ public final class ReportService extends Service {
                 .setDefaults(0)
                 .setSound(null)
                 .setPriority(Notification.PRIORITY_MIN);
-        if (!WatchdogPolicy.notificationLaunchesUi()) {
+        if(file!=null){
+            Intent intent=new Intent(this,MainActivity.class).putExtra("show_files",true).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            b.setContentIntent(android.app.PendingIntent.getActivity(this,4,intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE));
+            b.setStyle(new Notification.BigTextStyle().bigText(text));
+        }else if (!WatchdogPolicy.notificationLaunchesUi()) {
             b.setContentIntent(null);
         }
         return b.build();

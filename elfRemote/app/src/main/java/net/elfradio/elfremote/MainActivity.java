@@ -122,6 +122,7 @@ public final class MainActivity extends Activity {
         TextView v=new TextView(this);v.setText(text);v.setTextSize(size);v.setTextColor(color);v.setPadding(0,2,0,2);parent.addView(v);
     }
     private void showFiles(){
+        FileInbox.seen(this);
         if(fileDialog!=null&&fileDialog.isShowing())return;
         android.widget.ScrollView scroll=new android.widget.ScrollView(this);
         fileRows=new android.widget.LinearLayout(this);fileRows.setOrientation(android.widget.LinearLayout.VERTICAL);fileRows.setPadding(18,0,18,8);scroll.addView(fileRows);
