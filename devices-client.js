@@ -932,15 +932,21 @@ function selectTrafficBar(i){
   document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);if(n===i){var chart=$('trafficChart'),bar=b.getBoundingClientRect(),view=chart.getBoundingClientRect();chart.scrollLeft+=bar.left-view.left-(chart.clientWidth-bar.width)/2;}});
 }
 var SYSTEM_TAB='Wi-Fi';
-var SYSTEM_GROUPS={'Wi-Fi':[],'Linphone':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区']};
+var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();}
 function pageSystem(dis){
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
-  if(SYSTEM_TAB==='Linphone')return h+pageSipAccount(dis)+'</section></div>';
+  if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
   return h+'<div class="system-items">'+SYSTEM_GROUPS[SYSTEM_TAB].map(function(k){return '<div><span>'+k+'</span><span class="muted">尚未接通</span></div>';}).join('')+'</div></section></div>';
 }
 
+var ACCOUNT_TAB='Linphone';
+function selectAccountTab(name){ACCOUNT_TAB=name;renderOps();}
+function pageAccountSettings(dis){
+  var h='<div class="account-tabs" role="group" aria-label="账号类型">'+['Linphone','Zello'].map(function(name){return '<button class="btn-gray'+(ACCOUNT_TAB===name?' active':'')+'" aria-pressed="'+(ACCOUNT_TAB===name)+'" onclick="selectAccountTab(\''+name+'\')">'+name+'</button>';}).join('')+'</div>';
+  return h+(ACCOUNT_TAB==='Linphone'?pageSipAccount(dis):'<p class="muted">Zello账号配置正在接入</p>');
+}
 function pageSipAccount(dis){
   var d=currentDev(),saved=d&&d.sip_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_sip_account||!maintenanceAvailable(d,'configure_sip')?' disabled':'');
   var h='<form id="sipAccountForm" class="account-fields" onsubmit="configureSipAccount(event)"><label>服务器<input id="sipAccountServer" class="inp" required autocomplete="off" placeholder="sip.example.com" value="'+esc(saved.server||'')+'"'+blocked+'></label><label>账号<input id="sipAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label><label>认证账号<input id="sipAccountAuth" class="inp" autocomplete="off" placeholder="留空时使用账号" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label><label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存并登录</button><span id="sipAccountFeedback" role="status">'+esc(t.type==='configure_sip'?(t.detail||t.label):saved.updated_at?'上次注册成功 · '+sydney(saved.updated_at):d&&!d.managed_sip_account?'请更新客户端后使用':'尚未配置账号')+'</span></div></form>';
