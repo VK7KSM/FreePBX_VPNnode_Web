@@ -387,10 +387,23 @@ public final class ReportService extends Service {
     }
 
     private void ensureMaintenance() {
-        CoreInstaller.ensure(this, () -> { Handler h=worker; if(h!=null) h.post(() -> scheduleReport(1000L)); });
+        CoreInstaller.ensure(this, this::coreMaintenanceFinished);
         WatchdogInstaller.ensure(this, () -> {
             Handler target = worker;
-            if (target != null) target.post(() -> { CoreInstaller.ensure(this, () -> target.post(() -> scheduleReport(1000L))); scheduleReport(1000L); });
+            if (target != null) target.post(() -> { CoreInstaller.ensure(this, this::coreMaintenanceFinished); scheduleReport(1000L); });
+        });
+    }
+
+    private void coreMaintenanceFinished(){
+        Handler h=worker;if(h==null||destroyed)return;
+        h.post(()->{
+            if(destroyed)return;
+            if(CoreInstaller.ready())scheduleReport(1000L);
+            else {
+                long delay=CoreInstaller.retryDelayMs();
+                RuntimeLog.event("core_retry_scheduled delay_ms="+delay);
+                h.postDelayed(()->{if(!destroyed)ensureMaintenance();},delay);
+            }
         });
     }
 
@@ -1036,6 +1049,7 @@ public final class ReportService extends Service {
                 incomplete |= addLogFile(files, new java.io.File(paths[i]));
             }
             incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "heal.log"));
+            incomplete |= addLogFile(files, new java.io.File(getFilesDir(), "core-stage/last-failure.out"));
             java.io.File[] runtime = new java.io.File(getFilesDir(), "runtime-log").listFiles((dir,name) -> name.matches("runtime-[0-9]+\\.log"));
             if (runtime == null) incomplete = true;
             else {

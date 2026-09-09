@@ -7,5 +7,8 @@ service elfremote_wd /system/bin/sh /data/local/elfremote/watchdog.sh --foregrou
     oneshot
     disabled
 
+on property:init.svc.zygote=running
+    start elfremote_wd
+
 on property:sys.boot_completed=1
     start elfremote_wd

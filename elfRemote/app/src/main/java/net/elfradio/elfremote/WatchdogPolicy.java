@@ -222,6 +222,9 @@ final class WatchdogPolicy {
                 + "    oneshot\n"
                 + "    disabled\n"
                 + "\n"
+                + "on property:init.svc.zygote=running\n"
+                + "    start " + INIT_SERVICE + "\n"
+                + "\n"
                 + "on property:sys.boot_completed=1\n"
                 + "    start " + INIT_SERVICE + "\n";
     }

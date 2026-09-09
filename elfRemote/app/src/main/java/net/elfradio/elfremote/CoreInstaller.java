@@ -12,8 +12,10 @@ final class CoreInstaller {
     static final String DIR = "/data/local/elfremote/core";
     private static volatile boolean running, ready;
     private static long retryAt;
+    private static int failures;
 
     static boolean ready() { return ready; }
+    static long retryDelayMs() { return Math.max(1000L,retryAt-SystemClock.elapsedRealtime()); }
     static synchronized void ensure(Context context, Runnable finished) {
         if (running || !WatchdogInstaller.ready() || SystemClock.elapsedRealtime() < retryAt) return;
         running = true;
@@ -29,13 +31,14 @@ final class CoreInstaller {
                 if (health == null || health.optInt("version_code") != BuildConfig.VERSION_CODE) install(app);
                 ready = CoreClient.health().optInt("version_code") == BuildConfig.VERSION_CODE;
                 if (ready) CoreClient.request("/resume", new JSONObject());
+                if(ready)failures=0;
                 retryAt = SystemClock.elapsedRealtime() + (ready ? 60000 : 15000);
             } catch (Exception error) {
-                ready = false; retryAt = SystemClock.elapsedRealtime() + 15000;
+                ready = false; retryAt = SystemClock.elapsedRealtime() + Math.min(900000L,15000L << Math.min(6,failures++));
                 RuntimeLog.error("core_initialize_failed", error);
             } finally {
                 running = false;
-                if (before != ready && finished != null) finished.run();
+                if ((before != ready || !ready) && finished != null) finished.run();
             }
         }, "elfremote-core-install").start();
     }
@@ -59,7 +62,8 @@ final class CoreInstaller {
             su(stage, "if [ -f " + DIR + "/launch.sh ]; then cat " + DIR + "/launch.sh > "
                     + RescueFiles.quote(oldLauncher.getPath()) + "; chmod 0644 " + RescueFiles.quote(oldLauncher.getPath()) + "; fi\n");
             if (oldLauncher.isFile()) previous = RescueFiles.read(oldLauncher, 16000);
-            String launcher = launchScript(target) .replace("# LOCAL_RULE\n", loopbackRule(android.os.Process.myUid()));
+            // 核心不依赖应用防火墙规则才能启动；应用连接前在ensure中单独恢复本UID规则。
+            String launcher = launchScript(target);
             File stagedLauncher = new File(stage, "launch.sh");
             RescueFiles.write(stagedLauncher, launcher);
             su(stage, "cp " + RescueFiles.quote(apk) + " " + target + ".new\n"
@@ -90,11 +94,11 @@ final class CoreInstaller {
     static String loopbackRule(int uid) {
         if (uid < 10000) throw new IllegalArgumentException("应用UID无效");
         String rule = "OUTPUT -o lo -d 127.0.0.1/32 -p tcp --dport 8765 -m owner --uid-owner " + uid + " -j ACCEPT";
-        return "iptables -C " + rule + " 2>/dev/null || iptables -I " + rule.replace("OUTPUT ", "OUTPUT 1 ") + "\n";
+        return "iptables -w 5 -C " + rule + " 2>/dev/null || iptables -w 5 -I " + rule.replace("OUTPUT ", "OUTPUT 1 ") + "\n";
     }
 
     static String launchScript(String apk) {
-        return "#!/system/bin/sh\nset -e\n# LOCAL_RULE\nD=" + DIR + "\n"
+        return "#!/system/bin/sh\nset -e\nD=" + DIR + "\n"
                 + "p=$(cat \"$D/daemon.pid\" 2>/dev/null || true)\n"
                 + "case \"$p\" in ''|*[!0-9]*) ;; *) if [ -r /proc/$p/cmdline ] && tr '\\000' ' ' < /proc/$p/cmdline | grep -q 'net.elfradio.elfremote.RescueDaemon'; then exit 0; fi;; esac\n"
                 + "[ -f \"$D/generation\" ] || exit 1\n"
@@ -106,10 +110,18 @@ final class CoreInstaller {
     private static void su(File stage, String commands) throws Exception {
         File script = new File(stage, "apply.sh");
         RescueFiles.write(script, "#!/system/bin/sh\nset -e\n" + commands);
+        File output=new File(stage,"apply.out");
         Process p = new ProcessBuilder("su", "-c", "sh " + RescueFiles.quote(script.getPath()))
-                .redirectErrorStream(true).redirectOutput(new File(stage, "apply.out")).start();
+                .redirectErrorStream(true).redirectOutput(output).start();
         try {
-            if (!p.waitFor(20, TimeUnit.SECONDS) || p.exitValue() != 0) throw new IOException("core-apply-failed");
+            boolean exited=p.waitFor(20,TimeUnit.SECONDS);
+            if(!exited||p.exitValue()!=0){
+                String result="finished="+exited+" exit="+(exited?p.exitValue():-1)+"\n";
+                try{result+=RescueFiles.read(output,16384);}catch(Exception unavailable){result+="启动输出暂不可读\n";}
+                RescueFiles.write(new File(stage,"last-failure.out"),result);
+                RuntimeLog.event("core_apply_failed finished="+exited+" exit="+(exited?p.exitValue():-1));
+                throw new IOException("core-apply-failed");
+            }
         } finally { p.destroy(); }
     }
     private CoreInstaller() {}

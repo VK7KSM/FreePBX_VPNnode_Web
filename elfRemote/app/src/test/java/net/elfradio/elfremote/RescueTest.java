@@ -15,8 +15,8 @@ public class RescueTest {
     @Test public void coreLoopbackExceptionIsLimitedToOwnUidAndPort() {
         String command=CoreInstaller.loopbackRule(10123);
         assertTrue(command.contains("-o lo -d 127.0.0.1/32 -p tcp --dport 8765 -m owner --uid-owner 10123"));
-        assertTrue(command.contains("iptables -C OUTPUT"));
-        assertTrue(command.contains("iptables -I OUTPUT 1"));
+        assertTrue(command.contains("iptables -w 5 -C OUTPUT"));
+        assertTrue(command.contains("iptables -w 5 -I OUTPUT 1"));
         assertThrows(IllegalArgumentException.class,()->CoreInstaller.loopbackRule(0));
     }
 
