@@ -58,8 +58,14 @@ final class WatchdogInstaller {
                     if (output.isFile()) detail += RescueFiles.read(output, 65536);
                     RescueFiles.write(new File(staged, "last-failure.out"), detail);
                 } catch (Exception unavailable) { RuntimeLog.error("bootstrap_diagnostic_failed", unavailable); }
-                ready = false; state = "initialization_failed";
-                nextAttempt = SystemClock.elapsedRealtime() + Math.min(900000L, 60000L << Math.min(4, failures++));
+                if ("root-command-busy".equals(error.getMessage())) {
+                    // 更新/初始化共用旧守护时，排队不等于已有能力失效。
+                    ready = wasReady; state = wasReady ? "ready" : "pending";
+                    nextAttempt = SystemClock.elapsedRealtime() + 5000L;
+                } else {
+                    ready = false; state = "initialization_failed";
+                    nextAttempt = SystemClock.elapsedRealtime() + Math.min(900000L, 60000L << Math.min(4, failures++));
+                }
                 RuntimeLog.error("bootstrap_failed", error);
             } finally {
                 RuntimeLog.event("bootstrap_ready=" + ready);
