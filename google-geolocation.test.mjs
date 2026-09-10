@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {radioRequest,googleLocation} from './google-geolocation.js';
+import {radioRequest,googleLocation,googleBillingMonth,googleAccounts} from './google-geolocation.js';
 
 const now=1789017600000;
 const radio=()=>({sampled_at_ms:now,wifiAccessPoints:[{macAddress:'10:11:22:33:44:55',signalStrength:-50,ssid:'不应转发'},
@@ -49,5 +49,34 @@ test('额度、权限及服务失败不抛出阻塞上报的错误，短期不�
     await googleLocation(env,'t',{radio:radio()},now+1000,fetcher);assert.equal(calls,1);
   }
   assert.equal((await googleLocation(environment(),'t',{radio:radio()},now,async()=>{throw Error('网络故障');})).reason,'unavailable');
+  assert.equal((await googleLocation(environment(),'t',{radio:radio()},now,async()=>Response.json({error:{errors:[{reason:'dailyLimitExceeded'}]}},{status:403}))).reason,'quota_exceeded');
   assert.equal((await googleLocation(environment(),'t',{radio:radio()},now,async()=>Response.json({location:{lat:100,lng:0},accuracy:5}))).reason,'invalid_response');
+});
+
+
+test('独立结算账号到限切换，全部耗尽停止外呼，跨月恢复',async()=>{
+ const env=environment();env.GOOGLE_GEOLOCATION_ACCOUNTS=JSON.stringify([{id:'first',key:'a',monthlyLimit:1},{id:'second',key:'b',monthlyLimit:1}]);
+ const keys=[];const fetcher=async url=>{keys.push(new URL(url).searchParams.get('key'));return result();};
+ for(const d of ['one','two'])assert.equal((await googleLocation(env,d,{radio:radio()},now,fetcher)).reason,'located');
+ assert.equal((await googleLocation(env,'three',{radio:radio()},now,fetcher)).reason,'free_limit_reached');
+ assert.deepEqual(keys,['a','b']);
+ const later=Date.parse('2026-10-01T08:00:00Z');
+ assert.equal((await googleLocation(env,'one',{radio:{...radio(),sampled_at_ms:later}},later,fetcher)).reason,'located');
+ assert.deepEqual(keys,['a','b','a']);
+ assert.equal(googleBillingMonth(Date.parse('2026-10-01T06:59:00Z')),'2026-09');
+ assert.equal(googleBillingMonth(Date.parse('2026-10-01T07:00:00Z')),'2026-10');
+});
+
+test('接口额度拒绝自动切下一账号，失败请求仍记账，缓存命中不计费',async()=>{
+ const env=environment();env.GOOGLE_GEOLOCATION_ACCOUNTS=JSON.stringify([{id:'first',key:'a'},{id:'second',key:'b'}]);
+ let calls=0;const fetcher=async()=>++calls===1?Response.json({error:{status:'RESOURCE_EXHAUSTED'}},{status:403}):result();
+ assert.equal((await googleLocation(env,'one',{radio:radio()},now,fetcher)).reason,'located');
+ assert.equal((await googleLocation(env,'one',{radio:radio()},now,fetcher)).reason,'located');
+ assert.equal(calls,2);assert.equal(env.values.get('google-usage/first').used,1);assert.equal(env.values.get('google-usage/second').used,1);
+ assert.equal(JSON.stringify([...env.values.values()]).includes('"key"'),false);
+});
+
+test('配置不允许同账号或同密钥重复获得额度，无效JSON不退回无计数模式',()=>{
+ assert.equal(googleAccounts({GOOGLE_GEOLOCATION_ACCOUNTS:'bad',GOOGLE_GEOLOCATION_API_KEY:'a'}).length,0);
+ assert.equal(googleAccounts({GOOGLE_GEOLOCATION_ACCOUNTS:JSON.stringify([{id:'same',key:'a'},{id:'same',key:'b'},{id:'other',key:'a'}])}).length,1);
 });

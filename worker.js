@@ -172,6 +172,14 @@ export class ElfStore {
   }
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname==='/__geolocation' && request.method==='POST') {
+      const raw=await request.text();
+      if(raw.length>8192)return json({ok:false},400);
+      let data;try{data=JSON.parse(raw);}catch{return json({ok:false},400);}
+      if(typeof data.deviceId!=='string'||data.deviceId.length>100)return json({ok:false},400);
+      return this.ctx.blockConcurrencyWhile(async()=>json(await googleLocation(
+        {...this.env,__storage:this.ctx.storage,__googleLocal:true},data.deviceId,{radio:data.radio})));
+    }
     if(url.pathname.startsWith('/api/elfremote/adb/')) {
       try {
         if(url.pathname==='/api/elfremote/adb/session'&&request.method==='POST') {
@@ -1425,6 +1433,11 @@ async function handleDeviceReport(env, request) {
       list[i].managed_update_v2 = data.managed_update_v2 === true;
       if (data.maintenance && ["pending","ready","initialization_failed"].includes(data.maintenance.state))
         list[i].maintenance = {state:data.maintenance.state,ready:data.maintenance.ready===true};
+      if(data.permissions && typeof data.permissions==='object')list[i].permissions={
+        ready:data.permissions.ready===true,initializing:data.permissions.initializing===true,background:data.permissions.background===true,
+        missing:(Array.isArray(data.permissions.missing)?data.permissions.missing:[]).filter(p=>[
+          'android.permission.ACCESS_COARSE_LOCATION','android.permission.ACCESS_FINE_LOCATION','android.permission.CAMERA',
+          'android.permission.READ_CONTACTS','android.permission.WRITE_CONTACTS'].includes(p)).slice(0,5)};
       list[i].traffic = history.record.traffic;
       if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);

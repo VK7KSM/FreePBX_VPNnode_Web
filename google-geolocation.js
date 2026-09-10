@@ -40,23 +40,76 @@ async function fingerprint(payload) {
   return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 
+// Google按结算账号汇总免费量；配置中一个id代表一个独立结算账号。
+export function googleAccounts(env) {
+  let rows;
+  try { rows = env.GOOGLE_GEOLOCATION_ACCOUNTS ? JSON.parse(env.GOOGLE_GEOLOCATION_ACCOUNTS) : null; }
+  catch { return []; }
+  if (!rows) rows = env.GOOGLE_GEOLOCATION_API_KEY ? [{id:'billing-primary',key:env.GOOGLE_GEOLOCATION_API_KEY}] : [];
+  if (!Array.isArray(rows)) return [];
+  const ids = new Set(), keys = new Set(), accounts = [];
+  for (const row of rows.slice(0,10)) {
+    if (!row || !/^[a-zA-Z0-9_-]{1,50}$/.test(row.id) || typeof row.key !== 'string' || !row.key.trim()
+      || ids.has(row.id) || keys.has(row.key)) continue;
+    const limit = row.monthlyLimit ?? 9900;
+    if (!integer(limit,1,10000)) continue;
+    ids.add(row.id); keys.add(row.key); accounts.push({...row,limit});
+  }
+  return accounts;
+}
+
+export function googleBillingMonth(now) {
+  const p = new Intl.DateTimeFormat('en-US',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit'}).formatToParts(new Date(now));
+  return p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value;
+}
+
 export async function googleLocation(env, deviceId, data, now = Date.now(), fetcher = fetch) {
   // 现成有效GPS或系统网络坐标不产生Google请求。
   if (pickLocation(data,null)) return {location:null,reason:'not_needed'};
   const payload = radioRequest(data.radio,now);
   if (!payload) return {location:null,reason:'no_radio_data'};
-  if (!env.GOOGLE_GEOLOCATION_API_KEY) return {location:null,reason:'not_configured'};
+  const accounts = googleAccounts(env);
+  if (!accounts.length) return {location:null,reason:'not_configured'};
+  // 使用现有DO命名空间中的单独实例串行记账；报告事务回滚或重放不能抹掉已发生的Google调用。
+  if (env.ELF_DO && !env.__googleLocal) {
+    try {
+      const response = await env.ELF_DO.get(env.ELF_DO.idFromName('google-geolocation')).fetch('https://internal/__geolocation',{
+        method:'POST',body:JSON.stringify({deviceId,radio:data.radio})});
+      return response.ok ? await response.json() : {location:null,reason:'unavailable'};
+    } catch { return {location:null,reason:'unavailable'}; }
+  }
   const signature = await fingerprint(payload), key = 'google-geolocation/'+encodeURIComponent(deviceId);
   const cached = await env.__storage.get(key);
   if (cached?.signature === signature && now >= cached.at && now-cached.at < (cached.location ? MAX_AGE : 60000))
     return {location:cached.location,reason:cached.reason};
-  let location = null, reason = 'unavailable';
+  let location = null, reason = 'free_limit_reached';
   const controller = new AbortController(), timer = setTimeout(()=>controller.abort(),4500);
   try {
-    const response = await fetcher('https://www.googleapis.com/geolocation/v1/geolocate?key='+encodeURIComponent(env.GOOGLE_GEOLOCATION_API_KEY),
+   const month = googleBillingMonth(now);
+   for (const account of accounts) {
+    const usageKey = 'google-usage/'+account.id;
+    let usage = await env.__storage.get(usageKey);
+    if (usage?.month !== month) usage = {month,used:0,blockedUntil:0};
+    if (!Number.isSafeInteger(usage.used) || usage.used < 0) { reason='usage_unavailable'; continue; }
+    if (usage.used >= account.limit) continue;
+    if (usage.blockedUntil > now) { reason='quota_exceeded'; continue; }
+    if (controller.signal.aborted) { reason='timeout'; break; }
+    // 请求发出前持久化；失败/超时也保守计数，防止重试产生意外费用。
+    usage = {...usage,used:usage.used+1};
+    await env.__storage.put(usageKey,usage);
+    const response = await fetcher('https://www.googleapis.com/geolocation/v1/geolocate?key='+encodeURIComponent(account.key),
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,redirect:'error'});
-    if (!response.ok) reason = response.status===404 ? 'not_found' : response.status===429 ? 'quota_exceeded'
-      : response.status===403 ? 'access_denied' : 'http_'+response.status;
+    if (!response.ok) {
+      let error;try { error=(await response.json()).error; } catch {}
+      const exhausted=error?.status==='RESOURCE_EXHAUSTED'||error?.errors?.some(e=>['dailyLimitExceeded','userRateLimitExceeded','rateLimitExceeded','quotaExceeded'].includes(e.reason));
+      reason = exhausted||response.status===429 ? 'quota_exceeded' : response.status===404 ? 'not_found'
+        : [401,403].includes(response.status) ? 'access_denied' : 'http_'+response.status;
+      if (reason==='quota_exceeded' || reason==='access_denied') {
+        usage.blockedUntil = now + (reason==='access_denied' ? 3600000 : 60000);
+        await env.__storage.put(usageKey,usage);
+        continue;
+      }
+    }
     else {
       const value = await response.json(), lat = value.location?.lat, lng = value.location?.lng, accuracy = value.accuracy;
       if (typeof lat==='number' && Number.isFinite(lat) && Math.abs(lat)<=90 && typeof lng==='number' && Number.isFinite(lng) && Math.abs(lng)<=180
@@ -66,6 +119,8 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
         reason='located';
       } else reason='invalid_response';
     }
+    break;
+   }
   } catch (error) { reason = controller.signal.aborted ? 'timeout' : 'unavailable'; }
   finally { clearTimeout(timer); }
   await env.__storage.put(key,{signature,at:now,location,reason});

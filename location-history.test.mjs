@@ -19,6 +19,8 @@ test('Google无线定位进入真实上报与历史链路，重试去重且原�
   assert.equal(rows[0].network_location_reason,'located');assert.equal(rows[0].location_reason,'timeout');
   assert.equal(JSON.stringify(rows).includes('10:11:22:33:44:55'),false);
   assert.equal(f.data.get('remote_devices')[0].loc.provider,'google');
+  assert.equal(f.googleData.get('google-usage/billing-primary').used,1);
+  assert.equal(f.data.has('google-usage/billing-primary'),false);
   assert.equal((await report(f,'google-radio',at,null,{...extra,radio:{...radio,sampled_at_ms:radio.sampled_at_ms+1}})).status,400);assert.equal(calls,1);
 });
 const hash = createHash("sha256").update(token).digest("hex");
@@ -199,4 +201,14 @@ test("无编号旧客户端仍可上报，空坐标和越界点不落到地图�
   assert.equal([...f.data.values()].filter(v=>v?.legacy_report===true).length,1);
   assert.equal(pickLocation({gps:{lat:null,lng:null}},null),null);
   assert.equal(pickLocation({gps:{lat:91,lng:20}},null),null);
+});
+
+
+test('Google独立计数实例并发请求也不能超过账号上限',async t=>{
+ const f=fixture();f.env.GOOGLE_GEOLOCATION_ACCOUNTS=JSON.stringify([{id:'a',key:'test-a',monthlyLimit:1},{id:'b',key:'test-b',monthlyLimit:1}]);
+ const old=globalThis.fetch;t.after(()=>{globalThis.fetch=old;});let calls=0;
+ globalThis.fetch=async()=>{calls++;await new Promise(r=>setTimeout(r,5));return Response.json({location:{lat:1,lng:2},accuracy:50});};
+ const radio={sampled_at_ms:Date.now(),wifiAccessPoints:[{macAddress:'10:11:22:33:44:55',signalStrength:-50},{macAddress:'20:11:22:33:44:55',signalStrength:-60}]};
+ const values=await Promise.all(['one','two','three'].map(deviceId=>f.env.ELF_DO.get('google-geolocation').fetch('https://internal/__geolocation',{method:'POST',body:JSON.stringify({deviceId,radio})}).then(r=>r.json())));
+ assert.equal(calls,2);assert.equal(values.filter(x=>x.reason==='located').length,2);assert.equal(values[2].reason,'free_limit_reached');
 });
