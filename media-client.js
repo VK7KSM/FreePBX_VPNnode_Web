@@ -25,10 +25,10 @@ window.ElfMedia=(function(){
       await loadReportPhotos(s.device);state.selected=p.report_id;await stop(p.message||'照片已保存');
     }
   }
-  async function start(mode){
+  async function start(mode,requestedCamera){
     var d=currentDev();if(!d||!d.managed_media||d.enabled===false)return;
     if(active){if(active.mode===mode)await stop();return;}
-    var s={device:d,mode:mode,camera:cameraChoice[d.id]||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false};active=s;lastMessage='';render();
+    var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false};active=s;lastMessage='';render();
     try{
       if(mode==='ptt'||mode==='call'){
         if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('浏览器不支持麦克风');
@@ -40,6 +40,7 @@ window.ElfMedia=(function(){
       s.ws.onmessage=function(e){var p;try{p=JSON.parse(e.data);}catch{return;}
         if(p.type==='rpc'){var wait=s.pending[p.id];if(wait){delete s.pending[p.id];clearTimeout(wait.timer);if(p.error)wait.reject(Error(p.error));else wait.resolve(p.result);}return;}
         if(p.type==='closed'){stop(p.message);return;}
+        if(p.type==='status'&&String(p.message||'').startsWith('通信失败')){stop(p.message);return;}
         s.chain=s.chain.then(function(){return message(s,p);}).catch(function(e){stop(e.message);});
       };
       s.ws.onerror=function(){stop('通信连接失败');};s.ws.onclose=function(){if(active===s)stop('通信已结束');};
@@ -101,5 +102,5 @@ window.ElfMedia=(function(){
   function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','响铃']];return rows.map(function(row){var selected=active&&active.mode===row[0],disabled=!d||!d.managed_media||d.enabled===false||active&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
   function feedback(d){var text=active?active.message:d&&lastDevice===d.id?lastMessage:'';return text?'<span class="media-feedback" role="status">'+esc(text)+'</span>':'';}
   window.addEventListener('pagehide',function(){stop();});
-  return {switchPhoto:function(){var d=currentDev();if(!d||active)return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo');},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
+  return {switchPhoto:function(){var d=currentDev();if(!d||active)return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
 })();

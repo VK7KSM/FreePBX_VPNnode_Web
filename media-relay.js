@@ -47,7 +47,7 @@ export class MediaRelay {
   send(s,role,message){try{s.roles[role]?.send(JSON.stringify(message));}catch{this.close(s,'通信连接中断');}}
   async sfu(path,body,method='POST'){
     const config=JSON.parse(this.env.ELF_REALTIME);
-    const r=await this.fetcher('https://rtc.live.cloudflare.com/v1/apps/'+encodeURIComponent(config.appId)+path,{method,headers:{Authorization:'Bearer '+config.secret,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+    const r=await this.fetcher('https://rtc.live.cloudflare.com/v1/apps/'+encodeURIComponent(config.appId)+path,{method,headers:{Authorization:'Bearer '+config.secret,...(body===undefined?{}:{'Content-Type':'application/json'})},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
     const x=await r.json();if(!r.ok||x.errorCode||x.tracks?.some(t=>t.errorCode))throw Error('实时媒体协商失败');return x;
   }
   async message(s,role,raw){
@@ -74,7 +74,7 @@ export class MediaRelay {
       try{
         if(p.action==='new'){
           if(s.rtc[role])throw Error('实时连接已创建');
-          result=await this.sfu('/sessions/new',{});s.rtc[role]=result.sessionId;
+          result=await this.sfu('/sessions/new');s.rtc[role]=result.sessionId;
         }else{
           const id=s.rtc[role];if(!id)throw Error('实时连接未创建');
           const prefix='/sessions/'+encodeURIComponent(id);

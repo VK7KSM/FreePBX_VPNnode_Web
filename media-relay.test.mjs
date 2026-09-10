@@ -28,3 +28,9 @@ test('PTT60秒硬截止从真实就绪起算，结束后可立即再次开启',a
   const d={id:'xx',managed_media:true},first=r.create(d,'ptt'),s=r.sessions.get(first.session_id);at=10000;await r.message(s,'device','{"type":"ready"}');
   at=69999;timer();assert.equal(r.sessions.size,1);at=70000;timer();assert.equal(r.sessions.size,0);assert.ok(r.create(d,'ptt').session_id);
 });
+
+test('SFU创建无轨道会话必须省略正文，空JSON会触发服务器SDP校验',async()=>{
+ const {relay,s}=fixture();let seen=false;
+ relay.fetcher=async(url,init)=>{assert.ok(url.endsWith('/sessions/new'));assert.equal(init.body,undefined);assert.equal(init.headers['Content-Type'],undefined);seen=true;return Response.json({sessionId:'rtc'});};
+ await relay.message(s,'browser',JSON.stringify({type:'rpc',id:1,action:'new'}));assert.ok(seen);assert.equal(s.rtc.browser,'rtc');
+});
