@@ -261,12 +261,21 @@ public final class SystemSettings {
         // 先停热点恢复保存网络，最后恢复热点；D22开启Wi-Fi会关闭热点。
         applyHotspot(null,false);
         if((settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
-        Set<Integer> old=new HashSet<>();JSONArray saved=b.getJSONArray("configs");for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));old.add(c.networkId);if(wifi.updateNetwork(c)<0)throw new IOException("Wi-Fi原配置恢复被拒绝");}
+        Set<Integer> old=new HashSet<>();Map<Integer,Integer> restoredIds=new HashMap<>();JSONArray saved=b.getJSONArray("configs");
+        // networkId是本次系统运行的编号，重启后按网络名称和安全类型重新匹配。
+        for(int i=0;i<saved.length();i++){
+            WifiConfiguration c=unparcel(saved.getString(i));int previousId=c.networkId;
+            List<WifiConfiguration> current=wifi.getConfiguredNetworks();c.networkId=-1;
+            if(current!=null)for(WifiConfiguration candidate:current)if(sameNetwork(c,candidate)){c.networkId=candidate.networkId;break;}
+            int id=c.networkId<0?wifi.addNetwork(c):wifi.updateNetwork(c);
+            if(id<0)throw new IOException("Wi-Fi原配置恢复被拒绝");old.add(id);restoredIds.put(previousId,id);
+        }
         List<WifiConfiguration> all=wifi.getConfiguredNetworks();if(all!=null)for(WifiConfiguration c:all)if(!old.contains(c.networkId))wifi.removeNetwork(c.networkId);
-        for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(c.networkId,false);}
-        if(b.getBoolean("wifi")){int oldId=b.getInt("network_id");if(oldId>=0)wifi.enableNetwork(oldId,true);wifi.reconnect();}else wifi.setWifiEnabled(false);wifi.saveConfiguration();
+        for(int i=0;i<saved.length();i++){WifiConfiguration c=unparcel(saved.getString(i));if(c.status!=WifiConfiguration.Status.DISABLED)wifi.enableNetwork(restoredIds.get(c.networkId),false);}
+        if(b.getBoolean("wifi")){Integer id=restoredIds.get(b.getInt("network_id"));if(id!=null)wifi.enableNetwork(id,true);wifi.reconnect();}else wifi.setWifiEnabled(false);wifi.saveConfiguration();
         applyHotspot(b.isNull("ap")?null:unparcel(b.getString("ap")),b.getBoolean("ap_enabled"));
     }
+    private static boolean sameNetwork(WifiConfiguration a,WifiConfiguration b){return Objects.equals(a.SSID,b.SSID)&&a.allowedKeyManagement.equals(b.allowedKeyManagement);}
     private void applyHotspot(WifiConfiguration config,boolean enabled)throws Exception {
         ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
         // 使用Android 8网络共享服务及真实结果回调，避免已不支持的旧热点入口。
@@ -285,9 +294,9 @@ public final class SystemSettings {
         if(wifi.isWifiEnabled()!=b.getBoolean("wifi")||(settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data"))return false;
         if(((Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi)==13)!=b.getBoolean("ap_enabled"))return false;
         if(b.getBoolean("wifi")&&b.getInt("network_id")>=0){
-            WifiInfo info=wifi.getConnectionInfo();if(info==null||info.getNetworkId()!=b.getInt("network_id")||info.getIpAddress()==0)return false;
-            JSONArray configs=b.getJSONArray("configs");for(int i=0;i<configs.length();i++){WifiConfiguration old=unparcel(configs.getString(i));if(old.networkId!=info.getNetworkId())continue;
-                WifiConfiguration current=findConfig(info.getNetworkId(),true);if(current==null)return false;
+            WifiInfo info=wifi.getConnectionInfo();if(info==null||info.getNetworkId()<0||info.getIpAddress()==0)return false;
+            JSONArray configs=b.getJSONArray("configs");for(int i=0;i<configs.length();i++){WifiConfiguration old=unparcel(configs.getString(i));if(old.networkId!=b.getInt("network_id"))continue;
+                WifiConfiguration current=findConfig(info.getNetworkId(),true);if(current==null||!sameNetwork(old,current))return false;
                 Object a=old.getClass().getMethod("getIpConfiguration").invoke(old),c=current.getClass().getMethod("getIpConfiguration").invoke(current);if(!a.equals(c))return false;
             }
         }
