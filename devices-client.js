@@ -258,6 +258,7 @@ function selectDev(id){
   renderOps();
   flyTo(id);
   if(selFn==='files')loadFileManagerOnEntry();
+  if(selFn==='update')loadReleases();
 }
 
 function initMap(){
@@ -687,14 +688,17 @@ async function stopSendFile(){var s=FILE_SEND[FILE_VIEW];if(!s)return;s.stop=tru
   if(s.task_id)try{await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:s.task_id});fileSendMessage(s,'正在通知设备停止接收');pollSendFile(s);}catch(e){fileSendMessage(s,e.message);}
 }
 
-var RELEASES=[], RELEASE_STATE='idle', RELEASE_REQUEST=null;
+var RELEASES=[], RELEASE_STATE='idle', RELEASE_REQUEST=null, RELEASE_DEVICE='', RELEASE_SEQUENCE=0;
 function loadReleases(){
-  if(RELEASE_REQUEST)return RELEASE_REQUEST;
+  var d=currentDev(),deviceId=d&&d.id;if(!deviceId)return;
+  if(RELEASE_REQUEST && RELEASE_DEVICE===deviceId)return RELEASE_REQUEST;
+  var sequence=++RELEASE_SEQUENCE;RELEASE_DEVICE=deviceId;RELEASES=[];
   RELEASE_STATE='loading';if(selFn==='update')renderOps();
-  RELEASE_REQUEST=fetch('/api/elfremote/releases').then(function(r){if(!r.ok)throw Error('版本读取失败');return r.json();}).then(function(x){
+  RELEASE_REQUEST=fetch('/api/elfremote/releases?'+new URLSearchParams({device_id:deviceId})).then(function(r){if(!r.ok)throw Error('版本读取失败');return r.json();}).then(function(x){
+    if(sequence!==RELEASE_SEQUENCE)return;
     if(!x.ok || !Array.isArray(x.releases))throw Error('版本读取失败');
     RELEASES=x.releases.filter(function(r){return Number.isInteger(r.versionCode)&&r.versionCode>0;}).sort(function(a,b){return b.versionCode-a.versionCode;});RELEASE_STATE='ready';
-  }).catch(function(){RELEASE_STATE='error';}).finally(function(){RELEASE_REQUEST=null;if(selFn==='update')renderOps();});
+  }).catch(function(){if(sequence===RELEASE_SEQUENCE)RELEASE_STATE='error';}).finally(function(){if(sequence===RELEASE_SEQUENCE){RELEASE_REQUEST=null;if(selFn==='update')renderOps();}});
   return RELEASE_REQUEST;
 }
 function selectedRelease(){
@@ -743,21 +747,22 @@ function pageUpdate(dis){
   var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
   var h = '<div class="update-facts">';
   h += kv("设备当前版本", ver);
-  var latest=RELEASES[0],comparison=latest?compareReleaseVersion(d && d.app_version,latest):null;
+  var latest=d && RELEASE_DEVICE===d.id ? RELEASES[0] : null,comparison=latest?compareReleaseVersion(d && d.app_version,latest):null;
   var check=RELEASE_STATE==='error'?'无法读取已发布版本，请重试。':RELEASE_STATE!=='ready'?'正在检查是否有新版本…':!latest?'暂无已发布版本。':comparison===null?'无法识别设备当前版本，请先拉取设备信息。':comparison>=0?'当前版本即最新版本':'新的软件版本 '+latest.versionName;
   h += '<div class="kv"><div class="k">更新安装状态</div><div class="v">'+esc(check);
-  var busy=updateBusy(u),updateDisabled=dis || (busy?' disabled':'');
-  if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+updateDisabled+'>更新</button>';
+  var busy=updateBusy(u),updateDisabled=dis || (!d || !d.can_update || busy || RELEASE_DEVICE!==d.id?' disabled':'');
+  if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+(latest.expired?' disabled':updateDisabled)+'>更新</button>';
   h += '</div></div>';
   h += kv("安装进展", installationProgress(u));
   h += '<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(u)+'</div></div>';
   h += "</div>";
   var status=functionSection('更新状态',h);h='';
+  if(d && !d.can_update)h+='<p class="muted">设备尚未启用客户端更新功能</p>';
   h += '<div class="ops-actions" style="margin-top:.45rem">';
-  var ready=RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=updateDisabled || (ready?'':' disabled');
-  h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value"'+blocked+'>';
+  var ready=d && RELEASE_DEVICE===d.id && RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=updateDisabled || (!ready || selected.expired?' disabled':'');
+  h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value;renderOps()"'+(ready?'':' disabled')+'>';
   if(!ready)h+='<option value="">'+(RELEASE_STATE==='error'?'版本读取失败':RELEASE_STATE==='ready'?'暂无已发布版本':'正在读取版本…')+'</option>';
-  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(i===0?'（最新发布）':'')+'</option>';});
+  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(i===0?'（最新发布）':'')+(r.expired?' · 发布已过期':'')+'</option>';});
   h+='</select><button class="btn-green" onclick="assignUpdate()"'+blocked+'>下发该版本</button>';
   if(RELEASE_STATE==='error')h+='<button class="btn-gray" onclick="loadReleases()">重试</button>';
   h += "</div>";
@@ -1309,10 +1314,10 @@ async function cancelCommand(){
 }
 function assignUpdate(versionCode){
   var d = currentDev();
-  if(!d || updateBusy(d.update||{})) return;
+  if(!d || !d.can_update || RELEASE_DEVICE!==d.id || updateBusy(d.update||{})) return;
   var vc = parseInt(versionCode===undefined ? ($("updVc") && $("updVc").value) : versionCode, 10);
-  if(RELEASE_STATE!=='ready' || !RELEASES.some(function(r){return r.versionCode===vc;})){ alert('请选择已发布版本'); return; }
-  fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,versionCode:vc,request_id:crypto.randomUUID()})})
+  if(RELEASE_STATE!=='ready' || !RELEASES.some(function(r){return r.versionCode===vc && !r.expired;})){ alert('请选择已发布版本'); return; }
+  fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,channel:d.update_channel,versionCode:vc,request_id:crypto.randomUUID()})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }

@@ -44,12 +44,12 @@ test('旧制品仍可下载，新制品缺失不返回空APK',async()=>{
 test('更新分配校验设备能力与签名清单目标，重复分配不重置状态',async()=>{
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true}]});
   const cookie=await login(f);
-  const rel={job_id:'update-one',manifest_raw:JSON.stringify({device_id:'device'}),expires_at:Date.now()+60000,versionCode:100,versionName:'fixture'};
+  const rel={job_id:'update-one',manifest_raw:JSON.stringify({package:'net.elfradio.elfremote',device_id:'device'}),expires_at:Date.now()+60000,versionCode:100,versionName:'fixture'};
   f.data.set('elfremote_rel_100',rel);
   const assign=()=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:100},cookie),f.env);
   assert.equal((await assign()).status,400);
   let devices=f.data.get('remote_devices');devices[0].managed_update=true;f.data.set('remote_devices',devices);
-  f.data.set('elfremote_rel_100',{...rel,manifest_raw:JSON.stringify({device_id:'another-device'})});
+  f.data.set('elfremote_rel_100',{...rel,manifest_raw:JSON.stringify({package:'net.elfradio.elfremote',device_id:'another-device'})});
   assert.equal((await assign()).status,400);
   f.data.set('elfremote_rel_100',rel);assert.equal((await assign()).status,200);
   devices=f.data.get('remote_devices');assert.equal(devices[0].update.managed_update_v1,true);
@@ -61,7 +61,7 @@ test('更新分配校验设备能力与签名清单目标，重复分配不重�
 test('覆盖安装复用签名更新及回滚流程，不新建旧修复安装任务',async()=>{
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true}]});
   const cookie=await login(f);
-  const rel={job_id:'install-one',manifest_raw:JSON.stringify({device_id:'device'}),expires_at:Date.now()+60000,versionCode:101,versionName:'fixture'};
+  const rel={job_id:'install-one',manifest_raw:JSON.stringify({package:'net.elfradio.elfremote',device_id:'device'}),expires_at:Date.now()+60000,versionCode:101,versionName:'fixture'};
   f.data.set('elfremote_rel_101',rel);
   const response=await worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'install_apk',versionCode:101},cookie),f.env);
   assert.equal(response.status,200);
@@ -75,7 +75,7 @@ test('覆盖安装复用签名更新及回滚流程，不新建旧修复安装�
 test('能力上报留下的空更新记录不阻止首次下发，真实进行中任务仍受保护',async()=>{
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true,update:{state:'',managed_update_v1:true}}]});
   const cookie=await login(f);
-  const rel={job_id:'first-install',manifest_raw:'{}',expires_at:0,versionCode:102,versionName:'fixture'};
+  const rel={job_id:'first-install',manifest_raw:JSON.stringify({package:'net.elfradio.elfremote'}),expires_at:0,versionCode:102,versionName:'fixture'};
   f.data.set('elfremote_rel_102',rel);
   const assign=versionCode=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode},cookie),f.env);
   assert.equal((await assign(102)).status,200);
@@ -89,7 +89,7 @@ test('能力上报留下的空更新记录不阻止首次下发，真实进行�
 test('新客户端安装尝试独立于发布版本，重试幂等且过期清单明确拒绝',async()=>{
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,managed_update:true,managed_update_v2:true}]});
   const cookie=await login(f);
-  const rel={job_id:'release-fixed',manifest_raw:'{}',expires_at:0,versionCode:200,versionName:'fixture'};
+  const rel={job_id:'release-fixed',manifest_raw:JSON.stringify({package:'net.elfradio.elfremote'}),expires_at:0,versionCode:200,versionName:'fixture'};
   f.data.set('elfremote_rel_200',rel);
   const assign=key=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:200,request_id:key},cookie),f.env);
   const first=await (await assign('request-first')).json();
@@ -118,7 +118,7 @@ test('初始化失败仍能用已有成功更新器领取修复包，不能凭�
   const token='bootstrap-fixture-token';
   const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'device',status_only:true,enabled:true,
     managed_update:false,managed_update_v2:true,token_sha256:createHash('sha256').update(token).digest('hex')}]});
-  const cookie=await login(f),rel={job_id:'repair-release',manifest_raw:'{}',signature:'fixture',expires_at:0,versionCode:117,versionName:'repair'};
+  const cookie=await login(f),rel={job_id:'repair-release',manifest_raw:JSON.stringify({package:'net.elfradio.elfremote'}),signature:'fixture',expires_at:0,versionCode:117,versionName:'repair'};
   f.data.set('elfremote_rel_117',rel);
   const assign=()=>worker.fetch(request('/api/elfremote/assign','POST',{device_id:'device',versionCode:117,request_id:'repair-request'},cookie),f.env);
   assert.equal((await assign()).status,400);

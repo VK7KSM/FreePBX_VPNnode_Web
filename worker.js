@@ -1,3 +1,4 @@
+import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel } from './release-channels.js';
 import mediaClientSource from './media-client-source.js';
 // =========================================================================
 // elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
@@ -227,7 +228,13 @@ export class ElfStore {
     }
     if(url.pathname==='/__release'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>16384)return json({ok:false},400);const data=JSON.parse(raw);
-      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>handleElfReleasePublish({...this.env,__storage:storage,__uploadedArtifactKey:data.apk_key},new Request(request.url,{method:'POST',body:raw}))));
+      try {
+        return await this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(async storage=>{
+          const response=await handleElfReleasePublish({...this.env,__storage:storage,__uploadedArtifactKey:data.apk_key},new Request(request.url,{method:'POST',body:raw}));
+          if(!response.ok)throw response;
+          return response;
+        }));
+      }catch(error){if(error instanceof Response)return error;throw error;}
     }
     if(url.pathname==='/__media_records'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
@@ -339,9 +346,9 @@ const app = {
         if(encoded.length>12000||sig.length>2048)throw Error('清单过大');
         const raw=new TextDecoder().decode(Uint8Array.from(atob(encoded),c=>c.charCodeAt(0)));
         if(!await verifyUpdateSig(raw,sig))throw Error('清单签名无效');
-        const manifest=JSON.parse(raw);if(manifest.package!=='net.elfradio.elfremote'||!Number.isInteger(manifest.versionCode)||manifest.versionCode<=0)throw Error('清单字段无效');
+        const manifest=JSON.parse(raw);validateReleaseManifest(manifest);
         const key=await streamReleaseApk(env,manifest,request),stub=elfDoStub(env);if(!stub)throw Error('设备存储不可用');
-        return stub.fetch('https://elf-store/__release',{method:'POST',body:JSON.stringify({manifest_raw:raw,signature:sig,apk_key:key})});
+        return stub.fetch('https://elf-store/__release',{method:'POST',body:JSON.stringify({manifest_raw:raw,signature:sig,apk_key:key,publish_only:request.headers.get('X-Elf-Publish-Only')==='1'})});
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(!env.__storage&&pathname==='/api/elfremote/media-recordings'){
@@ -603,7 +610,7 @@ const app = {
       return handleElfReleasePublish(env, request);
     }
     if (pathname === "/api/elfremote/releases" && method === "GET") {
-      return handleElfReleaseList(env);
+      return handleElfReleaseList(env,url);
     }
     if (pathname === "/api/elfremote/assign" && method === "POST") {
       return handleElfAssign(env, request);
@@ -1014,6 +1021,9 @@ async function geoForIp(env, ip) {
 
 function publicDevice(d, modelName, model = {}) {
   const contact = recoveryContact(d);
+  let channel=null;try{channel=deviceReleaseChannel(d,[model]);}catch{}
+  const canUpdate=channel==='d31' ? d.managed_update===true && d.managed_update_v2===true
+    : channel==='d22' && (!d.status_only || d.managed_update===true || !!verifiedManagedUpdater(d));
   const batteryPresent=model.power_type==='external' ? false : model.power_type==='battery' ? true
     : typeof d.battery_present==='boolean' ? d.battery_present : null;
   return {
@@ -1022,6 +1032,8 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
+    update_channel:channel,can_update:canUpdate,
+    managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
     online: ["recent_contact", "awaiting_report", "checking_connection", "awaiting_full_report"].includes(contact.state),
     last_seen: d.last_seen || null,
@@ -1071,6 +1083,7 @@ function publicUpdate(u) {
     state: u.state || "",
     target: u.versionName || "",
     versionCode: u.versionCode || 0,
+    channel:u.channel || "d22",
     job_id: u.job_id || "",
     updated_at: u.updated_at || "",
     completed_at: u.completed_at || "",
@@ -1619,11 +1632,23 @@ async function handleElfReleasePublish(env, request) {
     if (!(await verifyUpdateSig(raw, sig))) return json({ ok: false, msg: "清单签名无效" }, 400);
     let m;
     try { m = JSON.parse(raw); } catch (e) { return json({ ok: false, msg: "清单不是 JSON" }, 400); }
-    const vc = Number(m.versionCode || 0);
-    if (vc <= 0 || m.package !== "net.elfradio.elfremote") {
-      return json({ ok: false, msg: "清单字段无效" }, 400);
+    const channel=validateReleaseManifest(m),vc=m.versionCode;
+    const existing=await getStore(env,releaseKey(channel,vc));
+    if(existing && (existing.sha256!==m.sha256 || existing.size!==m.size || existing.versionName!==m.versionName
+        || existing.certSha256!==m.certSha256))throw Error('同一通道版本码已对应其他制品，请增加版本码');
+    const jobMapping=await getStore(env,'elfremote_job_'+m.job_id);
+    if(jobMapping) {
+      const oldChannel=typeof jobMapping==='number'?'d22':jobMapping.channel;
+      const oldVersion=typeof jobMapping==='number'?jobMapping:jobMapping.versionCode;
+      const oldRelease=await getStore(env,releaseKey(oldChannel,oldVersion));
+      if(oldChannel!==channel || oldVersion!==vc || (jobMapping.manifest_raw || oldRelease?.manifest_raw)!==raw)throw Error('发布编号已被使用，请生成新的发布编号');
+    }
+    if(m.device_id) {
+      const target=(await loadDevices(env)).find(d=>d.id===m.device_id);
+      if(!target || deviceReleaseChannel(target,await loadDeviceModels(env))!==channel)throw Error('清单目标设备与发布通道不匹配');
     }
     const rel = {
+      channel,package:m.package,model_id:RELEASE_CHANNELS[channel].model_id,
       versionCode: vc,
       versionName: String(m.versionName || ""),
       sha256: String(m.sha256 || ""),
@@ -1635,34 +1660,49 @@ async function handleElfReleasePublish(env, request) {
       expires_at: m.expires_at || null,
       job_id: String(m.job_id || "")
     };
-    await setStore(env, "elfremote_rel_" + vc, rel);
-    const list = (await getStore(env, "elfremote_releases")) || [];
-    if (list.indexOf(vc) < 0) list.push(vc);
-    await setStore(env, "elfremote_releases", list);
-    if (rel.job_id) await setStore(env, "elfremote_job_" + rel.job_id, vc);
-    if (m.device_id) {
+    if (m.device_id && data.publish_only!==true) {
       await assignReleaseToDevice(env, String(m.device_id), rel);
     }
-    return json({ ok: true, versionCode: vc, versionName: rel.versionName });
+    await setStore(env, releaseKey(channel,vc), rel);
+    const list = (await getStore(env, releaseListKey(channel))) || [];
+    if (list.indexOf(vc) < 0) list.push(vc);
+    await setStore(env, releaseListKey(channel), list);
+    if (rel.job_id) await setStore(env, "elfremote_job_" + rel.job_id, {channel,versionCode:vc,apk_key:rel.apk_key,manifest_raw:raw});
+    return json({ ok: true, channel, package:rel.package, versionCode: vc, versionName: rel.versionName, sha256:rel.sha256, size:rel.size });
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
 }
 
-async function handleElfReleaseList(env) {
-  const ids = (await getStore(env, "elfremote_releases")) || [];
-  const out = [];
-  for (let i = 0; i < ids.length; i++) {
-    const rel = await getStore(env, "elfremote_rel_" + ids[i]);
-    if (!rel) continue;
-    out.push({
-      versionCode: rel.versionCode,
-      versionName: rel.versionName,
-      sha256: rel.sha256,
-      size: rel.size
-    });
-  }
-  return json({ ok: true, releases: out, store: env.ELF_DO ? "do" : "kv" });
+async function handleElfReleaseList(env,url) {
+  try {
+    let channel=releaseChannel(url.searchParams.get('channel') ?? undefined);
+    const deviceId=url.searchParams.get('device_id');
+    if(deviceId) {
+      const device=(await loadDevices(env)).find(d=>d.id===deviceId);
+      if(!device)return json({ok:false,msg:'未找到该设备'},404);
+      const selected=deviceReleaseChannel(device,await loadDeviceModels(env));
+      if(url.searchParams.has('channel') && selected!==channel)throw Error('设备与发布通道不匹配');
+      channel=selected;
+    }
+    const ids=(await getStore(env,releaseListKey(channel))) || [],out=[];
+    for(const id of ids) {
+      const rel=await getStore(env,releaseKey(channel,id));if(!rel)continue;
+      const m=JSON.parse(rel.manifest_raw||'{}');
+      if(deviceId && m.device_id && m.device_id!==deviceId)continue;
+      out.push({channel,package:rel.package||RELEASE_CHANNELS[channel].package,model_id:RELEASE_CHANNELS[channel].model_id,
+        versionCode:rel.versionCode,versionName:rel.versionName,sha256:rel.sha256,size:rel.size,certSha256:rel.certSha256,
+        expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
+    }
+    out.sort((a,b)=>b.versionCode-a.versionCode);
+    return json({ok:true,channel,releases:out,store:env.ELF_DO?'do':'kv'});
+  } catch(e){return json({ok:false,msg:e.message},400);}
+}
+
+async function releaseForDevice(env,device,input,version) {
+  const channel=deviceReleaseChannel(device,await loadDeviceModels(env));
+  if(input.channel!==undefined && releaseChannel(input.channel)!==channel)throw Error('设备与发布通道不匹配');
+  return getStore(env,releaseKey(channel,version));
 }
 
 async function handleElfAssign(env, request) {
@@ -1671,7 +1711,9 @@ async function handleElfAssign(env, request) {
     const deviceId = String(data.device_id || "").trim();
     const vc = Number(data.versionCode || 0);
     if (!deviceId || vc <= 0) return json({ ok: false, msg: "缺少设备或版本" }, 400);
-    const rel = await getStore(env, "elfremote_rel_" + vc);
+    const device=(await loadDevices(env)).find(d=>d.id===deviceId);
+    if(!device)return json({ok:false,msg:"未找到该设备"},404);
+    const rel = await releaseForDevice(env,device,data,vc);
     if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
     const d = await assignReleaseToDevice(env, deviceId, rel, data);
     if (!d) return json({ ok: false, msg: "未找到该设备" }, 404);
@@ -1693,6 +1735,9 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     if (list[i].id !== deviceId) continue;
     if (list[i].enabled === false) throw new Error("设备已停用");
     const manifest = JSON.parse(rel.manifest_raw);
+    const channel=manifestChannel(manifest);
+    if(deviceReleaseChannel(list[i],await loadDeviceModels(env))!==channel)throw Error("设备与发布制品不匹配");
+    if(channel==='d31' && (list[i].managed_update!==true || list[i].managed_update_v2!==true))throw Error("D31客户端尚未启用独立更新器");
     if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
     const recoveryUpdater = verifiedManagedUpdater(list[i]);
     if (list[i].status_only && list[i].managed_update !== true && !recoveryUpdater) throw new Error("当前客户端尚未接通更新");
@@ -1701,7 +1746,7 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     const requestId = String(input.request_id || "");
     if (requestId && !/^[a-zA-Z0-9-]{8,96}$/.test(requestId)) throw new Error("更新请求编号无效");
     if (modern && requestId && list[i].update?.request_id === requestId) {
-      if (list[i].update.versionCode !== rel.versionCode) throw new Error("同一请求不能选择不同版本");
+      if (list[i].update.versionCode !== rel.versionCode || (list[i].update.channel||'d22')!==channel) throw new Error("同一请求不能选择不同版本");
       return list[i];
     }
     if (!modern && list[i].update?.job_id === rel.job_id) {
@@ -1714,6 +1759,7 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     if (list[i].update?.job_id && !["success","recovered","rejected"].includes(list[i].update.state)
         && (!list[i].update.expires_at || Number(list[i].update.expires_at) > Date.now())) throw new Error("已有更新进行中");
     list[i].update = {
+      channel,package:manifest.package,
       job_id: modern ? "update-" + crypto.randomUUID() : rel.job_id,
       release_job_id: rel.job_id,
       request_id: requestId,
@@ -1836,7 +1882,7 @@ async function handleElfEnqueueTask(env, request) {
     if (String(data.type || "") === "install_apk") {
       const vc = Number(data.params?.versionCode || data.versionCode || 0);
       if (!Number.isInteger(vc) || vc <= 0) return json({ok:false,msg:"缺少有效 versionCode"},400);
-      const release = await getStore(env, "elfremote_rel_" + vc);
+      const release = await releaseForDevice(env,found,{channel:data.channel ?? data.params?.channel},vc);
       if (!release) return json({ok:false,msg:"未发布该版本"},404);
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
@@ -1960,9 +2006,11 @@ async function handleElfTaskProgress(env, request) {
 async function handleElfApk(env, pathname) {
   const jobId = decodeURIComponent(pathname.slice("/api/elfremote/apk/".length));
   if (!jobId) return json({ ok: false, msg: "缺少任务" }, 400);
-  const vc = await getStore(env, "elfremote_job_" + jobId);
-  if (!vc) return json({ ok: false, msg: "未知任务" }, 404);
-  const rel = await getStore(env, "elfremote_rel_" + vc);
+  const mapping = await getStore(env, "elfremote_job_" + jobId);
+  if (!mapping) return json({ ok: false, msg: "未知任务" }, 404);
+  const channel=typeof mapping==='number'?'d22':mapping.channel;
+  const vc=typeof mapping==='number'?mapping:mapping.versionCode;
+  const rel = mapping.apk_key ? {apk_key:mapping.apk_key} : await getStore(env,releaseKey(channel,vc));
   if (!rel) return json({ ok: false, msg: "制品缺失" }, 404);
   if (rel.apk_key) {
     const object = await env.ELF_ARTIFACTS?.get(rel.apk_key);

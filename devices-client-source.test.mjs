@@ -261,8 +261,8 @@ test('维护按钮遵循能力和任务占用，历史成功不冒充本次结�
 });
 
 test('已发布版本按编号降序，默认最新，手动选择不被重绘覆盖',async()=>{
- const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:async()=>({ok:true,json:async()=>({ok:true,releases:[{versionCode:9,versionName:'旧版'},{versionCode:95,versionName:'新版'}]})})});
- vm.runInContext(source,context);context.DEV=[{id:'fixture'}];context.selDev='fixture';context.renderOps=()=>{};
+ const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:async()=>({ok:true,json:async()=>({ok:true,releases:[{versionCode:9,versionName:'旧版'},{versionCode:95,versionName:'新版'}]})})});
+ vm.runInContext(source,context);context.DEV=[{id:'fixture',can_update:true}];context.selDev='fixture';context.renderOps=()=>{};
  await context.loadReleases();assert.equal(context.RELEASES[0].versionCode,95);assert.equal(context.selectedRelease().versionCode,95);
  assert.match(context.pageUpdate(''),/<option value="95" selected>/);
  context.uiOf().releaseVersion='9';assert.equal(context.selectedRelease().versionCode,9);
@@ -274,7 +274,7 @@ test('已发布版本按编号降序，默认最新，手动选择不被重绘�
 test('更新检查区分新旧和未知版本，快捷更新总是指定最新版',()=>{
  const requests=[];
  const context=vm.createContext({crypto,adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:(url,options)=>{requests.push(JSON.parse(options.body));return new Promise(()=>{});}});
- vm.runInContext(source,context);context.DEV=[{id:'fixture',app_version:'0.1.9'}];context.selDev='fixture';context.RELEASE_STATE='ready';
+ vm.runInContext(source,context);context.DEV=[{id:'fixture',can_update:true,update_channel:'d22',app_version:'0.1.9'}];context.selDev='fixture';context.RELEASE_DEVICE='fixture';context.RELEASE_STATE='ready';
  context.RELEASES=[{versionCode:95,versionName:'0.1.94-production-lost-mode'},{versionCode:10,versionName:'0.1.9'}];context.uiOf().releaseVersion=10;
  assert.match(context.pageUpdate(''),/新的软件版本.*assignUpdate\(95\)/);
  context.assignUpdate(95);assert.equal(requests[0].versionCode,95);
@@ -326,4 +326,20 @@ test('系统分类快速切换只补读最后选择，停用设备不能下发�
  for(let i=0;i<15&&context.systemSettingsState().pending;i++)await Promise.resolve();assert.deepEqual(requests,['sound','network']);
  assert.equal(context.systemSettingsState().pending,false);assert.equal(context.DEV[0].system_settings.network.group,'network');
  context.DEV[0].enabled=false;await context.runSystemSettings({group:'network',action:'set',key:'bluetooth',value:true});assert.equal(requests.length,2);
+});
+
+test('切换机型时旧发布请求不能覆盖新设备，未启用更新器不能下发',async()=>{
+ const pending=new Map(),sent=[];
+ const context=vm.createContext({crypto,URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},fetch:(url,options)=>{
+  if(options){sent.push(JSON.parse(options.body));return new Promise(()=>{});}
+  return new Promise(resolve=>pending.set(new URL('https://test'+url).searchParams.get('device_id'),resolve));
+ }});vm.runInContext(source,context);context.renderOps=()=>{};
+ context.DEV=[{id:'d22',can_update:true,update_channel:'d22'},{id:'d31',can_update:false,update_channel:'d31'}];context.selDev='d22';
+ const old=context.loadReleases();context.selDev='d31';const current=context.loadReleases();
+ pending.get('d31')({ok:true,json:async()=>({ok:true,releases:[{versionCode:68,versionName:'D31版'}]})});await current;
+ pending.get('d22')({ok:true,json:async()=>({ok:true,releases:[{versionCode:999,versionName:'D22版'}]})});await old;
+ assert.equal(context.RELEASE_DEVICE,'d31');assert.equal(context.RELEASES[0].versionCode,68);
+ assert.doesNotMatch(context.pageUpdate(''),/D22版/);assert.match(context.pageUpdate(''),/尚未启用客户端更新/);
+ context.assignUpdate(68);assert.equal(sent.length,0);context.DEV[1].can_update=true;context.assignUpdate(68);
+ assert.equal(sent.length,1);assert.equal(sent[0].channel,'d31');assert.equal(sent[0].device_id,'d31');
 });
