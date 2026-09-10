@@ -50,6 +50,7 @@ export async function runRecovery(env, stub) {
   const response = await stub.fetch('https://elf-store/__recovery', {method:'POST'});
   if (!response.ok) throw new Error('超时检查准备失败');
   const {outgoing} = await response.json();
+  if(!outgoing.length)return;
   const run = {started_at:new Date().toISOString(), prepared:outgoing.length, accepted:0, failed:0};
   await Promise.all(outgoing.map(async item => {
     let accepted = false;

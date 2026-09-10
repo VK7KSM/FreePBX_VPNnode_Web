@@ -50,15 +50,22 @@ function applySipStatus(d, full){
   renderAll();
   if(full) renderSync();
 }
-function loadSip(){
-  fetch("/api/sip").then(function(r){return r.json();}).then(function(d){
-    applySipStatus(d, true);
-  }).catch(function(){ STALE=true; renderStatus(); });
+var sipLoading=null,sipPollFailures=0,sipPollAt=0,sipFullAt=0,sipRetryAt=0;
+function readSip(full){
+  if(sipLoading)return sipLoading;
+  sipLoading=fetch(full?'/api/sip':'/api/sip/live').then(function(r){
+    if(!r.ok){var seconds=Number(r.headers&&r.headers.get('Retry-After'));if(seconds>0)sipRetryAt=Date.now()+Math.min(seconds,900)*1000;throw Error('读取失败');}return r.json();
+  }).then(function(d){if(!d.ok)throw Error('读取失败');applySipStatus(d,full);sipPollFailures=0;sipRetryAt=0;if(full)sipFullAt=Date.now();})
+    .catch(function(){sipPollFailures++;STALE=true;renderStatus();})
+    .finally(function(){sipPollAt=Date.now();sipLoading=null;});
+  return sipLoading;
 }
-function loadSipLive(){
-  fetch("/api/sip/live").then(function(r){return r.json();}).then(function(d){
-    applySipStatus(d, false);
-  }).catch(function(){ STALE=true; renderStatus(); });
+function loadSip(){return readSip(true);}
+function loadSipLive(){return readSip(false);}
+function sipPollDelay(){
+  if(sipRetryAt>Date.now())return Math.max(0,sipRetryAt-sipPollAt);
+  if(sipPollFailures)return Math.min(300000,15000*Math.pow(2,Math.min(5,sipPollFailures-1)));
+  return ST&&Number(ST.active_calls)>0?2000:10000;
 }
 function saveAll(done){
   window._sipSaved = true;
@@ -588,6 +595,8 @@ function drawCdr(){
   $("cdrPager").innerHTML = pg;
 }
 document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });
-setInterval(function(){ if(adminSession.authenticated) loadSipLive(); }, 2000);
-setInterval(function(){ if(adminSession.authenticated) loadSip(); }, 60000);
+setInterval(function(){
+  if(adminSession.authenticated&&!document.hidden&&Date.now()-sipPollAt>=sipPollDelay())readSip(Date.now()-sipFullAt>=60000);
+},2000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&adminSession.authenticated&&Date.now()-sipPollAt>=sipPollDelay())loadSip();});
 checkAuth();

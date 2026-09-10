@@ -256,9 +256,10 @@ export class ElfStore {
     if (url.pathname === "/__recovery" && request.method === "POST") {
       return this.ctx.blockConcurrencyWhile(() => this.ctx.storage.transaction(async storage => {
         const scoped = { ...this.env, __storage: storage };
-        const devices = await loadDevices(scoped);
+        const devices = await loadDevices(scoped),before=JSON.stringify(devices);
         const outgoing = await prepareRecovery(storage, devices);
-        await saveDevices(scoped, devices);
+        if(JSON.stringify(devices)!==before)await saveDevices(scoped, devices);
+        if(!outgoing.length)await storage.put('report_recovery_run',{started_at:new Date().toISOString(),completed_at:new Date().toISOString(),prepared:0,accepted:0,failed:0});
         return json({ok:true,outgoing});
       }));
     }
@@ -280,6 +281,11 @@ export class ElfStore {
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
           return await this.ctx.storage.transaction(async storage => {
+            if(!isMachineRoute(url.pathname,request.method)) {
+              if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
+              const auth=await handleAdminAuth(storage,this.env,new Request('https://elf-store/__auth/session',{headers:request.headers}));
+              if(!auth.ok)throw auth;
+            }
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
               __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,__media:this.media });
@@ -309,11 +315,29 @@ export class ElfStore {
   }
 }
 
+// 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
+function singleStoreRead(path,method) {
+  return method==='GET' && ['/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/elfremote/releases'].includes(path);
+}
+
+const quotaCooldown=new WeakMap();
+function isQuotaError(error){return /Exceeded allowed volume of requests in Durable Objects free tier/i.test(error?.message||'');}
+function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
+function quotaUnavailable(){
+  const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;
+  return authJson({ok:false,code:'storage_quota_exceeded',msg:'服务器额度暂时用尽，正在等待恢复',retry_at:reset},503,{'Retry-After':String(Math.max(1,Math.min(900,Math.ceil((reset-now)/1000))))});
+}
+
 const app = {
   async scheduled(event, env) {
     const stub=elfDoStub(env);
-    for(const work of [runRecovery,cleanupFiles,cleanupPhotos,cleanupReturns,cleanupRecordings]) {
-      try { await work(env,stub); } catch { console.error('scheduled_task_failed',work.name); }
+    const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
+    const jobs=[runRecovery,cleanupFiles,...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
+    for(const work of jobs) {
+      try { await work(env,stub); } catch(error) {
+        console.error('scheduled_task_failed',work.name);
+        if(isQuotaError(error)){markQuotaUnavailable(env);break;}
+      }
     }
   },
   async fetch(request, env, ctx) {
@@ -325,6 +349,9 @@ const app = {
 
     if (pathname === "/admin-session.js") {
       return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
+    }
+    if(!env.__storage && singleStoreRead(pathname,method)) {
+      const stub=elfDoStub(env);return stub?stub.fetch(request):authJson({ok:false,msg:'设备存储不可用'},503);
     }
     if (!env.__storage && pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
       if (!trustedOrigin(request)) return authJson({ ok: false, msg: "请求来源不匹配" }, 403);
@@ -578,15 +605,15 @@ const app = {
       return handleDeviceModelSave(env, request);
     }
     if (pathname === "/api/devices" && method === "GET") {
-      const devices = await loadDevicesHydrated(env);
-      const registered = await loadDevices(env);
+      const models=await loadDeviceModels(env),registered=await loadDevices(env);
+      const devices = await loadDevicesHydrated(env,models,registered);
       const unpaired = Object.entries(await loadEnrolls(env))
         .filter(([, row]) => row && !row.paired && !registered.some(d => d.token_sha256 === row.token_sha256))
         .map(([code, row]) => ({ name: row.device_name || row.model_hint || "未命名设备",
           pairable: Date.parse(row.expires_at) > Date.now(),
           app_version: row.app_version, last_seen: row.last_seen || row.created_at,
           model_hint: row.model_hint, expires_at: row.expires_at }));
-      return json({ ok: true, devices, unpaired });
+      return json({ ok: true, devices, unpaired, models });
     }
     if (pathname === "/api/devices" && method === "POST") {
       return handleDeviceCreate(env, request);
@@ -666,7 +693,14 @@ const app = {
     });
   }
 };
-export default app;
+export default {
+  ...app,
+  async fetch(request,env,ctx){
+    if(new URL(request.url).pathname.startsWith('/api/') && Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
+    try{return await app.fetch(request,env,ctx);}
+    catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);return quotaUnavailable();}
+  }
+};
 
 function defaultSipExtensions() {
   const rows = [
@@ -1087,16 +1121,17 @@ function publicUpdate(u) {
     job_id: u.job_id || "",
     updated_at: u.updated_at || "",
     completed_at: u.completed_at || "",
+    expires_at:u.expires_at || null,
     detail: u.detail || "",
     label: updateStateLabel(u.state || "")
   };
 }
 
-async function loadDevicesHydrated(env) {
-  const models = await loadDeviceModels(env);
+async function loadDevicesHydrated(env,models,list) {
+  models=models || await loadDeviceModels(env);
   const byId = {};
   for (let i = 0; i < models.length; i++) byId[models[i].id] = models[i];
-  const list = await loadDevices(env);
+  list=list || await loadDevices(env);
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const d = list[i];

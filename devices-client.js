@@ -108,10 +108,9 @@ function logout(){ return adminSession.logout(); }
 
 function loadDevices(){
   if(deviceLoad) return deviceLoad;
-  function read(url){return fetch(url).then(function(r){if(!r.ok) throw new Error('刷新失败（'+r.status+'）');return r.json();});}
-  deviceLoad = Promise.all([
-    read("/api/devices"), read("/api/device-models")
-  ]).then(function(arr){
+  function read(url){return fetch(url).then(function(r){if(!r.ok){var retry=Number(r.headers&&r.headers.get('Retry-After'));if(retry>0)devicePollRetryAt=Date.now()+Math.min(retry,900)*1000;throw new Error('刷新失败（'+r.status+'）');}return r.json();});}
+  deviceLoad = read("/api/devices").then(function(snapshot){
+    var arr=[snapshot,snapshot];
     if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
     var previousId=selDev;
     var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
@@ -134,8 +133,9 @@ function loadDevices(){
     if(editing) renderRemoteConsole();
 
     if($("deviceLoadError")) $("deviceLoadError").textContent='';
-    return true;
+    devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();return true;
   }).catch(function(error){
+    devicePollFailures++;lastPollAt=Date.now();
     if($("deviceLoadError")) $("deviceLoadError").textContent=error.message||'刷新失败，保留上次数据';
     return false;
   }).finally(function(){deviceLoad=null;});
@@ -1541,11 +1541,20 @@ function delModel(id){
 
 checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
-var lastPollAt=0;
+var lastPollAt=0,devicePollFailures=0,devicePollRetryAt=0;
+function devicePollDelay(){
+  if(devicePollRetryAt>Date.now())return Math.max(0,devicePollRetryAt-lastPollAt);
+  if(devicePollFailures)return Math.min(300000,15000*Math.pow(2,Math.min(devicePollFailures-1,5)));
+  var active=DEV.some(function(d){return (updateBusy(d.update||{})&&(!d.update.expires_at||d.update.expires_at>Date.now())&&(!d.update.updated_at||Date.now()-Date.parse(d.update.updated_at)<120000)) || (d.task&&['pending','claimed','running'].includes(d.task.state)&&(!d.task.expires_at||d.task.expires_at>Date.now()));});
+  return active?3000:30000;
+}
 setInterval(function(){
-  if(adminSession.authenticated && Date.now()-lastPollAt >= (document.hidden?60000:selFn==='update'?2000:10000)){
+  if(adminSession.authenticated && !document.hidden && Date.now()-lastPollAt>=devicePollDelay()){
     lastPollAt=Date.now();loadDevices();
   }
 }, 2000);
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('visibilitychange',function(){
+  if(!document.hidden&&adminSession.authenticated&&Date.now()-lastPollAt>=devicePollDelay())loadDevices();
+});
 
 if(typeof document!=="undefined"&&document.addEventListener)document.addEventListener("keydown",function(e){if(e.key==="Escape"&&MEDIA_HISTORY.device)closeMediaHistory();});

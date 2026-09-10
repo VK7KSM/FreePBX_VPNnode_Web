@@ -28,6 +28,7 @@ final class CorePush implements Closeable {
     private volatile String activeKey="";
     private String activeNetwork="";
     private int failures;
+    private final HttpRetryPolicy httpRetry=new HttpRetryPolicy();
     CorePush(File root)throws Exception {
         directory=new File(root,"push");if(!directory.isDirectory()&&!directory.mkdir())throw new IOException("推送目录不可用");
         android.system.Os.chmod(directory.getPath(),0700);
@@ -108,7 +109,7 @@ final class CorePush implements Closeable {
         wake.hold("sync",45000);
         try{JSONObject identity=state.snapshot(),reply=post(Protocol.pushSyncPath(),identityBody(identity));JSONObject notice=reply.optJSONObject("status_request");
             if(notice!=null)state.notice(CorePushState.key(identity),notice,System.currentTimeMillis());deliver();RuntimeLog.event("core_push_sync_ok");
-        }catch(Exception error){RuntimeLog.error("core_push_sync_failed",error);if(!closed&&connected)wake.schedule("sync",60000,this::sync);}
+        }catch(Exception error){RuntimeLog.error("core_push_sync_failed",error);if(!closed&&connected){long delay=60000;try{delay=Math.max(delay,httpRetry.remaining(Protocol.pushSyncPath(),SystemClock.elapsedRealtime()));}catch(Exception ignored){}RuntimeLog.event("core_push_sync_retry delay_ms="+delay);wake.schedule("sync",delay,this::sync);}}
         finally{wake.release("sync");}
     }
     private void deliver(){
@@ -125,6 +126,7 @@ final class CorePush implements Closeable {
     }
     private void retry(Throwable error){
         dispose();if(closed)return;long delay=PushPolicy.retryDelay(failures++,Math.random());
+        try{delay=Math.max(delay,httpRetry.remaining(Protocol.pushConfigPath(),SystemClock.elapsedRealtime()));}catch(Exception ignored){}
         RuntimeLog.error("core_mqtt_failed",error);RuntimeLog.event("core_mqtt_retry delay_ms="+delay);wake.schedule("retry",delay,this::ensure);
     }
     private void dispose(){
@@ -140,11 +142,16 @@ final class CorePush implements Closeable {
         return new JSONObject().put("text",text.toString());
     }
     private static JSONObject identityBody(JSONObject identity)throws Exception{return new JSONObject().put("device_id",identity.getString("device_id")).put("token",identity.getString("token"));}
-    private static JSONObject post(String url,JSONObject body)throws Exception {
+    private JSONObject post(String url,JSONObject body)throws Exception {
+        httpRetry.check(url,SystemClock.elapsedRealtime());
+        try{JSONObject result=postOnce(url,body);httpRetry.success(url);return result;}
+        catch(Exception error){httpRetry.failed(url,error,SystemClock.elapsedRealtime());throw error;}
+    }
+    private static JSONObject postOnce(String url,JSONObject body)throws Exception {
         HttpsURLConnection c=(HttpsURLConnection)Protocol.requireHttpsUrl(url).openConnection();c.setSSLSocketFactory(CoreTraffic.factory());
         try{c.setConnectTimeout(15000);c.setReadTimeout(20000);c.setInstanceFollowRedirects(false);c.setRequestMethod("POST");c.setDoOutput(true);
             c.setRequestProperty("Content-Type","application/json");byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);
-            try(OutputStream out=c.getOutputStream()){out.write(bytes);}if(c.getResponseCode()!=200)throw new IOException("核心推送HTTP状态="+c.getResponseCode());
+            try(OutputStream out=c.getOutputStream()){out.write(bytes);}if(c.getResponseCode()!=200)throw new HttpRetryPolicy.StatusFailure(c.getResponseCode(),c.getHeaderField("Retry-After"));
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buffer=new byte[2048];int n;while((n=in.read(buffer))!=-1){if(out.size()+n>16384)throw new IOException("核心推送响应过大");out.write(buffer,0,n);}JSONObject reply=new JSONObject(new String(out.toByteArray(),StandardCharsets.UTF_8));if(!reply.optBoolean("ok"))throw new IOException("核心推送请求被拒绝");return reply;}
         }finally{c.disconnect();}
     }

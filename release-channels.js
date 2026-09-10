@@ -22,7 +22,7 @@ export function validateReleaseManifest(m,now=Date.now()) {
     ||typeof m.versionName!=='string'||!m.versionName||m.versionName.length>128
     ||!Number.isSafeInteger(m.size)||m.size<=0||m.size>64*1024*1024
     ||!/^[0-9a-f]{64}$/.test(m.sha256||'')||!/^[0-9a-f]{64}$/.test(m.certSha256||'')
-    ||!Number.isSafeInteger(m.expires_at)||m.expires_at<=now
+    ||!Number.isSafeInteger(m.expires_at)||(!(channel==='d22'&&m.expires_at===0)&&m.expires_at<=now)
     ||!/^[A-Za-z0-9_-]{1,96}$/.test(m.job_id||'')
     ||(m.device_id!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(m.device_id))
     ||m.url!=='https://v.elfradio.net/api/elfremote/apk/'+m.job_id)throw Error('清单字段或有效期无效');

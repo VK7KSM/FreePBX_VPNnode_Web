@@ -8,6 +8,7 @@ import java.net.URL;
 import java.nio.charset.Charset;
 
 final class HttpJson {
+    private static final HttpRetryPolicy retry=new HttpRetryPolicy();
     static String post(String url, String json) throws Exception {
         return exchange("POST", url, json);
     }
@@ -59,9 +60,13 @@ final class HttpJson {
     }
 
     private static String exchange(String method, String url, String json) throws Exception {
+        Protocol.requireHttpsUrl(url);
+        retry.check(url,android.os.SystemClock.elapsedRealtime());
         try {
-            return exchangeOnce(method, url, json);
+            String response=exchangeOnce(method,url,json);retry.success(url);return response;
         } catch (Exception e) {
+            long delay=retry.failed(url,e,android.os.SystemClock.elapsedRealtime());
+            RuntimeLog.event("https_retry delay_ms="+delay);
             RuntimeLog.error("https_failed", e);
             throw e;
         }
@@ -77,7 +82,6 @@ final class HttpJson {
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
-            c.setRequestProperty("User-Agent", "elfRemote/" + Protocol.appVersion());
             if (json != null) {
                 byte[] body = json.getBytes("UTF-8");
                 c.setDoOutput(true);
@@ -87,6 +91,7 @@ final class HttpJson {
                 os.close();
             }
             int code = c.getResponseCode();
+            if(code>=500||code==429)throw new HttpRetryPolicy.StatusFailure(code,c.getHeaderField("Retry-After"));
             if (code >= 300 && code < 400) throw new java.io.IOException("redirect refused");
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             if (in == null) return "{}";

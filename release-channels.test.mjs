@@ -63,6 +63,6 @@ test('独立发布通道从上传、筛选、分配到领取完整隔离，保�
  assert.equal(response.status,400);assert.deepEqual(f.data,before);
 });
 test('历史D22清单兼容，其他机型不能借用D22通道',()=>{
- const m=JSON.parse(signed('d22').manifest_raw);delete m.channel;delete m.model_id;assert.equal(validateReleaseManifest(m),'d22');
+ const m=JSON.parse(signed('d22').manifest_raw);delete m.channel;delete m.model_id;assert.equal(validateReleaseManifest(m),'d22');assert.equal(validateReleaseManifest({...m,expires_at:0}),'d22');
  assert.throws(()=>validateReleaseManifest({...m,package:RELEASE_CHANNELS.d31.package}));
 });
