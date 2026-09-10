@@ -20,4 +20,17 @@ public class PhotoPolicyTest {
         assertTrue(PhotoPolicy.due(now,now-900000));assertTrue(PhotoPolicy.due(now,0));
         assertFalse(PhotoPolicy.recent(now,now-900001));assertTrue(PhotoPolicy.recent(now,now-1000));
     }
+    @Test public void transmittedReportKeepsSampleTimeAfterOutboxRemovesPrivateTimestamp()throws Exception {
+        java.io.File folder=java.nio.file.Files.createTempDirectory("photo-report").toFile();
+        try{
+            StatusOutbox outbox=new StatusOutbox(folder,4);
+            long at=1788995200000L;
+            JSONObject body=new JSONObject().put("report_id","fixture").put("queued_at_ms",at).put("reported_at","2026-09-09T23:06:40.000Z").put("network","wifi");
+            outbox.add(body);
+            new StatusReporter(outbox,text->{JSONObject sent=new JSONObject(text);assertFalse(sent.has("queued_at_ms"));
+                assertEquals(at,PhotoPolicy.sampledAt(sent));assertTrue(PhotoPolicy.recent(at+1000,PhotoPolicy.sampledAt(sent)));
+                return "{ok:true,report_id:fixture}";
+            }).flush("test-token");
+        }finally{for(java.io.File f:folder.listFiles())f.delete();folder.delete();}
+    }
 }

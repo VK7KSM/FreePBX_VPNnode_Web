@@ -17,4 +17,15 @@ public class SystemSettingsTest {
             try{SystemSettings.normalize(new JSONObject("{group:network,action:set,key:dns,value:{mode:auto}}"));fail();}catch(java.io.IOException expected){}
         }finally{for(java.io.File f:folder.listFiles())f.delete();folder.delete();}
     }
+    @Test public void oldFailedNetworkJournalCannotOverrideLaterConfirmedNetwork()throws Exception {
+        java.io.File root=java.nio.file.Files.createTempDirectory("network-journals").toFile();
+        java.io.File old=new java.io.File(root,"old"),latest=new java.io.File(root,"latest");old.mkdir();latest.mkdir();
+        try{
+            java.io.File a=new java.io.File(old,"settings-network-before.json"),b=new java.io.File(latest,"settings-network-before.json");
+            RescueFiles.write(a,"{}");a.setLastModified(1000);RescueFiles.write(b,"{}");b.setLastModified(2000);
+            assertEquals(latest,SystemSettings.pendingNetworkRecovery(root));
+            RescueFiles.write(new java.io.File(latest,"settings-commit"),"ok");assertNull(SystemSettings.pendingNetworkRecovery(root));
+            assertTrue(SystemSettings.needsRecovery(old));
+        }finally{for(java.io.File d:root.listFiles()){for(java.io.File f:d.listFiles())f.delete();d.delete();}root.delete();}
+    }
 }

@@ -46,10 +46,8 @@ final class RescueJobs {
     }
 
     private void recoverNetworks() {
-        File[] folders=root.listFiles();if(folders==null)return;
-        java.util.List<File> pending=new java.util.ArrayList<>();
-        for(File folder:folders)if(SystemSettings.needsRecovery(folder))pending.add(folder);
-        if(pending.isEmpty())return;networkRecovering=true;
+        File latest=SystemSettings.pendingNetworkRecovery(root);if(latest==null)return;
+        java.util.List<File> pending=java.util.Collections.singletonList(latest);networkRecovering=true;
         new Thread(()->{
             try{for(File folder:pending){
                 boolean recovered=false;
@@ -100,7 +98,7 @@ final class RescueJobs {
         JSONObject p=SystemSettings.normalize(params);
         if(p.optString("action").equals("set")&&(p.optString("group").equals("wifi")||p.optString("group").equals("network"))) {
             if(networkRecovering)throw new IOException("正在恢复重启前的网络配置，请稍后重试");
-            File[] folders=root.listFiles();if(folders!=null)for(File folder:folders)if(SystemSettings.needsRecovery(folder))throw new IOException("上次网络恢复尚未完成，请先检查维护日志");
+            if(SystemSettings.pendingNetworkRecovery(root)!=null)throw new IOException("上次网络恢复尚未完成，请先检查维护日志");
         }
         String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return submit(id,"system-settings:"+fingerprint,120,(folder,command,timeout)->SystemSettings.execute(folder,p));

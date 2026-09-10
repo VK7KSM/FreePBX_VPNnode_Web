@@ -56,7 +56,7 @@ final class ReportPhotos {
         if(completed(id)||jobFile(id).isFile())return;
         long now=System.currentTimeMillis();boolean critical=PhotoPolicy.critical(report);
         android.content.SharedPreferences cadence=context.getSharedPreferences("report-photo-cadence",0);
-        if(!critical&&(!PhotoPolicy.recent(now,report.optLong("queued_at_ms"))
+        if(!critical&&(!PhotoPolicy.recent(now,PhotoPolicy.sampledAt(report))
                 ||!PhotoPolicy.due(now,Math.max(cadence.getLong("queued",0),cadence.getLong("captured",0))))){remember(id);return;}
         if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("照片队列不可用");
         File[] queued=directory.listFiles((dir,name)->name.endsWith(".json"));

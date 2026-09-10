@@ -230,6 +230,13 @@ public final class SystemSettings {
     }
     static boolean needsRecovery(File folder){return new File(folder,"settings-network-before.json").isFile()
             &&!new File(folder,"settings-commit").isFile()&&!new File(folder,"settings-restored").isFile();}
+    static File pendingNetworkRecovery(File root){
+        File[] folders=root.listFiles();File latest=null;long newest=Long.MIN_VALUE;
+        if(folders!=null)for(File folder:folders){File journal=new File(folder,"settings-network-before.json");
+            if(journal.isFile()&&journal.lastModified()>newest){newest=journal.lastModified();latest=folder;}}
+        // 新事务的真实原像已包含后续管理员选择，旧失败任务不能覆盖它。
+        return latest!=null&&needsRecovery(latest)?latest:null;
+    }
     static boolean recover(File folder)throws Exception {
         if(!needsRecovery(folder))return true;
         String command="CLASSPATH="+RescueFiles.quote(System.getProperty("java.class.path"))+" app_process /system/bin "+SystemSettings.class.getName()+" "+RescueFiles.quote(folder.getPath())+" recover";
