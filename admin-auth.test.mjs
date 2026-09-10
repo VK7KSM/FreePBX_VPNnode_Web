@@ -128,3 +128,14 @@ test("更换订阅令牌后固定旧值不能绕过验证",async()=>{
  assert.equal((await worker.fetch(request("/sub/d31"),f.env)).status,401);
  assert.equal((await worker.fetch(request("/sub/new-subscription"),f.env)).status,200);
 });
+
+test('登录会话查询的503不会冒充密码错误，按Retry-After等待后自动恢复',async()=>{
+ const nodes={loginWrap:{style:{}},lerr:{style:{}}},timers=[];let available=false,loaded=0,requests=0;
+ const context={URL,location:{href:'https://example.test/devices',origin:'https://example.test'},document:{hidden:false,getElementById:id=>nodes[id]},localStorage:{removeItem(){}},setTimeout(fn,ms){timers.push({fn,ms});return timers.length;},clearTimeout(){}};
+ context.window=context;context.fetch=async()=>{requests++;return available?Response.json({ok:true}):Response.json({ok:false},{status:503,headers:{'Retry-After':'900'}});};
+ vm.runInNewContext(adminSessionSource,context);await context.adminSession.check(()=>loaded++);
+ assert.equal(loaded,0);assert.equal(requests,1);assert.equal(timers[0].ms,900000);assert.match(nodes.lerr.textContent,/服务器暂不可用/);
+ context.document.hidden=true;timers[0].fn();assert.equal(requests,1);
+ context.document.hidden=false;available=true;timers[1].fn();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(requests,2);assert.equal(loaded,1);assert.equal(context.adminSession.authenticated,true);
+});
