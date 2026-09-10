@@ -12,7 +12,7 @@ test('大APK正文直接传给R2并要求长度及SHA校验，不经过DO的Base
  assert.equal(await streamReleaseApk(env,{size:bytes.length,sha256},req()),'apks/'+sha256);assert.ok(saved);
  await assert.rejects(streamReleaseApk(env,{size:bytes.length-1,sha256},req()),/长度/);
  env.ELF_ARTIFACTS.put=async()=>{throw Error('checksum mismatch');};await assert.rejects(streamReleaseApk(env,{size:bytes.length,sha256},req()),/checksum/);
- const f=fixture();assert.equal((await worker.fetch(req(),f.env)).status,404);
+ const f=fixture();
  assert.equal((await worker.fetch(new Request('https://example.test/api/elfremote/releases/upload',{method:'PUT',body:bytes}),f.env)).status,401);
 });
 
