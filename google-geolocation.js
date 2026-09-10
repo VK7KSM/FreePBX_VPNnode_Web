@@ -75,19 +75,20 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
     try {
       const response = await env.ELF_DO.get(env.ELF_DO.idFromName('google-geolocation')).fetch('https://internal/__geolocation',{
         method:'POST',body:JSON.stringify({deviceId,radio:data.radio})});
-      return response.ok ? await response.json() : {location:null,reason:'unavailable'};
-    } catch { return {location:null,reason:'unavailable'}; }
+      return response.ok ? await response.json() : {location:null,reason:'location_service_http_'+response.status};
+    } catch { return {location:null,reason:'location_service_failed'}; }
   }
   const signature = await fingerprint(payload), key = 'google-geolocation/'+encodeURIComponent(deviceId);
   const cached = await env.__storage.get(key);
   if (cached?.signature === signature && now >= cached.at && now-cached.at < (cached.location ? MAX_AGE : 60000))
     return {location:cached.location,reason:cached.reason};
-  let location = null, reason = 'free_limit_reached';
+  let location = null, reason = 'free_limit_reached', stage = 'billing_period';
   const controller = new AbortController(), timer = setTimeout(()=>controller.abort(),4500);
   try {
    const month = googleBillingMonth(now);
    for (const account of accounts) {
     const usageKey = 'google-usage/'+account.id;
+    stage='usage_read';
     let usage = await env.__storage.get(usageKey);
     if (usage?.month !== month) usage = {month,used:0,blockedUntil:0};
     if (!Number.isSafeInteger(usage.used) || usage.used < 0) { reason='usage_unavailable'; continue; }
@@ -96,7 +97,9 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
     if (controller.signal.aborted) { reason='timeout'; break; }
     // 请求发出前持久化；失败/超时也保守计数，防止重试产生意外费用。
     usage = {...usage,used:usage.used+1};
+    stage='usage_write';
     await env.__storage.put(usageKey,usage);
+    stage='google_request';
     const response = await fetcher('https://www.googleapis.com/geolocation/v1/geolocate?key='+encodeURIComponent(account.key),
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,redirect:'error'});
     if (!response.ok) {
@@ -121,7 +124,7 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
     }
     break;
    }
-  } catch (error) { reason = controller.signal.aborted ? 'timeout' : 'unavailable'; }
+  } catch (error) { reason = controller.signal.aborted ? 'timeout' : stage==='google_request' ? 'unavailable' : stage+'_failed'; }
   finally { clearTimeout(timer); }
   await env.__storage.put(key,{signature,at:now,location,reason});
   return {location,reason};
