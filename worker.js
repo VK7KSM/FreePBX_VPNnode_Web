@@ -46,7 +46,7 @@ import { appendLocationHistory, queryLocationHistory } from "./location-history.
 import { normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
 import { queryDailyTraffic } from "./daily-traffic.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
-import { saveReleaseApk } from "./update-artifacts.js";
+import { saveReleaseApk, streamReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
 import { fileMetadata, fileHttp, validateFileTask, cleanupFiles, cleanupDeliveredFile } from "./file-transfer.js";
@@ -225,6 +225,10 @@ export class ElfStore {
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
+    if(url.pathname==='/__release'&&request.method==='POST'){
+      const raw=await request.text();if(raw.length>16384)return json({ok:false},400);const data=JSON.parse(raw);
+      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>handleElfReleasePublish({...this.env,__storage:storage,__uploadedArtifactKey:data.apk_key},new Request(request.url,{method:'POST',body:raw}))));
+    }
     if(url.pathname==='/__media_records'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
@@ -328,6 +332,17 @@ const app = {
     if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
       const stub=elfDoStub(env);
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
+    }
+    if(!env.__storage&&pathname==='/api/elfremote/releases/upload'&&method==='PUT'){
+      try{
+        const encoded=request.headers.get('X-Elf-Manifest')||'',sig=request.headers.get('X-Elf-Signature')||'';
+        if(encoded.length>12000||sig.length>2048)throw Error('清单过大');
+        const raw=new TextDecoder().decode(Uint8Array.from(atob(encoded),c=>c.charCodeAt(0)));
+        if(!await verifyUpdateSig(raw,sig))throw Error('清单签名无效');
+        const manifest=JSON.parse(raw);if(manifest.package!=='net.elfradio.elfremote'||!Number.isInteger(manifest.versionCode)||manifest.versionCode<=0)throw Error('清单字段无效');
+        const key=await streamReleaseApk(env,manifest,request),stub=elfDoStub(env);if(!stub)throw Error('设备存储不可用');
+        return stub.fetch('https://elf-store/__release',{method:'POST',body:JSON.stringify({manifest_raw:raw,signature:sig,apk_key:key})});
+      }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(!env.__storage&&pathname==='/api/elfremote/media-recordings'){
       const stub=elfDoStub(env);return stub?recordingHttp(env,request,stub):json({ok:false},503);
@@ -1580,7 +1595,7 @@ async function handleElfReleasePublish(env, request) {
     const raw = String(data.manifest_raw || "");
     const sig = String(data.signature || "");
     const apkB64 = String(data.apk_b64 || "");
-    if (!raw || !sig || !apkB64) return json({ ok: false, msg: "缺少清单或制品" }, 400);
+    if (!raw || !sig || (!apkB64&&!env.__uploadedArtifactKey)) return json({ ok: false, msg: "缺少清单或制品" }, 400);
     if (!(await verifyUpdateSig(raw, sig))) return json({ ok: false, msg: "清单签名无效" }, 400);
     let m;
     try { m = JSON.parse(raw); } catch (e) { return json({ ok: false, msg: "清单不是 JSON" }, 400); }
@@ -1596,7 +1611,7 @@ async function handleElfReleasePublish(env, request) {
       certSha256: String(m.certSha256 || ""),
       manifest_raw: raw,
       signature: sig,
-      apk_key: await saveReleaseApk(env, m, apkB64),
+      apk_key: env.__uploadedArtifactKey==='apks/'+m.sha256 ? env.__uploadedArtifactKey : await saveReleaseApk(env, m, apkB64),
       expires_at: m.expires_at || null,
       job_id: String(m.job_id || "")
     };

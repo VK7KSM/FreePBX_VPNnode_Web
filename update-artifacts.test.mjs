@@ -1,9 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {saveReleaseApk} from './update-artifacts.js';
+import {saveReleaseApk,streamReleaseApk} from './update-artifacts.js';
 import worker from './worker.js';
 import {fixture,request,login} from './test-support.mjs';
+
+test('大APK正文直接传给R2并要求长度及SHA校验，不经过DO的Base64解码',async()=>{
+ const bytes=new Uint8Array(20*1024*1024),sha256=createHash('sha256').update(bytes).digest('hex');let saved=false;
+ const env={ELF_ARTIFACTS:{async put(key,body,options){assert.equal(body instanceof ReadableStream,true);assert.equal(options.sha256,sha256);assert.equal(createHash('sha256').update(new Uint8Array(await new Response(body).arrayBuffer())).digest('hex'),sha256);saved=true;}}};
+ const req=()=>new Request('https://test/upload',{method:'PUT',headers:{'Content-Length':String(bytes.length)},body:bytes});
+ assert.equal(await streamReleaseApk(env,{size:bytes.length,sha256},req()),'apks/'+sha256);assert.ok(saved);
+ await assert.rejects(streamReleaseApk(env,{size:bytes.length-1,sha256},req()),/长度/);
+ env.ELF_ARTIFACTS.put=async()=>{throw Error('checksum mismatch');};await assert.rejects(streamReleaseApk(env,{size:bytes.length,sha256},req()),/checksum/);
+ const f=fixture();assert.equal((await worker.fetch(req(),f.env)).status,404);
+ assert.equal((await worker.fetch(new Request('https://example.test/api/elfremote/releases/upload',{method:'PUT',body:bytes}),f.env)).status,401);
+});
 
 test('更新制品校验后进入私有对象存储，下载不依赖状态中的Base64',async()=>{
   const bytes=Buffer.alloc(512*1024,7),sha256=createHash('sha256').update(bytes).digest('hex');
