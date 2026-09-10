@@ -99,7 +99,10 @@ export async function cleanupPhotos(env,stub){
   if(!env.ELF_ARTIFACTS||!stub)return;
   const result=await rpc(stub,{action:'expired'});if(!result.ok)return;
   for(const photo of (await result.json()).files){
-    await env.ELF_ARTIFACTS.delete(photo.object_key);
-    await rpc(stub,{action:'removed',device_id:photo.device_id,report_id:photo.report_id});
+    try {
+      await env.ELF_ARTIFACTS.delete(photo.object_key);
+      const removed=await rpc(stub,{action:'removed',device_id:photo.device_id,report_id:photo.report_id});
+      if(!removed.ok)throw Error('metadata');
+    } catch { console.error('photo_cleanup_pending'); }
   }
 }

@@ -972,7 +972,7 @@ function selectTrafficBar(i){
   document.querySelectorAll('.traffic-bar').forEach(function(b,n){b.classList.toggle('selected',n===i);if(n===i){var chart=$('trafficChart'),bar=b.getBoundingClientRect(),view=chart.getBoundingClientRect();chart.scrollLeft+=bar.left-view.left-(chart.clientWidth-bar.width)/2;}});
 }
 var SYSTEM_TAB='Wi-Fi';
-var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','DNS','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
+var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置')readSystemSettings();}
 function pageSystem(dis){
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
@@ -1005,8 +1005,6 @@ function pageSystemSettings(dis){
   }else if(group==='network'){
     h+='<div class="system-settings-grid">'+systemToggle('mobile_data',data.mobile_available?'移动数据':'未检测到SIM卡',data.mobile_data,blocked||(!data.mobile_available?' disabled':''))+systemToggle('bluetooth',data.bluetooth_supported?'蓝牙':'设备无蓝牙',data.bluetooth,blocked||(!data.bluetooth_supported?' disabled':''))+'</div>';
     h+='<div class="system-setting-section"><h4>热点</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemHotspot(true)"><input class="inp" id="setting-hotspot-name" aria-label="热点名称" placeholder="热点名称" value="'+esc(data.hotspot.ssid||'')+'" required'+blocked+'><input class="inp" id="setting-hotspot-password" type="password" aria-label="热点密码" placeholder="热点密码" minlength="8" maxlength="63" autocomplete="new-password" required'+blocked+'><button class="btn-green"'+blocked+'>保存并开启</button><button type="button" class="btn-gray" onclick="saveSystemHotspot(false)"'+(blocked||(!data.hotspot.enabled?' disabled':''))+'>关闭热点</button><span>'+esc(data.hotspot.enabled?'已开启':'已关闭')+'</span></form></div>';
-    var dnsDisabled=blocked||(!data.dns_editable?' disabled':'');
-    h+='<div class="system-setting-section"><h4>Wi-Fi DNS</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemDns()"><select class="inp" id="setting-dns-mode"'+dnsDisabled+'><option value="auto"'+(data.dns.mode==='auto'?' selected':'')+'>自动获取</option><option value="manual"'+(data.dns.mode==='manual'?' selected':'')+'>手动设置</option></select><input class="inp" id="setting-dns-servers" aria-label="DNS地址" placeholder="DNS地址，以空格分隔" value="'+esc(data.dns.servers.join(' '))+'"'+dnsDisabled+'><button class="btn-green"'+dnsDisabled+'>保存</button></form></div>';
     h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((data.paired||[]).length?'<div class="system-items">'+data.paired.map(function(p){return '<div><span>'+esc(p.name||'蓝牙设备')+'</span><span>'+esc(p.address)+'</span></div>';}).join('')+'</div>':'<p class="muted">'+(data.bluetooth?'暂无已配对设备':'蓝牙已关闭')+'</p>')+'</div><div class="system-items"><div><span>USB模式</span><span>'+esc((data.usb||'none').split(',').map(function(mode){return {mtp:'文件传输',adb:'USB调试',rndis:'USB网络共享',ptp:'照片传输',none:'未启用'}[mode]||mode;}).join(' · '))+'</span></div></div>';
   }else if(group==='apps'){
     if(data.package){
@@ -1038,7 +1036,6 @@ async function runSystemSettings(params){
 function readSystemSettings(){var d=currentDev();if(!d||!d.managed_system_settings)return;var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],s=systemSettingsState();if(group)runSystemSettings({group:group,action:'read',package:group==='apps'?s.package:'',offset:group==='apps'?s.offset:0});}
 function saveSystemField(key){var group=SYSTEM_GROUP_IDS[SYSTEM_TAB],el=$('setting-'+key),v=el.value;if(el.type==='number')v=Number(v);else if(v==='true'||v==='false')v=v==='true';runSystemSettings({group:group,action:'set',key:key,value:v,package:group==='apps'?systemSnapshot().package:''});}
 function saveSystemHotspot(enabled){runSystemSettings({group:'network',action:'set',key:'hotspot',value:{enabled:enabled,ssid:$('setting-hotspot-name').value.trim(),password:$('setting-hotspot-password').value}});}
-function saveSystemDns(){runSystemSettings({group:'network',action:'set',key:'dns',value:{mode:$('setting-dns-mode').value,servers:$('setting-dns-servers').value.trim().split(/[\s,]+/).filter(Boolean)}});}
 function systemChooseApp(pkg){var s=systemSettingsState();s.package=pkg;s.offset=0;readSystemSettings();}
 function systemAppsPage(direction){var s=systemSettingsState(),d=systemSnapshot();s.offset=direction>0?d.next:Math.max(0,d.offset-15);readSystemSettings();}
 function systemPermission(i){var d=systemSnapshot(),p=d.permissions[i];runSystemSettings({group:'apps',action:'set',package:d.package,key:'permission',value:{name:p.name,granted:!p.granted}});}

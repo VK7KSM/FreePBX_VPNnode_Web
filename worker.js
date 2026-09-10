@@ -262,7 +262,12 @@ export class ElfStore {
 }
 
 const app = {
-  async scheduled(event, env) { await runRecovery(env, elfDoStub(env)); await cleanupFiles(env,elfDoStub(env)); await cleanupPhotos(env,elfDoStub(env)); await cleanupReturns(env,elfDoStub(env)); },
+  async scheduled(event, env) {
+    const stub=elfDoStub(env);
+    for(const work of [runRecovery,cleanupFiles,cleanupPhotos,cleanupReturns]) {
+      try { await work(env,stub); } catch { console.error('scheduled_task_failed',work.name); }
+    }
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -1889,7 +1894,7 @@ function b64EncodeUnicode(str) {
 async function handleSubscription(request, url, env) {
   const token = url.searchParams.get("token") || url.pathname.split("/").pop();
   const configuredToken = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
-  if (token !== configuredToken && token !== "d31") {
+  if (token !== configuredToken) {
     return new Response("Unauthorized", { status: 401 });
   }
 

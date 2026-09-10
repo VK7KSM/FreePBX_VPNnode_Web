@@ -121,3 +121,10 @@ test("浏览器标记不会自动登录，管理 API 的 401 自动退回登录"
   assert.equal(context.adminSession.authenticated, false);
   assert.equal(form.style.display, "flex");
 });
+
+
+test("更换订阅令牌后固定旧值不能绕过验证",async()=>{
+ const f=fixture({sub_token:"new-subscription",nodes:[]});
+ assert.equal((await worker.fetch(request("/sub/d31"),f.env)).status,401);
+ assert.equal((await worker.fetch(request("/sub/new-subscription"),f.env)).status,200);
+});

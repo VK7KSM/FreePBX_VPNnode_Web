@@ -49,6 +49,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
     return { duplicate: true, record: await storage.get(previous.key) };
   }
   const record = { device_id: device, installation_id: installation, report_id: id, reported_at: reported, received_at: received,
+    report_reason: event?.type || String(data.report_reason || (data.status_request_id ? "requested" : "unknown")).slice(0,40),
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
     location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };

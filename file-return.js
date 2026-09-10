@@ -71,5 +71,5 @@ export async function returnHttp(env,request,stub){
 }
 export async function cleanupReturns(env,stub){
   if(!env.ELF_ARTIFACTS||!stub)return;const r=await rpc(stub,{action:'expired'});if(!r.ok)return;
-  for(const m of (await r.json()).files){let cursor;do{const list=await env.ELF_ARTIFACTS.list({prefix:'device-files/return/'+m.device_id+'/'+m.task_id+'/',cursor});if(list.objects.length)await env.ELF_ARTIFACTS.delete(list.objects.map(o=>o.key));cursor=list.truncated?list.cursor:undefined;}while(cursor);await rpc(stub,{...m,action:'removed'});}
+  for(const m of (await r.json()).files){try{let cursor;do{const list=await env.ELF_ARTIFACTS.list({prefix:'device-files/return/'+m.device_id+'/'+m.task_id+'/',cursor});if(list.objects.length)await env.ELF_ARTIFACTS.delete(list.objects.map(o=>o.key));cursor=list.truncated?list.cursor:undefined;}while(cursor);const removed=await rpc(stub,{...m,action:'removed'});if(!removed.ok)throw Error('metadata');}catch{console.error('return_cleanup_pending');}}
 }

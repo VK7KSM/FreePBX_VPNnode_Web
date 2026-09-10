@@ -54,3 +54,16 @@ test('照片存储暂时失败返回可重试状态，不提前宣布照片可�
   assert.equal((await upload(f,'retry')).status,503);assert.equal(f.data.get('remote_devices')[0].report_photo,undefined);
   assert.equal(f.data.get('report-photo/test/retry').ready,false);
 });
+
+
+test('单张照片删除失败保留索引，后续照片仍可清理',async()=>{
+ const removed=[],deleted=[];
+ const stub={async fetch(url,init){const p=JSON.parse(init.body);if(p.action==='expired')return Response.json({files:[{device_id:'test',report_id:'bad',object_key:'bad'},{device_id:'test',report_id:'good',object_key:'good'}]});removed.push(p.report_id);return Response.json({ok:true});}};
+ await cleanupPhotos({ELF_ARTIFACTS:{async delete(key){deleted.push(key);if(key==='bad')throw Error('fixture');}}},stub);
+ assert.deepEqual(deleted,['bad','good']);assert.deepEqual(removed,['good']);
+});
+
+test('定时补拉或文件清理失败不会跳过照片和取回文件清理',async()=>{
+ const paths=[];const env={ELF_DO:{idFromName:x=>x,get:()=>({async fetch(url,init){paths.push(new URL(url).pathname);const p=JSON.parse(init.body);if(paths.length<=2)throw Error('fixture');return Response.json({files:[]});}})},ELF_ARTIFACTS:{}};
+ await worker.scheduled({},env);assert.equal(paths.length,4);assert.ok(paths.includes('/__photos'));assert.ok(paths.some(p=>p.includes('return')));
+});

@@ -32,3 +32,8 @@ test('兼容D22系统HTTP调试行但拒绝其他错误输出，公开回执仍�
  applyRepairProgress(d,'compat','success','完成',{exit_code:0,action:'completed',text},7);assert.doesNotThrow(()=>JSON.parse(d.task.result.text));
  assert.throws(()=>applySystemSettingsResult({task:{state:'running',params:{group:'network'}}},{exit_code:0,action:'completed',text:'Error: failed\n'+JSON.stringify({group:'network',sampled_at:5})},6));
 });
+
+
+test('移除的Wi-Fi DNS不再接受下发',()=>{
+ assert.throws(()=>systemSettingsParams({group:'network',action:'set',key:'dns',value:{mode:'auto'}}));
+});

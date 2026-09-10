@@ -28,7 +28,7 @@ test('七天到期即停止访问，R2删除失败保留索引供下次重试',a
   photo.expires_at=1;await f.storage.delete(photo.expiry_key);photo.expiry_key='report-photo-expiry/0000000000001/a/one';
   await f.storage.put('report-photo/a/one',photo);await f.storage.put(photo.expiry_key,photo);
   f.env.ELF_ARTIFACTS={async delete(){throw Error('temporary');}};
-  await assert.rejects(cleanupPhotos(f.env,f.env.ELF_DO.get('main')));assert.ok(f.data.has(photo.expiry_key));
+  await cleanupPhotos(f.env,f.env.ELF_DO.get('main'));assert.ok(f.data.has(photo.expiry_key));
   f.env.ELF_ARTIFACTS.delete=async()=>{};await cleanupPhotos(f.env,f.env.ELF_DO.get('main'));
   assert.equal(f.data.has(photo.expiry_key),false);assert.equal(f.data.has('report-photo/a/one'),false);
 });

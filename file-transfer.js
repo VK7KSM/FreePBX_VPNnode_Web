@@ -143,6 +143,6 @@ export async function cleanupFiles(env,stub) {
         cursor=listed.truncated?listed.cursor:undefined;
       }while(cursor);
       await rpc(stub,{action:'cleanup_done',id:m.id});
-    }catch(error){throw error;}
+    }catch(error){console.error("file_cleanup_pending");}
   }
 }

@@ -1,5 +1,5 @@
 // 系统配置复用既有设备任务与回执；不提供第二套管理入口。
-const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot','dns'],wifi:['connect'],apps:['enabled','permission','notifications','background']};
+const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot'],wifi:['connect'],apps:['enabled','permission','notifications','background']};
 export function systemSettingsParams(p={}){
   const group=p.group,action=p.action??'read',pkg=p.package??'',offset=p.offset??0;
   if(!Object.hasOwn(keys,group)||!['read','set'].includes(action)||typeof pkg!=='string'||(pkg&&!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(pkg))||!Number.isInteger(offset)||offset<0||offset>10000)throw Error('系统配置参数无效');
@@ -17,7 +17,6 @@ export function systemSettingsParams(p={}){
     if(key==='connect'||v.enabled){if(typeof v.ssid!=='string'||!v.ssid||new TextEncoder().encode(v.ssid).length>32||v.ssid.includes('\0'))throw Error('网络名称无效');const password=v.password??'';
       if(typeof password!=='string'||(password!==''&&!/^[0-9a-fA-F]{64}$/.test(password)&&!/^[\x20-\x7e]{8,63}$/.test(password))||(key==='hotspot'&&!password))throw Error('网络密码格式无效');}
   }
-  if(key==='dns'&&(!v||!['auto','manual'].includes(v.mode)||(v.mode==='manual'&&(!Array.isArray(v.servers)||v.servers.length<1||v.servers.length>2||v.servers.some(s=>typeof s!=='string'||!/^[0-9a-fA-F:.]{3,45}$/.test(s))))))throw Error('DNS地址无效');
   out.key=key;out.value=v;if(JSON.stringify(out).length>6000)throw Error('设置参数过大');return out;
 }
 
