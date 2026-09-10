@@ -281,7 +281,7 @@ function batteryText(d){
   return (!d || d.battery==null ? "—" : d.battery+"%") + (d && d.charging===true ? " · 充电中" : "");
 }
 function battHtml(pct, charging, present){
-  if(present===false)return '<span class="mbatt" title="外接电源" role="img" aria-label="外接电源"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0V8zm6 9v4"/></svg></span>';
+  if(present===false)return '<span class="mbatt" title="外接电源" role="img" aria-label="外接电源"><svg width="17" height="9" viewBox="0 0 18 10" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="#0f172a" d="M12 2v6H8a3 3 0 0 1 0-6h4Z"/><path d="M12 3h4m-4 4h4M5 5H1"/></svg></span>';
   var p = pct==null || !isFinite(Number(pct)) ? -1 : Math.max(0, Math.min(100, Math.round(Number(pct))));
   var fill = p<0 ? 0 : p;
   var col = p<0 ? "#64748b" : (p<=20 ? "#f87171" : (p<=50 ? "#fbbf24" : "#4ade80"));
