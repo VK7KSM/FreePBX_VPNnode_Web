@@ -32,9 +32,18 @@ test('Zello任务需要能力与登录证据，秘密不回传且失败不覆盖
  applyRepairProgress(current,'zello-failed','failed','登录失败',{},Date.now());
  assert.deepEqual(current.account_configs.zello,old);assert.deepEqual(current.task.params,{});
 });
-test('Zello安装恢复等待其他任务结束，每个新凭据只尝试一次',async()=>{
+test('Zello安装恢复等待其他任务结束，同一重试窗口不重复登录',async()=>{
  const f=fixture(),d={id:'test',enabled:true,managed_zello_account:true,token_sha256:'new',account_configs:{zello:{params,applied_token_sha:'old'}},task:{state:'running'}};
  assert.equal(await queueZelloRestore(d,f.storage,Date.now()),false);d.task=null;
  assert.equal(await queueZelloRestore(d,f.storage,Date.now()),true);assert.equal(d.task.type,'configure_zello');
  d.task.state='failed';assert.equal(await queueZelloRestore(d,f.storage,Date.now()),false);
+});
+
+
+test('Zello临时失败在退避后重试，成功后不再恢复',async()=>{
+ const f=fixture(),d={id:'retry',managed_zello_account:true,token_sha256:'new',account_configs:{zello:{params,applied_token_sha:'old'}}};
+ assert.equal(await queueZelloRestore(d,f.storage,1000),true);d.task.state='failed';
+ assert.equal(await queueZelloRestore(d,f.storage,301000),true);d.task.state='running';
+ applyRepairProgress(d,d.task.id,'success','登录完成',{exit_code:0,action:'completed',logged_in:true},301001);
+ assert.equal(await queueZelloRestore(d,f.storage,99999999),false);
 });

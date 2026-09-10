@@ -7,7 +7,15 @@ import java.io.*;
 final class CorePushState {
     private final File file;
     private JSONObject value;
-    CorePushState(File file)throws Exception {this.file=file;value=file.isFile()?new JSONObject(RescueFiles.read(file,16384)):new JSONObject();}
+    CorePushState(File file)throws Exception {
+        this.file=file;
+        try{value=file.isFile()?new JSONObject(RescueFiles.read(file,16384)):new JSONObject();}
+        catch(org.json.JSONException invalid){
+            File backup=new File(file.getPath()+".invalid-"+System.currentTimeMillis());
+            if(!file.renameTo(backup))throw new IOException("损坏推送配置无法保留");
+            value=new JSONObject();RescueFiles.write(file,value.toString());
+        }
+    }
     synchronized JSONObject snapshot()throws Exception{return new JSONObject(value.toString());}
     static String key(JSONObject input){return input.optString("device_id")+":"+input.optString("token");}
     synchronized boolean configure(JSONObject request)throws Exception {

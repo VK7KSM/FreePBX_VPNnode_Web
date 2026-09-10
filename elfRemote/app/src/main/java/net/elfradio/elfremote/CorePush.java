@@ -33,11 +33,13 @@ final class CorePush implements Closeable {
         android.system.Os.chmod(directory.getPath(),0700);
         state=new CorePushState(new File(directory,"state.json"));
         Context system=CoreWake.systemContext();
-        thread=new HandlerThread("elfremote-core-push");thread.start();worker=new Handler(thread.getLooper());wake=new CoreWake(system,worker);
         network=(ConnectivityManager)system.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if(network==null)throw new IOException("系统网络服务尚未就绪");
         callback=new ConnectivityManager.NetworkCallback(){public void onAvailable(Network n){hint();}public void onLost(Network n){hint();}};
-        network.registerDefaultNetworkCallback(callback,worker);
-        worker.post(this::ensure);
+        thread=new HandlerThread("elfremote-core-push");thread.start();worker=new Handler(thread.getLooper());
+        wake=new CoreWake(system,worker);
+        try { network.registerDefaultNetworkCallback(callback,worker);worker.post(this::ensure); }
+        catch(Exception error){try{network.unregisterNetworkCallback(callback);}catch(Exception ignored){}wake.close();thread.quitSafely();throw error;}
     }
     JSONObject configure(JSONObject request)throws Exception {
         boolean changed=state.configure(request);if(changed){connected=false;worker.post(()->{dispose();failures=0;ensure();});}else worker.post(this::ensure);

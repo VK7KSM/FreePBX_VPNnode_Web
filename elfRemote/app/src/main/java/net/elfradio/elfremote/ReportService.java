@@ -55,6 +55,7 @@ public final class ReportService extends Service {
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
     private String reportReason="startup",scheduledReason="startup";
+    private long nextReportElapsed;
     private String lastNetwork = "";
     private final Runnable networkReport = () -> {
         String current = networkType();
@@ -73,6 +74,7 @@ public final class ReportService extends Service {
         @Override
         public void run() {
             if (reporting) return;
+            if(android.os.SystemClock.elapsedRealtime()<nextReportElapsed)return;
             reporting = true;
             reportReason=scheduledReason;
             WakeScheduler.hold(ReportService.this, "report", 120000L);
@@ -102,6 +104,7 @@ public final class ReportService extends Service {
     };
 
     private void scheduleReport(long delay) {
+        nextReportElapsed=android.os.SystemClock.elapsedRealtime()+Math.max(1000L,delay);
         scheduledReason=delay>=900000L?"periodic":"maintenance_or_retry";
         worker.removeCallbacks(loop);
         if (BuildConfig.STATUS_ONLY) wake.schedule("report", delay);
@@ -227,6 +230,7 @@ public final class ReportService extends Service {
                 || ACTION_RENEW.equals(intent.getAction()))) {
             if (worker != null) worker.post(() -> {
                 if (push != null) { push.ensure(); push.networkHint(); }
+                nextReportElapsed=0;scheduledReason="manual";
                 loop.run();
             });
         }
@@ -835,7 +839,7 @@ public final class ReportService extends Service {
                         postTask(id, ok ? "success" : "failed", detail, report);
                         new java.io.File(getFilesDir(), "core-active.json").delete();
                         // 新安装恢复可能还需配置另一应用；账号任务结束后立即检查，避免等15分钟。
-                        if(sipAccount||zelloAccount)scheduleReport(1000L);
+                        if(systemSettings||sipAccount||zelloAccount)scheduleReport(1000L);
                     } catch (Exception error) { RuntimeLog.error("core_receipt_pending", error); scheduleReport(15000L); }
                     finally { WakeScheduler.release("core-command"); }
                 });

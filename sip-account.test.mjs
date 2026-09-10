@@ -37,7 +37,7 @@ test('账号任务校验能力及注册证据，秘密不进入管理列表和�
   assert.deepEqual(current.account_configs.linphone,old);assert.deepEqual(current.task.params,{});
 });
 
-test('新安装只恢复一次已验证配置，任务占用时延后且不自行覆盖管理员新任务',async()=>{
+test('新安装恢复已验证配置并等待重试窗口，任务占用时延后且不自行覆盖管理员新任务',async()=>{
   const f=fixture(),d={id:'test',enabled:true,managed_sip_account:true,token_sha256:'new',account_configs:{linphone:{params,applied_token_sha:'old'}}};
   d.task={id:'busy',state:'running'};
   assert.equal(await queueSipRestore(d,f.storage,Date.now()),false);
@@ -46,4 +46,16 @@ test('新安装只恢复一次已验证配置，任务占用时延后且不自�
   assert.equal(await queueSipRestore(d,f.storage,Date.now()),false);assert.equal(d.task.id,id);
   d.task.state='failed';assert.equal(await queueSipRestore(d,f.storage,Date.now()),false);
   d.token_sha256='newer';assert.equal(await queueSipRestore(d,f.storage,Date.now()),true);
+});
+
+
+test('账号临时失败自动重试最多三次，明确密码错误停止；不重复成功安装',async()=>{
+ const f=fixture(),d={id:'retry',managed_sip_account:true,token_sha256:'new',account_configs:{linphone:{params,applied_token_sha:'old'}}};
+ assert.equal(await queueSipRestore(d,f.storage,1000),true);d.task.state='failed';
+ assert.equal(await queueSipRestore(d,f.storage,299999),false);
+ assert.equal(await queueSipRestore(d,f.storage,301000),true);d.task.state='failed';
+ assert.equal(await queueSipRestore(d,f.storage,2101000),true);d.task.state='failed';
+ assert.equal(await queueSipRestore(d,f.storage,100000000),false);
+ d.token_sha256='next';assert.equal(await queueSipRestore(d,f.storage,100000001),true);d.task.state='failed';d.task.result={text:'invalid password'};
+ assert.equal(await queueSipRestore(d,f.storage,110000001),false);assert.equal(d.account_configs.linphone.restore.blocked,'账号或密码错误');
 });

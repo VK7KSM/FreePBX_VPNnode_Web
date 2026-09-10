@@ -29,7 +29,8 @@ final class CoreInstaller {
                 JSONObject health = null;
                 try { health = CoreClient.health(); } catch (Exception unavailable) { }
                 if (health == null || health.optInt("version_code") != BuildConfig.VERSION_CODE) install(app);
-                ready = CoreClient.health().optInt("version_code") == BuildConfig.VERSION_CODE;
+                JSONObject checked=CoreClient.health();
+                ready = checked.optInt("version_code") == BuildConfig.VERSION_CODE && checked.optBoolean("independent_push");
                 if (ready) CoreClient.request("/resume", new JSONObject());
                 if(ready)failures=0;
                 retryAt = SystemClock.elapsedRealtime() + (ready ? 60000 : 15000);

@@ -19,4 +19,10 @@ public class CorePushStateTest {
         File folder=temp.newFolder(),path=new File(folder,"state.json");CorePushState state=new CorePushState(path);JSONObject id=identity("token_fixture_123456",0);state.configure(id);
         assertTrue(new File(path.getPath()+".tmp").mkdir());assertThrows(Exception.class,()->state.notice(CorePushState.key(id),notice(1),1000));assertNull(state.pending(1000));
     }
+    @Test public void corruptStateIsPreservedAndCanReceiveNewIdentity()throws Exception {
+        File path=new File(temp.getRoot(),"broken.json");RescueFiles.write(path,"{broken");
+        CorePushState state=new CorePushState(path);assertEquals("",state.snapshot().optString("device_id"));
+        assertEquals(1,temp.getRoot().listFiles((d,n)->n.startsWith("broken.json.invalid-")).length);
+        state.configure(identity("token_fixture_123456",0));assertEquals("fixture",new CorePushState(path).snapshot().getString("device_id"));
+    }
 }

@@ -235,11 +235,57 @@ export function zelloAccountParams(value={}) {
   return {username,password,type};
 }
 export async function queueZelloRestore(device,storage,now) {
-  const saved=device.account_configs?.zello;
-  if(!saved||device.enabled===false||!device.managed_zello_account||saved.applied_token_sha===device.token_sha256||saved.attempted_token_sha===device.token_sha256||repairInflight(device.task))return false;
-  const result=await enqueueRepairTask(device,{type:'configure_zello',id:'zello-restore-'+crypto.randomUUID(),params:saved.params},now,storage);
+  return queueAccountRestore(device,storage,now,'zello','configure_zello','managed_zello_account');
+}
+
+// 保存的是当前目标，恢复使用新任务编号；失败有界退避，不重放旧命令。
+function restoreDue(saved,device,now) {
+  if(saved.applied_token_sha===device.token_sha256)return false;
+  let r=saved.restore;
+  if(!r||r.token!==device.token_sha256)r=saved.restore={token:device.token_sha256,attempts:0,next_at:0};
+  const task=device.task;
+  if(r.task_id&&task?.id===r.task_id&&!repairInflight(task)) {
+    if(!r.settled){
+      r.settled=true;
+      settleRestore(saved,task.state,task.detail,task.result);
+    }
+  }
+  return !r.blocked&&r.attempts<3&&now>=r.next_at;
+}
+function settleRestore(saved,state,detail,result) {
+  const r=saved.restore;if(!r)return;
+  const failure=String(result?.text||detail||'');
+  if(/bad credentials|invalid (?:password|credentials)|incorrect password|wrong password|密码错误|凭据错误|认证被拒绝/i.test(failure))r.blocked='账号或密码错误';
+  if(state==='rejected')r.blocked='设备拒绝该配置，请检查版本及配置';
+  r.settled=true;
+}
+function attemptedRestore(saved,device,now) {
+  const r=saved.restore;r.attempts++;r.task_id=device.task.id;r.settled=false;
+  r.next_at=now+[5*60000,30*60000,2*3600000][r.attempts-1];
+  device.task.restore_attempt=true;
+}
+async function queueAccountRestore(device,storage,now,name,type,capability) {
+  const saved=device.account_configs?.[name];
+  if(!saved||device.enabled===false||!device[capability]||repairInflight(device.task)||!restoreDue(saved,device,now))return false;
+  const result=await enqueueRepairTask(device,{type,id:name+'-restore-'+crypto.randomUUID(),params:saved.params},now,storage);
   if(!result.ok)return false;
-  device.task.managed_exec_v1=true;saved.attempted_token_sha=device.token_sha256;return true;
+  device.task.managed_exec_v1=true;attemptedRestore(saved,device,now);return true;
+}
+export async function queueSystemRestore(device,storage,now) {
+  if(device.enabled===false||!device.managed_system_settings||repairInflight(device.task)||!device.token_sha256)return false;
+  const targets=Object.values(device.system_targets||{}).sort((a,b)=>{
+    const priority=x=>x.params.group==='wifi'||x.params.group==='network'?2:(x.params.key==='enabled'&&x.params.value===false?1:0);
+    return priority(a)-priority(b)||a.updated_at-b.updated_at;
+  });
+  for(const saved of targets) {
+    if(!restoreDue(saved,device,now))continue;
+    let params;try{params=systemSettingsParams(saved.params);}catch{saved.restore.blocked='设置已不再支持';continue;}
+    // 没有密码的Wi-Fi目标依赖设备已有保存网络，刷后不能假设仍然存在。
+    const result=await enqueueRepairTask(device,{type:'system_config',id:'settings-restore-'+crypto.randomUUID(),params},now,storage);
+    if(!result.ok)return false;
+    device.task.managed_exec_v1=true;attemptedRestore(saved,device,now);return true;
+  }
+  return false;
 }
 
 export function sipAccountParams(value={}) {
@@ -251,12 +297,7 @@ export function sipAccountParams(value={}) {
 }
 
 export async function queueSipRestore(device,storage,now) {
-  const saved=device.account_configs?.linphone;
-  if(!saved||device.enabled===false||!device.managed_sip_account||saved.applied_token_sha===device.token_sha256||saved.attempted_token_sha===device.token_sha256||repairInflight(device.task))return false;
-  const result=await enqueueRepairTask(device,{type:'configure_sip',id:'sip-restore-'+crypto.randomUUID(),params:saved.params},now,storage);
-  if(!result.ok)return false;
-  device.task.managed_exec_v1=true;saved.attempted_token_sha=device.token_sha256;
-  return true;
+  return queueAccountRestore(device,storage,now,'linphone','configure_sip','managed_sip_account');
 }
 
 export function commandParams(value={}) {
@@ -401,6 +442,10 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     if (state === "claimed") device.task.claimed_at = device.task.updated_at;
     if (state === "running") device.task.started_at = device.task.updated_at;
     if (["success","failed","rejected","expired"].includes(state)) device.task.completed_at = device.task.updated_at;
+  }
+  if(["success","failed","rejected","expired"].includes(state)) {
+    for(const saved of [...Object.values(device.account_configs||{}),...Object.values(device.system_targets||{})])
+      if(saved.restore?.task_id===taskId)settleRestore(saved,state,detail,result);
   }
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);

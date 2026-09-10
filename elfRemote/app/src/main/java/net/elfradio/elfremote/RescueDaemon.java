@@ -27,17 +27,26 @@ public final class RescueDaemon {
             RescueFiles.write(new File(root,"daemon.pid"),Integer.toString(android.os.Process.myPid()));
             try { RescueFiles.write(new File(root,"started.json"),RescueDiagnostics.collect().toString()); }
             catch(Exception unavailable) { System.err.println("核心启动诊断暂不可用，继续启动命令服务"); }
+            RuntimeLog.initialize(new File(root,"runtime-log"),BuildConfig.VERSION_NAME);
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
-            RuntimeLog.initialize(new File(root,"runtime-log"),BuildConfig.VERSION_NAME);
             CorePush push=null;
-            try{push=new CorePush(root);server.setPush(push);}catch(Exception failure){RuntimeLog.error("core_push_start_failed",failure);}
+            long pushRetryAt=0;int pushFailures=0;
             server.start(3000, true);
             System.out.println("CORE_HTTP_READY version="+BuildConfig.VERSION_CODE);
             try {
-                while (guard.isFile() && generation.equals(RescueFiles.read(guard, 128)))
+                while (guard.isFile() && generation.equals(RescueFiles.read(guard, 128))) {
+                    if(push==null&&SystemClock.elapsedRealtime()>=pushRetryAt) {
+                        try{push=new CorePush(root);server.setPush(push);RuntimeLog.event("core_push_initialized");}
+                        catch(Exception failure){
+                            long delay=Math.min(300000L,5000L<<Math.min(6,pushFailures++));
+                            pushRetryAt=SystemClock.elapsedRealtime()+delay;
+                            RuntimeLog.error("core_push_start_failed",failure);RuntimeLog.event("core_push_initialize_retry delay_ms="+delay);
+                        }
+                    }
                     Thread.sleep(2000);
+                }
             } finally {
                 if(push!=null)push.close();
                 adb.close();

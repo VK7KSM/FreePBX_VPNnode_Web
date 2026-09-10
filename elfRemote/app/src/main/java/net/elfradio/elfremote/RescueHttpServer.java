@@ -13,7 +13,7 @@ final class RescueHttpServer extends NanoHTTPD {
     private final Status status;
     private final int uid;
     private AdbSessions adb;
-    private CorePush push;
+    private volatile CorePush push;
     void setPush(CorePush value){push=value;}
     void setAdb(AdbSessions value){adb=value;}
 

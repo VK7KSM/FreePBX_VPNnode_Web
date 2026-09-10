@@ -79,6 +79,7 @@ public final class SystemSettings {
             if(!tool.folder.getCanonicalPath().startsWith(CoreInstaller.DIR+"/jobs/"))throw new IOException("配置任务目录无效");
             tool.context=CoreWake.systemContext();tool.resolver=tool.context.getContentResolver();tool.wifi=(WifiManager)tool.context.getSystemService(Context.WIFI_SERVICE);
             if(args.length==2&&args[1].equals("rollback")){tool.guard();exit=0;}
+            else if(args.length==2&&args[1].equals("recover")){tool.recoverNetwork();exit=0;}
             else {JSONObject p=normalize(new JSONObject(RescueFiles.read(new File(tool.folder,"settings-request.json"),16000)));JSONObject result=tool.perform(p);RescueFiles.write(new File(tool.folder,"settings-result.json"),result.toString());System.out.println("系统配置结果已保存");exit=0;}
         }catch(Throwable failure){Throwable e=failure;while(e instanceof InvocationTargetException&&e.getCause()!=null)e=e.getCause();String message="系统配置未完成："+String.valueOf(e.getMessage());
             try{if(tool!=null&&tool.folder!=null&&tool.folder.getCanonicalPath().startsWith(CoreInstaller.DIR+"/jobs/"))RescueFiles.write(new File(tool.folder,"settings-error.txt"),message);}catch(Exception saveFailure){}
@@ -224,8 +225,23 @@ public final class SystemSettings {
     private void guard()throws Exception {
         HandlerThread t=new HandlerThread("elfremote-settings-rollback");t.start();CountDownLatch fired=new CountDownLatch(1);AlarmManager alarms=(AlarmManager)context.getSystemService(Context.ALARM_SERVICE);AlarmManager.OnAlarmListener listener=fired::countDown;
         alarms.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP,SystemClock.elapsedRealtime()+95000,"elfRemote:settings-rollback",listener,new Handler(t.getLooper()));RescueFiles.write(new File(folder,"settings-guard-ready"),"ready");
-        try {fired.await(110,TimeUnit.SECONDS);if(!new File(folder,"settings-commit").exists()){restoreNetwork();RescueFiles.write(new File(folder,"settings-restored"),"restored");}}
+        try {fired.await(110,TimeUnit.SECONDS);if(needsRecovery(folder))recoverNetwork();}
         finally{alarms.cancel(listener);t.quitSafely();}
+    }
+    static boolean needsRecovery(File folder){return new File(folder,"settings-network-before.json").isFile()
+            &&!new File(folder,"settings-commit").isFile()&&!new File(folder,"settings-restored").isFile();}
+    static boolean recover(File folder)throws Exception {
+        if(!needsRecovery(folder))return true;
+        String command="CLASSPATH="+RescueFiles.quote(System.getProperty("java.class.path"))+" app_process /system/bin "+SystemSettings.class.getName()+" "+RescueFiles.quote(folder.getPath())+" recover";
+        File run=new File(folder,"boot-recovery-"+System.currentTimeMillis());if(!run.mkdir())throw new IOException("恢复记录目录不可用");
+        JSONObject result=RescueDaemon.execute(run,command,90);
+        return result.optInt("exit_code",-1)==0&&!needsRecovery(folder);
+    }
+    private void recoverNetwork()throws Exception {
+        try(RandomAccessFile f=new RandomAccessFile(new File(folder,"settings-recovery.lock"),"rw");java.nio.channels.FileLock lock=f.getChannel().lock()){
+            if(!needsRecovery(folder))return;
+            restoreNetwork();RescueFiles.write(new File(folder,"settings-restored"),"restored");
+        }
     }
     private void restoreNetwork()throws Exception {
         JSONObject b=new JSONObject(RescueFiles.read(new File(folder,"settings-network-before.json"),300000));

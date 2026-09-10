@@ -30,4 +30,16 @@ export function applySystemSettingsResult(device,result,now){
   if(device.task.state==='success')return;
   const p=device.task.params;if(snapshot.group!==p.group||!Number.isFinite(snapshot.sampled_at)||(p.action==='set'&&snapshot.applied!==true))throw Error('系统配置结果与任务不匹配');
   device.system_settings={...device.system_settings,[p.group]:{...snapshot,received_at:now}};
+  if(p.action==='set') {
+    const params=systemSettingsParams(p),id=systemSettingId(params);
+    const all=device.system_targets??={},previous=all[id];
+    // 空密码表示使用设备已有网络，不覆盖服务器保存的同名有效密码。
+    if(params.key==='connect'&&!params.value.password&&previous?.params.value.ssid===params.value.ssid)
+      params.value={...params.value,password:previous.params.value.password??''};
+    const same=previous&&JSON.stringify(previous.params)===JSON.stringify(params);
+    all[id]={params,revision:same?previous.revision:(previous?.revision??0)+1,applied_token_sha:device.token_sha256,updated_at:now};
+    device.system_targets=all;
+  }
 }
+
+export function systemSettingId(p){return [p.group,p.package||'',p.key,p.key==='permission'?p.value.name:''].join('|');}

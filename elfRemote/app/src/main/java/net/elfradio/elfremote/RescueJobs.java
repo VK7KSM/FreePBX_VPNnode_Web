@@ -11,6 +11,7 @@ final class RescueJobs {
     private final Runner runner;
     private final AtomicBoolean busy = new AtomicBoolean();
     private volatile Exception persistenceFailure;
+    private volatile boolean networkRecovering;
 
     RescueJobs(File root, Runner runner) throws Exception {
         this.root = root;
@@ -41,6 +42,30 @@ final class RescueJobs {
                 }
             }
         }
+        recoverNetworks();
+    }
+
+    private void recoverNetworks() {
+        File[] folders=root.listFiles();if(folders==null)return;
+        java.util.List<File> pending=new java.util.ArrayList<>();
+        for(File folder:folders)if(SystemSettings.needsRecovery(folder))pending.add(folder);
+        if(pending.isEmpty())return;networkRecovering=true;
+        new Thread(()->{
+            try{for(File folder:pending){
+                boolean recovered=false;
+                for(int attempt=0;attempt<3&&!recovered;attempt++)try{
+                    if(attempt>0)Thread.sleep(attempt*15000L);
+                    recovered=SystemSettings.recover(folder);
+                }catch(Exception failure){RuntimeLog.error("settings_boot_restore_failed",failure);}
+                RuntimeLog.event("settings_boot_restore completed="+recovered);
+                if(recovered){
+                    JSONObject state=new JSONObject(RescueFiles.read(new File(folder,"result.json"),600000));
+                    state.put("state","failed").put("exit_code",1).put("output","配置期间维护进程或设备重启，已恢复修改前网络，请重新设置");
+                    RescueFiles.write(new File(folder,"result.json"),state.toString());
+                }
+            }}catch(Exception error){RuntimeLog.error("settings_boot_recovery_record_failed",error);}
+            finally{networkRecovering=false;}
+        },"elfremote-network-recovery").start();
     }
 
     static void validate(String id, String command, int timeout) {
@@ -73,6 +98,10 @@ final class RescueJobs {
 
     synchronized JSONObject submitSettings(String id,JSONObject params)throws Exception {
         JSONObject p=SystemSettings.normalize(params);
+        if(p.optString("action").equals("set")&&(p.optString("group").equals("wifi")||p.optString("group").equals("network"))) {
+            if(networkRecovering)throw new IOException("正在恢复重启前的网络配置，请稍后重试");
+            File[] folders=root.listFiles();if(folders!=null)for(File folder:folders)if(SystemSettings.needsRecovery(folder))throw new IOException("上次网络恢复尚未完成，请先检查维护日志");
+        }
         String fingerprint=UpdatePolicy.sha256Hex(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return submit(id,"system-settings:"+fingerprint,120,(folder,command,timeout)->SystemSettings.execute(folder,p));
     }
@@ -93,6 +122,7 @@ final class RescueJobs {
     }
 
     private JSONObject submit(String id, String command, int timeout, Runner execution) throws Exception {
+        if(networkRecovering)throw new IOException("正在恢复重启前网络，请稍后重试");
         if (persistenceFailure != null) throw new IOException("任务结果持久化失败，停止接受新任务", persistenceFailure);
         validate(id, command, timeout);
         if (new File(root.getParentFile(),"upgrading").exists()) throw new IllegalStateException("维护核心正在更新");
@@ -138,6 +168,7 @@ final class RescueJobs {
     }
 
     JSONObject get(String id) throws Exception {
+        if(networkRecovering)throw new IOException("正在恢复重启前网络，请稍后重试");
         if (persistenceFailure != null) throw new IOException("任务结果未可靠保存", persistenceFailure);
         if (!id.matches("[a-zA-Z0-9-]{1,64}")) throw new IllegalArgumentException("Invalid id");
         File file = new File(new File(root, id), "result.json");
@@ -148,10 +179,10 @@ final class RescueJobs {
         File marker = new File(root.getParentFile(), "upgrading");
         if (prepare) RescueFiles.write(marker, "upgrading\n");
         else if (marker.exists() && !marker.delete()) throw new IOException("解除核心更新门失败");
-        return new JSONObject().put("busy", busy.get());
+        return new JSONObject().put("busy", isBusy());
     }
 
-    boolean isBusy() { return busy.get(); }
+    boolean isBusy() { return busy.get()||networkRecovering; }
 
     JSONObject fileHistory() throws Exception {
         org.json.JSONArray files=new org.json.JSONArray();
@@ -182,7 +213,7 @@ final class RescueJobs {
         for (File dir : dirs) {
             try {
                 JSONObject result=get(dir.getName());
-                if(result==null||"running".equals(result.optString("state")))continue;
+                if(result==null||"running".equals(result.optString("state"))||SystemSettings.needsRecovery(dir))continue;
                 long finished=result.optLong("finished",new File(dir,"result.json").lastModified());
                 if(finished<=0||finished>=cutoff)continue;
                 File[] files=dir.listFiles();

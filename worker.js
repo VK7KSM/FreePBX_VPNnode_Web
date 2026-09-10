@@ -24,6 +24,7 @@ import {
   enqueueRepairTask,
   queueSipRestore,
   queueZelloRestore,
+  queueSystemRestore,
   repairHistory,
   findRepairTask,
   shouldOfferRepair,
@@ -1432,10 +1433,11 @@ async function handleDeviceReport(env, request) {
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       found.task.state = "expired";
       found.task.detail = "expired";
-      if(CONFIG_TYPES.includes(found.task.type) || ["configure_sip","configure_zello","set_lost_mode"].includes(found.task.type)) found.task.params={};
+      if(CONFIG_TYPES.includes(found.task.type) || ["system_config","configure_sip","configure_zello","set_lost_mode"].includes(found.task.type)) found.task.params={};
     }
     await queueSipRestore(found,env.__storage,now);
     await queueZelloRestore(found,env.__storage,now);
+    await queueSystemRestore(found,env.__storage,now);
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
