@@ -8,8 +8,8 @@ window.ElfMedia=(function(){
   function ice(pc){return new Promise(function(resolve){if(pc.iceGatheringState==='complete'){resolve();return;}var done=function(){if(pc.iceGatheringState==='complete'){clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',done);resolve();}},timer=setTimeout(function(){pc.removeEventListener('icegatheringstatechange',done);resolve();},7000);pc.addEventListener('icegatheringstatechange',done);});}
   async function publish(s){
     s.pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
-    s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);if((s.mode==='microphone'||s.mode==='video')&&!s.recorder&&s.remote.getAudioTracks().length&&(s.mode!=='video'||s.remote.getVideoTracks().length))startRecording(s).catch(function(e){stop(e.message);});};
-    s.pc.onconnectionstatechange=function(){if(s.pc.connectionState==='failed')stop('媒体连接失败');if(s.pc.connectionState==='connected'){s.message='';s.started=s.started||Date.now();render();}};
+    s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);maybeRecord(s);};
+    s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败');if(s.pc.connectionState==='connected'){s.message='';s.started=s.started||Date.now();render();maybeRecord(s);}};
     if(s.local)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
     await rpc(s,'new');
     if(s.local){await s.pc.setLocalDescription(await s.pc.createOffer());await ice(s.pc);var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track;}).map(function(t){return {mid:t.mid,trackName:t.sender.track.kind};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);await rpc(s,'published');}
@@ -37,18 +37,18 @@ window.ElfMedia=(function(){
       }
       var result=await json('/api/elfremote/media/session',{device_id:d.id,mode:mode,camera:s.camera});
       if(active!==s)return;s.id=result.session_id;s.ws=new WebSocket(location.origin.replace(/^http/,'ws')+'/api/elfremote/media/browser?session_id='+s.id);
-      s.ws.onmessage=function(e){var p;try{p=JSON.parse(e.data);}catch{return;}
+      s.ws.onmessage=function(e){if(active!==s)return;var p;try{p=JSON.parse(e.data);}catch{return;}
         if(p.type==='rpc'){var wait=s.pending[p.id];if(wait){delete s.pending[p.id];clearTimeout(wait.timer);if(p.error)wait.reject(Error(p.error));else wait.resolve(p.result);}return;}
         if(p.type==='closed'){stop(p.message);return;}
         if(p.type==='status'&&String(p.message||'').startsWith('通信失败')){stop(p.message);return;}
-        s.chain=s.chain.then(function(){return message(s,p);}).catch(function(e){stop(e.message);});
+        s.chain=s.chain.then(function(){return message(s,p);}).catch(function(e){if(active===s)stop(e.message);});
       };
-      s.ws.onerror=function(){stop('通信连接失败');};s.ws.onclose=function(){if(active===s)stop('通信已结束');};
+      s.ws.onerror=function(){if(active===s)stop('通信连接失败');};s.ws.onclose=function(){if(active===s)stop('通信已结束');};
       s.timer=setInterval(function(){if(active!==s)return;var elapsed=s.started?Date.now()-s.started:0;if(mode!=='alarm'&&elapsed>=(mode==='ptt'?60000:mode==='photo'?60000:1800000)){stop();return;}send(s,{type:'ping'});updateTime(s);},1000);
     }catch(e){if(active===s)await stop(e.name==='NotAllowedError'?'未获得浏览器麦克风权限':e.message);}
   }
   async function stop(messageText){
-    var s=active;if(!s)return;active=null;s.closed=true;lastDevice=s.device.id;lastMessage=messageText||'已结束';
+    var s=active;if(!s)return;active=null;s.closed=true;s.recordEnded=Date.now();lastDevice=s.device.id;lastMessage=messageText||'已结束';
     clearInterval(s.timer);send(s,{type:'stop'});if(s.ws)s.ws.close();Object.values(s.pending).forEach(function(p){clearTimeout(p.timer);p.reject(Error('通信已结束'));});s.pending={};
     if(s.recorder&&s.recorder.state!=='inactive'){
       s.recorder.stop();
@@ -59,9 +59,10 @@ window.ElfMedia=(function(){
     if(s.animation)cancelAnimationFrame(s.animation);if(s.audioContext)s.audioContext.close();
     if(s.node){var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}s.node.remove();}
     render();
-    if(s.recording){try{await s.upload;if(s.uploadError)throw s.uploadError;if(!s.parts)throw Error('未收到可保存的录制数据');await json(recordUrl(s)+'&action=finish',{parts:s.parts,duration_ms:Date.now()-s.recordStarted});lastMessage='录制已保存';}catch(e){lastMessage='录制保存失败：'+e.message;}render();}
+    if(s.recording){try{await s.upload;if(s.uploadError)throw s.uploadError;if(!s.parts)throw Error('未收到可保存的录制数据');await json(recordUrl(s)+'&action=finish',{parts:s.parts,duration_ms:s.recordEnded-s.recordStarted});lastMessage='录制已保存';}catch(e){lastMessage='录制保存失败：'+e.message;}render();}
   }
   function recordUrl(s){return '/api/elfremote/media-recordings?'+new URLSearchParams({device_id:s.device.id,id:s.recording});}
+  function maybeRecord(s){if(active===s&&s.pc?.connectionState==='connected'&&(s.mode==='microphone'||s.mode==='video')&&!s.recording&&s.remote.getAudioTracks().length&&(s.mode!=='video'||s.remote.getVideoTracks().length))startRecording(s).catch(function(e){if(active===s)stop(e.message);});}
   async function startRecording(s){
     if(active!==s||s.recording)return;
     if(!window.MediaRecorder)throw Error('当前浏览器不支持录制');
@@ -78,7 +79,7 @@ window.ElfMedia=(function(){
       }});
       if(s.queuedBytes>24*1024*1024&&active===s)stop('网络上传过慢，录制已结束');
     };
-    s.recorder.onerror=function(){if(active===s)stop('录制失败');};s.recorder.start(5000);
+    s.recorder.onerror=function(){if(active===s)stop('录制失败');};s.recordStarted=Date.now();s.recorder.start(5000);
   }
   function elapsed(ms){var seconds=Math.max(0,Math.floor(ms/1000));return Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0');}
   function updateTime(s){if(!s.node)return;var time=s.node.querySelector('time');if(time)time.textContent=s.mode==='video'?sydney(Date.now()):s.started?elapsed(Date.now()-s.started):'';}

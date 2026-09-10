@@ -1,4 +1,5 @@
 import {authJson as json} from './admin-auth.js';
+import {webmDuration} from './webm-duration.js';
 const TTL=7*86400000,MAX_PART=8*1024*1024,MAX_TOTAL=512*1024*1024;
 const valid=s=>typeof s==='string'&&/^[a-zA-Z0-9_-]{1,96}$/.test(s);
 const rpc=(stub,p)=>stub.fetch('https://store/__media_records',{method:'POST',body:JSON.stringify(p)});
@@ -36,7 +37,8 @@ export async function recordingMetadata(storage,request,loadDevices,now=Date.now
     }
     if(p.action==='finish'){
       if(p.parts!==old.parts.length||!old.parts.length)throw Error('录制分段尚未全部保存');
-      old.complete=true;old.duration_ms=Math.min(1800000,Math.max(old.duration_ms,Number(p.duration_ms)||0));await storage.put(k,old);return json({ok:true,record:old});
+      if(p.header){if(p.header.bytes<1||p.header.bytes>MAX_PART+64||p.header.key!=='media-recordings/'+p.device_id+'/'+p.id+'/header/'+p.header.sha256)throw Error('录制文件头无效');old.bytes+=p.header.bytes-old.parts[0].bytes;old.parts[0]={...p.header,index:0};}
+      old.complete=true;old.header_finalized=!!p.header||!old.mime.includes('webm');old.duration_ms=Math.min(1800000,Math.max(old.duration_ms,Number(p.duration_ms)||0));await storage.put(k,old);return json({ok:true,record:old});
     }
     throw Error('录制操作无效');
   }catch(e){return json({ok:false,msg:e.message},400);}
@@ -47,7 +49,19 @@ export async function recordingHttp(env,request,stub){
     const u=new URL(request.url),p={device_id:u.searchParams.get('device_id'),id:u.searchParams.get('id')};
     if(request.method==='POST'){
       const body=await request.text();if(body.length>4096)throw Error('录制请求过大');const data=JSON.parse(body);
-      return rpc(stub,{...data,...p,action:u.searchParams.get('action')});
+      const action=u.searchParams.get('action');if(action==='create')return rpc(stub,{...p,action,type:data.type,mime:data.mime});
+      if(action!=='finish')throw Error('录制操作无效');
+      const response=await rpc(stub,{...p,action:'get'});if(!response.ok)return response;const {record}=await response.json();
+      if(record.complete&&record.header_finalized)return json({ok:true,record});const parts=record.complete?record.parts.length:data.parts;if(parts!==record.parts.length||!record.parts.length)throw Error('录制分段尚未全部保存');
+      const duration=Math.min(1800000,Math.max(record.duration_ms,Number(data.duration_ms)||0));let header;
+      if(record.mime.includes('webm')){
+        const object=await env.ELF_ARTIFACTS.get(record.parts[0].key);if(!object)throw Error('录制首段缺失');
+        const bytes=webmDuration(await new Response(object.body).arrayBuffer(),duration);
+        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+        const key='media-recordings/'+p.device_id+'/'+p.id+'/header/'+hash;
+        await env.ELF_ARTIFACTS.put(key,bytes,{sha256:hash,httpMetadata:{contentType:record.mime}});header={key,sha256:hash,bytes:bytes.length};
+      }
+      return rpc(stub,{...p,action,parts,duration_ms:duration,header});
     }
     if(request.method==='PUT'){
       const index=Number(u.searchParams.get('index'));if(!Number.isInteger(index)||index<0||index>=720)throw Error('分段编号无效');

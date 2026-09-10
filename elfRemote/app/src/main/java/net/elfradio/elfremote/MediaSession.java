@@ -94,7 +94,17 @@ final class MediaSession {
             audio.setMode(AudioManager.MODE_IN_COMMUNICATION);audio.setSpeakerphoneOn(true);audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),0);
         }
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());
-        egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context).createAudioDeviceModule();
+        final String owner=id;
+        egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context)
+            .setAudioRecordErrorCallback(new JavaAudioDeviceModule.AudioRecordErrorCallback(){
+                public void onWebRtcAudioRecordInitError(String e){audioFailure(owner,"麦克风初始化失败",e);}
+                public void onWebRtcAudioRecordStartError(JavaAudioDeviceModule.AudioRecordStartErrorCode c,String e){audioFailure(owner,"麦克风启动失败",e);}
+                public void onWebRtcAudioRecordError(String e){audioFailure(owner,"麦克风采集失败",e);}
+            }).setAudioTrackErrorCallback(new JavaAudioDeviceModule.AudioTrackErrorCallback(){
+                public void onWebRtcAudioTrackInitError(String e){audioFailure(owner,"扬声器初始化失败",e);}
+                public void onWebRtcAudioTrackStartError(JavaAudioDeviceModule.AudioTrackStartErrorCode c,String e){audioFailure(owner,"扬声器启动失败",e);}
+                public void onWebRtcAudioTrackError(String e){audioFailure(owner,"扬声器播放失败",e);}
+            }).createAudioDeviceModule();
         factory=PeerConnectionFactory.builder().setAudioDeviceModule(adm).setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(),true,true)).setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
         PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));
         config.sdpSemantics=PeerConnection.SdpSemantics.UNIFIED_PLAN;
@@ -161,6 +171,7 @@ final class MediaSession {
     private void sendStatus(){try{send(new JSONObject().put("type","status").put("camera",facing).put("cameras",android.hardware.Camera.getNumberOfCameras()));}catch(Exception e){fail(e);}}
     private void sendMessage(String text){try{send(new JSONObject().put("type","status").put("message",text));}catch(Exception ignored){}}
     private synchronized void markReady(){if(closed||ready)return;ready=true;main.removeCallbacks(timeout);if(!"alarm".equals(mode))main.postDelayed(timeout,"ptt".equals(mode)?60000:"photo".equals(mode)?60000:1800000);try{send(new JSONObject().put("type","ready"));}catch(Exception e){fail(e);}}
+    private void audioFailure(String owner,String operation,String detail){if(!closed&&owner.equals(id))fail(new Exception(operation+"："+detail));}
     private void fail(Exception e){RuntimeLog.error("media_failed",e);sendMessage("通信失败："+e.getMessage());stop("通信失败");}
     private void restoreRoute(){if(route.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,route.getInt("volume",0),0);audio.setSpeakerphoneOn(route.getBoolean("speaker",false));audio.setMode(route.getInt("mode",AudioManager.MODE_NORMAL));route.edit().clear().commit();}}
     synchronized void stop(String reason){

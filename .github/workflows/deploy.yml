@@ -12,6 +12,7 @@ on:
       - "adb-relay.js"
       - "media-relay.js"
       - "media-recordings.js"
+      - "webm-duration.js"
       - "media-client.js"
       - "media-client-source.js"
       - "terminal-assets.js"

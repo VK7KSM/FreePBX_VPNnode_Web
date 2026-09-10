@@ -7,6 +7,7 @@ import android.os.Handler;
 /** 双音交替警报：响30秒、停10秒；结束后恢复原音量。 */
 final class MediaAlarm {
     private final AudioManager audio;
+    private final Context context;
     private final Handler handler;
     private final android.content.SharedPreferences state;
     private AudioTrack track;
@@ -14,7 +15,7 @@ final class MediaAlarm {
     private final Runnable sound=this::sound;
     private final Runnable pause=this::pause;
     private synchronized void pause(){if(!active)return;if(track!=null)track.pause();handler.postDelayed(sound,10000);}
-    MediaAlarm(Context c,Handler h){audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);handler=h;state=c.getSharedPreferences("media-alarm",0);restore();}
+    MediaAlarm(Context c,Handler h){context=c.getApplicationContext();audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);handler=h;state=c.getSharedPreferences("media-alarm",0);restore();}
     synchronized void start() throws Exception {
         if(active)return;
         int original=audio.getStreamVolume(AudioManager.STREAM_ALARM);
@@ -34,7 +35,7 @@ final class MediaAlarm {
             active=true;sound();
         }catch(Exception e){close();throw e;}
     }
-    private synchronized void sound(){if(!active||track==null)return;track.play();handler.postDelayed(pause,30000);}
+    private synchronized void sound(){if(!active||track==null)return;WakeScheduler.hold(context,"media-alarm-cycle",60000L);track.play();handler.postDelayed(pause,30000);}
     private void restore(){if(audio!=null&&state.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_ALARM,state.getInt("volume",0),0);state.edit().clear().commit();}}
-    synchronized void close(){active=false;handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
+    synchronized void close(){active=false;WakeScheduler.release("media-alarm-cycle");handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
 }
