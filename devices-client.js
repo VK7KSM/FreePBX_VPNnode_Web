@@ -277,9 +277,11 @@ function deviceColor(id, online){
   return online ? c : "#64748b";
 }
 function batteryText(d){
+  if(d && d.battery_present===false)return "外接电源";
   return (!d || d.battery==null ? "—" : d.battery+"%") + (d && d.charging===true ? " · 充电中" : "");
 }
-function battHtml(pct, charging){
+function battHtml(pct, charging, present){
+  if(present===false)return '<span class="mbatt" title="外接电源" role="img" aria-label="外接电源"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0V8zm6 9v4"/></svg></span>';
   var p = pct==null || !isFinite(Number(pct)) ? -1 : Math.max(0, Math.min(100, Math.round(Number(pct))));
   var fill = p<0 ? 0 : p;
   var col = p<0 ? "#64748b" : (p<=20 ? "#f87171" : (p<=50 ? "#fbbf24" : "#4ade80"));
@@ -295,7 +297,7 @@ function pinHtml(d, selected){
   return '<div class="dpin'+(selected?" pin-on":"")+'">'+
     '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 1px #0f172a,0 0 0 2px '+col+'"></div>'+
     '<div class="dpin-card">'+
-      '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery,d.charging)+'</div>'+
+      '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery,d.charging,d.battery_present)+'</div>'+
       '<div class="dpin-time">'+esc(seen)+'</div>'+
     '</div></div>';
 }
@@ -435,7 +437,7 @@ function renderOps(){
   else h += '<button class="device-action action-unpair" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
   h += '<div class="ops-grid">';
-  h += kv("电量", bat);
+  h += kv(d && d.battery_present===false ? "供电" : "电量", bat);
   h += kv("网络", net);
   h += kv("IP & MAC", (d && d.ip ? d.ip : "—") + " / " + (d && d.mac ? d.mac : "未获取"));
   h += kv("定位", src);
@@ -472,10 +474,19 @@ function fnPageHtml(){
 function functionSection(title,content){
   return '<section class="function-section"><h4>'+esc(title)+'</h4><div class="function-content">'+content+'</div></section>';
 }
+function powerOptions(value){
+  return [['auto','自动识别'],['battery','电池设备'],['external','外接电源']].map(function(p){return '<option value="'+p[0]+'"'+(value===p[0]?' selected':'')+'>'+p[1]+'</option>';}).join('');
+}
 function pageModel(){
-  var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>操作</th></tr></thead><tbody>';
-  MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
-  return h+(MODELS.length?'':'<tr><td colspan="3" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
+  var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><select id="mPower" class="inp" aria-label="供电方式">'+powerOptions('auto')+'</select><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>供电方式</th><th>操作</th></tr></thead><tbody>';
+  MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><select class="inp" aria-label="'+esc(m.name)+'供电方式" onchange="setModelPower(MODELS['+i+'].id,this.value)">'+powerOptions(m.power_type||'auto')+'</select></td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
+  return h+(MODELS.length?'':'<tr><td colspan="4" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
+}
+function setModelPower(id,value){
+  var m=MODELS.find(function(row){return row.id===id;});if(!m)return;
+  fetch('/api/device-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:m.id,name:m.name,note:m.note||'',icon:m.icon||'',power_type:value})})
+  .then(function(r){return r.json();}).then(function(d){if(!d.ok)throw Error(d.msg||'保存失败');MODELS=d.models;loadDevices();})
+  .catch(function(e){alert(e.message);renderOps();});
 }
 var MAINTENANCE_RUN={};
 var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
@@ -1497,7 +1508,7 @@ function submitPair(){
 function addModel(){
   var name = $("mName").value.trim();
   var note = $("mNote").value.trim();
-  fetch("/api/device-models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name,note:note})})
+  fetch("/api/device-models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name,note:note,power_type:$("mPower").value})})
   .then(function(r){return r.json();}).then(function(d){
     if(!d.ok){ alert(d.msg||"失败"); return; }
     MODELS = d.models; renderOps();

@@ -43,7 +43,7 @@ import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
-import { normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
+import { deviceModelKey, registrationModel, normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
 import { queryDailyTraffic } from "./daily-traffic.js";
 import { saveTaskLog, downloadTaskLog } from "./task-artifacts.js";
 import { saveReleaseApk, streamReleaseApk } from "./update-artifacts.js";
@@ -947,14 +947,16 @@ function defaultDeviceModels() {
   return [
     { id: "mdl_d22", name: "D22", icon: "", note: "对讲机" },
     { id: "mdl_h13", name: "H13", icon: "", note: "对讲机" },
-    { id: "mdl_d31", name: "D31", icon: "", note: "座机" },
+    { id: "mdl_d31", name: "D31", icon: "", note: "座机", power_type:"external" },
     { id: "mdl_pixel3", name: "Pixel 3", icon: "", note: "网关手机" }
-  ];
+  ].map(model => ({power_type:"auto",...model, registration_key:deviceModelKey(model.name)}));
 }
 
 async function loadDeviceModels(env) {
   const raw = await getStore(env, "remote_device_models");
-  if (Array.isArray(raw) && raw.length) return raw;
+  if (Array.isArray(raw)) return raw.map(model => ({...model,
+    power_type:model.power_type || (model.id==='mdl_d31' ? 'external' : 'auto'),
+    registration_key:model.registration_key || defaultDeviceModels().find(item=>item.id===model.id)?.registration_key || deviceModelKey(model.name)}));
   const models = defaultDeviceModels();
   await setStore(env, "remote_device_models", models);
   return models;
@@ -1010,8 +1012,10 @@ async function geoForIp(env, ip) {
   return null;
 }
 
-function publicDevice(d, modelName) {
+function publicDevice(d, modelName, model = {}) {
   const contact = recoveryContact(d);
+  const batteryPresent=model.power_type==='external' ? false : model.power_type==='battery' ? true
+    : typeof d.battery_present==='boolean' ? d.battery_present : null;
   return {
     id: d.id,
     name: d.paired === false ? (d.device_name || d.name) : d.name,
@@ -1023,8 +1027,9 @@ function publicDevice(d, modelName) {
     last_seen: d.last_seen || null,
     contact_state: contact.state,
     report_due_at: contact.report_due_at,
-    battery: d.battery == null ? null : d.battery,
-    charging: typeof d.charging === "boolean" ? d.charging : null,
+    battery_present:batteryPresent,
+    battery: batteryPresent===false || d.battery == null ? null : d.battery,
+    charging: batteryPresent===false ? false : typeof d.charging === "boolean" ? d.charging : null,
     last_report_event: d.last_report_event || null,
     report_photo: d.report_photo || null,
     traffic: d.traffic || null,
@@ -1083,7 +1088,7 @@ async function loadDevicesHydrated(env) {
   for (let i = 0; i < list.length; i++) {
     const d = list[i];
     const m = byId[d.model_id];
-    const visible = publicDevice(d, m ? m.name : "");
+    const visible = publicDevice(d, m ? m.name : "",m || {});
     if (visible.paired || visible.online) out.push(visible);
   }
   return out;
@@ -1109,9 +1114,19 @@ async function handleDeviceModelSave(env, request) {
     const name = String(data.name || "").trim();
     if (!name) return json({ ok: false, msg: "型号名称不能为空" }, 400);
     let id = String(data.id || "").trim();
+    const previous=models.find(model=>model.id===id);
+    const powerType=data.power_type ?? previous?.power_type ?? 'auto';
+    if(!['auto','battery','external'].includes(powerType))return json({ok:false,msg:"供电方式无效"},400);
+    const key=previous?.registration_key || deviceModelKey(name);
+    const nameKey=deviceModelKey(name);
+    if(!key || key.length>64 || !nameKey || nameKey.length>64) return json({ok:false,msg:"型号名称需包含字母或数字，且不超过64个有效字符"},400);
+    if(models.some(model=>model.id!==id && [model.registration_key,deviceModelKey(model.name)].some(k=>k===key||k===nameKey)))
+      return json({ok:false,msg:"已有相同的型号名称或接入标识"},409);
     const item = {
       id: id || newRemoteId("mdl_"),
       name: name,
+      registration_key:key,
+      power_type:powerType,
       icon: String(data.icon || "").trim(),
       note: String(data.note || "").trim()
     };
@@ -1255,18 +1270,15 @@ async function handleDeviceEnroll(env, request) {
       if (await sha256Hex(data.token) !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
       const devices = await loadDevices(env);
       registered = devices.find(d => d.token_sha256 === tokenSha);
-      const identity = normalizeDeviceIdentity(data.hardware_identity);
+      // 已有凭据与刷后关联保留管理员选择；新设备才按网页维护的目录选型。
+      const models = await loadDeviceModels(env);
+      const identity = normalizeDeviceIdentity(data.hardware_identity,models);
       if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now);
       if (!registered) {
-        const modelId = identity?.variant === "d31" ? "mdl_d31" : "mdl_d22";
-        const models = await loadDeviceModels(env);
-        if (!models.some(model => model.id === modelId)) {
-          models.push(defaultDeviceModels().find(model => model.id === modelId));
-          await saveDeviceModels(env, models);
-        }
+        const model = registrationModel(models,data,identity);
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
           name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
-          model_id: modelId, enabled: true, status_only: true };
+          model_id: model.id, enabled: true, status_only: true };
         devices.push(registered);
       }
       if (identity) registered.hardware_identity=identity;
@@ -1420,7 +1432,8 @@ async function handleDeviceReport(env, request) {
     const matched = list.find(d => d.id === deviceId);
     if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
-    const identity = normalizeDeviceIdentity(data.hardware_identity);
+    if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
+    const identity = normalizeDeviceIdentity(data.hardware_identity,data.hardware_identity ? await loadDeviceModels(env) : []);
     if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
     let reportLocation = pickLocation(data, null);
@@ -1502,6 +1515,9 @@ async function handleDeviceReport(env, request) {
         list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
       }
       list[i].charging = typeof data.charging === "boolean" ? data.charging : null;
+      if(Object.hasOwn(data,'battery_present')) {
+        list[i].battery_present=data.battery_present;
+      }
       if(history.record.report_event)list[i].last_report_event={...history.record.report_event,report_id:history.record.report_id,received_at:history.record.received_at};
       if (data.ready != null) list[i].ready = !!data.ready;
       const ip = observedIp;
