@@ -1258,9 +1258,15 @@ async function handleDeviceEnroll(env, request) {
       const identity = normalizeDeviceIdentity(data.hardware_identity);
       if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now);
       if (!registered) {
+        const modelId = identity?.variant === "d31" ? "mdl_d31" : "mdl_d22";
+        const models = await loadDeviceModels(env);
+        if (!models.some(model => model.id === modelId)) {
+          models.push(defaultDeviceModels().find(model => model.id === modelId));
+          await saveDeviceModels(env, models);
+        }
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
           name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
-          model_id: "mdl_d22", enabled: true, status_only: true };
+          model_id: modelId, enabled: true, status_only: true };
         devices.push(registered);
       }
       if (identity) registered.hardware_identity=identity;
@@ -1345,11 +1351,6 @@ async function handleDevicePair(env, request) {
     const code = normalizePairCode(data.code);
     if (!code) return json({ ok: false, msg: "请输入六位数字配对码" }, 400);
     const name = String(data.name || "").trim();
-    const model_id = String(data.model_id || "mdl_d22").trim();
-    const models = await loadDeviceModels(env);
-    let okModel = false;
-    for (let i = 0; i < models.length; i++) if (models[i].id === model_id) okModel = true;
-    if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
     const now = Date.now();
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
     const row = enrolls[code];
@@ -1363,6 +1364,9 @@ async function handleDevicePair(env, request) {
     const list = await loadDevices(env);
     const ip = String(data.ip || "").trim();
     const registered = list.find(d => d.id === row.device_id && d.token_sha256 === row.token_sha256);
+    const model_id = String(data.model_id || registered?.model_id || "mdl_d22").trim();
+    const models = await loadDeviceModels(env);
+    if (!models.some(model => model.id === model_id)) return json({ ok: false, msg: "请选择已有型号" }, 400);
     if (registered) {
       registered.paired = true;
       registered.name = name || registered.device_name || registered.name;
