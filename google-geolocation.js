@@ -63,7 +63,7 @@ export function googleBillingMonth(now) {
   return p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value;
 }
 
-export async function googleLocation(env, deviceId, data, now = Date.now(), fetcher = fetch) {
+export async function googleLocation(env, deviceId, data, now = Date.now(), fetcher = (...args) => fetch(...args)) {
   // 现成有效GPS或系统网络坐标不产生Google请求。
   if (pickLocation(data,null)) return {location:null,reason:'not_needed'};
   const payload = radioRequest(data.radio,now);
@@ -124,7 +124,7 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
     }
     break;
    }
-  } catch (error) { reason = controller.signal.aborted ? 'timeout' : stage==='google_request' ? 'unavailable' : stage+'_failed'; }
+  } catch (error) { reason = controller.signal.aborted ? 'timeout' : /illegal invocation/i.test(String(error?.message)) ? 'fetch_binding_failed' : stage==='google_request' ? 'unavailable' : stage+'_failed'; }
   finally { clearTimeout(timer); }
   await env.__storage.put(key,{signature,at:now,location,reason});
   return {location,reason};
