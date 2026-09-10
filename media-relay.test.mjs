@@ -34,3 +34,19 @@ test('SFU创建无轨道会话必须省略正文，空JSON会触发服务器SDP�
  relay.fetcher=async(url,init)=>{assert.ok(url.endsWith('/sessions/new'));assert.equal(init.body,undefined);assert.equal(init.headers['Content-Type'],undefined);seen=true;return Response.json({sessionId:'rtc'});};
  await relay.message(s,'browser',JSON.stringify({type:'rpc',id:1,action:'new'}));assert.ok(seen);assert.equal(s.rtc.browser,'rtc');
 });
+test('浏览器断网未发关闭帧时结束警报，容忍后台标签页一分钟节流',async()=>{
+ let at=1000,timer;const relay=new MediaRelay({},{now:()=>at,schedule:f=>(timer=f,0),cancel(){}});
+ const {session_id}=relay.create({id:'xx',managed_media:true},'alarm'),s=relay.sessions.get(session_id);
+ await relay.message(s,'device','{"type":"ready"}');at+=60000;timer();assert.equal(s.closed,false);
+ await relay.message(s,'browser','{"type":"ping"}');at+=89999;timer();assert.equal(s.closed,false);
+ at++;timer();assert.equal(s.closed,true);assert.equal(relay.sessions.size,0);
+});
+test('实时录音和录像即使心跳正常也在30分钟结束',async()=>{
+ for(const mode of ['microphone','video']){
+  let at=1000,timer;const relay=new MediaRelay({ELF_REALTIME:'{}'},{now:()=>at,schedule:f=>(timer=f,0),cancel(){}});
+  const {session_id}=relay.create({id:'xx',managed_media:true},mode),s=relay.sessions.get(session_id);
+  await relay.message(s,'device','{"type":"ready"}');at+=1799999;
+  await relay.message(s,'browser','{"type":"ping"}');timer();assert.equal(s.closed,false);
+  at++;timer();assert.equal(s.closed,true);
+ }
+});

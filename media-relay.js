@@ -14,7 +14,7 @@ export class MediaRelay {
     if([...this.sessions.values()].some(s=>s.deviceId===device.id))throw Error('请先结束该设备当前通信');
     if(this.sessions.size>=16)throw Error('当前通信过多');
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
-    const s={id,token,deviceId:device.id,mode,camera,created,started:0,roles:{},published:{},rtc:{},chains:{},closed:false};
+    const s={id,token,deviceId:device.id,mode,camera,created,started:0,lastBrowser:created,roles:{},published:{},rtc:{},chains:{},closed:false};
     this.sessions.set(id,s);try{this.arm(s);}catch(error){this.sessions.delete(id);throw error;}
     return {ok:true,session_id:id,mode};
   }
@@ -22,6 +22,7 @@ export class MediaRelay {
     if(s.closed)return;
     const at=this.now();
     if(!s.started&&at-s.created>=45000)this.close(s,'设备连接超时');
+    else if(s.started&&at-s.lastBrowser>=90000)this.close(s,'网页连接已中断');
     else if(s.mode!=='alarm'&&s.started&&at-s.started>=(s.mode==='ptt'?60000:s.mode==='photo'?60000:1800000))this.close(s,'本次通信已结束');
     else this.arm(s);
   },1000);}
@@ -55,6 +56,7 @@ export class MediaRelay {
     try{
       if(typeof raw!=='string'||raw.length>96000)throw Error('通信消息过大');
       const p=JSON.parse(raw),other=role==='browser'?'device':'browser';
+      if(role==='browser')s.lastBrowser=this.now();
       if(p.type==='stop'){this.close(s,'通信已结束');return;}
       if(p.type==='ping'){this.send(s,role,{type:'pong'});return;}
       if(p.type==='ready'){
