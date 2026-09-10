@@ -415,7 +415,7 @@ function renderOps(){
   var d = currentDev();
   var dis = d ? "" : " disabled";
   var bat = batteryText(d);
-  var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : "未知"));
+  var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : (d.network==="ethernet" ? "有线网络" : "未知")));
   var src = d && d.loc ? locLabel(d.loc.source) : "—";
   if(d && d.loc && d.loc.source==="gps" && d.loc.lat!=null && d.loc.lng!=null && isFinite(Number(d.loc.lat)) && isFinite(Number(d.loc.lng))) {
     src = "GPS · " + Number(d.loc.lat).toFixed(6) + " · " + Number(d.loc.lng).toFixed(6);
@@ -478,8 +478,8 @@ function powerOptions(value){
   return [['auto','自动识别'],['battery','电池设备'],['external','外接电源']].map(function(p){return '<option value="'+p[0]+'"'+(value===p[0]?' selected':'')+'>'+p[1]+'</option>';}).join('');
 }
 function pageModel(){
-  var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><select id="mPower" class="inp" aria-label="供电方式">'+powerOptions('auto')+'</select><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>供电方式</th><th>操作</th></tr></thead><tbody>';
-  MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><select class="inp" aria-label="'+esc(m.name)+'供电方式" onchange="setModelPower(MODELS['+i+'].id,this.value)">'+powerOptions(m.power_type||'auto')+'</select></td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
+  var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><select id="mPower" class="inp" style="width:auto;min-width:112px;min-height:32px;padding:5px 9px" aria-label="供电方式">'+powerOptions('auto')+'</select><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>供电方式</th><th>操作</th></tr></thead><tbody>';
+  MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><select class="inp" style="width:auto;min-width:112px;min-height:32px;padding:5px 9px" aria-label="'+esc(m.name)+'供电方式" onchange="setModelPower(MODELS['+i+'].id,this.value)">'+powerOptions(m.power_type||'auto')+'</select></td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
   return h+(MODELS.length?'':'<tr><td colspan="4" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
 }
 function setModelPower(id,value){
