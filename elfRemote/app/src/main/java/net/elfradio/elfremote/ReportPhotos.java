@@ -100,12 +100,7 @@ final class ReportPhotos {
     }
     private void cameraPermission()throws Exception{
         if(context.checkSelfPermission(android.Manifest.permission.CAMERA)==android.content.pm.PackageManager.PERMISSION_GRANTED)return;
-        java.lang.Process process=new ProcessBuilder("su","-c","pm grant --user 0 net.elfradio.elfremote android.permission.CAMERA").start();
-        try{
-            long end=SystemClock.elapsedRealtime()+3000L;
-            while(SystemClock.elapsedRealtime()<end){try{process.exitValue();break;}catch(IllegalThreadStateException wait){Thread.sleep(50);}}
-        }finally{process.destroy();process.getInputStream().close();process.getErrorStream().close();process.getOutputStream().close();}
-        if(context.checkSelfPermission(android.Manifest.permission.CAMERA)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Permanent("相机权限不可用");
+        throw new IOException("相机权限初始化尚未完成");
     }
     private void capture(JSONObject job){
         final long generation=++captureGeneration;

@@ -250,6 +250,7 @@ final class WatchdogPolicy {
                 + "DIR=/data/local/elfremote\n"
                 + "SCRIPT=/data/local/elfremote/watchdog.sh\n"
                 + "[ \"$(id -u)\" = 0 ] || exit 1\n"
+                + "(\n" + PermissionPolicy.commands() + "\n) || exit $?\n"
                 + "echo BOOTSTRAP_PERMISSIONS_BEGIN $(date +%s)\n"
                 + startupDirectoryCommands()
                 + "echo BOOTSTRAP_PERMISSIONS_END $(date +%s)\n"

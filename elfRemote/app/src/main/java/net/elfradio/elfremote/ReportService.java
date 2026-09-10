@@ -56,6 +56,7 @@ public final class ReportService extends Service {
     private boolean healthReportConfirmed;
     private String reportReason="startup",scheduledReason="startup";
     private long nextReportElapsed;
+    private final long permissionsStarted = android.os.SystemClock.elapsedRealtime();
     private String lastNetwork = "";
     private final Runnable networkReport = () -> {
         String current = networkType();
@@ -75,6 +76,12 @@ public final class ReportService extends Service {
         public void run() {
             if (reporting) return;
             if(android.os.SystemClock.elapsedRealtime()<nextReportElapsed)return;
+            if (!PermissionGate.ready(ReportService.this)
+                    && android.os.SystemClock.elapsedRealtime() - permissionsStarted < 60000L) {
+                PermissionGate.ensure(ReportService.this, null);
+                scheduleReport(1000L);
+                return;
+            }
             reporting = true;
             reportReason=scheduledReason;
             WakeScheduler.hold(ReportService.this, "report", 120000L);
@@ -115,7 +122,6 @@ public final class ReportService extends Service {
     public void onCreate() {
         super.onCreate();
         wake = new WakeScheduler(this);
-        PermissionGate.initializeBackground(this);
         store = new PairingStore(this);
         traffic = new TrafficMeter(this);
         if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
@@ -394,6 +400,7 @@ public final class ReportService extends Service {
     }
 
     private void ensureMaintenance() {
+        PermissionGate.ensure(this, null);
         CoreInstaller.ensure(this, this::coreMaintenanceFinished);
         WatchdogInstaller.ensure(this, () -> {
             Handler target = worker;
@@ -442,6 +449,7 @@ public final class ReportService extends Service {
         putBattery(body);
         body.put("ready", WatchdogInstaller.ready());
         body.put("maintenance", WatchdogInstaller.snapshot());
+        body.put("permissions", PermissionGate.snapshot(this));
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_adb_session", CoreInstaller.ready());
@@ -683,6 +691,7 @@ public final class ReportService extends Service {
         putBattery(body);
         body.put("ready", WatchdogInstaller.ready());
         body.put("maintenance", WatchdogInstaller.snapshot());
+        body.put("permissions", PermissionGate.snapshot(this));
         JSONObject gps = gpsFix();
         if (gps != null) body.put("gps", gps);
         JSONObject res;

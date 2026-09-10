@@ -52,6 +52,14 @@ final class RescueHttpServer extends NanoHTTPD {
             if (!peer.isSiteLocalAddress() && !peer.isLoopbackAddress())
                 return response(Response.Status.FORBIDDEN, "仅开放局域网");
             String path = session.getUri();
+            if(session.getMethod()==Method.POST && "/permissions/initialize".equals(path)) {
+                if(session.getHeaders().containsKey("origin")||!peer.isLoopbackAddress())return response(Response.Status.FORBIDDEN,"仅供本机初始化");
+                return json(Response.Status.OK,PermissionPolicy.initializeFromCore());
+            }
+            if(session.getMethod()==Method.POST && "/radio-snapshot".equals(path)) {
+                if(session.getHeaders().containsKey("origin")||!peer.isLoopbackAddress())return response(Response.Status.FORBIDDEN,"仅供本机上报采集");
+                return json(Response.Status.OK,RadioLocation.coreCapture());
+            }
             if(session.getMethod()==Method.GET && "/diagnostics".equals(path))
                 return json(Response.Status.OK,RescueDiagnostics.collect());
             if(session.getMethod()==Method.GET && "/files/recent".equals(path))return json(Response.Status.OK,jobs.fileHistory());

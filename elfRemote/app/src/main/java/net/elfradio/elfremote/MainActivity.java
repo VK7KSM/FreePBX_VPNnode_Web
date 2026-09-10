@@ -49,7 +49,7 @@ public final class MainActivity extends Activity {
         fileInboxButton.setOnClickListener(v->showFiles());
         reportButton.setOnClickListener(v -> ServiceStarter.startNow(this));
         renewButton.setOnClickListener(v -> ServiceStarter.renew(this));
-        permButton.setOnClickListener(v -> PermissionGate.requestIgnoreBattery(this));
+        permButton.setOnClickListener(v -> PermissionGate.ensure(this, null));
         codeView.requestFocus();
         ServiceStarter.start(this);
         render();

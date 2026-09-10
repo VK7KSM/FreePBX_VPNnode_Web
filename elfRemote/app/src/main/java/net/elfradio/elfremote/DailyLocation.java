@@ -115,13 +115,8 @@ final class DailyLocation {
             RuntimeLog.error("daily_location_provider_check_failed", error);
             finish("provider_unavailable"); return;
         }
-        if (!granted) {
-            PermissionGate.initializeLocation(context, worker, () -> {
-                if (completion == null) return;
-                if (PermissionGate.hasLocation(context)) startSampling();
-                else finish("permission_denied");
-            });
-        } else startSampling();
+        if (!granted) finish("permission_initialization_pending");
+        else startSampling();
     }
 
     private void startSampling() {

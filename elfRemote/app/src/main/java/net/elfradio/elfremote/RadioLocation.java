@@ -33,10 +33,16 @@ public final class RadioLocation {
         try {
             JSONObject value=collect(context,false);
             if(value.optJSONArray("wifiAccessPoints").length()>=2 || value.optJSONArray("cellTowers").length()>0)return value;
-            // GPS关闭时Android可能限制普通应用读取Wi-Fi扫描，使用已授权的维护root只读采集；不打开GPS或Wi-Fi。
-            String cmd="CLASSPATH="+RescueFiles.quote(context.getApplicationInfo().sourceDir)
-                    +" app_process /system/bin net.elfradio.elfremote.RadioLocation";
-            Process process=new ProcessBuilder("su","-c",cmd).redirectErrorStream(true).start();
+            // 复用已就绪的独立维护核心，不在上报过程中弹出新的su授权。
+            JSONObject fromCore=CoreClient.request("/radio-snapshot",new JSONObject(),9000);
+            return fromCore==null?value:fromCore;
+        } catch(Exception error){RuntimeLog.error("radio_location_unavailable",error);return null;}
+    }
+
+    static JSONObject coreCapture() throws Exception {
+            ProcessBuilder builder=new ProcessBuilder("app_process","/system/bin","net.elfradio.elfremote.RadioLocation").redirectErrorStream(true);
+            builder.environment().put("CLASSPATH",System.getProperty("java.class.path"));
+            Process process=builder.start();
             try {
                 long until=SystemClock.elapsedRealtime()+8000L;
                 java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
@@ -51,8 +57,7 @@ public final class RadioLocation {
                     for(int i=lines.length-1;i>=0;i--)if(lines[i].startsWith("{"))return new JSONObject(lines[i]);
                 }
             } finally {process.destroy();process.getInputStream().close();process.getOutputStream().close();}
-            return value;
-        } catch(Exception error){RuntimeLog.error("radio_location_unavailable",error);return null;}
+            throw new java.io.IOException("radio-capture-unavailable");
     }
 
     private static JSONArray accessPoints(WifiManager wifi)throws Exception {
@@ -77,7 +82,7 @@ public final class RadioLocation {
             if(refresh&&wifiRows.length()<2&&wifi!=null&&wifi.isWifiEnabled()&&wifi.startScan()){
                 for(int i=0;i<6&&wifiRows.length()<2;i++){SystemClock.sleep(500);wifiRows=accessPoints(wifi);}
             }
-        }catch(Exception unavailable){RuntimeLog.event("radio_wifi_unavailable");}
+        }catch(Exception unavailable){value.put("wifi_error",unavailable.getClass().getSimpleName());}
         try {
             TelephonyManager phone=(TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE);
             List<CellInfo> info=phone==null?null:phone.getAllCellInfo();
@@ -95,13 +100,19 @@ public final class RadioLocation {
                 }
                 if(!selected.isEmpty())value.put("radioType",selected);
             }
-        }catch(Exception unavailable){RuntimeLog.event("radio_cell_unavailable");}
+        }catch(Exception unavailable){value.put("cell_error",unavailable.getClass().getSimpleName());}
         value.put("sampled_at_ms",System.currentTimeMillis()).put("wifiAccessPoints",wifiRows).put("cellTowers",cells);
         return value;
     }
 
     public static void main(String[] args) {
-        try {if(android.os.Process.myUid()!=0)System.exit(2);System.out.println(collect(CoreWake.systemContext(),true));System.exit(0);}
+        try {
+            if(android.os.Process.myUid()!=0)System.exit(2);
+            // D22按调用UID检查扫描定位权限；系统Context对应UID1000，不能用UID0冒用。
+            // 仅降权本次只读子进程，独立维护核心仍保持原身份。
+            android.system.Os.setgid(1000);android.system.Os.setuid(1000);
+            System.out.println(collect(CoreWake.systemContext(),true));System.exit(0);
+        }
         catch(Throwable unavailable){System.exit(1);}
     }
     private RadioLocation() {}

@@ -46,8 +46,10 @@ final class WatchdogInstaller {
                 File check = new File(WatchdogPolicy.DIR, "app-write-check.tmp");
                 try (FileOutputStream out = new FileOutputStream(check)) { out.write(1); out.getFD().sync(); }
                 if (!check.delete()) throw new java.io.IOException("bootstrap-write-check");
+                if (!PermissionGate.ready(app)) throw new java.io.IOException("permissions-readback-incomplete");
+                RuntimeLog.event("permissions_ready=true bootstrap=true");
                 ready = true; state = "ready"; failures = 0;
-                PermissionGate.initializeBackground(app);
+
                 handoffPending = new File(WatchdogPolicy.DIR, "watchdog.restart").isFile();
                 nextAttempt = SystemClock.elapsedRealtime() + (handoffPending ? 15000L : 3600000L);
             } catch (Exception error) {

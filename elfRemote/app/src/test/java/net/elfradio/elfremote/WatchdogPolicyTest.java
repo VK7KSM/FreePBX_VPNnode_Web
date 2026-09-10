@@ -197,7 +197,8 @@ public class WatchdogPolicyTest {
         assertFalse(s.contains("codex_call"));
         assertFalse(s.contains("codex_wake"));
         assertFalse(s.contains("codex_firewall"));
-        assertFalse(s.contains("dumpsys"));
+        // 初始化只允许本应用后台豁免，仍禁止无关系统扫描。
+        assertFalse(s.replace("dumpsys deviceidle whitelist +net.elfradio.elfremote", "").contains("dumpsys"));
         assertFalse(s.contains("uiautomator"));
         assertFalse(s.contains("input keyevent"));
     }

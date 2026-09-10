@@ -1005,6 +1005,7 @@ function publicDevice(d, modelName) {
     app_version: d.app_version || "",
     ready: !!d.ready,
     maintenance: d.maintenance || null,
+    permissions: d.permissions || null,
     loc: d.loc || null,
     update: publicUpdate(d.update),
     task: publicRepair(d.task)

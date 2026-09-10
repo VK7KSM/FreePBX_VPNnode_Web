@@ -16,10 +16,7 @@ final class DeviceContacts {
     private void permission() throws Exception {
         for (String name : new String[]{"android.permission.READ_CONTACTS","android.permission.WRITE_CONTACTS"}) {
             if (context.checkSelfPermission(name)==android.content.pm.PackageManager.PERMISSION_GRANTED) continue;
-            Process p=new ProcessBuilder("su","-c","pm grant --user 0 net.elfradio.elfremote "+name).redirectErrorStream(true).start();
-            if (!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)) {p.destroy();throw new java.io.IOException("contacts-permission-timeout");}
-            if (p.exitValue()!=0 || context.checkSelfPermission(name)!=android.content.pm.PackageManager.PERMISSION_GRANTED)
-                throw new java.io.IOException("contacts-permission-denied");
+            throw new java.io.IOException("contacts-permission-initialization-pending");
         }
     }
 
