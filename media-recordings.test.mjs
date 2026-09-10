@@ -7,13 +7,14 @@ test('完成录制写入可拖动的时长头，失败保留原段，重试不�
   const post=(action,data)=>recordingHttp(env,new Request(url+'&action='+action,{method:'POST',body:JSON.stringify(data)}),stub);
   await post('create',{type:'audio',mime:'audio/webm;codecs=opus'});
   const header=new Uint8Array([0x18,0x53,0x80,0x67,0x01,255,255,255,255,255,255,255,0x15,0x49,0xa9,0x66,0x87,0x2a,0xd7,0xb1,0x83,0x0f,0x42,0x40,0x1f,0x43,0xb6,0x75,0x83,1,2,3]);
-  await recordingHttp(env,new Request(url+'&index=0',{method:'PUT',body:header}),stub);
-  assert.equal((await post('finish',{parts:2,duration_ms:5000})).status,400);
+  await recordingHttp(env,new Request(url+'&index=0',{method:'PUT',body:header.slice(0,1)}),stub);
+  await recordingHttp(env,new Request(url+'&index=1',{method:'PUT',body:header.slice(1)}),stub);
+  assert.equal((await post('finish',{parts:3,duration_ms:5000})).status,400);
   const put=env.ELF_ARTIFACTS.put;env.ELF_ARTIFACTS.put=async()=>{throw Error('storage unavailable');};
-  assert.equal((await post('finish',{parts:1,duration_ms:5000})).status,400);
+  assert.equal((await post('finish',{parts:2,duration_ms:5000})).status,400);
   assert.equal(f.data.get('media-record/xx/header').complete,false);
   env.ELF_ARTIFACTS.put=put;
-  const result=await (await post('finish',{parts:1,duration_ms:5000})).json();
+  const result=await (await post('finish',{parts:2,duration_ms:5000})).json();
   assert.equal(result.record.header_finalized,true);assert.equal(result.record.bytes,header.length+11);
   const response=await recordingHttp(env,new Request(url,{headers:{Range:'bytes=27-34'}}),stub);
   assert.equal(response.status,206);assert.equal(new DataView(await response.arrayBuffer()).getFloat64(0),5000);

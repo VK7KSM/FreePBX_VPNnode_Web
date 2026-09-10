@@ -36,8 +36,9 @@ export async function recordingMetadata(storage,request,loadDevices,now=Date.now
       await storage.put(k,old);return json({ok:true,part});
     }
     if(p.action==='finish'){
+      if(old.complete&&old.header_finalized)return json({ok:true,record:old});
       if(p.parts!==old.parts.length||!old.parts.length)throw Error('录制分段尚未全部保存');
-      if(p.header){if(p.header.bytes<1||p.header.bytes>MAX_PART+64||p.header.key!=='media-recordings/'+p.device_id+'/'+p.id+'/header/'+p.header.sha256)throw Error('录制文件头无效');old.bytes+=p.header.bytes-old.parts[0].bytes;old.parts[0]={...p.header,index:0};}
+      if(p.header){const count=p.header.part_count;if(!Number.isInteger(count)||count<1||count>old.parts.length||p.header.bytes<1||p.header.bytes>MAX_PART+65536+64||p.header.key!=='media-recordings/'+p.device_id+'/'+p.id+'/header/'+p.header.sha256)throw Error('录制文件头无效');old.bytes+=p.header.bytes-old.parts.slice(0,count).reduce((n,p)=>n+p.bytes,0);old.parts.splice(0,count,{...p.header,index:0});}
       old.complete=true;old.header_finalized=!!p.header||!old.mime.includes('webm');old.duration_ms=Math.min(1800000,Math.max(old.duration_ms,Number(p.duration_ms)||0));await storage.put(k,old);return json({ok:true,record:old});
     }
     throw Error('录制操作无效');
@@ -55,11 +56,16 @@ export async function recordingHttp(env,request,stub){
       if(record.complete&&record.header_finalized)return json({ok:true,record});const parts=record.complete?record.parts.length:data.parts;if(parts!==record.parts.length||!record.parts.length)throw Error('录制分段尚未全部保存');
       const duration=Math.min(1800000,Math.max(record.duration_ms,Number(data.duration_ms)||0));let header;
       if(record.mime.includes('webm')){
-        const object=await env.ELF_ARTIFACTS.get(record.parts[0].key);if(!object)throw Error('录制首段缺失');
-        const bytes=webmDuration(await new Response(object.body).arrayBuffer(),duration);
+        // MediaRecorder可能先输出只有1字节的首段，Info不保证落在单个上传分段内。
+        let prefix=new Uint8Array(),bytes,partCount=0;
+        for(const part of record.parts){
+          const object=await env.ELF_ARTIFACTS.get(part.key);if(!object)throw Error('录制首段缺失');
+          const chunk=new Uint8Array(await new Response(object.body).arrayBuffer()),joined=new Uint8Array(prefix.length+chunk.length);joined.set(prefix);joined.set(chunk,prefix.length);prefix=joined;partCount++;
+          try{bytes=webmDuration(prefix,duration);break;}catch(e){if(prefix.length>=65536||partCount===record.parts.length)throw e;}
+        }
         const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
         const key='media-recordings/'+p.device_id+'/'+p.id+'/header/'+hash;
-        await env.ELF_ARTIFACTS.put(key,bytes,{sha256:hash,httpMetadata:{contentType:record.mime}});header={key,sha256:hash,bytes:bytes.length};
+        await env.ELF_ARTIFACTS.put(key,bytes,{sha256:hash,httpMetadata:{contentType:record.mime}});header={key,sha256:hash,bytes:bytes.length,part_count:partCount};
       }
       return rpc(stub,{...p,action,parts,duration_ms:duration,header});
     }
