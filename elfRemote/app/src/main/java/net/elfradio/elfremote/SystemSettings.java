@@ -126,7 +126,7 @@ public final class SystemSettings {
         if(group.equals("sound")) {
             AudioManager a=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);JSONObject max=new JSONObject();
             for(int i=0;i<VOLUMES.length;i++){out.put(VOLUMES[i],a.getStreamVolume(STREAMS[i]));max.put(VOLUMES[i],a.getStreamMaxVolume(STREAMS[i]));}
-            out.put("maximum",max).put("brightness",settingInt("system","screen_brightness",102)).put("brightness_auto",settingInt("system","screen_brightness_mode",0)==1).put("font_scale",configuration().fontScale);
+            out.put("maximum",max).put("brightness",settingInt("system","screen_brightness",102)).put("brightness_auto",settingInt("system","screen_brightness_mode",0)==1).put("font_scale",configuration().fontScale).put("font_scale_saved",Double.parseDouble(setting("get","system","font_scale").replace("null","1.0")));
         }else if(group.equals("time")){
             Configuration config=configuration();out.put("locale",config.getLocales().get(0).toLanguageTag()).put("timezone",property("persist.sys.timezone"))
                 .put("auto_time",settingInt("global","auto_time",1)==1).put("auto_time_zone",settingInt("global","auto_time_zone",1)==1);
@@ -166,7 +166,7 @@ public final class SystemSettings {
         String group=p.getString("group"),key=p.getString("key");
         if(group.equals("sound")) {
             int i=Arrays.asList(VOLUMES).indexOf(key);if(i>=0){AudioManager a=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);int v=((Number)value).intValue();if(v>a.getStreamMaxVolume(STREAMS[i]))throw new IOException("音量超出设备范围");a.setStreamVolume(STREAMS[i],v,0);}
-            else if(key.equals("font_scale")){Configuration c=configuration();c.fontScale=((Number)value).floatValue();updateConfiguration(c);}
+            else if(key.equals("font_scale")){Configuration c=configuration();c.fontScale=((Number)value).floatValue();setting("put","system","font_scale",Float.toString(c.fontScale));updateConfiguration(c);}
             else if(!putSetting("system",key.equals("brightness_auto")?"screen_brightness_mode":"screen_brightness",key.equals("brightness_auto")?((Boolean)value?1:0):((Number)value).intValue()))throw new IOException("设置写入失败");
         }else if(group.equals("time")) {
             if(key.equals("timezone"))((AlarmManager)context.getSystemService(Context.ALARM_SERVICE)).setTimeZone((String)value);
@@ -191,6 +191,7 @@ public final class SystemSettings {
         if(key.equals("hotspot")){JSONObject v=(JSONObject)value,got=after.getJSONObject("hotspot");return got.getBoolean("enabled")==v.getBoolean("enabled")&&(!v.getBoolean("enabled")||got.getString("ssid").equals(v.getString("ssid")));}
         if(key.equals("permission")){JSONObject v=(JSONObject)value;return (context.getPackageManager().checkPermission(v.getString("name"),p.getString("package"))==PackageManager.PERMISSION_GRANTED)==v.getBoolean("granted");}
         if(value instanceof Number&&p.getString("group").equals("apps"))return ((Number)value).intValue()==after.getInt(key.equals("enabled")?"enabled_state":"background_mode");
+        if(key.equals("font_scale")&&Math.abs(((Number)value).doubleValue()-after.getDouble("font_scale_saved"))>=.001)return false;
         if(value instanceof Number)return Math.abs(((Number)value).doubleValue()-after.getDouble(key))<.001;
         return value.equals(after.get(key));
     }
