@@ -281,7 +281,7 @@ function batteryText(d){
   return (!d || d.battery==null ? "—" : d.battery+"%") + (d && d.charging===true ? " · 充电中" : "");
 }
 function battHtml(pct, charging, present){
-  if(present===false)return '<span class="mbatt" title="外接电源" role="img" aria-label="外接电源"><svg width="17" height="9" viewBox="0 0 18 10" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="#0f172a" d="M12 2v6H8a3 3 0 0 1 0-6h4Z"/><path d="M12 3h4m-4 4h4M5 5H1"/></svg></span>';
+  if(present===false)return '<span class="mbatt mplug" title="外接电源" role="img" aria-label="外接电源"><svg width="18" height="11" viewBox="0 0 18 11" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="#0f172a" d="M12.5 1.5v8H8a4 4 0 0 1 0-8h4.5Z"/><path d="M12.5 3.5h4m-4 4h4M4 5.5H.5"/></svg></span>';
   var p = pct==null || !isFinite(Number(pct)) ? -1 : Math.max(0, Math.min(100, Math.round(Number(pct))));
   var fill = p<0 ? 0 : p;
   var col = p<0 ? "#64748b" : (p<=20 ? "#f87171" : (p<=50 ? "#fbbf24" : "#4ade80"));

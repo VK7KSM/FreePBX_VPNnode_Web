@@ -2713,6 +2713,7 @@ function renderDevicesHtml() {
     '.dpin-time{font-size:10px;color:#94a3b8;line-height:1.2}',
     '.pin-on .dpin-card{border-color:#93c5fd}',
     '.mbatt{display:inline-flex;align-items:center;flex-shrink:0}',
+    '.mplug{margin-left:-2px;transform:translateY(1px);height:11px}',
     '.mbatt-b{position:relative;width:15px;height:8px;border:1px solid #cbd5e1;border-radius:1px;padding:1px;box-sizing:border-box;background:#0f172a}',
     '.mbatt-bolt{position:absolute;width:8px;height:12px;left:3px;top:-3px;fill:#f8fafc;stroke:#0f172a;stroke-width:1;stroke-linejoin:round;pointer-events:none}',
     '.mbatt-l{display:block;height:100%;border-radius:1px}',
