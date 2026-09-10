@@ -1,7 +1,7 @@
 // MediaRecorder输出的WebM通常没有Duration；只修正首段Info，不重新编码媒体。
 function element(bytes,at){
   const start=at;let width=1,mask=128;
-  while(width<=4&&!(bytes[at]&mask)){mask>>=1;width++;}if(width>4||at+width>=bytes.length)throw Error('WebM元素编号无效');
+  while(width<=4&&!(bytes[at]&mask)){mask>>=1;width++;}if(width>4||at+width>=bytes.length)throw Error('WebM元素编号无效：偏移'+at+'，首段长度'+bytes.length);
   let id=0;for(let i=0;i<width;i++)id=id*256+bytes[at++];
   const sizeAt=at;mask=128;width=1;while(width<=8&&!(bytes[at]&mask)){mask>>=1;width++;}if(width>8||at+width>bytes.length)throw Error('WebM元素长度无效');
   let size=bytes[at++]&(mask-1),unknown=size===mask-1;
