@@ -883,6 +883,45 @@ function showHistoryRecord(index){
 }
 
 var DAILY_CACHE={}, TRAFFIC_HISTORY={seq:0};
+var PHOTO_HISTORY={};
+function photoHistory(d){
+  if(!PHOTO_HISTORY[d.id])PHOTO_HISTORY[d.id]={photos:[],selected:null,loaded:0,pending:false,retry:0,latest:''};
+  return PHOTO_HISTORY[d.id];
+}
+function visiblePhotos(state){return state.photos.filter(function(p){return p.expires_at>Date.now();});}
+function loadReportPhotos(d){
+  var state=photoHistory(d),latest=d.report_photo&&d.report_photo.report_id||'';
+  if(state.pending||Date.now()<state.retry||(state.loaded&&state.latest===latest&&Date.now()-state.loaded<300000))return;
+  state.pending=true;state.error='';var rows=[];
+  function page(cursor){
+    return fetch('/api/elfremote/report-photo?'+new URLSearchParams({device_id:d.id,list:'1',cursor:cursor||''})).then(function(r){if(!r.ok)throw Error('照片读取失败');return r.json();}).then(function(x){
+      if(!x.ok)throw Error('照片读取失败');rows=rows.concat(x.photos);return x.next?page(x.next):rows;
+    });
+  }
+  return page('').then(function(){
+    state.photos=rows.sort(function(a,b){return b.captured_at.localeCompare(a.captured_at)||b.report_id.localeCompare(a.report_id);});
+    state.loaded=Date.now();state.latest=latest;
+    if(state.selected&&!state.photos.some(function(p){return p.report_id===state.selected;}))state.selected=null;
+  }).catch(function(){state.error='照片读取失败';state.retry=Date.now()+15000;}).finally(function(){
+    state.pending=false;if(currentDev()&&currentDev().id===d.id)renderRemoteConsole();
+  });
+}
+function stepReportPhoto(delta){
+  var d=currentDev();if(!d)return;var state=photoHistory(d),photos=visiblePhotos(state);
+  var index=Math.max(0,photos.findIndex(function(p){return p.report_id===state.selected;})),next=index+delta;
+  if(next<0||next>=photos.length)return;
+  state.selected=next===0?null:photos[next].report_id;renderRemoteConsole();
+}
+function reportPhotoHtml(d){
+  var state=d?photoHistory(d):null,photos=state?visiblePhotos(state):[];
+  var index=state?Math.max(0,photos.findIndex(function(p){return p.report_id===state.selected;})):0,photo=photos[index];
+  var h='<div class="remote-preview">';
+  h+=photo?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:photo.report_id}).toString())+'" alt="设备上报照片" onerror="this.hidden=true;this.parentNode.querySelector(\'.photo-error\').hidden=false"><span class="photo-error" hidden>照片暂不可用</span>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>'+(state?(state.error||(!state.loaded?'照片读取中…':'暂无上报照片')):'画面与播放区域')+'</span>';
+  h+='<button type="button" class="photo-nav photo-prev" aria-label="上一张照片" onclick="stepReportPhoto(1)"'+(index+1<photos.length?'':' disabled')+'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m14 6-6 6 6 6"/></svg></button>';
+  h+='<button type="button" class="photo-nav photo-next" aria-label="下一张照片" onclick="stepReportPhoto(-1)"'+(index>0?'':' disabled')+'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m10 6 6 6-6 6"/></svg></button>';
+  if(photo)h+='<time class="photo-time" datetime="'+esc(photo.captured_at)+'" title="拍摄时间 · 悉尼">'+esc(sydney(photo.captured_at))+'</time>';
+  return h+'</div>';
+}
 function trafficDay(){var p=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());var v={};p.forEach(function(x){v[x.type]=x.value;});return v.year+'-'+v.month+'-'+v.day;}
 function shiftTrafficDay(day,n){return new Date(Date.parse(day+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);}
 function trafficBytes(n){return (Number(n||0)/1000).toFixed(1)+' KB';}
@@ -890,12 +929,12 @@ function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficByte
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
-  var h='<div class="remote-head"><h3>远程音视频</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
-  var photo=d&&d.report_photo;
-  h+='<div class="remote-preview" style="position:relative">'+(photo?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:photo.report_id}).toString())+'" alt="设备最新照片" title="'+esc(photo.captured_at)+'" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain">':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>画面与播放区域</span>')+'</div><div class="remote-controls">';
+  var h='<div class="remote-head"><h3>通信终端</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
+  h+=reportPhotoHtml(d)+'<div class="remote-controls">';
   ['PTT','麦克风','前置摄像头','后置摄像头'].forEach(function(label){h+='<button type="button" disabled>'+label+'</button>';});
   h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;
+  if(d)loadReportPhotos(d);
   if(d && !cached){
     DAILY_CACHE[key]={pending:true};
     fetch('/api/devices/traffic?'+new URLSearchParams({device_id:d.id,from:day,to:day})).then(function(r){if(!r.ok) throw Error('流量读取失败');return r.json();}).then(function(x){if(!x.ok) throw Error(x.msg||'流量读取失败');DAILY_CACHE[key]={row:x.days[0]};}).catch(function(){DAILY_CACHE[key]={error:'流量读取失败'};setTimeout(function(){delete DAILY_CACHE[key];},15000);}).finally(function(){if(currentDev()&&currentDev().id===d.id) renderRemoteConsole();});

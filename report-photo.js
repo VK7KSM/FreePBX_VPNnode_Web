@@ -14,6 +14,14 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
       const rows=await storage.list({prefix:'report-photo-expiry/',end:'report-photo-expiry/'+String(now).padStart(13,'0')+'~',limit:50});
       return json({ok:true,files:[...rows.values()]});
     }
+    if(p.action==='list'){
+      if(!valid(p.device_id)||(p.cursor&&!valid(p.cursor)))return json({ok:false,msg:'照片查询编号无效'},400);
+      const prefix=key(p.device_id,'');
+      const rows=await storage.list({prefix,...(p.cursor?{startAfter:prefix+p.cursor}:{}),limit:100});
+      const photos=[...rows.values()].filter(photo=>photo.ready&&photo.expires_at>now)
+        .map(({report_id,captured_at,expires_at})=>({report_id,captured_at,expires_at}));
+      return json({ok:true,photos,next:rows.size===100?[...rows.keys()].at(-1).slice(prefix.length):null});
+    }
     if(!valid(p.device_id)||!valid(p.report_id))return json({ok:false,msg:'照片关联编号无效'},400);
     const k=key(p.device_id,p.report_id),old=await storage.get(k);
     if(p.action==='get')return old?.ready&&old.expires_at>now?json({ok:true,photo:old}):json({ok:false,msg:'照片不可用'},404);
@@ -62,6 +70,7 @@ export async function photoHttp(env,request,stub){
     if(!env.ELF_ARTIFACTS)return json({ok:false,msg:'照片存储未配置'},503);
     const u=new URL(request.url),p={device_id:u.searchParams.get('device_id'),report_id:u.searchParams.get('report_id')};
     if(request.method==='GET'){
+      if(u.searchParams.get('list')==='1')return rpc(stub,{action:'list',device_id:p.device_id,cursor:u.searchParams.get('cursor')});
       const result=await rpc(stub,{...p,action:'get'});if(!result.ok)return result;
       const {photo}=await result.json(),object=await env.ELF_ARTIFACTS.get(photo.object_key);
       return object?new Response(object.body,{headers:{'Content-Type':'image/jpeg','Cache-Control':'private, max-age=3600','X-Content-Type-Options':'nosniff'}}):json({ok:false,msg:'照片文件缺失'},404);
