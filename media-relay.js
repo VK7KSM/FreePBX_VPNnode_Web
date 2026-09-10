@@ -4,7 +4,7 @@ export function mediaDirections(mode,role){
   return {audio:role==='browser'?['ptt','call'].includes(mode):['call','microphone','video'].includes(mode),video:role==='device'&&mode==='video'};
 }
 export class MediaRelay {
-  constructor(env,{now=Date.now,schedule=setTimeout,cancel=clearTimeout,fetcher=fetch}={}){
+  constructor(env,{now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id),fetcher=(url,init)=>fetch(url,init)}={}){
     this.env=env;this.now=now;this.schedule=schedule;this.cancel=cancel;this.fetcher=fetcher;this.sessions=new Map();
   }
   create(device,mode,camera='front'){
@@ -15,7 +15,7 @@ export class MediaRelay {
     if(this.sessions.size>=16)throw Error('当前通信过多');
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
     const s={id,token,deviceId:device.id,mode,camera,created,started:0,roles:{},published:{},rtc:{},chains:{},closed:false};
-    this.sessions.set(id,s);this.arm(s);
+    this.sessions.set(id,s);try{this.arm(s);}catch(error){this.sessions.delete(id);throw error;}
     return {ok:true,session_id:id,mode};
   }
   arm(s){s.timer=this.schedule(()=>{
