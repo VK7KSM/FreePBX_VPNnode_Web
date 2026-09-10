@@ -4,6 +4,21 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DailyLocationTest {
+    @Test public void repeatedShortMovementTimeoutsCannotPostponeFullReportSampling() {
+        long full = 1000L;
+        for (long now = 301000L; now <= 3601000L; now += 300000L)
+            full = DailyLocation.nextFullAttempt(full, now, true);
+        assertEquals(1000L, full);
+        assertTrue(DailyLocation.shouldStart(full, 0, true, 3601000L));
+        full = DailyLocation.nextFullAttempt(full, 3601000L, false);
+        assertFalse(DailyLocation.shouldStart(full, 0, true, 3602000L));
+    }
+    @Test public void onlyFullSamplingGetsOneBoundedRetry() {
+        assertEquals(5000L, DailyLocation.retryDelay(false, false));
+        assertEquals(0L, DailyLocation.retryDelay(false, true));
+        assertEquals(0L, DailyLocation.retryDelay(true, false));
+        assertEquals(0L, DailyLocation.retryDelay(true, true));
+    }
     @Test public void explicitRequestRejectsRecentButPreRequestCache() {
         assertTrue(DailyLocation.recent(1000, 3000));
         assertFalse(DailyLocation.freshForRequest(1000, 3000, 2000));
