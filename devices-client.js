@@ -892,14 +892,15 @@ function photoHistory(d){
 function visiblePhotos(state){return state.photos.filter(function(p){return p.expires_at>Date.now();});}
 function loadReportPhotos(d){
   var state=photoHistory(d),latest=d.report_photo&&d.report_photo.report_id||'';
-  if(state.pending||Date.now()<state.retry||(state.loaded&&state.latest===latest&&Date.now()-state.loaded<300000))return;
+  if(state.pending)return state.promise;
+  if(Date.now()<state.retry||(state.loaded&&state.latest===latest&&Date.now()-state.loaded<300000))return;
   state.pending=true;state.error='';var rows=[];
   function page(cursor){
     return fetch('/api/elfremote/report-photo?'+new URLSearchParams({device_id:d.id,list:'1',cursor:cursor||''})).then(function(r){if(!r.ok)throw Error('照片读取失败');return r.json();}).then(function(x){
       if(!x.ok)throw Error('照片读取失败');rows=rows.concat(x.photos);return x.next?page(x.next):rows;
     });
   }
-  return page('').then(function(){
+  return state.promise=page('').then(function(){
     state.photos=rows.sort(function(a,b){return b.captured_at.localeCompare(a.captured_at)||b.report_id.localeCompare(a.report_id);});
     state.loaded=Date.now();state.latest=latest;
     if(state.selected&&!state.photos.some(function(p){return p.report_id===state.selected;}))state.selected=null;
@@ -924,7 +925,7 @@ function openMediaHistory(){
   Promise.resolve(loadReportPhotos(d)).then(renderMediaHistory);
   MEDIA_RECORDS[d.id]=null;fetch('/api/elfremote/media-recordings?'+new URLSearchParams({device_id:d.id,list:'1'})).then(function(r){if(!r.ok)throw Error('历史记录读取失败');return r.json();}).then(function(x){MEDIA_RECORDS[d.id]=x.records;renderMediaHistory();}).catch(function(){MEDIA_RECORDS[d.id]={error:'历史记录读取失败'};renderMediaHistory();});
 }
-function closeMediaHistory(){MEDIA_HISTORY.device=null;if($('mediaHistoryWrap'))$('mediaHistoryWrap').style.display='none';}
+function closeMediaHistory(){MEDIA_HISTORY.device=null;var wrap=$('mediaHistoryWrap');if(wrap){wrap.querySelectorAll('audio,video').forEach(function(el){el.pause();});wrap.style.display='none';}}
 function selectMediaType(type){MEDIA_HISTORY.type=type;renderMediaHistory();}
 function showMediaPhoto(index){
   var d=DEV.find(function(x){return x.id===MEDIA_HISTORY.device;});if(!d)return;

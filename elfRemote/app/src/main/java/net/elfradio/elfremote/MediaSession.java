@@ -56,7 +56,7 @@ final class MediaSession {
                     try{if(raw.length()>96000)throw new Exception("通信消息过大");JSONObject x=new JSONObject(raw);
                         if("rpc".equals(x.optString("type"))){CompletableFuture<JSONObject> f=waiting.remove(x.optInt("id"));if(f!=null){if(x.has("error"))f.completeExceptionally(new Exception(x.optString("error")));else f.complete(x.getJSONObject("result"));}}
                         else if("closed".equals(x.optString("type")))stop(x.optString("message"));
-                        else executor.execute(()->{try{message(x);}catch(Exception e){fail(e);}});
+                        else executor.execute(()->{try{message(x);}catch(Exception|LinkageError e){fail(new Exception(e));}});
                     }catch(Exception e){fail(e);}
                 }
                 public void onClose(int code,String reason,boolean remote){if(socket==this)stop("通信已断开");}
@@ -93,7 +93,7 @@ final class MediaSession {
             if(!route.edit().putBoolean("saved",true).putInt("mode",audio.getMode()).putBoolean("speaker",audio.isSpeakerphoneOn()).putInt("volume",audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)).commit())throw new Exception("原音频设置保存失败");
             audio.setMode(AudioManager.MODE_IN_COMMUNICATION);audio.setSpeakerphoneOn(true);audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),0);
         }
-        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions());
+        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());
         egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context).createAudioDeviceModule();
         factory=PeerConnectionFactory.builder().setAudioDeviceModule(adm).setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(),true,true)).setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
         PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));

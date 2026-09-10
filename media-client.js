@@ -2,7 +2,7 @@
 window.ElfMedia=(function(){
   var active=null,lastMessage='',lastDevice='',cameraChoice={};
   function render(){if(typeof renderRemoteConsole==='function')renderRemoteConsole();}
-  async function json(url,body,method){var r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});var x=await r.json();if(!r.ok||x.ok===false)throw Error(x.msg||'通信请求失败');return x;}
+  async function json(url,body,method){var r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!(r.headers.get('Content-Type')||'').includes('json'))throw Error('通信服务暂时不可用');var x=await r.json();if(!r.ok||x.ok===false)throw Error(x.msg||'通信请求失败');return x;}
   function send(s,p){if(s.ws&&s.ws.readyState===1)s.ws.send(JSON.stringify(p));}
   function rpc(s,action,body){return new Promise(function(resolve,reject){var id=++s.seq,timer=setTimeout(function(){delete s.pending[id];reject(Error('实时媒体协商超时'));},20000);s.pending[id]={resolve:resolve,reject:reject,timer:timer};send(s,{type:'rpc',id:id,action:action,body:body||{}});});}
   function ice(pc){return new Promise(function(resolve){if(pc.iceGatheringState==='complete'){resolve();return;}var done=function(){if(pc.iceGatheringState==='complete'){clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',done);resolve();}},timer=setTimeout(function(){pc.removeEventListener('icegatheringstatechange',done);resolve();},7000);pc.addEventListener('icegatheringstatechange',done);});}
@@ -21,8 +21,8 @@ window.ElfMedia=(function(){
     else if(p.type==='ready'){s.started=p.started_at||Date.now();s.message='';render();}
     else if(p.type==='status'){if(p.cameras)s.cameras=p.cameras;if(p.camera){s.camera=p.camera;cameraChoice[s.device.id]=p.camera;}if(p.message)s.message=p.message;render();}
     else if(p.type==='result'&&s.mode==='photo'){
-      var state=photoHistory(s.device);state.loaded=0;state.retry=0;state.selected=p.report_id;
-      await loadReportPhotos(s.device);await stop(p.message||'照片已保存');
+      var state=photoHistory(s.device);if(state.pending)await state.promise;state.loaded=0;state.retry=0;
+      await loadReportPhotos(s.device);state.selected=p.report_id;await stop(p.message||'照片已保存');
     }
   }
   async function start(mode){
@@ -90,7 +90,7 @@ window.ElfMedia=(function(){
       if(s.mode==='video'){var button=document.createElement('button');button.className='media-camera-switch';button.type='button';button.title='切换摄像头';button.setAttribute('aria-label','切换摄像头');button.textContent='⇄';button.onclick=function(){send(s,{type:'switch'});};s.node.appendChild(button);}
     }
     var switcher=s.node.querySelector('.media-camera-switch');if(switcher)switcher.hidden=!(s.cameras>1);
-    var element=s.node.querySelector('video,audio');if(element&&s.remote&&element.srcObject!==s.remote){element.srcObject=s.remote;element.play().catch(function(){var button=s.node.querySelector('.media-play');if(button)button.hidden=false;});}
+    var element=s.node.querySelector('video,audio');if(element&&s.remote&&(element.srcObject!==s.remote||element.paused)){element.srcObject=s.remote;element.play().catch(function(){var button=s.node.querySelector('.media-play');if(button)button.hidden=false;});}
     if(s.node.querySelector('canvas')&&!s.audioContext&&(s.remote&&s.remote.getAudioTracks().length||s.local)){
       s.audioContext=new AudioContext();s.audioContext.resume().catch(function(){});var analyser=s.audioContext.createAnalyser();analyser.fftSize=512;s.audioContext.createMediaStreamSource(s.remote&&s.remote.getAudioTracks().length?s.remote:s.local).connect(analyser);var samples=new Uint8Array(analyser.frequencyBinCount),canvas=s.node.querySelector('canvas');canvas.width=640;canvas.height=180;var ctx=canvas.getContext('2d');
       function draw(){if(active!==s)return;analyser.getByteTimeDomainData(samples);ctx.clearRect(0,0,640,180);ctx.strokeStyle='#60a5fa';ctx.lineWidth=2;ctx.beginPath();samples.forEach(function(v,i){var x=i/samples.length*640,y=v/128*90;if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();s.animation=requestAnimationFrame(draw);}draw();
