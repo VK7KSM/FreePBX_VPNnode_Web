@@ -23,7 +23,8 @@ final class UpdatePolicy {
     static final String ST_REJECTED = "rejected";
     static final String LAST_GOOD_APK = "/data/local/elfremote/last_good.apk";
     static final String UPDATER_APK = "/data/local/elfremote/updater.apk";
-    static final long HEALTH_TIMEOUT_MS = 90_000L;
+    // 完整GPS采样含一次重试最多95秒，另留无线定位与健康报告时间。
+    static final long HEALTH_TIMEOUT_MS = 150_000L;
     static final long MAX_APK_BYTES = 64L * 1024 * 1024;
     static final String PKG = "net.elfradio.elfremote";
     static final String PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\n"

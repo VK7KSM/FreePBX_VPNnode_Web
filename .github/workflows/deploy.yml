@@ -33,6 +33,7 @@ on:
       - "devices-client-source.js"
       - "embed-devices-client.mjs"
       - "remote-location.js"
+      - "google-geolocation.js"
       - "elfRemote/control-plane.js"
       - "*.test.mjs"
       - ".github/workflows/deploy.yml"

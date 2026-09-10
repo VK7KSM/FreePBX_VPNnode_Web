@@ -6,6 +6,21 @@ import { fixture, request, login } from "./test-support.mjs";
 import { pickLocation } from "./remote-location.js";
 
 const token = "test-device-token";
+test('Google无线定位进入真实上报与历史链路，重试去重且原始无线参数不外露',async t=>{
+  const f=setup(),c=await login(f);f.env.GOOGLE_GEOLOCATION_API_KEY='unit-test-key';
+  let calls=0;const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
+  globalThis.fetch=async(url,options)=>{assert.equal(new URL(url).hostname,'www.googleapis.com');assert.equal(JSON.parse(options.body).considerIp,false);calls++;return Response.json({location:{lat:-33.8,lng:151.1},accuracy:51});};
+  const at=new Date().toISOString(),radio={sampled_at_ms:Date.now(),wifiAccessPoints:[{macAddress:'10:11:22:33:44:55',signalStrength:-50},{macAddress:'20:11:22:33:44:55',signalStrength:-60}]};
+  const extra={radio,location_reason:'timeout'};
+  assert.equal((await report(f,'google-radio',at,null,{...extra,token:'wrong'})).status,401);assert.equal(calls,0);
+  assert.equal((await report(f,'google-radio',at,null,extra)).status,200);
+  assert.equal((await report(f,'google-radio',at,null,extra)).status,200);assert.equal(calls,1);
+  const rows=(await history(f,c)).records;assert.equal(rows.length,1);assert.equal(rows[0].location.source,'wifi');assert.equal(rows[0].location.provider,'google');
+  assert.equal(rows[0].network_location_reason,'located');assert.equal(rows[0].location_reason,'timeout');
+  assert.equal(JSON.stringify(rows).includes('10:11:22:33:44:55'),false);
+  assert.equal(f.data.get('remote_devices')[0].loc.provider,'google');
+  assert.equal((await report(f,'google-radio',at,null,{...extra,radio:{...radio,sampled_at_ms:radio.sampled_at_ms+1}})).status,400);assert.equal(calls,1);
+});
 const hash = createHash("sha256").update(token).digest("hex");
 
 test('蜂窝位移报告保存原因及距离，同号补报不重复记轨迹',async()=>{

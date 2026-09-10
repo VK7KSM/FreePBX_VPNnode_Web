@@ -41,7 +41,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,
     cell: data.cell || null, network: data.network || "unknown", battery: data.battery ?? null,
     app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null,
-    status_request_id: data.status_request_id || null, ...(traffic == null ? {} : { traffic }),...(event?{report_event:event}:{}) });
+    status_request_id: data.status_request_id || null, ...(data.radio ? {radio:data.radio} : {}), ...(traffic == null ? {} : { traffic }),...(event?{report_event:event}:{}) });
   const hash = await sha(content);
   const previous = await storage.get(dedupKey);
   if (previous) {
@@ -52,7 +52,7 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
     report_reason: event?.type || String(data.report_reason || (data.status_request_id ? "requested" : "unknown")).slice(0,40),
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
-    location_reason: String(data.location_reason || "").slice(0,120), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };
+    location_reason: String(data.location_reason || "").slice(0,120), ...(data.network_location_reason ? {network_location_reason:String(data.network_location_reason).slice(0,40)} : {}), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };
   const key = prefix(device) + timeline + "/" + id;
   await storage.put(key, record);
   await storage.put(dedupKey, { key, hash });

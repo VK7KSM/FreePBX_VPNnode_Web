@@ -7,6 +7,7 @@ import { LOGO_PNG_B64 } from "./logo.js";
 import { AdbRelay } from "./adb-relay.js";
 import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
+import { googleLocation } from "./google-geolocation.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
 // 2026-09-06: 远程Shell buttons then plain status text.
@@ -1361,7 +1362,22 @@ async function handleDeviceReport(env, request) {
     const identity = normalizeDeviceIdentity(data.hardware_identity);
     if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
-    const reportLocation = pickLocation(data, await geoForIp(env, observedIp));
+    let reportLocation = pickLocation(data, null);
+    if (!reportLocation) {
+      // 重发已确认报告复用历史定位，不再次调用付费接口；内容一致性仍由历史模块校验。
+      const seen = typeof data.report_id === 'string' && /^[a-zA-Z0-9_.:-]{1,96}$/.test(data.report_id)
+        ? await env.__storage.get('history-id/'+encodeURIComponent(deviceId)+'/'+data.report_id) : null;
+      const old = seen ? await env.__storage.get(seen.key) : null;
+      if (old) reportLocation = old.location;
+      else {
+        try {
+          const google = await googleLocation(env,deviceId,data);
+          reportLocation = google.location;
+          if (data.radio) data.network_location_reason = google.reason;
+        } catch { if (data.radio) data.network_location_reason = 'unavailable'; }
+        if (!reportLocation) reportLocation = pickLocation(data, await geoForIp(env, observedIp));
+      }
+    }
     const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation, Date.now(), matched.installation_id);
     await acknowledgeStatus(env.__storage, deviceId, data);
     if (history.duplicate) {

@@ -466,7 +466,11 @@ public final class ReportService extends Service {
         body.put("traffic", traffic.sample());
         JSONObject location = gpsFix();
         if (location != null) body.put("gps", location);
-        else body.put("location_reason", dailyLocation == null ? "no_cached_location" : dailyLocation.reason());
+        else {
+            body.put("location_reason", dailyLocation == null ? "no_cached_location" : dailyLocation.reason());
+            JSONObject radio=RadioLocation.capture(this);
+            if(radio!=null)body.put("radio",radio);
+        }
         return body;
     }
 
