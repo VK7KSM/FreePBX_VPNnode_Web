@@ -625,10 +625,10 @@ async function startReturnFile(){
 }
 async function pollReturnFile(s){
   clearTimeout(FILE_POLL);if(FILE_VIEW!==s.device_id||!$('returnFileStatus')||!s.task_id)return;
-  try{var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id})),t=x.task;
+  try{var x=await readWatchedTask(s,s.device_id,s.task_id),t=x&&x.task;
     if(t){s.message=t.detail||'等待设备取回';$('returnFileStatus').textContent=s.message;s.busy=['pending','claimed','running'].includes(t.state);
       if(!s.busy){['returnFileStart','returnFilePath','returnFileCell'].forEach(function(id){$(id).disabled=false;});if(t.state==='success'){$('returnFileDownload').href=returnUrl(s);$('returnFileDownload').style.display='inline';}return;}}
-  }catch(e){$('returnFileStatus').textContent=e.message;}
+  }catch(e){$('returnFileStatus').textContent=e.message;if(e.stopPolling)return;}
   FILE_POLL=setTimeout(function(){pollReturnFile(s);},5000);
 }
 async function cancelReturnFile(){var s=FILE_RETURN[FILE_VIEW];if(!s||!s.task_id)return;try{await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:s.task_id});pollReturnFile(s);}catch(e){$('returnFileStatus').textContent=e.message;}}
@@ -679,9 +679,9 @@ async function startSendFile(){
 }
 async function pollSendFile(s){
   clearTimeout(FILE_POLL);if(FILE_VIEW!==s.device_id||!s.task_id)return;
-  try{var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id}));
-    if(x.task){fileSendMessage(s,x.task.detail||x.task.label||'等待设备接收');if(['success','failed','rejected','expired'].includes(x.task.state)){s.job_id='';return;}}
-  }catch(e){fileSendMessage(s,e.message);}
+  try{var x=await readWatchedTask(s,s.device_id,s.task_id);
+    if(x&&x.task){fileSendMessage(s,x.task.detail||x.task.label||'等待设备接收');if(['success','failed','rejected','expired'].includes(x.task.state)){s.job_id='';return;}}
+  }catch(e){fileSendMessage(s,e.message);if(e.stopPolling)return;}
   FILE_POLL=setTimeout(function(){pollSendFile(s);},5000);
 }
 async function stopSendFile(){var s=FILE_SEND[FILE_VIEW];if(!s)return;s.stop=true;if(s.busy){fileSendMessage(s,'当前分块完成后停止上传');return;}
@@ -1291,17 +1291,30 @@ function commandResult(u,t){
   u.shell.lines.push({k:'sys',t:(t.detail||t.label)+(result.exit_code!=null?' · 退出码 '+result.exit_code:'')+(result.elapsed_ms!=null?' · '+(result.elapsed_ms/1000).toFixed(1)+'s':'')});
   if(u.shell.lines.length>500)u.shell.lines=u.shell.lines.slice(-400);
 }
+// 查询退避仅影响结果显示，不取消任务，也不重发设备命令。
+async function readWatchedTask(owner,deviceId,id){
+  var key=deviceId+'/'+id,p=owner.resultPoll;
+  if(!p||p.key!==key)p=owner.resultPoll={key:key,failures:0,next:0};
+  if(document.hidden||p.next>Date.now()||p.busy)return null;
+  p.busy=true;
+  try{
+    var r=await fetch('/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:id}));
+    if(!r.ok){var e=Error(r.status===404?'任务记录已不存在':'结果暂不可用，稍后自动重试');e.stopPolling=r.status===401||r.status===403||r.status===404;e.retryAfter=Math.min(900,Math.max(0,Number(r.headers.get('Retry-After'))||0))*1000;throw e;}
+    var x=await r.json();if(!x.ok||!x.task){var missing=Error('任务记录已不存在');missing.stopPolling=true;throw missing;}
+    p.failures=0;p.next=0;return x;
+  }catch(e){p.failures++;p.next=Date.now()+Math.max(e.retryAfter||0,Math.min(300000,15000*Math.pow(2,Math.min(5,p.failures-1))));throw e;}
+  finally{p.busy=false;}
+}
 async function watchCommand(deviceId,id,u){
+  if(u.shell.pending!==id)return;
   try {
-    var r=await fetch('/api/elfremote/tasks?device_id='+encodeURIComponent(deviceId)+'&task_id='+encodeURIComponent(id));
-    var x=await r.json();if(!r.ok||!x.ok)throw Error('结果暂不可用');
-    var t=x.task;
-    if(['success','failed','rejected','expired'].includes(t.state)){
+    var x=await readWatchedTask(u.shell,deviceId,id),t=x&&x.task;
+    if(t&&['success','failed','rejected','expired'].includes(t.state)){
       commandResult(u,t);
       u.shell.pending=null;u.shell.cancelRequested=false;
       if(selDev===deviceId)renderOps();return;
     }
-  } catch(e) { /* 仅查询服务器，不因查询失败重新执行命令。 */ }
+  } catch(e) {if(e.stopPolling){u.shell.pending=null;u.shell.lines.push({k:'sys',t:e.message});if(selDev===deviceId)renderOps();return;}}
   if(u.shell.pending===id)setTimeout(function(){watchCommand(deviceId,id,u);},2000);
 }
 async function cancelCommand(){

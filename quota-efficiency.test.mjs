@@ -14,6 +14,25 @@ test('额度错误变为可识别503，短时间重复请求不会继续调用DO
  for(let i=0;i<10;i++){const r=await worker.fetch(request('/api/devices'),env);assert.equal(r.status,503);assert.equal((await r.json()).code,'storage_quota_exceeded');assert.ok(Number(r.headers.get('Retry-After'))>0);}
  assert.equal(calls,1);assert.equal((await worker.fetch(request('/devices'),env)).status,200);
 });
+
+test('命令和文件结果查询在后台暂停，故障遵循Retry-After，恢复后不重新执行任务',async()=>{
+ let now=100000,calls=0,status=503;class Clock extends Date{static now(){return now;}}
+ const context=vm.createContext({Date:Clock,URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{hidden:false,addEventListener(){}},fetch:async()=>{calls++;return {ok:status===200,status,headers:{get:()=> '900'},json:async()=>({ok:true,task:{state:'success'}})};}});
+ vm.runInContext(fs.readFileSync('devices-client.js','utf8'),context);const owner={};
+ await assert.rejects(context.readWatchedTask(owner,'device','task'));assert.equal(calls,1);
+ for(let i=0;i<100;i++){now+=2000;assert.equal(await context.readWatchedTask(owner,'device','task'),null);}assert.equal(calls,1);
+ now+=900000;context.document.hidden=true;assert.equal(await context.readWatchedTask(owner,'device','task'),null);assert.equal(calls,1);
+ context.document.hidden=false;status=200;assert.equal((await context.readWatchedTask(owner,'device','task')).task.state,'success');assert.equal(calls,2);
+ status=404;await assert.rejects(context.readWatchedTask(owner,'device','gone'),e=>e.stopPolling===true);
+});
+
+test('任务与上报回执的只读查询复用一次DO鉴权，不接受失效会话',async()=>{
+ const f=fixture(),cookie=await login(f),count=countRequests(f);
+ for(const path of ['/api/elfremote/tasks?device_id=missing','/api/devices/status-request?device_id=missing']){
+  const before=count();await worker.fetch(request(path,'GET',undefined,cookie),f.env);assert.equal(count()-before,1);
+  assert.equal((await worker.fetch(request(path,'GET',undefined,'elf_admin=fake'),f.env)).status,401);
+ }
+});
 test('空闲、后台、更新任务和失败退避使用不同轮询节奏',()=>{
  const timers=[],events={};const context=vm.createContext({Date,adminSession:{authenticated:true,check(){}},setTimeout(){},setInterval(fn){timers.push(fn)},document:{hidden:false,addEventListener(name,fn){events[name]=fn;}}});
  vm.runInContext(fs.readFileSync('devices-client.js','utf8'),context);let calls=0;context.loadDevices=()=>calls++;

@@ -317,7 +317,7 @@ export class ElfStore {
 
 // 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
 function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/elfremote/releases'].includes(path);
+  return method==='GET' && ['/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
 }
 
 const quotaCooldown=new WeakMap();
