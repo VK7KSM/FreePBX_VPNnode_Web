@@ -101,7 +101,7 @@ export async function googleLocation(env, deviceId, data, now = Date.now(), fetc
     await env.__storage.put(usageKey,usage);
     stage='google_request';
     const response = await fetcher('https://www.googleapis.com/geolocation/v1/geolocate?key='+encodeURIComponent(account.key),
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,redirect:'error'});
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,redirect:'manual'});
     if (!response.ok) {
       let error;try { error=(await response.json()).error; } catch {}
       const exhausted=error?.status==='RESOURCE_EXHAUSTED'||error?.errors?.some(e=>['dailyLimitExceeded','userRateLimitExceeded','rateLimitExceeded','quotaExceeded'].includes(e.reason));
