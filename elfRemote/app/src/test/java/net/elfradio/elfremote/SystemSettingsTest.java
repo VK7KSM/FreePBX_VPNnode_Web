@@ -3,6 +3,31 @@ import org.json.JSONObject;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class SystemSettingsTest {
+    public static class CurrentDataDisabled {
+        public boolean isDataEnabled(){return false;}
+        public boolean getDataEnabled(){throw new AssertionError("真实false不得改用旧接口");}
+    }
+    public static class LegacyDataEnabled { public boolean getDataEnabled(){return true;} }
+    public static class PermissionDenied {
+        public boolean isDataEnabled(){throw new SecurityException("permission denied");}
+        public boolean getDataEnabled(){throw new AssertionError("异常不得被兼容回退掩盖");}
+    }
+    public static class InvalidDataResult { public String isDataEnabled(){return "true";} }
+    @Test public void usesRealDisabledStateWithoutFallingBack()throws Exception {
+        assertFalse(SystemSettings.readDataEnabled(new CurrentDataDisabled()));
+    }
+    @Test public void supportsLegacyGetterOnlyWhenModernMethodIsAbsent()throws Exception {
+        assertTrue(SystemSettings.readDataEnabled(new LegacyDataEnabled()));
+    }
+    @Test public void doesNotHidePermissionFailureBehindLegacyGetter()throws Exception {
+        try{SystemSettings.readDataEnabled(new PermissionDenied());fail();}
+        catch(java.lang.reflect.InvocationTargetException expected){assertTrue(expected.getCause() instanceof SecurityException);}
+    }
+    @Test public void rejectsMissingOrInvalidDataServices()throws Exception {
+        for(Object value:new Object[]{null,new Object(),new InvalidDataResult()}){
+            try{SystemSettings.readDataEnabled(value);fail();}catch(java.io.IOException expected){}
+        }
+    }
     @Test public void rejectsInvalidValuesBeforeDeviceWrite()throws Exception {
         for(String input:new String[]{"{group:sound,action:set,key:brightness,value:999}","{group:network,action:set,key:mobile_data,value:'false'}","{group:apps,action:set,key:enabled,value:false}","{group:time,action:set,key:timezone,value:'invalid-zone'}"})try{SystemSettings.normalize(new JSONObject(input));fail(input);}catch(Exception expected){}
         assertEquals("test",SystemSettings.normalize(new JSONObject("{group:wifi,action:set,key:connect,value:{ssid:test,password:''}}")).getJSONObject("value").getString("ssid"));

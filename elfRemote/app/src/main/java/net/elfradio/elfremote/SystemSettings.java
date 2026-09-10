@@ -150,7 +150,7 @@ public final class SystemSettings {
             WifiInfo current=wifi.getConnectionInfo();JSONArray saved=new JSONArray();List<WifiConfiguration> configs=wifi.getConfiguredNetworks();if(configs!=null)for(WifiConfiguration c:configs)saved.put(new JSONObject().put("id",c.networkId).put("ssid",unquote(c.SSID)));
             out.put("wifi_enabled",wifi.isWifiEnabled()).put("ssid",current==null?"":unquote(current.getSSID())).put("network_id",current==null?-1:current.getNetworkId()).put("saved",saved);
             if(group.equals("network")){
-                out.put("mobile_data",settingInt("global","mobile_data",0)==1).put("mobile_available",hasSim()).put("usb",property("sys.usb.state"));
+                out.put("mobile_data",mobileDataEnabled()).put("mobile_available",hasSim()).put("usb",property("sys.usb.state"));
                 BluetoothAdapter bt=BluetoothAdapter.getDefaultAdapter();out.put("bluetooth_supported",bt!=null).put("bluetooth",bt!=null&&bt.isEnabled());JSONArray paired=new JSONArray();if(bt!=null&&bt.isEnabled())for(BluetoothDevice d:bt.getBondedDevices())paired.put(new JSONObject().put("name",d.getName()).put("address",d.getAddress()));out.put("paired",paired);
                 WifiConfiguration ap=(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi);int state=(Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi);
                 out.put("hotspot",new JSONObject().put("enabled",state==13).put("ssid",ap==null?"":unquote(ap.SSID)));
@@ -217,7 +217,7 @@ public final class SystemSettings {
     private void armGuard(JSONObject p)throws Exception {
         JSONArray configs=new JSONArray();List<WifiConfiguration> all=asSystem(()->(List<WifiConfiguration>)wifi.getClass().getMethod("getPrivilegedConfiguredNetworks").invoke(wifi));
         if(all==null)throw new IOException("无法保存Wi-Fi恢复依据");for(WifiConfiguration c:all)configs.put(parcel(c));
-        WifiConfiguration ap=asSystem(()->(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi));JSONObject backup=new JSONObject().put("configs",configs).put("wifi",wifi.isWifiEnabled()).put("network_id",wifi.getConnectionInfo().getNetworkId()).put("mobile_data",settingInt("global","mobile_data",0)==1)
+        WifiConfiguration ap=asSystem(()->(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi));JSONObject backup=new JSONObject().put("configs",configs).put("wifi",wifi.isWifiEnabled()).put("network_id",wifi.getConnectionInfo().getNetworkId()).put("mobile_data",mobileDataEnabled())
             .put("ap",ap==null?JSONObject.NULL:parcel(ap)).put("ap_enabled",(Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi)==13);
         RescueFiles.write(new File(folder,"settings-network-before.json"),backup.toString());
         java.lang.Process guard=new ProcessBuilder("/system/bin/setsid","/system/bin/app_process","/system/bin",SystemSettings.class.getName(),folder.getPath(),"rollback").redirectErrorStream(true).redirectOutput(new File(folder,"settings-guard.log")).start();
@@ -261,7 +261,7 @@ public final class SystemSettings {
     private void restoreNetworkValues(JSONObject b)throws Exception {
         // 先停热点恢复保存网络，最后恢复热点；D22开启Wi-Fi会关闭热点。
         applyHotspot(null,false);
-        if((settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
+        if(mobileDataEnabled()!=b.getBoolean("mobile_data")){if(hasSim())shell("svc data "+(b.getBoolean("mobile_data")?"enable":"disable"));else putSetting("global","mobile_data",b.getBoolean("mobile_data")?1:0);}wifi.setWifiEnabled(true);for(int i=0;i<30&&!wifi.isWifiEnabled();i++)Thread.sleep(200);
         Set<Integer> old=new HashSet<>();Map<Integer,Integer> restoredIds=new HashMap<>();JSONArray saved=b.getJSONArray("configs");
         // networkId是本次系统运行的编号，重启后按网络名称和安全类型重新匹配。
         for(int i=0;i<saved.length();i++){
@@ -292,7 +292,7 @@ public final class SystemSettings {
         }
     }
     private boolean networkRestored(JSONObject b)throws Exception {
-        if(wifi.isWifiEnabled()!=b.getBoolean("wifi")||(settingInt("global","mobile_data",0)==1)!=b.getBoolean("mobile_data"))return false;
+        if(wifi.isWifiEnabled()!=b.getBoolean("wifi")||mobileDataEnabled()!=b.getBoolean("mobile_data"))return false;
         if(((Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi)==13)!=b.getBoolean("ap_enabled"))return false;
         if(b.getBoolean("wifi")&&b.getInt("network_id")>=0){
             WifiInfo info=wifi.getConnectionInfo();if(info==null||info.getNetworkId()<0||info.getIpAddress()==0)return false;
@@ -315,6 +315,31 @@ public final class SystemSettings {
     private static int backgroundOperation()throws Exception {return AppOpsManager.class.getField("OP_RUN_IN_BACKGROUND").getInt(null);}
     private int backgroundMode(int uid,String pkg)throws Exception {AppOpsManager ops=(AppOpsManager)context.getSystemService(Context.APP_OPS_SERVICE);return (Integer)ops.getClass().getMethod("checkOpNoThrow",int.class,int.class,String.class).invoke(ops,backgroundOperation(),uid,pkg);}
     private boolean hasSim(){return ((android.telephony.TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE)).getSimState()==android.telephony.TelephonyManager.SIM_STATE_READY;}
+    private boolean mobileDataEnabled()throws Exception {
+        // 无SIM仅保留预设开关；有SIM时MTK的global值可能滞后，不能据此判断或回滚。
+        if(!hasSim())return settingInt("global","mobile_data",0)==1;
+        return asSystem(()->{
+            android.telephony.TelephonyManager phone=(android.telephony.TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE);
+            if(Build.VERSION.SDK_INT>=24){
+                int subscription=android.telephony.SubscriptionManager.getDefaultDataSubscriptionId();
+                if(!android.telephony.SubscriptionManager.isValidSubscriptionId(subscription))throw new IOException("默认移动数据订阅不可用");
+                phone=phone.createForSubscriptionId(subscription);
+            }
+            return readDataEnabled(phone);
+        });
+    }
+    static boolean readDataEnabled(Object phone)throws Exception {
+        if(phone==null)throw new IOException("移动数据服务不可用");
+        for(String name:new String[]{"isDataEnabled","getDataEnabled"}){
+            Method method;
+            try{method=phone.getClass().getMethod(name);}catch(NoSuchMethodException absent){continue;}
+            // 只有接口不存在才换旧方法；拒绝、异常或false都不能回退为旧global值。
+            Object value=method.invoke(phone);
+            if(!(value instanceof Boolean))throw new IOException("移动数据开关返回无效");
+            return (Boolean)value;
+        }
+        throw new IOException("系统不支持读取移动数据开关");
+    }
     private static String setting(String... args)throws Exception {
         List<String> command=new ArrayList<>(Arrays.asList("/system/bin/settings","--user","0"));Collections.addAll(command,args);
         java.lang.Process process=new ProcessBuilder(command).redirectErrorStream(true).start();

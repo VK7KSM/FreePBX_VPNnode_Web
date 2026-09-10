@@ -21,6 +21,11 @@ public final class RadioLocation {
     static boolean recent(long atNanos,long nowNanos) {
         return atNanos>0 && nowNanos>=atNanos && nowNanos-atNanos<=RADIO_AGE_MS*1000000L;
     }
+    static boolean usableCellObservation(long atNanos,long nowNanos,boolean registered) {
+        // D22的MTK接口对当前注册小区返回零时间戳；仅此情况接受本次读取。
+        // 邻区仍须有新鲜时间戳，真实过期或未来时间戳不能冒充当前观测。
+        return (atNanos==0 && registered) || recent(atNanos,nowNanos);
+    }
     static JSONObject tower(String type,int id,int area,int mcc,int mnc,int strength)throws Exception {
         long max=type.equals("gsm")?65535:268435455;
         if(id<0||id>max||area<0||area>65535||mcc<1||mcc>999||mnc<0||mnc>999)return null;
@@ -90,7 +95,7 @@ public final class RadioLocation {
                 info=new ArrayList<>(info);info.sort((a,b)->Boolean.compare(b.isRegistered(),a.isRegistered()));
                 String selected="";
                 for(CellInfo cell:info){
-                    if(!recent(cell.getTimeStamp(),SystemClock.elapsedRealtimeNanos()))continue;
+                    if(!usableCellObservation(cell.getTimeStamp(),SystemClock.elapsedRealtimeNanos(),cell.isRegistered()))continue;
                     JSONObject row=null;String type="";
                     if(cell instanceof CellInfoLte){CellInfoLte c=(CellInfoLte)cell;CellIdentityLte d=c.getCellIdentity();type="lte";row=tower(type,d.getCi(),d.getTac(),d.getMcc(),d.getMnc(),c.getCellSignalStrength().getDbm());}
                     else if(cell instanceof CellInfoWcdma){CellInfoWcdma c=(CellInfoWcdma)cell;CellIdentityWcdma d=c.getCellIdentity();type="wcdma";row=tower(type,d.getCid(),d.getLac(),d.getMcc(),d.getMnc(),c.getCellSignalStrength().getDbm());}

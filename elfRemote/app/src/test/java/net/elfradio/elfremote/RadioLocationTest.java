@@ -21,4 +21,17 @@ public class RadioLocationTest {
         assertNull(RadioLocation.tower("lte",123,-1,505,1,-96));
         assertTrue(UpdatePolicy.HEALTH_TIMEOUT_MS>60000L+5000L+30000L+8000L+4500L);
     }
+    @Test public void zeroTimestampIsAcceptedOnlyForCurrentlyRegisteredCell() {
+        long now=300000000000L;
+        assertTrue(RadioLocation.usableCellObservation(0,now,true));
+        assertFalse(RadioLocation.usableCellObservation(0,now,false));
+        assertFalse(RadioLocation.usableCellObservation(-1,now,true));
+        assertFalse(RadioLocation.usableCellObservation(Long.MAX_VALUE,now,true));
+        assertFalse(RadioLocation.usableCellObservation(now+1,now,true));
+        assertFalse(RadioLocation.usableCellObservation(1000000000L,now,true));
+        assertFalse(RadioLocation.usableCellObservation(1000000000L,now,false));
+        assertTrue(RadioLocation.usableCellObservation(now-1000000000L,now,true));
+        assertTrue(RadioLocation.usableCellObservation(now-1000000000L,now,false));
+        assertFalse(RadioLocation.recent(0,now));
+    }
 }
