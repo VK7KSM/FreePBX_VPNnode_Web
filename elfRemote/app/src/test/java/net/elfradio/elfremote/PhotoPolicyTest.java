@@ -14,4 +14,10 @@ public class PhotoPolicyTest {
         assertTrue(PhotoPolicy.networkAllowed(true,true,false));assertFalse(PhotoPolicy.networkAllowed(false,true,false));
         assertTrue(PhotoPolicy.networkAllowed(false,true,true));assertFalse(PhotoPolicy.networkAllowed(false,false,true));
     }
+    @Test public void ordinaryPhotosHaveFifteenMinuteCadenceAndSkipStaleReports(){
+        long now=2000000L;
+        assertFalse(PhotoPolicy.due(now,now-6000));assertFalse(PhotoPolicy.due(now,now-899999));
+        assertTrue(PhotoPolicy.due(now,now-900000));assertTrue(PhotoPolicy.due(now,0));
+        assertFalse(PhotoPolicy.recent(now,now-900001));assertTrue(PhotoPolicy.recent(now,now-1000));
+    }
 }

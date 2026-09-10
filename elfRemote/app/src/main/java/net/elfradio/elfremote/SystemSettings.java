@@ -37,7 +37,7 @@ public final class SystemSettings {
             Map<String,List<String>> keys=new HashMap<>();
             keys.put("sound",Arrays.asList("media","ring","alarm","call","brightness","brightness_auto","font_scale"));
             keys.put("time",Arrays.asList("locale","auto_time","auto_time_zone","timezone"));
-            keys.put("network",Arrays.asList("mobile_data","bluetooth","hotspot","dns"));
+            keys.put("network",Arrays.asList("mobile_data","bluetooth","hotspot"));
             keys.put("wifi",Arrays.asList("connect"));keys.put("apps",Arrays.asList("enabled","permission","notifications","background"));
             if(!keys.get(group).contains(key))throw new IOException("该分类没有此设置");
             if(Arrays.asList("brightness_auto","auto_time","auto_time_zone","mobile_data","bluetooth","enabled","notifications","background").contains(key)&&!(value instanceof Boolean))throw new IOException("开关值无效");
@@ -51,7 +51,6 @@ public final class SystemSettings {
             if(key.equals("permission")){JSONObject v=p.getJSONObject("value");String permission=v.getString("name");if(!permission.matches("[A-Za-z0-9_.]+")||!(v.get("granted") instanceof Boolean))throw new IOException("权限参数无效");}
             if(key.equals("connect")){JSONObject v=p.getJSONObject("value");ConfigPolicy.wifi(v);}
             if(key.equals("hotspot")){JSONObject v=p.getJSONObject("value");if(!(v.get("enabled") instanceof Boolean))throw new IOException("热点状态无效");if(v.optBoolean("enabled")){String ssid=v.getString("ssid"),password=v.optString("password","");ConfigPolicy.wifi(new JSONObject().put("ssid",ssid).put("password",password));if(password.isEmpty())throw new IOException("请设置热点密码");}}
-            if(key.equals("dns")){JSONObject v=p.getJSONObject("value");if(!Arrays.asList("auto","manual").contains(v.getString("mode")))throw new IOException("DNS模式无效");if(v.getString("mode").equals("manual")){JSONArray servers=v.getJSONArray("servers");if(servers.length()<1||servers.length()>2)throw new IOException("请填写1至2个DNS地址");for(int i=0;i<servers.length();i++)if(!servers.getString(i).matches("[0-9a-fA-F:.]+")||InetAddress.getByName(servers.getString(i)).isAnyLocalAddress())throw new IOException("DNS地址无效");}}
             n.put("key",key).put("value",value);
         }
         if(n.toString().length()>6000)throw new IOException("设置参数过大");return n;
@@ -154,9 +153,6 @@ public final class SystemSettings {
                 BluetoothAdapter bt=BluetoothAdapter.getDefaultAdapter();out.put("bluetooth_supported",bt!=null).put("bluetooth",bt!=null&&bt.isEnabled());JSONArray paired=new JSONArray();if(bt!=null&&bt.isEnabled())for(BluetoothDevice d:bt.getBondedDevices())paired.put(new JSONObject().put("name",d.getName()).put("address",d.getAddress()));out.put("paired",paired);
                 WifiConfiguration ap=(WifiConfiguration)wifi.getClass().getMethod("getWifiApConfiguration").invoke(wifi);int state=(Integer)wifi.getClass().getMethod("getWifiApState").invoke(wifi);
                 out.put("hotspot",new JSONObject().put("enabled",state==13).put("ssid",ap==null?"":unquote(ap.SSID)));
-                JSONArray dns=new JSONArray();if(link!=null)for(InetAddress address:link.getDnsServers())dns.put(address.getHostAddress());WifiConfiguration active=findConfig(current==null?-1:current.getNetworkId(),false);
-                String mode="auto";if(active!=null){Object ip=active.getClass().getMethod("getIpConfiguration").invoke(active);mode="STATIC".equals(String.valueOf(ip.getClass().getMethod("getIpAssignment").invoke(ip)))?"manual":"auto";}
-                out.put("dns",new JSONObject().put("mode",mode).put("servers",dns)).put("dns_editable",active!=null);
             }
         }
         return out;
@@ -187,13 +183,11 @@ public final class SystemSettings {
         else if(key.equals("hotspot")){JSONObject v=(JSONObject)value;WifiConfiguration c=null;if(v.getBoolean("enabled")){c=new WifiConfiguration();c.SSID=v.getString("ssid");c.preSharedKey=v.getString("password");c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);}
             applyHotspot(c,v.getBoolean("enabled"));}
         else if(key.equals("connect"))connectWifi((JSONObject)value);
-        else if(key.equals("dns"))setDns((JSONObject)value);
     }
     private boolean matches(JSONObject p,JSONObject after)throws Exception {
         String key=p.getString("key");Object value=p.get("value");
         if(key.equals("connect"))return asSystem(()->{WifiInfo info=wifi.getConnectionInfo();return info!=null&&info.getIpAddress()!=0&&unquote(info.getSSID()).equals(p.getJSONObject("value").getString("ssid"));});
         if(key.equals("hotspot")){JSONObject v=(JSONObject)value,got=after.getJSONObject("hotspot");return got.getBoolean("enabled")==v.getBoolean("enabled")&&(!v.getBoolean("enabled")||got.getString("ssid").equals(v.getString("ssid")));}
-        if(key.equals("dns")){JSONObject want=(JSONObject)value,got=after.getJSONObject("dns");if(!want.getString("mode").equals(got.getString("mode")))return false;if(want.getString("mode").equals("auto"))return true;JSONArray expected=want.getJSONArray("servers"),actual=got.getJSONArray("servers");if(expected.length()!=actual.length())return false;for(int i=0;i<expected.length();i++)if(!InetAddress.getByName(expected.getString(i)).equals(InetAddress.getByName(actual.getString(i))))return false;return true;}
         if(key.equals("permission")){JSONObject v=(JSONObject)value;return (context.getPackageManager().checkPermission(v.getString("name"),p.getString("package"))==PackageManager.PERMISSION_GRANTED)==v.getBoolean("granted");}
         if(value instanceof Number&&p.getString("group").equals("apps"))return ((Number)value).intValue()==after.getInt(key.equals("enabled")?"enabled_state":"background_mode");
         if(value instanceof Number)return Math.abs(((Number)value).doubleValue()-after.getDouble(key))<.001;
@@ -217,17 +211,6 @@ public final class SystemSettings {
             c.SSID=ConfigPolicy.quoteWifi(v.getString("ssid"));c.allowedKeyManagement.clear();if(password.isEmpty()){c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);c.preSharedKey=null;}else{c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);c.preSharedKey=password.matches("[0-9a-fA-F]{64}")?password:ConfigPolicy.quoteWifi(password);}
             id=found==null?wifi.addNetwork(c):wifi.updateNetwork(c);if(id<0)throw new IOException("系统拒绝Wi-Fi配置");}
         if(!wifi.enableNetwork(id,true)||!wifi.reconnect())throw new IOException("系统拒绝连接Wi-Fi");wifi.saveConfiguration();
-    }
-    private void setDns(JSONObject v)throws Exception {
-        WifiConfiguration c=findConfig(wifi.getConnectionInfo().getNetworkId(),true);if(c==null)throw new IOException("DNS配置需要当前Wi-Fi连接");
-        Object ip=c.getClass().getMethod("getIpConfiguration").invoke(c);Class<?> ipc=ip.getClass(),assignment=Class.forName("android.net.IpConfiguration$IpAssignment");
-        if(v.getString("mode").equals("auto"))ipc.getMethod("setIpAssignment",assignment).invoke(ip,Enum.valueOf((Class)assignment,"DHCP"));
-        else {ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);LinkProperties link=cm.getLinkProperties(cm.getActiveNetwork());Class<?> staticType=Class.forName("android.net.StaticIpConfiguration");Object cfg=staticType.getConstructor().newInstance();
-            LinkAddress ipv4=null;InetAddress gateway=null;for(LinkAddress address:link.getLinkAddresses())if(address.getAddress() instanceof Inet4Address)ipv4=address;for(RouteInfo route:link.getRoutes())if(route.isDefaultRoute()&&route.getGateway() instanceof Inet4Address)gateway=route.getGateway();if(ipv4==null||gateway==null)throw new IOException("没有可保持的Wi-Fi地址与网关");
-            staticType.getField("ipAddress").set(cfg,ipv4);staticType.getField("gateway").set(cfg,gateway);List<InetAddress> dns=(List<InetAddress>)staticType.getField("dnsServers").get(cfg);JSONArray addresses=v.getJSONArray("servers");for(int i=0;i<addresses.length();i++)dns.add(InetAddress.getByName(addresses.getString(i)));
-            ipc.getMethod("setIpAssignment",assignment).invoke(ip,Enum.valueOf((Class)assignment,"STATIC"));ipc.getMethod("setStaticIpConfiguration",staticType).invoke(ip,cfg);
-        }
-        c.getClass().getMethod("setIpConfiguration",ipc).invoke(c,ip);if(wifi.updateNetwork(c)<0)throw new IOException("系统拒绝DNS配置");wifi.saveConfiguration();wifi.disconnect();wifi.enableNetwork(c.networkId,true);wifi.reconnect();
     }
     private void armGuard(JSONObject p)throws Exception {
         JSONArray configs=new JSONArray();List<WifiConfiguration> all=asSystem(()->(List<WifiConfiguration>)wifi.getClass().getMethod("getPrivilegedConfiguredNetworks").invoke(wifi));

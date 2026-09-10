@@ -54,6 +54,7 @@ public final class ReportService extends Service {
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean healthReportConfirmed;
+    private String reportReason="startup",scheduledReason="startup";
     private String lastNetwork = "";
     private final Runnable networkReport = () -> {
         String current = networkType();
@@ -73,6 +74,7 @@ public final class ReportService extends Service {
         public void run() {
             if (reporting) return;
             reporting = true;
+            reportReason=scheduledReason;
             WakeScheduler.hold(ReportService.this, "report", 120000L);
             if (push != null) push.ensure();
             if (dailyLocation != null && store.registered()) dailyLocation.beforePeriodicReport(this::reportAndSchedule);
@@ -100,6 +102,7 @@ public final class ReportService extends Service {
     };
 
     private void scheduleReport(long delay) {
+        scheduledReason=delay>=900000L?"periodic":"maintenance_or_retry";
         worker.removeCallbacks(loop);
         if (BuildConfig.STATUS_ONLY) wake.schedule("report", delay);
         else worker.postDelayed(loop, delay);
@@ -420,6 +423,7 @@ public final class ReportService extends Service {
         JSONObject body = new JSONObject();
         body.put("device_id", store.deviceId());
         body.put("report_id", java.util.UUID.randomUUID().toString());
+        body.put("report_reason",requestId==null?reportReason:"requested");
         if (requestId != null) body.put("status_request_id", requestId);
         long now = System.currentTimeMillis();
         java.text.SimpleDateFormat time = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);

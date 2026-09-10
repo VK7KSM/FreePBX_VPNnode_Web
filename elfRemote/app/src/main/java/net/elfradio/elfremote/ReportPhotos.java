@@ -54,12 +54,17 @@ final class ReportPhotos {
         if(!PhotoPolicy.wanted(report))return;
         String id=report.getString("report_id");if(!id.matches("[a-zA-Z0-9-]{1,96}"))throw new IOException("照片报告编号无效");
         if(completed(id)||jobFile(id).isFile())return;
+        long now=System.currentTimeMillis();boolean critical=PhotoPolicy.critical(report);
+        android.content.SharedPreferences cadence=context.getSharedPreferences("report-photo-cadence",0);
+        if(!critical&&(!PhotoPolicy.recent(now,report.optLong("queued_at_ms"))
+                ||!PhotoPolicy.due(now,Math.max(cadence.getLong("queued",0),cadence.getLong("captured",0))))){remember(id);return;}
         if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("照片队列不可用");
         File[] queued=directory.listFiles((dir,name)->name.endsWith(".json"));
         if(queued!=null&&queued.length>=16){RuntimeLog.event("report_photo_skipped reason=queue_full");remember(id);return;}
         JSONObject job=new JSONObject().put("report_id",id).put("device_id",report.getString("device_id"))
                 .put("critical",PhotoPolicy.critical(report)).put("created_at",System.currentTimeMillis()).put("attempts",0);
         RescueFiles.write(jobFile(id),job.toString());
+        if(!critical&&!cadence.edit().putLong("queued",now).commit())throw new IOException("拍照间隔保存失败");
         RuntimeLog.event("report_photo_queued critical="+job.getBoolean("critical"));resume();
     }
     void resume(){if(!stopped)handler.post(this::process);}
@@ -82,7 +87,10 @@ final class ReportPhotos {
             JSONObject job=jobs.get(0);busy=true;
             if(allowedNetwork(job)==null){failed(job,new Paused());return;}
             WakeScheduler.hold(context,"report-photo",60000L);
-            if(imageFile(job.getString("report_id")).isFile())upload(job);else capture(job);
+            if(imageFile(job.getString("report_id")).isFile())upload(job);
+            else if(!job.optBoolean("critical")&&(!PhotoPolicy.recent(now,job.optLong("created_at"))
+                    ||!PhotoPolicy.due(now,context.getSharedPreferences("report-photo-cadence",0).getLong("captured",0)))){discard(job);finished();}
+            else capture(job);
         }catch(Exception error){RuntimeLog.error("report_photo_queue_failed",error);busy=false;WakeScheduler.release("report-photo");wake.schedule("report-photo",60000L);}
     }
     private Network allowedNetwork(JSONObject job){
@@ -125,7 +133,9 @@ final class ReportPhotos {
                         File temporary=new File(file.getPath()+".tmp");
                         try(FileOutputStream out=new FileOutputStream(temporary)){out.write(bytes);out.getFD().sync();}
                         if(!temporary.renameTo(file))throw new IOException("照片缓存提交失败");
-                        job.put("captured_at",System.currentTimeMillis());RescueFiles.write(jobFile(job.getString("report_id")),job.toString());
+                        long captured=System.currentTimeMillis();
+                        if(!context.getSharedPreferences("report-photo-cadence",0).edit().putLong("captured",captured).commit())throw new IOException("拍摄时间保存失败");
+                        job.put("captured_at",captured);RescueFiles.write(jobFile(job.getString("report_id")),job.toString());
                         RuntimeLog.event("report_photo_captured bytes="+bytes.length);upload(job);
                     }catch(Exception error){failed(job,error);}
                 });}catch(Exception error){releaseCamera();failed(job,error);}
