@@ -64,6 +64,17 @@ test('单张照片删除失败保留索引，后续照片仍可清理',async()=>
 });
 
 test('定时补拉或文件清理失败不会跳过照片和取回文件清理',async()=>{
- const paths=[];const env={ELF_DO:{idFromName:x=>x,get:()=>({async fetch(url,init){paths.push(new URL(url).pathname);const p=JSON.parse(init.body);if(paths.length<=2)throw Error('fixture');return Response.json({files:[]});}})},ELF_ARTIFACTS:{}};
- await worker.scheduled({},env);assert.equal(paths.length,4);assert.ok(paths.includes('/__photos'));assert.ok(paths.some(p=>p.includes('return')));
+ const paths=[];const env={ELF_DO:{idFromName:x=>x,get:()=>({async fetch(url,init){paths.push(new URL(url).pathname);const p=JSON.parse(init.body);if(paths.length<=2)throw Error('fixture');return Response.json({files:[],records:[]});}})},ELF_ARTIFACTS:{}};
+ await worker.scheduled({},env);assert.equal(paths.length,5);assert.ok(paths.includes("/__media_records"));assert.ok(paths.includes('/__photos'));assert.ok(paths.some(p=>p.includes('return')));
+});
+
+test('管理员单独拍照可在蜂窝上传，但凭据、指定设备及授权期限仍须匹配',async()=>{
+ const f=setup();
+ f.data.set('manual-photo/test/manual',{received_at:new Date().toISOString(),expires_at:Date.now()+60000});
+ assert.equal((await upload(f,'manual',jpeg,'wrong')).status,401);
+ assert.equal((await upload(f,'manual')).status,200);
+ assert.equal((await upload(f,'unrequested')).status,409);
+ f.data.set('manual-photo/test/expired',{received_at:new Date().toISOString(),expires_at:Date.now()-1});
+ assert.equal((await upload(f,'expired')).status,409);
+ await report(f,'cell-after-manual','cellular');assert.equal((await upload(f,'cell-after-manual')).status,409);
 });

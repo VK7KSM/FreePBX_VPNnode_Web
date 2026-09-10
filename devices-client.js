@@ -884,6 +884,7 @@ function showHistoryRecord(index){
 
 var DAILY_CACHE={}, TRAFFIC_HISTORY={seq:0};
 var PHOTO_HISTORY={};
+var MEDIA_HISTORY={device:null,type:'photo'},MEDIA_RECORDS={};
 function photoHistory(d){
   if(!PHOTO_HISTORY[d.id])PHOTO_HISTORY[d.id]={photos:[],selected:null,loaded:0,pending:false,retry:0,latest:''};
   return PHOTO_HISTORY[d.id];
@@ -903,7 +904,7 @@ function loadReportPhotos(d){
     state.loaded=Date.now();state.latest=latest;
     if(state.selected&&!state.photos.some(function(p){return p.report_id===state.selected;}))state.selected=null;
   }).catch(function(){state.error='照片读取失败';state.retry=Date.now()+15000;}).finally(function(){
-    state.pending=false;if(currentDev()&&currentDev().id===d.id)renderRemoteConsole();
+    state.pending=false;if(currentDev()&&currentDev().id===d.id)renderRemoteConsole();renderMediaHistory();
   });
 }
 function stepReportPhoto(delta){
@@ -911,6 +912,39 @@ function stepReportPhoto(delta){
   var index=Math.max(0,photos.findIndex(function(p){return p.report_id===state.selected;})),next=index+delta;
   if(next<0||next>=photos.length)return;
   state.selected=next===0?null:photos[next].report_id;renderRemoteConsole();
+}
+function openMediaHistory(){
+  var d=currentDev();if(!d)return;
+  MEDIA_HISTORY={device:d.id,type:'photo'};
+  if(!$('mediaHistoryWrap')){
+    var wrap=document.createElement('div');wrap.id='mediaHistoryWrap';wrap.className='media-history-wrap';
+    wrap.onclick=function(e){if(e.target===wrap)closeMediaHistory();};document.body.appendChild(wrap);
+  }
+  $('mediaHistoryWrap').style.display='flex';renderMediaHistory();
+  Promise.resolve(loadReportPhotos(d)).then(renderMediaHistory);
+  MEDIA_RECORDS[d.id]=null;fetch('/api/elfremote/media-recordings?'+new URLSearchParams({device_id:d.id,list:'1'})).then(function(r){if(!r.ok)throw Error('历史记录读取失败');return r.json();}).then(function(x){MEDIA_RECORDS[d.id]=x.records;renderMediaHistory();}).catch(function(){MEDIA_RECORDS[d.id]={error:'历史记录读取失败'};renderMediaHistory();});
+}
+function closeMediaHistory(){MEDIA_HISTORY.device=null;if($('mediaHistoryWrap'))$('mediaHistoryWrap').style.display='none';}
+function selectMediaType(type){MEDIA_HISTORY.type=type;renderMediaHistory();}
+function showMediaPhoto(index){
+  var d=DEV.find(function(x){return x.id===MEDIA_HISTORY.device;});if(!d)return;
+  var photos=visiblePhotos(photoHistory(d)),photo=photos[index];if(!photo)return;
+  photoHistory(d).selected=photo.report_id;closeMediaHistory();if(selDev!==d.id){selDev=d.id;renderList();renderOps();}renderRemoteConsole();
+}
+function renderMediaHistory(){
+  if(!MEDIA_HISTORY.device||!$('mediaHistoryWrap'))return;
+  var d=DEV.find(function(x){return x.id===MEDIA_HISTORY.device;});if(!d){closeMediaHistory();return;}
+  var state=photoHistory(d),photos=visiblePhotos(state),type=MEDIA_HISTORY.type;
+  var h='<section class="media-history-card" role="dialog" aria-modal="true" aria-label="历史记录"><div class="media-history-head"><h3>历史记录</h3><span>'+esc(d.name)+'</span><button type="button" class="btn-close" aria-label="关闭历史记录" onclick="closeMediaHistory()">&times;</button></div><div class="media-history-tabs">';
+  [['photo','照片'],['audio','录音'],['video','录像']].forEach(function(row){h+='<button type="button" class="'+(type===row[0]?'active':'')+'" onclick="selectMediaType(\''+row[0]+'\')">'+row[1]+'</button>';});
+  h+='</div><div class="media-history-grid">';
+  if(type==='photo'&&photos.length)photos.forEach(function(p,i){h+='<button type="button" class="media-history-photo" onclick="showMediaPhoto('+i+')"><img loading="lazy" src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:p.report_id}).toString())+'" alt="照片"><time>'+esc(sydney(p.captured_at))+'</time></button>';});
+  else if(type!=='photo'){
+    var records=MEDIA_RECORDS[d.id];
+    if(Array.isArray(records)&&records.some(function(r){return r.type===type;}))records.filter(function(r){return r.type===type;}).forEach(function(r){var url='/api/elfremote/media-recordings?'+new URLSearchParams({device_id:d.id,id:r.id});h+='<div class="media-history-record"><time>'+esc(sydney(r.captured_at))+' · '+Math.ceil(r.duration_ms/1000)+'s'+(r.complete?'':' · 中断')+'</time><'+(type==='audio'?'audio':'video')+' controls preload="none" src="'+esc(url)+'"></'+(type==='audio'?'audio':'video')+'></div>';});
+    else h+='<p class="media-history-empty">'+(!records?'读取中…':records.error||('暂无'+(type==='audio'?'录音':'录像')))+'</p>';
+  }else h+='<p class="media-history-empty">'+(state.error||(!state.loaded?'读取中…':'暂无照片'))+'</p>';
+  $('mediaHistoryWrap').innerHTML=h+'</div></section>';
 }
 function reportPhotoHtml(d){
   var state=d?photoHistory(d):null,photos=state?visiblePhotos(state):[];
@@ -929,11 +963,13 @@ function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficByte
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
-  var h='<div class="remote-head"><h3>通信终端</h3><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span></div>';
-  h+=reportPhotoHtml(d)+'<div class="remote-controls">';
-  ['PTT','麦克风','前置摄像头','后置摄像头'].forEach(function(label){h+='<button type="button" disabled>'+label+'</button>';});
-  h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
+  var h='<div class="remote-head"><h3>通信终端</h3><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
+  var media=typeof ElfMedia!=='undefined'?ElfMedia:null;
+  h+=(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d))+'<div class="remote-controls">';
+  h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
+  h+='</div>'+(media?media.feedback(d):'')+'<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;
+  if(media)media.mount(d);
   if(d)loadReportPhotos(d);
   if(d && !cached){
     DAILY_CACHE[key]={pending:true};
@@ -1494,3 +1530,5 @@ setInterval(function(){
     lastPollAt=Date.now();loadDevices();
   }
 }, 2000);
+
+if(typeof document!=="undefined"&&document.addEventListener)document.addEventListener("keydown",function(e){if(e.key==="Escape"&&MEDIA_HISTORY.device)closeMediaHistory();});

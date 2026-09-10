@@ -4,7 +4,7 @@ package net.elfradio.elfremote;
 final class PermissionPolicy {
     static final String[] RUNTIME = {
         "android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.CAMERA", "android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS"
+        "android.permission.CAMERA", "android.permission.RECORD_AUDIO", "android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS"
     };
     static String commands() {
         StringBuilder s = new StringBuilder("#!/system/bin/sh\n[ \"$(id -u)\" = 0 ] || exit 1\nfailed=0\n");

@@ -1,3 +1,4 @@
+import mediaClientSource from './media-client-source.js';
 // =========================================================================
 // elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
 // 升级：通话组 + 网关账户 + 分级分机目录
@@ -51,6 +52,8 @@ import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery
 import { fileMetadata, fileHttp, validateFileTask, cleanupFiles, cleanupDeliveredFile } from "./file-transfer.js";
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
+import {MediaRelay} from './media-relay.js';
+import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
 
 const DEFAULT_USER = "admin";
@@ -169,6 +172,7 @@ export class ElfStore {
     this.ctx = ctx;
     this.env = env;
     this.adb = new AdbRelay();
+    this.media = new MediaRelay(env);
   }
   async fetch(request) {
     const url = new URL(request.url);
@@ -179,6 +183,25 @@ export class ElfStore {
       if(typeof data.deviceId!=='string'||data.deviceId.length>100)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(async()=>json(await googleLocation(
         {...this.env,__storage:this.ctx.storage,__googleLocal:true},data.deviceId,{radio:data.radio})));
+    }
+    if(url.pathname.startsWith('/api/elfremote/media/')) {
+      try {
+        if(url.pathname==='/api/elfremote/media/session'&&request.method==='POST') {
+          const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
+          const data=JSON.parse(raw);
+          return await this.ctx.blockConcurrencyWhile(async()=>{
+            const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
+            const result=this.media.create(d,data.mode,data.camera);
+            if(data.mode==='photo'){const key='manual-photo/'+d.id+'/'+result.session_id,expires=Date.now()+86400000;await this.ctx.storage.put(key,{received_at:new Date().toISOString(),expires_at:expires});await this.ctx.storage.put('manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+result.session_id,key);}
+            return json(result);
+          });
+        }
+        const role=url.pathname==='/api/elfremote/media/browser'?'browser':url.pathname==='/api/elfremote/media/device'?'device':null;
+        if(!role||request.method!=='GET')return json({ok:false},404);
+        if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false},426);
+        const s=this.media.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        const pair=new WebSocketPair();this.media.attach(s,role,pair[1]);return new Response(null,{status:101,webSocket:pair[0]});
+      }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/adb/')) {
       try {
@@ -201,6 +224,10 @@ export class ElfStore {
     if(url.pathname==='/__returns'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+    }
+    if(url.pathname==='/__media_records'&&request.method==='POST'){
+      const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
+      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
@@ -244,7 +271,7 @@ export class ElfStore {
           return await this.ctx.storage.transaction(async storage => {
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
-              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb });
+              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,__media:this.media });
             if (!response.ok) throw response;
             return response;
           });
@@ -274,7 +301,7 @@ export class ElfStore {
 const app = {
   async scheduled(event, env) {
     const stub=elfDoStub(env);
-    for(const work of [runRecovery,cleanupFiles,cleanupPhotos,cleanupReturns]) {
+    for(const work of [runRecovery,cleanupFiles,cleanupPhotos,cleanupReturns,cleanupRecordings]) {
       try { await work(env,stub); } catch { console.error('scheduled_task_failed',work.name); }
     }
   },
@@ -302,6 +329,9 @@ const app = {
       const stub=elfDoStub(env);
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
     }
+    if(!env.__storage&&pathname==='/api/elfremote/media-recordings'){
+      const stub=elfDoStub(env);return stub?recordingHttp(env,request,stub):json({ok:false},503);
+    }
     if(!env.__storage&&pathname==='/api/elfremote/report-photo'){
       const stub=elfDoStub(env);return stub?photoHttp(env,request,stub):json({ok:false},503);
     }
@@ -325,7 +355,7 @@ const app = {
         }
         return response;
       }
-      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session"].includes(pathname)) {
+      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session","/api/elfremote/media/session"].includes(pathname)) {
         const payload = await request.clone().json().catch(() => null);
         const saved = await stub.fetch(request);
         if (!saved.ok || !payload?.device_id) return saved;
@@ -588,6 +618,7 @@ const app = {
     if (pathname === "/api/devices/pair" && method === "POST") {
       return handleDevicePair(env, request);
     }
+    if(pathname==="/media-client.js")return new Response(mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if (pathname === "/devices-client.js") {
       return new Response(devicesClientSource, {
         headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }
@@ -988,6 +1019,8 @@ function publicDevice(d, modelName) {
     managed_lost_tasks: d.managed_lost_tasks === true,
     managed_exec_tasks: d.managed_exec_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
+    managed_media: d.managed_media === true,
+    media_cameras: Number(d.media_cameras)||0,
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
     managed_file_operations: d.managed_file_operations === true,
@@ -1421,6 +1454,8 @@ async function handleDeviceReport(env, request) {
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
       list[i].managed_adbd_tasks = data.managed_adbd_tasks === true;
       list[i].managed_adb_session = data.managed_adb_session === true;
+      list[i].managed_media = data.managed_media === true;
+      list[i].media_cameras = Math.min(4,Math.max(0,Number(data.media_cameras)||0));
       list[i].managed_wifi_scan_tasks = data.managed_wifi_scan_tasks === true;
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
@@ -1470,6 +1505,7 @@ async function handleDeviceReport(env, request) {
     await queueSystemRestore(found,env.__storage,now);
     await saveDevices(env, list);
     const body = { ok: true, paired: found.paired !== false, report_id: history.record.report_id };
+    if(found.enabled!==false&&data.managed_media===true)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     addManagedTaskOffer(body, found, data, now);
@@ -2584,7 +2620,8 @@ function renderDevicesHtml() {
     '#devOps{grid-column:1/-1;padding:.85rem 1.1rem 1rem}',
     '.remote-preview img,.remote-preview video{width:100%;height:100%;object-fit:contain}.traffic-link{border:0;background:none;color:#93c5fd;padding:0;cursor:pointer;font-size:11px;white-space:nowrap}.system-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.system-tabs .active{background:#2563eb}.system-items>div{display:flex;justify-content:space-between;padding:12px;border-bottom:1px solid #334155}.report-feedback{font-size:12px;color:#b1bdcb}.ops-head-left{flex-wrap:wrap}.traffic-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.traffic-header h3{margin:0 auto 0 0;font-size:15px;white-space:nowrap}.traffic-range{display:flex;align-items:center;gap:4px;color:#64748b}.traffic-range input{font:inherit;font-size:11px;width:108px;height:28px;padding:3px 5px;color:#cbd5e1;background:#111c2c;border:1px solid #334155;border-radius:5px;color-scheme:dark}#trafficChart{overflow-x:auto;padding:0 8px;min-width:0;flex:1}.traffic-chart-frame{display:flex;margin-top:32px}#trafficY{position:relative;flex:0 0 42px;height:210px;border-right:1px solid #445066;font-size:10px;color:#94a3b8}#trafficY span{position:absolute;right:8px;transform:translateY(-50%)}#trafficY small{position:absolute;top:-25px;right:8px;font-size:10px}.traffic-empty{position:absolute;bottom:-2px;width:4px;height:4px;background:#60a5fa;border-radius:50%}.traffic-rx-text{color:#60a5fa}.traffic-tx-text{color:#f5c451}#trafficHistoryWrap .btn-close{position:static;display:flex;align-items:center;justify-content:center;flex:0 0 28px;width:28px;height:28px;margin:0;padding:0}.traffic-plot{width:100%}.traffic-bars{display:flex;align-items:end;height:210px;border-bottom:1px solid #445066;background:repeating-linear-gradient(to top,transparent 0,transparent 69px,#33415555 69px,#33415555 70px)}.traffic-bar{border:0;background:none;flex:1;min-width:0;height:100%;padding:0;cursor:pointer;display:flex;justify-content:center;align-items:end;position:relative}.traffic-stack{display:flex;flex-direction:column;justify-content:flex-end;width:6px;border-radius:3px 3px 0 0;overflow:hidden}.traffic-stack i{display:block;flex-shrink:0}.traffic-rx{background:#60a5fa}.traffic-tx{background:#f5c451}.traffic-bar:hover .traffic-stack,.traffic-bar.selected .traffic-stack{outline:1px solid #f8fafc;outline-offset:2px}.traffic-axis{height:30px;position:relative;font-size:11px;color:#94a3b8;margin-top:9px}.traffic-axis span{position:absolute;transform:translateX(-50%);white-space:nowrap}.traffic-axis span:first-child{transform:none;left:0!important}.traffic-axis span:last-child{transform:translateX(-100%);left:100%!important}#trafficDetail{margin:4px -20px -20px;padding:14px 20px;background:#111c2c;border-radius:0 0 14px 14px;color:#d4deec;font-size:12px;line-height:1.8;font-variant-numeric:tabular-nums}#trafficHistoryWrap .modal-card{width:min(820px,95vw);padding:20px;border-radius:14px}@media(max-width:500px){.traffic-header{gap:6px}.traffic-header h3{font-size:13px}.traffic-range{gap:2px}.traffic-range input{width:94px;font-size:10px;padding:2px}#trafficHistoryWrap .modal-card{padding:16px}.traffic-header{margin-bottom:16px}#trafficDetail{margin:4px -16px -16px;padding:12px 16px}.remote-traffic{gap:6px!important}}',
     '.remote-preview{position:relative;overflow:hidden}.remote-preview>img{position:absolute;inset:0}.remote-preview .photo-nav{position:absolute;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:28px;height:36px;padding:0;border:1px solid #ffffff20;border-radius:7px;background:#101827b3;color:#e2e8f0;cursor:pointer}.remote-preview .photo-nav svg{width:20px;height:20px}.photo-nav:hover:not(:disabled){background:#243247e6}.photo-nav:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}.photo-nav:disabled{opacity:.25;cursor:default}.photo-prev{left:8px}.photo-next{right:8px}.photo-time{position:absolute;right:8px;bottom:7px;max-width:calc(100% - 16px);padding:3px 6px;border-radius:4px;background:#101827b3;color:#cbd5e1;font-size:10px;line-height:1.5;font-variant-numeric:tabular-nums}.photo-error{position:relative;color:#94a3b8}',
-    '.remote-stage{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(0,1.2fr);gap:1rem;min-height:0}.remote-console{padding:14px;overflow:visible;border-radius:1rem;min-width:0}.remote-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.remote-head h3{margin:0;font-size:14px}.remote-device{font-size:12px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.remote-preview{aspect-ratio:16/9;height:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1px solid #334155;border-radius:10px;background:#101827;color:#64748b;font-size:12px}.remote-preview svg{width:30px;height:30px}.remote-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:10px 0}.remote-controls button{border:1px solid #334155;border-radius:7px;padding:7px 3px;background:#243247;color:#94a3b8;font-size:12px;cursor:not-allowed}.remote-note{font-size:11px;color:#94a3b8;margin:0 0 12px}.remote-traffic{display:flex;align-items:center;flex-wrap:wrap;gap:8px;border-top:1px solid #334155;padding-top:10px;font-size:11px;line-height:1.6}.remote-traffic .traffic-link{margin-left:auto}.remote-traffic strong{white-space:nowrap}.remote-traffic summary{cursor:pointer}.remote-traffic p{font-size:11px;overflow-wrap:anywhere}.remote-map{border-radius:1rem;overflow:hidden;min-width:0}',
+    '.remote-head-actions{display:flex;align-items:center;gap:10px;min-width:0}.remote-controls button:not(:disabled){background:#24483e;border-color:#366657;color:#e2e8f0;cursor:pointer}.remote-controls button.active{background:#7f2638;border-color:#a53b50;color:#fff}.media-feedback{display:block;font-size:11px;color:#a6b5c7;margin:4px 0 8px}.media-live{position:relative;overflow:hidden}.media-live canvas{width:94%;height:55%}.media-live video{position:absolute;inset:0}.media-live time{position:absolute;right:9px;bottom:6px;font-size:10px;color:#cbd5e1;background:#101827a8;border-radius:4px;padding:2px 4px}.media-volume{position:absolute;left:10px;bottom:8px;font-size:11px;display:flex;align-items:center;gap:8px}.media-volume label{display:flex;gap:6px;align-items:center}.media-volume input{width:85px;accent-color:#60a5fa}.media-camera-switch{position:absolute;right:8px;top:8px;z-index:2;background:#152235ce;border:1px solid #506078;border-radius:5px;color:#d3dfef;width:29px;height:25px;cursor:pointer}.remote-preview .media-alarm-icon{width:42%;height:70%;color:#f34f5f;animation:media-alarm 1s steps(2,end) infinite}@keyframes media-alarm{50%{opacity:.2}}.media-history-wrap{position:fixed;inset:0;z-index:2100;display:none;align-items:center;justify-content:center;background:#020617b3;padding:20px}.media-history-card{width:min(720px,100%);max-height:85vh;overflow:auto;padding:20px;background:#182436;border:1px solid #344154;border-radius:12px;font-size:12px;color:#cbd5e1}.media-history-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}.media-history-head h3{font-size:15px;margin:0 auto 0 0}.media-history-head>span{color:#94a3b8;font-size:11px}.media-history-head .btn-close{position:static;margin:0}.media-history-tabs{display:flex;gap:8px;margin-bottom:16px}.media-history-tabs button{background:transparent;color:#9dacbd;border:1px solid #344154;border-radius:5px;padding:5px 15px;cursor:pointer;font:inherit}.media-history-tabs .active{background:#263e59;color:#dbeafe;border-color:#47627f}.media-history-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.media-history-photo{padding:0;border:1px solid #344154;border-radius:6px;background:#111c2b;color:#aab9cc;overflow:hidden;cursor:pointer;font:inherit}.media-history-photo img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#0c1521}.media-history-photo time{display:block;padding:6px;font-size:10px}.media-history-empty{grid-column:1/-1;margin:24px 0;text-align:center;color:#8091a7}.media-history-record{grid-column:1/-1;padding:12px;background:#111c2b;border:1px solid #344154;border-radius:6px}.media-history-record time{display:block;margin-bottom:8px;font-size:11px;color:#a9b7ca}.media-history-record video{width:100%;max-height:300px}.media-history-record audio{width:100%;height:32px}@media(max-width:480px){.media-history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.media-history-card{padding:14px}.remote-controls button{font-size:11px;padding:7px 0}.media-history-wrap{padding:10px}}',
+    '.remote-stage{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(0,1.2fr);gap:1rem;min-height:0}.remote-console{padding:14px;overflow:visible;border-radius:1rem;min-width:0}.remote-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.remote-head h3{margin:0;font-size:14px}.remote-device{font-size:12px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.remote-preview{aspect-ratio:16/9;height:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1px solid #334155;border-radius:10px;background:#101827;color:#64748b;font-size:12px}.remote-preview svg{width:30px;height:30px}.remote-controls{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;margin:10px 0}.remote-controls button{border:1px solid #334155;border-radius:7px;padding:7px 3px;background:#243247;color:#94a3b8;font-size:12px;cursor:not-allowed}.remote-note{font-size:11px;color:#94a3b8;margin:0 0 12px}.remote-traffic{display:flex;align-items:center;flex-wrap:wrap;gap:8px;border-top:1px solid #334155;padding-top:10px;font-size:11px;line-height:1.6}.remote-traffic .traffic-link{margin-left:auto}.remote-traffic strong{white-space:nowrap}.remote-traffic summary{cursor:pointer}.remote-traffic p{font-size:11px;overflow-wrap:anywhere}.remote-map{border-radius:1rem;overflow:hidden;min-width:0}',
     '@media(max-width:1000px) and (min-width:801px){.layout{grid-template-columns:190px minmax(0,1fr)}.remote-stage{grid-template-columns:minmax(260px,1fr) minmax(0,1fr);gap:10px}}@media(max-width:800px){.layout{grid-template-rows:auto auto auto}.remote-stage{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 320px}.remote-console{overflow:visible}#devList{max-height:180px}.remote-preview{height:auto}}',
     '.ops-head{display:flex;align-items:center;gap:.6rem;margin-bottom:.65rem;flex-wrap:wrap}',
     '.ops-head-left{display:flex;align-items:baseline;gap:.55rem;min-width:0;flex:1}',
@@ -2715,6 +2752,7 @@ function renderDevicesHtml() {
     '<div style="text-align:right;margin-top:.8rem"><button class="btn-gray" onclick="closeEdit()">关闭<\/button><\/div>',
     '<\/div><\/div>',
     '<script src="/admin-session.js"><\/script>',
+    '<script src="/media-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'
   ].join("\n");

@@ -24,6 +24,14 @@ final class ReportPhotos {
         @Override public void onCameraAvailable(String id){available.put(id,true);}
         @Override public void onCameraUnavailable(String id){available.put(id,false);}
     };
+    interface ManualResult { void complete(JSONObject result,Exception error); }
+    private final Map<String,ManualResult> callbacks=new java.util.concurrent.ConcurrentHashMap<>();
+    void manual(String id,String deviceId,String facing,ManualResult callback)throws Exception {
+        if(!id.matches("[a-zA-Z0-9-]{1,96}")||!java.util.Arrays.asList("front","back").contains(facing))throw new IOException("拍照请求无效");
+        if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("照片队列不可用");
+        JSONObject job=new JSONObject().put("report_id",id).put("device_id",deviceId).put("manual",true).put("camera",facing).put("created_at",System.currentTimeMillis()).put("attempts",0);
+        callbacks.put(id,callback);RescueFiles.write(jobFile(id),job.toString());resume();
+    }
     private volatile boolean stopped;
     private volatile HttpURLConnection connection;
     private boolean busy;
@@ -88,7 +96,7 @@ final class ReportPhotos {
             if(allowedNetwork(job)==null){failed(job,new Paused());return;}
             WakeScheduler.hold(context,"report-photo",60000L);
             if(imageFile(job.getString("report_id")).isFile())upload(job);
-            else if(!job.optBoolean("critical")&&(!PhotoPolicy.recent(now,job.optLong("created_at"))
+            else if(!job.optBoolean("manual")&&!job.optBoolean("critical")&&(!PhotoPolicy.recent(now,job.optLong("created_at"))
                     ||!PhotoPolicy.due(now,context.getSharedPreferences("report-photo-cadence",0).getLong("captured",0)))){discard(job);finished();}
             else capture(job);
         }catch(Exception error){RuntimeLog.error("report_photo_queue_failed",error);busy=false;WakeScheduler.release("report-photo");wake.schedule("report-photo",60000L);}
@@ -96,7 +104,7 @@ final class ReportPhotos {
     private Network allowedNetwork(JSONObject job){
         ConnectivityManager cm=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
         Network n=cm.getActiveNetwork();NetworkCapabilities caps=n==null?null:cm.getNetworkCapabilities(n);
-        return caps!=null&&PhotoPolicy.networkAllowed(caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),true,job.optBoolean("critical"))?n:null;
+        return caps!=null&&(job.optBoolean("manual")||PhotoPolicy.networkAllowed(caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),true,job.optBoolean("critical")))?n:null;
     }
     private void cameraPermission()throws Exception{
         if(context.checkSelfPermission(android.Manifest.permission.CAMERA)==android.content.pm.PackageManager.PERMISSION_GRANTED)return;
@@ -106,8 +114,9 @@ final class ReportPhotos {
         final long generation=++captureGeneration;
         try{
             cameraPermission();int id=-1;Camera.CameraInfo info=new Camera.CameraInfo();
-            for(int i=0;i<Camera.getNumberOfCameras();i++){Camera.getCameraInfo(i,info);if(info.facing==Camera.CameraInfo.CAMERA_FACING_FRONT){id=i;break;}}
-            if(id<0)throw new Permanent("没有前置摄像头");
+            for(int i=0;i<Camera.getNumberOfCameras();i++){Camera.getCameraInfo(i,info);if(info.facing==("back".equals(job.optString("camera"))?Camera.CameraInfo.CAMERA_FACING_BACK:Camera.CameraInfo.CAMERA_FACING_FRONT)){id=i;break;}}
+            if(id<0&&job.optBoolean("manual")&&Camera.getNumberOfCameras()>0){id=0;Camera.getCameraInfo(id,info);}
+            if(id<0)throw new Permanent("没有可用摄像头");
             if(Boolean.FALSE.equals(available.get(String.valueOf(id))))throw new IOException("前置摄像头正在使用");
             camera=Camera.open(id);
             Camera.Parameters p=camera.getParameters();
@@ -129,7 +138,7 @@ final class ReportPhotos {
                         try(FileOutputStream out=new FileOutputStream(temporary)){out.write(bytes);out.getFD().sync();}
                         if(!temporary.renameTo(file))throw new IOException("照片缓存提交失败");
                         long captured=System.currentTimeMillis();
-                        if(!context.getSharedPreferences("report-photo-cadence",0).edit().putLong("captured",captured).commit())throw new IOException("拍摄时间保存失败");
+                        if(!job.optBoolean("manual")&&!context.getSharedPreferences("report-photo-cadence",0).edit().putLong("captured",captured).commit())throw new IOException("拍摄时间保存失败");
                         job.put("captured_at",captured);RescueFiles.write(jobFile(job.getString("report_id")),job.toString());
                         RuntimeLog.event("report_photo_captured bytes="+bytes.length);upload(job);
                     }catch(Exception error){failed(job,error);}
@@ -157,7 +166,9 @@ final class ReportPhotos {
                 JSONObject result=new JSONObject(out.toString("UTF-8"));
                 if(!result.optBoolean("ok")||!sha.equals(result.optString("sha256"))||file.length()!=result.optLong("bytes"))throw new IOException("照片回执不匹配");
             }
-            RuntimeLog.event("report_photo_uploaded bytes="+file.length());discard(job);finished();
+            RuntimeLog.event("report_photo_uploaded bytes="+file.length());
+            ManualResult callback=callbacks.remove(id);if(callback!=null)callback.complete(new JSONObject().put("type","result").put("report_id",id).put("captured_at",captured).put("message","照片已保存"),null);
+            discard(job);finished();
         }catch(Exception error){failed(job,error);}
         finally{HttpURLConnection c=connection;connection=null;if(c!=null)c.disconnect();}
     }
@@ -167,7 +178,7 @@ final class ReportPhotos {
             if(error instanceof Paused){job.put("next_at",System.currentTimeMillis()+900000L);RuntimeLog.event("report_photo_waiting_wifi");}
             else{
                 int n=job.optInt("attempts")+1;job.put("attempts",n);RuntimeLog.error("report_photo_failed attempt="+n,error);
-                if(error instanceof Permanent||n>=3){discard(job);finished();return;}
+                if(error instanceof Permanent||n>=3){ManualResult callback=callbacks.remove(job.getString("report_id"));if(callback!=null)callback.complete(null,error);discard(job);finished();return;}
                 job.put("next_at",System.currentTimeMillis()+(n==1?30000L:120000L));
             }
             RescueFiles.write(jobFile(job.getString("report_id")),job.toString());

@@ -48,6 +48,7 @@ public final class ReportService extends Service {
     private boolean movementSampling;
     private android.content.BroadcastReceiver batteryReceiver;
     private AlarmPlayer alarm;
+    private MediaSession media;
     private String locatingTask = "";
     private WifiConnector wifiConnector;
     private LostMode lostMode;
@@ -143,7 +144,8 @@ public final class ReportService extends Service {
         worker.post(wifiConnector::recover);
         if (BuildConfig.STATUS_ONLY) push = new PushConnection(this, worker, store, this::receiveStatusRequest);
         if (BuildConfig.STATUS_ONLY) dailyLocation = new DailyLocation(this, worker);
-        if(BuildConfig.STATUS_ONLY){reportPhotos=new ReportPhotos(this,store);reportPhotos.resume();}
+        if(BuildConfig.STATUS_ONLY){reportPhotos=new ReportPhotos(this,store);
+        media=new MediaSession(this,store,reportPhotos);reportPhotos.resume();}
         if(BuildConfig.STATUS_ONLY){
             try{batteryReports=new BatteryReports(new java.io.File(getFilesDir(),"battery-reports.json"));}
             catch(Exception error){RuntimeLog.error("battery_report_state_failed",error);}
@@ -258,6 +260,7 @@ public final class ReportService extends Service {
         if(reportPhotos!=null)reportPhotos.close();
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
+        if (media != null) media.stop("客户端服务停止");
         if (connectivity != null && networkCallback != null) {
             try { connectivity.unregisterNetworkCallback(networkCallback); }
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
@@ -453,6 +456,8 @@ public final class ReportService extends Service {
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_adb_session", CoreInstaller.ready());
+        body.put("managed_media", true);
+        body.put("media_cameras", android.hardware.Camera.getNumberOfCameras());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
         body.put("managed_file_operations", CoreInstaller.ready());
@@ -609,6 +614,8 @@ public final class ReportService extends Service {
             JSONObject response = new JSONObject(reply);
             JSONObject managed = response.optJSONObject("managed_task");
             if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
+                JSONObject mediaOffer=response.optJSONObject("media_session");
+                if(mediaOffer!=null)worker.post(()->{if(media==null)media=new MediaSession(this,store,reportPhotos);media.receive(mediaOffer);});
                 JSONObject adb=response.optJSONObject("adb_session");
                 if(adb!=null&&CoreInstaller.ready())worker.post(()->openAdb(adb));
             }

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-for (const name of ["devices-client", "sip-client"]) {
+for (const name of ["devices-client", "sip-client", "media-client"]) {
 const src = fs.readFileSync(path.join(root, name + ".js"), "utf8").replace(/\r\n/g, "\n");
 const dest = path.join(root, name + "-source.js");
 const output = "export default " + JSON.stringify(src) + ";\n";

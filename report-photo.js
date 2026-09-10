@@ -11,6 +11,8 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
   try{
     const p=await request.json();
     if(p.action==='expired'){
+      const permits=await storage.list({prefix:'manual-photo-expiry/',end:'manual-photo-expiry/'+String(now).padStart(13,'0')+'~',limit:100});
+      for(const [expiry,k] of permits){await storage.delete(k);await storage.delete(expiry);}
       const rows=await storage.list({prefix:'report-photo-expiry/',end:'report-photo-expiry/'+String(now).padStart(13,'0')+'~',limit:50});
       return json({ok:true,files:[...rows.values()]});
     }
@@ -27,7 +29,7 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
     if(p.action==='get')return old?.ready&&old.expires_at>now?json({ok:true,photo:old}):json({ok:false,msg:'照片不可用'},404);
     if(p.action==='removed'){
       if(old&&old.expires_at<=now){
-        await storage.delete(old.expiry_key);await storage.delete(k);
+        await storage.delete(old.expiry_key);await storage.delete(k);await storage.delete('manual-photo/'+p.device_id+'/'+p.report_id);
         const devices=await loadDevices(),d=devices.find(d=>d.id===p.device_id);
         if(d?.report_photo?.report_id===p.report_id){delete d.report_photo;await saveDevices(devices);}
       }
@@ -36,10 +38,12 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
     const devices=await loadDevices(),device=devices.find(d=>d.id===p.device_id);
     if(!device||device.enabled===false||typeof p.token!=='string'||!p.token||device.token_sha256!==await sha(new TextEncoder().encode(p.token)))return json({ok:false,msg:'设备验证失败'},401);
     const index=await storage.get('history-id/'+encodeURIComponent(device.id)+'/'+p.report_id);
-    const report=index?await storage.get(index.key):null;
+    const manual=await storage.get('manual-photo/'+device.id+'/'+p.report_id);
+    const isManual=manual?.expires_at>now;
+    const report=isManual?manual:index?await storage.get(index.key):null;
     if(!report||Date.parse(report.received_at)+86400000<now)return json({ok:false,msg:'文字报告尚未确认或已过期'},409);
     const critical=report.report_event?.type==='low_battery'&&report.report_event.level<2&&report.report_event.thresholds.includes(2);
-    if(report.network!=='wifi'&&!critical)return json({ok:false,msg:'本次报告不包含拍照规则'},409);
+    if(!isManual&&report.network!=='wifi'&&!critical)return json({ok:false,msg:'本次报告不包含拍照规则'},409);
     if(p.action==='reserve'){
       if(!Number.isInteger(p.bytes)||p.bytes<4||p.bytes>PHOTO_MAX||!/^[a-f0-9]{64}$/.test(p.sha256||'')
         ||!Number.isFinite(p.captured_at)||Math.abs(now-p.captured_at)>86400000)throw Error('照片信息无效');
