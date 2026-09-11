@@ -28,6 +28,7 @@ window.ElfMedia=(function(){
   async function start(mode,requestedCamera){
     var d=currentDev();if(!d||!d.managed_media||d.enabled===false)return;
     if(active){if(active.mode===mode)await stop();return;}
+    if(typeof trajectoryReturnLive==='function')trajectoryReturnLive();
     var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false};active=s;lastMessage='';render();
     try{
       if(mode==='ptt'||mode==='call'){
@@ -74,11 +75,12 @@ window.ElfMedia=(function(){
     s.recordStopped=new Promise(function(resolve){s.recorder.onstop=resolve;});
     s.recorder.ondataavailable=function(e){if(!e.data.size)return;var blob=e.data,duration=Date.now()-s.recordStarted,index=s.parts++;s.queuedBytes=(s.queuedBytes||0)+blob.size;
       s.upload=s.upload.then(async function(){if(s.uploadError)return;for(var attempt=0;attempt<3;attempt++){
-        try{var response=await fetch(recordUrl(s)+'&index='+index+'&duration_ms='+duration,{method:'PUT',body:blob,signal:AbortSignal.timeout(20000)});var result=await response.json();if(!response.ok||!result.ok)throw Error(result.msg||'上传失败');s.queuedBytes-=blob.size;return;}
+        try{var response=await fetch(recordUrl(s)+'&index='+index+'&duration_ms='+duration+'&captured_at='+s.recordStarted,{method:'PUT',body:blob,signal:AbortSignal.timeout(20000)});var result=await response.json();if(!response.ok||!result.ok)throw Error(result.msg||'上传失败');s.queuedBytes-=blob.size;return;}
         catch(error){if(attempt===2){s.uploadError=error;if(active===s)stop('录制上传中断');return;}await new Promise(function(r){setTimeout(r,1000*(attempt+1));});}
       }});
       if(s.queuedBytes>24*1024*1024&&active===s)stop('网络上传过慢，录制已结束');
     };
+    s.recorder.onstart=function(){s.recordStarted=Date.now();};
     s.recorder.onerror=function(){if(active===s)stop('录制失败');};s.recordStarted=Date.now();s.recorder.start(5000);
   }
   function elapsed(ms){var seconds=Math.max(0,Math.floor(ms/1000));return Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0');}
@@ -103,5 +105,5 @@ window.ElfMedia=(function(){
   function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','响铃']];return rows.map(function(row){var selected=active&&active.mode===row[0],disabled=!d||!d.managed_media||d.enabled===false||active&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
   function feedback(d){var text=active?active.message:d&&lastDevice===d.id?lastMessage:'';return text?'<span class="media-feedback" role="status">'+esc(text)+'</span>':'';}
   window.addEventListener('pagehide',function(){stop();});
-  return {switchPhoto:function(){var d=currentDev();if(!d||active)return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
+  return {isActive:function(){return !!active;},switchPhoto:function(){var d=currentDev();if(!d||active)return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
 })();

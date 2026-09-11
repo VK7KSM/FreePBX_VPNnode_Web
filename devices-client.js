@@ -1,3 +1,44 @@
+// 轨迹纯规则开始：界面与测试共用，保留原始记录，不改坐标。
+var Trajectory=(function(){
+  function time(value){var n=typeof value==='number'?value:Date.parse(value);return Number.isFinite(n)?n:NaN;}
+  function cadence(r){var n=Number(r.report_interval_ms);return n>=60000&&n<=86400000?n:(r.network==='wifi'||r.network==='ethernet'?900000:3600000);}
+  function location(r){var p=r&&r.location;return p&&p.lat!=null&&p.lng!=null&&Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lng))&&Math.abs(Number(p.lat))<=90&&Math.abs(Number(p.lng))<=180?p:null;}
+  function quality(r){var p=location(r);if(!p)return 'gap';var at=time(r.sample_at||p.at),event=time(r.timeline_at);if(Number.isFinite(at)&&Number.isFinite(event)&&(at>event+60000||event-at>cadence(r)*2))return 'gap';
+    if(p.source==='ip')return 'area';var a=Number(p.acc_m);
+    if(p.source==='gps'&&(p.acc_m==null||a>0&&a<=100))return 'good';
+    if(['wifi','cell','network','gps'].includes(p.source)&&a>0)return a<=100?'good':'coarse';return 'gap';}
+  function distance(a,b){var rad=Math.PI/180,dy=(b.lat-a.lat)*rad,dx=(b.lng-a.lng)*rad;var q=Math.sin(dy/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dx/2)**2;return 12742000*Math.asin(Math.sqrt(Math.min(1,q)));}
+  function build(input){var rows=input.filter(function(r){return Number.isFinite(time(r.timeline_at));}).slice().sort(function(a,b){return time(a.timeline_at)-time(b.timeline_at)||String(a.report_id).localeCompare(String(b.report_id));});
+    var segments=[],areas=[],ignored=[],part=[],pending=[],last=-1;
+    function flush(){if(part.length)segments.push(part);part=[];}
+    rows.forEach(function(r,i){var kind=quality(r);if(kind==='good'){
+      var gap=last>=0&&time(r.timeline_at)-time(rows[last].timeline_at)>2.5*Math.max(cadence(r),cadence(rows[last]));
+      if(pending.length>=2||gap){flush();areas=areas.concat(pending);}else if(pending.length===1)ignored.push(pending[0]);
+      pending=[];part.push(i);last=i;
+    }else if(kind==='coarse'){pending.push(i);}else{flush();areas=areas.concat(pending);pending=[];last=-1;if(location(r))areas.push(i);}});
+    // 尾部只有一个粗点时暂不跨接；后续完整查询再判断，不由游标改变规则。
+    areas=areas.concat(pending.length>=2?pending:[]);ignored=ignored.concat(pending.length===1?pending:[]);flush();
+    var groups=[];segments.forEach(function(segment){var group=[];function finish(){if(group.length)groups.push(group);group=[];}
+      segment.forEach(function(i){if(group.length&&distance(location(rows[group[0]]),location(rows[i]))>Math.max(25,Math.min(100,Number(location(rows[i]).acc_m)||25)))finish();group.push(i);});finish();});
+    return {rows:rows,segments:segments,areas:areas,ignored:ignored,groups:groups};
+  }
+  function events(rows,media){var known=new Map(rows.map(function(r){return [r.report_id,r];}));var out=rows.map(function(r,i){return {key:'report:'+r.report_id,at:time(r.timeline_at),record:r,index:i};});
+    media.forEach(function(m){if(m.type==='photo'&&known.has(m.report_id))return;var at=time(m.captured_at);if(!Number.isFinite(at))return;out.push({key:m.type+':'+m.id,at:at,media:m,index:-1});});
+    return out.sort(function(a,b){return a.at-b.at||a.key.localeCompare(b.key);});
+  }
+  function related(event,media){if(!event)return [];return media.filter(function(m){if(event.media&&event.media.id===m.id&&event.media.type===m.type)return true;
+    if(m.type==='photo')return event.record&&m.report_id===event.record.report_id;
+    return event.at>=time(m.captured_at)&&event.at<=time(m.ended_at||m.captured_at);});}
+  function dayRange(from,to){function midnight(day){var utc=Date.parse(day+'T00:00:00Z');if(!Number.isFinite(utc))throw Error('日期无效');var n=utc;
+    for(var i=0;i<3;i++){var p={};new Intl.DateTimeFormat('en-GB',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(n)).forEach(function(x){p[x.type]=x.value;});n+=utc-Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second);}return n;}
+    var next=new Date(Date.parse(to+'T00:00:00Z')+86400000).toISOString().slice(0,10);return {from:midnight(from),to:midnight(next)-1};}
+  function playbackIndex(events,item,at){var selected=events.findIndex(function(e){return e.media&&e.media.type===item.type&&e.media.id===item.id;});events.forEach(function(e,i){if(e.record&&e.at>=time(item.captured_at)&&e.at<=at)selected=i;});return selected;}
+  function preceding(events,at){var low=0,high=events.length;while(low<high){var mid=(low+high)>>1;if(events[mid].at<=at)low=mid+1;else high=mid;}return low-1;}
+  function nearest(events,at){var low=0,high=events.length;while(low<high){var mid=(low+high)>>1;if(events[mid].at<at)low=mid+1;else high=mid;}if(!low)return 0;if(low===events.length)return low-1;return at-events[low-1].at<=events[low].at-at?low-1:low;}
+  return {time:time,cadence:cadence,location:location,quality:quality,distance:distance,build:build,events:events,related:related,dayRange:dayRange,nearest:nearest,preceding:preceding,playbackIndex:playbackIndex};
+})();
+// 轨迹纯规则结束。
+
 var DEV = [];
 var UNPAIRED = [];
 var MODELS = [];
@@ -19,7 +60,7 @@ var FN_ITEMS = [
   ["update", "更新客户端", '<path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline>'],
   ["wifi", "系统配置", '<path d="M9.5 3h5l.6 2.4 2.1 1.2 2.4-.7 2.5 4.2-1.8 1.7v2.4l1.8 1.7-2.5 4.2-2.4-.7-2.1 1.2-.6 2.4h-5l-.6-2.4-2.1-1.2-2.4.7-2.5-4.2 1.8-1.7v-2.4L1.9 10l2.5-4.2 2.4.7 2.1-1.2z" transform="translate(1 0) scale(.92)"/><circle cx="12" cy="12" r="3"/>'],
   ["contacts", "通信录", '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>'],
-  ["locate", "立即定位", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
+  ["locate", "设备轨迹", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
   ["files", "文件管理", '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>'],
   ["lost", "丢失模式", '<path d="M12 3l8 4v5c0 5-3.5 8.5-8 9.5C7.5 20.5 4 17 4 12V7l8-4z"></path>'],
   ["model", "添加型号", '<rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17 14v8M14 18h8"></path>']
@@ -273,13 +314,14 @@ function esc(s){
 }
 
 function selectDev(id){
-  clearHistoryMarker();
+  trajectoryLeave();
   selDev = id;
   renderList(); updateReportFeedback();
   renderOps();
   flyTo(id);
   if(selFn==='files')loadFileManagerOnEntry();
   if(selFn==='update')loadReleases();
+  if(selFn==='locate'){var history=historyState();if(!history.loaded)queryHistory();else{history.historical=history.events.length>0;renderOps();trajectoryDrawMap(true);}}
 }
 
 function initMap(){
@@ -373,6 +415,7 @@ function renderMap(){
   }
   if(bounds.length && !mapFitted) { map.fitBounds(bounds, { padding: [100,100], maxZoom: hasIpArea ? 14 : 16 }); mapFitted=true; }
   layoutMapMarkers();
+  if(trajectoryEvent())trajectoryDrawMap(false);
 }
 
 function layoutMapMarkers(){
@@ -418,8 +461,10 @@ function flyTo(id){
 function kv(k,v,title){ return '<div class="kv"><div class="k">'+k+'</div><div class="v"'+(title?' title="'+esc(title)+'"':'')+'>'+esc(v)+'</div></div>'; }
 
 function pickFn(id){
+  if(selFn!==id)trajectoryLeave();
   selFn = id;
   renderOps();
+  if(id==='locate'){var history=historyState();if(history&&!history.loaded)queryHistory();else if(history){history.historical=history.events.length>0;renderOps();trajectoryDrawMap(true);}}
   if(id==='update')loadReleases();
   if(id==='files')loadFileManagerOnEntry();
   if(id==='wifi'&&SYSTEM_TAB!=='账号配置')readSystemSettings();
@@ -487,7 +532,7 @@ function fnPageHtml(){
   if(selFn==="update") return pageUpdate(dis);
   if(selFn==="wifi") return pageSystem(dis);
   if(selFn==="contacts") return functionSection('联系人管理',pageContacts(dis));
-  if(selFn==="locate") return functionSection('位置与历史',pageLocate(dis));
+  if(selFn==="locate") return pageLocate(dis);
   if(selFn==="files") return pageFiles();
   if(selFn==="lost") return functionSection('失主信息',pageLost(dis));
   if(selFn==="model") return functionSection('型号管理',pageModel());
@@ -1034,78 +1079,74 @@ function pageContacts(dis){
   return h;
 }
 
-function pageLocate(dis){
-  var state = historyState();
-  var rows = state ? state.rows : [];
-  var h = '<div class="ops-actions">';
-  h += '<button class="btn-green" onclick="locNow()"'+dis+'>立即更新位置</button>';
-  h += '<button class="btn-gray" onclick="clearHistoryMarker();flyTo(selDev)">实时位置</button>';
-  var device=currentDev(), task=device && device.task;
-  if(task && task.type==='locate_now') {
-    var outcomes={'location-sampled':'已取得新坐标','location-timeout':'未取得新坐标，采样超时','location-location_disabled':'系统定位已关闭','location-permission_denied':'定位权限不可用','location-provider_unavailable':'定位服务不可用'};
-    h += '<span class="muted">'+esc(outcomes[task.detail]||task.label||'等待设备')+'</span>';
-  }
-  h += "</div>";
-  if(!state) return h;
-  h += '<div class="ops-actions" style="margin-top:8px"><label>开始 <input class="inp" type="datetime-local" aria-label="开始时间" value="'+esc(state.from)+'" onchange="historyState().from=this.value"></label>';
-  h += '<label>结束 <input class="inp" type="datetime-local" aria-label="结束时间" value="'+esc(state.to)+'" onchange="historyState().to=this.value"></label>';
-  h += '<button class="btn-gray" onclick="queryHistory(false)"'+(state.loading?' disabled':'')+'>查询历史</button></div>';
-  h += '<p class="muted">筛选时间：浏览器本地时间；记录时间：悉尼</p>';
-  if(state.error) h += '<p role="alert">'+esc(state.error)+'</p>';
-  h += '<div style="overflow:auto;max-height:360px"><table style="margin-top:.55rem;min-width:540px"><thead><tr><th>上报 / 采样 / 接收时间</th><th>位置</th><th>公网 IP</th></tr></thead><tbody>';
-  if(!rows.length) h += '<tr><td colspan="3" class="muted">'+(state.loading?'查询中':state.loaded?'该时间范围没有记录':'尚未查询历史')+'</td></tr>';
-  else for(var i=0;i<rows.length;i++){
-    var r=rows[i], loc=r.location;
-    var label=loc ? locLabel(loc.source)+' · '+Number(loc.lat).toFixed(6)+' · '+Number(loc.lng).toFixed(6)+(loc.acc_m!=null?' · '+loc.acc_m+'m':'') : '无坐标 · '+(r.location_reason||r.location_status||'未提供');
-    h += '<tr><td>'+sydney(r.reported_at)+'<br><span class="muted">'+sydney(r.sample_at)+'<br>'+sydney(r.received_at)+'</span></td><td>';
-    h += loc ? '<button class="btn-gray" onclick="showHistoryRecord('+i+')">'+esc(label)+'</button>' : esc(label);
-    h += '</td><td>'+esc(r.ip||'—')+'</td></tr>';
-  }
-  h += "</tbody></table></div>";
-  if(state.cursor) h += '<button class="btn-gray" onclick="queryHistory(true)"'+(state.loading?' disabled':'')+'>更多记录</button>';
-  return h;
+var trajectoryLayer=null,trajectorySelectedLayer=null,trajectoryTimer=null;
+function historyState(){var u=uiOf();if(!u)return null;if(!u.history){var day=trafficDay();u.history={from:day,to:day,preset:'today',rows:[],media:[],events:[],selected:-1,loaded:false,loading:false,sequence:0,error:'',historical:false};}return u.history;}
+function trajectoryState(){return selFn==='locate'?historyState():null;}
+function trajectoryEvent(){var s=trajectoryState();return s&&s.historical?s.events[s.selected]:null;}
+function trajectoryClock(at){return new Date(at).toLocaleTimeString('en-GB',{timeZone:'Australia/Sydney',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});}
+function trajectoryPreset(preset){var s=historyState(),today=trafficDay();if(!s)return;s.preset=preset;if(preset==='today')s.from=s.to=today;else if(preset==='yesterday')s.from=s.to=shiftTrafficDay(today,-1);else if(preset==='week'){s.from=shiftTrafficDay(today,-6);s.to=today;}else{renderOps();return;}queryHistory();}
+function trajectoryDate(which,value){var s=historyState();s[which]=value;s.preset='custom';queryHistory();}
+async function queryHistory(){var s=historyState(),id=selDev;if(!s)return;var range;try{range=Trajectory.dayRange(s.from,s.to);if(range.from>range.to||range.to-range.from>366*86400000)throw Error('请选择不超过366天的有效日期范围');}catch(e){s.sequence++;s.loading=false;s.loaded=false;s.historical=false;trajectoryStopPlayer(s);trajectoryStopReplay();clearHistoryMarker();s.error=e.message;renderOps();return;}
+  var seq=++s.sequence;s.loading=true;s.error='';trajectoryStopPlayer(s);trajectoryStopReplay();s.historical=false;s.loaded=false;clearHistoryMarker();renderOps();
+  async function pages(path){var rows=[],cursor=null,seen=new Set();do{var q=new URLSearchParams({device_id:id,from:new Date(range.from).toISOString(),to:new Date(range.to).toISOString(),limit:'500'});if(cursor)q.set('cursor',cursor);var r=await fetch(path+'?'+q),x=await readServiceJson(r);if(s.sequence!==seq)return null;rows=rows.concat(x.records||[]);cursor=x.next_cursor;if(cursor&&seen.has(cursor))throw Error('历史分页未推进');seen.add(cursor);}while(cursor);return rows;}
+  try{var result=await Promise.all([pages('/api/devices/history'),pages('/api/devices/trajectory-media')]);if(seq!==s.sequence||!result[0]||!result[1])return;
+    s.track=Trajectory.build(result[0]);s.rows=s.track.rows;s.media=result[1];s.events=Trajectory.events(s.rows,s.media);s.selected=s.events.length-1;s.historical=s.selected>=0;s.viewFrom=range.from;s.viewTo=range.to;if(s.events.length){var pad=Math.max(900000,(s.events.at(-1).at-s.events[0].at)*.05);s.viewFrom=Math.max(range.from,s.events[0].at-pad);s.viewTo=Math.min(range.to,s.events.at(-1).at+pad);}s.loaded=true;s.range=range;
+  }catch(e){if(seq===s.sequence)s.error=e.message||'轨迹读取失败';}
+  finally{if(seq===s.sequence){s.loading=false;if(selDev===id&&selFn==='locate'){renderOps();trajectoryDrawMap(true);}}}
 }
-
-function localDateInput(date){
-  return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
+function pageLocate(){var s=historyState();if(!s)return '<p class="muted">请选择设备</p>';
+  var h='<section id="trajectoryPanel" class="trajectory-panel"><div class="trajectory-toolbar"><div class="trajectory-presets">';
+  [['today','今天'],['yesterday','昨天'],['week','最近7天'],['custom','自定义']].forEach(function(p){h+='<button type="button" class="'+(s.preset===p[0]?'active':'')+'" onclick="trajectoryPreset(\''+p[0]+'\')">'+p[1]+'</button>';});
+  h+='</div><div class="trajectory-dates"><input type="date" aria-label="轨迹开始日期" value="'+esc(s.from)+'" onchange="trajectoryDate(\'from\',this.value)"><span>—</span><input type="date" aria-label="轨迹结束日期" value="'+esc(s.to)+'" onchange="trajectoryDate(\'to\',this.value)"><button type="button" class="traffic-link" onclick="queryHistory()"'+(s.loading?' disabled':'')+'>刷新</button></div></div>';
+  if(s.error)h+='<p class="trajectory-error" role="alert">'+esc(s.error)+'</p>';
+  if(!s.loaded||!s.events.length)return h+'<div class="trajectory-empty">'+(s.loading?'轨迹读取中…':s.loaded?'该时间段没有记录':'请选择日期查看轨迹')+'</div></section>';
+  h+='<div class="trajectory-playbar"><button type="button" aria-label="上一个时间点" onclick="trajectorySelect(historyState().selected-1)">‹</button><button type="button" id="trajectoryPlay" onclick="trajectoryReplay()">'+(trajectoryTimer?'暂停':'播放轨迹')+'</button><button type="button" aria-label="下一个时间点" onclick="trajectorySelect(historyState().selected+1)">›</button><span id="trajectoryTime">'+esc(sydney(s.events[s.selected]?.at))+'</span><span class="trajectory-count">'+s.rows.length+' 次上报</span><button type="button" aria-label="放大时间轴" onclick="trajectoryZoom(.5)">＋</button><button type="button" aria-label="缩小时间轴" onclick="trajectoryZoom(2)">−</button><button type="button" class="traffic-link" onclick="trajectoryReturnLive()">返回实时</button></div>';
+  h+='<div id="trajectoryAxis">'+trajectoryAxisHtml(s)+'</div><div id="trajectoryDetail">'+trajectoryDetailHtml(s)+'</div></section>';return h;
 }
-function historyState(){
-  var u=uiOf(); if(!u) return null;
-  if(!u.history) u.history={from:localDateInput(new Date(Date.now()-86400000)),to:localDateInput(new Date()),rows:[],cursor:null,loading:false,loaded:false,error:'',sequence:0};
-  return u.history;
+function trajectoryAxisHtml(s){var span=Math.max(1,s.viewTo-s.viewFrom),percent=function(at){return Math.max(0,Math.min(100,(at-s.viewFrom)/span*100));};
+  var h='<div class="trajectory-axis" role="group" aria-label="横向轨迹时间轴">';
+  for(var i=0;i<5;i++){var at=Math.round((s.viewFrom+span*i/4)/60000)*60000;h+='<span class="trajectory-tick" style="left:'+i*25+'%"><time>'+esc(span>86400000?new Date(at).toLocaleDateString('en-GB',{timeZone:'Australia/Sydney',day:'2-digit',month:'2-digit'}):trajectoryClock(at))+'</time></span>';}
+  s.events.forEach(function(e,index){if(e.at<s.viewFrom||e.at>s.viewTo)return;h+='<button type="button" class="trajectory-point'+(index===s.selected?' selected':'')+'" data-track-index="'+index+'" style="left:'+percent(e.at)+'%" onclick="trajectorySelect('+index+')" aria-label="'+esc(sydney(e.at)+' 时间点')+'" title="'+esc(sydney(e.at))+'"></button>';});
+  h+='<i id="trajectoryCursor" style="left:'+percent(s.events[s.selected]?.at||s.viewFrom)+'%"></i></div><input class="trajectory-slider" type="range" aria-label="拖动选择轨迹时间" min="'+s.viewFrom+'" max="'+s.viewTo+'" step="1000" value="'+Math.max(s.viewFrom,Math.min(s.viewTo,s.events[s.selected]?.at||s.viewFrom))+'" oninput="trajectorySeek(Number(this.value))">';return h;
 }
-async function queryHistory(more){
-  var id=selDev, state=historyState(); if(!state || state.loading) return;
-  var from=new Date(state.from), to=new Date(state.to);
-  if(!state.from || !state.to || !isFinite(from.getTime()) || !isFinite(to.getTime()) || from>to){state.error='请选择有效的起止时间';renderOps();return;}
-  var range=from.toISOString()+'|'+to.toISOString();
-  if(more && state.range!==range) more=false;
-  var params=new URLSearchParams({device_id:id,from:from.toISOString(),to:to.toISOString(),limit:'100'});
-  if(more && state.cursor) params.set('cursor',state.cursor);
-  if(!more){state.rows=[];state.cursor=null;clearHistoryMarker();}
-  state.loading=true;state.error='';state.range=range;
-  var sequence=++state.sequence;renderOps();
-  try{
-    var response=await fetch('/api/devices/history?'+params.toString()), data=await response.json();
-    if(!response.ok || !data.ok) throw new Error(data.msg||'历史查询失败');
-    if(state.sequence!==sequence) return;
-    state.rows=more?state.rows.concat(data.records):data.records;
-    state.cursor=data.next_cursor;state.loaded=true;
-  }catch(error){state.error=error.message||'历史查询失败';}
-  finally{state.loading=false;if(selDev===id) renderOps();}
+function trajectoryDetailHtml(s){var e=s.events[s.selected];if(!e)return '';var r=e.record,p=Trajectory.location(r),battery=r?batteryText(r):'—',media=Trajectory.related(e,s.media).filter(function(m){return m.type!=='photo';});
+  function field(label,value){return '<div class="trajectory-detail-row"><span class="trajectory-field">'+label+'</span><span>'+esc(value)+'</span></div>';}
+  var h='<div class="trajectory-detail-list">'+field('时间',sydney(e.at))+field(r&&r.battery_present===false?'供电':'电量',battery);
+  h+=field('定位',p?locLabel(p.source)+(p.acc_m>0?' · '+Math.round(p.acc_m)+'m':'')+(Trajectory.quality(r)!=='good'?' · 不参与连线':''):'无对应位置');
+  media.forEach(function(m){var expired=m.expired||m.expires_at<=Date.now(),label=m.type==='audio'?'录音':'录像';h+='<div class="trajectory-detail-row"><span class="trajectory-field">'+label+'</span><span>'+esc(trajectoryClock(m.captured_at))+' · '+Math.floor(m.duration_ms/60000)+':'+String(Math.floor(m.duration_ms/1000)%60).padStart(2,'0')+(m.time_source==='server'?' · 时间近似':'')+(expired?' · 已过期':!m.complete?' · 未完整结束':'')+'</span>'+(expired?'':'<button type="button" class="traffic-link" aria-label="播放'+label+'" onclick="trajectoryPlayMedia(\''+esc(m.type+':'+m.id)+'\')">播放</button>')+'</div>';});
+  return h+'</div>';
 }
-function clearHistoryMarker(){
-  if(historyMarker && map) map.removeLayer(historyMarker);
-  historyMarker=null;
+function trajectorySeek(at){var s=historyState();if(s&&s.events.length)trajectorySelect(Trajectory.nearest(s.events,at));}
+function trajectorySelect(index,keepPlayer){var s=historyState();if(!s||index<0||index>=s.events.length)return;if(index===s.selected&&s.historical&&!s.playItem&&!keepPlayer){trajectoryStopReplay();return;}if(!keepPlayer){trajectoryStopPlayer(s);trajectoryStopReplay();}var restoreTrack=!s.historical;s.selected=index;s.historical=true;if(restoreTrack)trajectoryDrawMap(false);
+  var e=s.events[index];if(e.at<s.viewFrom||e.at>s.viewTo){var span=s.viewTo-s.viewFrom;s.viewFrom=Math.max(s.range.from,e.at-span/2);s.viewTo=Math.min(s.range.to,s.viewFrom+span);if($('trajectoryAxis'))$('trajectoryAxis').innerHTML=trajectoryAxisHtml(s);}
+  if($('trajectoryDetail'))$('trajectoryDetail').innerHTML=trajectoryDetailHtml(s);if($('trajectoryTime'))$('trajectoryTime').textContent=sydney(e.at);
+  if($('trajectoryAxis')){var input=$('trajectoryAxis').querySelector('input');if(input)input.value=e.at;$('trajectoryAxis').querySelectorAll('[data-track-index]').forEach(function(el){el.classList.toggle('selected',Number(el.dataset.trackIndex)===index);});}
+  if($('trajectoryCursor'))$('trajectoryCursor').style.left=Math.max(0,Math.min(100,(e.at-s.viewFrom)/(s.viewTo-s.viewFrom)*100))+'%';
+  trajectoryDrawSelected(true);renderRemoteConsole();
 }
-function showHistoryRecord(index){
-  var state=historyState(), record=state && state.rows[index];
-  if(!record || !record.location || !map) return;
-  clearHistoryMarker();
-  var loc=record.location;
-  historyMarker=L.marker([loc.lat,loc.lng],{zIndexOffset:1000}).addTo(map)
-    .bindPopup('历史位置 · '+esc(sydney(record.timeline_at))).openPopup();
-  map.panTo([loc.lat,loc.lng]);
+function trajectoryZoom(factor){var s=historyState();if(!s||!s.range)return;var center=s.events[s.selected]?.at||s.viewFrom,span=Math.max(60000,Math.min(s.range.to-s.range.from,(s.viewTo-s.viewFrom)*factor));s.viewFrom=Math.max(s.range.from,Math.min(s.range.to-span,center-span/2));s.viewTo=s.viewFrom+span;$('trajectoryAxis').innerHTML=trajectoryAxisHtml(s);}
+function trajectoryStopReplay(){if(trajectoryTimer)clearInterval(trajectoryTimer);trajectoryTimer=null;if($('trajectoryPlay'))$('trajectoryPlay').textContent='播放轨迹';}
+function trajectoryReplay(){if(trajectoryTimer){trajectoryStopReplay();return;}var s=historyState();if(!s||!s.events.length)return;trajectoryStopPlayer(s);if(s.selected>=s.events.length-1)trajectorySelect(0,true);trajectoryTimer=setInterval(function(){if(selFn!=='locate'||document.hidden||s!==historyState()||s.selected>=s.events.length-1){trajectoryStopReplay();return;}trajectorySelect(s.selected+1,true);},1000);if($('trajectoryPlay'))$('trajectoryPlay').textContent='暂停';}
+function clearHistoryMarker(){if(historyMarker&&map)map.removeLayer(historyMarker);historyMarker=null;if(trajectoryLayer&&map)map.removeLayer(trajectoryLayer);trajectoryLayer=null;if(trajectorySelectedLayer&&map)map.removeLayer(trajectorySelectedLayer);trajectorySelectedLayer=null;Object.keys(markers).forEach(function(k){if(markers[k].setOpacity)markers[k].setOpacity(1);});Object.keys(circles).forEach(function(k){if(circles[k].setStyle)circles[k].setStyle({opacity:1,fillOpacity:.16});});}
+function trajectoryDrawMap(fit){var s=trajectoryState();clearHistoryMarker();if(!s||!s.historical||!s.track||!map||typeof L==='undefined')return;trajectoryLayer=L.layerGroup().addTo(map);Object.keys(markers).forEach(function(k){markers[k].setOpacity(.18);});Object.keys(circles).forEach(function(k){circles[k].setStyle({opacity:.08,fillOpacity:.01});});var points=[];
+  s.track.segments.forEach(function(segment){var coordinates=segment.map(function(i){var p=s.rows[i].location;points.push([p.lat,p.lng]);return [p.lat,p.lng];});if(coordinates.length>1)L.polyline(coordinates,{color:'#60a5fa',weight:2.5,opacity:.85}).addTo(trajectoryLayer);});
+  s.track.groups.forEach(function(group){var i=group[0],r=s.rows[i],p=r.location;var layer=L.circleMarker([p.lat,p.lng],{radius:group.length>1?6:4,color:'#cfe4ff',weight:1,fillColor:'#60a5fa',fillOpacity:1}).addTo(trajectoryLayer);layer.bindTooltip(esc(trajectoryClock(Trajectory.time(r.timeline_at)))+(group.length>1?'—'+esc(trajectoryClock(Trajectory.time(s.rows[group.at(-1)].timeline_at)))+' · '+group.length+'次上报':''));layer.on('click',function(){trajectorySelect(s.events.findIndex(function(e){return e.index===i;}));});});
+  s.track.areas.forEach(function(i){var p=s.rows[i].location;points.push([p.lat,p.lng]);var circle=L.circle([p.lat,p.lng],{radius:Number(p.acc_m)>0?Number(p.acc_m):2000,color:'#94a3b8',weight:1,fillOpacity:.035,dashArray:'3 5'}).addTo(trajectoryLayer);circle.on('click',function(){trajectorySelect(s.events.findIndex(function(e){return e.index===i;}));});});
+  if(fit&&points.length)map.fitBounds(points,{padding:[30,30],maxZoom:17});trajectoryDrawSelected(false);
+}
+function trajectoryDrawSelected(pan){if(trajectorySelectedLayer&&map)map.removeLayer(trajectorySelectedLayer);trajectorySelectedLayer=null;var e=trajectoryEvent(),p=e&&Trajectory.location(e.record);if(!p||!map)return;trajectorySelectedLayer=L.layerGroup().addTo(map);if(p.acc_m>0)L.circle([p.lat,p.lng],{radius:p.acc_m,color:'#f5c451',weight:1,fillOpacity:.08}).addTo(trajectorySelectedLayer);L.circleMarker([p.lat,p.lng],{radius:6,color:'#fff0c2',weight:2,fillColor:'#f5c451',fillOpacity:1}).addTo(trajectorySelectedLayer).bindTooltip(esc(trajectoryClock(e.at)),{permanent:true,direction:'top',className:'trajectory-tooltip'});if(pan)map.panTo([p.lat,p.lng],{animate:false});}
+function trajectoryStopPlayer(s){if(!s)return;if(s.playerNode){var el=s.playerNode.querySelector('audio,video');if(el){el.pause();el.removeAttribute('src');el.load();}s.playerNode=null;}if(s.audioFrame)cancelAnimationFrame(s.audioFrame);s.audioFrame=null;if(s.audioContext)s.audioContext.close().catch(function(){});s.audioContext=null;s.playItem=null;}
+function trajectoryReturnLive(){var s=historyState();if(s){trajectoryStopPlayer(s);s.historical=false;}trajectoryStopReplay();clearHistoryMarker();renderRemoteConsole();}
+function trajectoryLeave(){var s=historyState();if(s)s.historical=false;trajectoryStopPlayer(s);trajectoryStopReplay();clearHistoryMarker();}
+function trajectoryPhotoStep(delta){var s=historyState(),e=trajectoryEvent();if(!s||!e)return;var indices=s.events.map(function(e,i){return Trajectory.related(e,s.media).some(function(m){return m.type==='photo';})?i:-1;}).filter(function(i){return i>=0;});var next=delta>0?indices.find(function(i){return i>s.selected;}):indices.slice().reverse().find(function(i){return i<s.selected;});if(next!=null)trajectorySelect(next);}
+function trajectoryPreview(){var s=trajectoryState(),e=trajectoryEvent();if(!s||!e)return null;if(s.playItem)return '<div class="remote-preview trajectory-player"></div>';var photos=Trajectory.related(e,s.media).filter(function(m){return m.type==='photo';}),p=photos[0],expired=p&&(p.expired||p.expires_at<=Date.now());var h='<div class="remote-preview trajectory-photo">';
+  h+=p&&!expired?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:selDev,report_id:p.report_id}).toString())+'" alt="所选时刻照片" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>照片暂不可用</span>':'<span>'+(expired?'照片已过期':'此时没有照片')+'</span>';
+  h+='<button type="button" class="photo-nav photo-prev" aria-label="上一张历史照片" onclick="trajectoryPhotoStep(-1)">‹</button><button type="button" class="photo-nav photo-next" aria-label="下一张历史照片" onclick="trajectoryPhotoStep(1)">›</button><time class="photo-time">'+esc(sydney(p?p.captured_at:e.at))+'</time></div>';return h;
+}
+function trajectoryPlayMedia(key){var s=historyState(),item=s&&s.media.find(function(m){return m.type+':'+m.id===key;});if(!item||item.expired||item.expires_at<=Date.now())return;if(typeof ElfMedia!=='undefined'&&ElfMedia.isActive()){s.error='请先结束实时通信';renderOps();return;}trajectoryStopReplay();trajectoryStopPlayer(s);s.playItem=item;s.historical=true;renderRemoteConsole();}
+function trajectoryMount(){var s=trajectoryState();if(!s||!s.playItem)return;var placeholder=document.querySelector('#remoteConsole .trajectory-player');if(!placeholder)return;if(s.playerNode){placeholder.replaceWith(s.playerNode);return;}var m=s.playItem;s.playerNode=placeholder;placeholder.innerHTML='<'+(m.type==='audio'?'audio':'video')+' controls playsinline preload="metadata"></'+(m.type==='audio'?'audio':'video')+'>'+(m.type==='audio'?'<canvas aria-label="历史录音波形"></canvas>':'')+'<time class="photo-time">'+esc(sydney(m.captured_at))+'</time>';var el=placeholder.querySelector('audio,video');el.src='/api/elfremote/media-recordings?'+new URLSearchParams({device_id:selDev,id:m.id});el.onloadedmetadata=function(){el.play().catch(function(){});};
+  el.ontimeupdate=function(){if(s!==historyState()||!s.playItem)return;var at=m.captured_at+el.currentTime*1000,index=Trajectory.playbackIndex(s.events,m,at);if(index>=0&&index!==s.selected)trajectorySelect(index,true);var t=s.playerNode&&s.playerNode.querySelector('time');if(t)t.textContent=sydney(at);};
+  if(m.type==='audio')el.onplay=function(){try{if(!s.audioContext){s.audioContext=new AudioContext();var source=s.audioContext.createMediaElementSource(el),analyser=s.audioContext.createAnalyser();analyser.fftSize=512;source.connect(analyser);analyser.connect(s.audioContext.destination);s.analyser=analyser;}s.audioContext.resume();var canvas=placeholder.querySelector('canvas');canvas.width=600;canvas.height=140;var ctx=canvas.getContext('2d'),samples=new Uint8Array(s.analyser.frequencyBinCount);function draw(){if(!s.playerNode||el.paused)return;s.analyser.getByteTimeDomainData(samples);ctx.clearRect(0,0,600,140);ctx.strokeStyle='#60a5fa';ctx.beginPath();samples.forEach(function(v,i){var x=i/samples.length*600,y=v/128*70;if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();s.audioFrame=requestAnimationFrame(draw);}if(s.audioFrame)cancelAnimationFrame(s.audioFrame);draw();}catch(e){}}
 }
 
 var DAILY_CACHE={}, DAILY_LAST={}, DAILY_FAILURES={}, TRAFFIC_HISTORY={seq:0};
@@ -1192,12 +1233,14 @@ function renderRemoteConsole(){
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
   var errorText=serviceErrorText();
   var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3><span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
-  var media=typeof ElfMedia!=='undefined'?ElfMedia:null;
-  h+=(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d))+'<div class="remote-controls">';
+  var media=typeof ElfMedia!=='undefined'?ElfMedia:null,historical=trajectoryPreview();
+  if(trajectoryEvent())h+='<div class="trajectory-preview-caption">历史 · '+esc(sydney(trajectoryEvent().at))+'<button type="button" class="traffic-link" onclick="trajectoryReturnLive()">返回实时</button></div>';
+  h+=(historical&&!(media&&media.isActive())?historical:(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d)))+'<div class="remote-controls">';
   h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
   h+='</div>'+(media?media.feedback(d):'')+'<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;
   if(media)media.mount(d);
+  trajectoryMount();
   if(d)loadReportPhotos(d);
   if(d && !document.hidden && (!cached||(cached.error&&Date.now()>=cached.retryAt))){
     DAILY_CACHE[key]={pending:true};

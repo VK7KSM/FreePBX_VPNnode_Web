@@ -1,3 +1,4 @@
+import {archiveMedia} from './trajectory-media.js';
 import {authJson as json} from './admin-auth.js';
 import {webmDuration} from './webm-duration.js';
 const TTL=7*86400000,MAX_PART=8*1024*1024,MAX_TOTAL=512*1024*1024;
@@ -22,7 +23,7 @@ export async function recordingMetadata(storage,request,loadDevices,now=Date.now
       const record={id:p.id,device_id:p.device_id,type:p.type,mime:p.mime,captured_at:now,expires_at:now+TTL,expiry_key:expiry,parts:[],bytes:0,ready:false,duration_ms:0,complete:false};
       await storage.put(k,record);await storage.put(expiry,{device_id:p.device_id,id:p.id});return json({ok:true,record});
     }
-    if(p.action==='removed'){if(old&&old.expires_at<=now){await storage.delete(old.expiry_key);await storage.delete(k);}return json({ok:true});}
+    if(p.action==='removed'){if(old&&old.expires_at<=now){if(old.ready)await archiveMedia(storage,old);await storage.delete(old.expiry_key);await storage.delete(k);}return json({ok:true});}
     if(!old||old.expires_at<=now&&p.action!=='cleanup')return json({ok:false,msg:'录制记录已过期或不存在'},404);
     if(p.action==='get'||p.action==='cleanup')return json({ok:true,record:old});
     if(p.action==='part'){
@@ -31,15 +32,19 @@ export async function recordingMetadata(storage,request,loadDevices,now=Date.now
       if(previous)return previous.bytes===p.bytes&&previous.sha256===p.sha256?json({ok:true,part:previous}):json({ok:false,msg:'录制分段不一致'},409);
       if(old.complete||p.index!==old.parts.length||old.bytes+p.bytes>MAX_TOTAL)throw Error('录制分段顺序或大小无效');
       const part={index:p.index,bytes:p.bytes,sha256:p.sha256,key:'media-recordings/'+p.device_id+'/'+p.id+'/'+p.index+'/'+p.sha256};
+      if(!old.parts.length&&p.captured_at!=null){
+        if(!Number.isFinite(p.captured_at)||Math.abs(now-p.captured_at)>86400000)throw Error('录制开始时间无效');
+        old.captured_at=p.captured_at;old.time_source='browser';
+      }
       old.parts.push(part);old.bytes+=p.bytes;old.ready=true;
       old.duration_ms=Math.max(old.duration_ms,Math.min(1800000,Math.max(0,Number(p.duration_ms)||0)));
-      await storage.put(k,old);return json({ok:true,part});
+      await storage.put(k,old);if(old.parts.length===1)await archiveMedia(storage,old);return json({ok:true,part});
     }
     if(p.action==='finish'){
       if(old.complete&&old.header_finalized)return json({ok:true,record:old});
       if(p.parts!==old.parts.length||!old.parts.length)throw Error('录制分段尚未全部保存');
       if(p.header){const count=p.header.part_count;if(!Number.isInteger(count)||count<1||count>old.parts.length||p.header.bytes<1||p.header.bytes>MAX_PART+65536+64||p.header.key!=='media-recordings/'+p.device_id+'/'+p.id+'/header/'+p.header.sha256)throw Error('录制文件头无效');old.bytes+=p.header.bytes-old.parts.slice(0,count).reduce((n,p)=>n+p.bytes,0);old.parts.splice(0,count,{...p.header,index:0});}
-      old.complete=true;old.header_finalized=!!p.header||!old.mime.includes('webm');old.duration_ms=Math.min(1800000,Math.max(old.duration_ms,Number(p.duration_ms)||0));await storage.put(k,old);return json({ok:true,record:old});
+      old.complete=true;old.header_finalized=!!p.header||!old.mime.includes('webm');old.duration_ms=Math.min(1800000,Math.max(old.duration_ms,Number(p.duration_ms)||0));await storage.put(k,old);await archiveMedia(storage,old);return json({ok:true,record:old});
     }
     throw Error('录制操作无效');
   }catch(e){return json({ok:false,msg:e.message},400);}
@@ -82,7 +87,7 @@ export async function recordingHttp(env,request,stub){
       // 同一序号内容相同才可重试；对象写完后才登记可见分段。
       const key='media-recordings/'+p.device_id+'/'+p.id+'/'+index+'/'+hash;
       if(!previous)await env.ELF_ARTIFACTS.put(key,bytes,{sha256:hash,httpMetadata:{contentType:record.mime}});
-      return rpc(stub,{...p,action:'part',index,bytes:n,sha256:hash,duration_ms:Number(u.searchParams.get('duration_ms'))});
+      return rpc(stub,{...p,action:'part',index,bytes:n,sha256:hash,duration_ms:Number(u.searchParams.get('duration_ms')),captured_at:u.searchParams.has('captured_at')?Number(u.searchParams.get('captured_at')):undefined});
     }
     if(request.method!=='GET')return json({ok:false},405);
     if(u.searchParams.get('list')==='1')return rpc(stub,{action:'list',device_id:p.device_id});

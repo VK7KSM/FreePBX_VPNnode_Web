@@ -107,33 +107,28 @@ test('通信录显示真实号码，操作传递稳定编号且不提前伪造�
   assert.equal(sent[4].params.password,'fixture-pass');assert.equal(context.DEV[0].contacts.items.length,1);
 });
 
-test("历史查询切设备不串台，翻页保持范围，修改范围重新查询", async () => {
-  let resolveResponse, requested;
+test("轨迹自动翻页、切设备隔离和改变日期后的竞态", async () => {
+  const pending=[];
   const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},
-    fetch(url){requested=url;return new Promise(resolve=>{resolveResponse=resolve;});}});
-  vm.runInContext(source,context);
-  context.renderOps=()=>{};
-  context.DEV=[{id:"a"},{id:"b"}];context.selDev="a";
-  const state=context.historyState();
-  state.from="2026-09-01T00:00";state.to="2026-09-02T00:00";
-  const first=context.queryHistory(false);
-  context.selDev="b";
-  resolveResponse({ok:true,json:async()=>({ok:true,records:[{report_id:"one"}],next_cursor:"next"})});
-  await first;
-  assert.equal(context.historyState().rows.length,0);
-  assert.equal(state.rows[0].report_id,"one");
-  context.selDev="a";
-  const second=context.queryHistory(true);
-  assert.equal(new URL(requested,"https://example.test").searchParams.get("cursor"),"next");
-  resolveResponse({ok:true,json:async()=>({ok:true,records:[{report_id:"two"}],next_cursor:null})});
-  await second;
-  assert.equal(state.rows.length,2);
-  state.to="2026-09-03T00:00";
-  const third=context.queryHistory(true);
-  assert.equal(new URL(requested,"https://example.test").searchParams.has("cursor"),false);
-  resolveResponse({ok:false,json:async()=>({ok:false,msg:"测试错误"})});
-  await third;
-  assert.equal(state.error,"测试错误");assert.equal(state.loading,false);
+    document:{getElementById:()=>null},fetch(url){return new Promise(resolve=>pending.push({url,resolve}));}});
+  vm.runInContext(source,context);context.renderOps=()=>{};context.trajectoryDrawMap=()=>{};
+  context.DEV=[{id:"a"},{id:"b"}];context.selDev="a";context.selFn='locate';
+  const state=context.historyState();state.from="2026-09-01";state.to="2026-09-02";
+  const respond=(p,records,next_cursor=null)=>p.resolve({ok:true,json:async()=>({ok:true,records,next_cursor})});
+  const first=context.queryHistory();assert.equal(pending.length,2);context.selDev="b";
+  respond(pending[0],[{report_id:'one',timeline_at:'2026-09-01T00:00:00Z'}],'next');respond(pending[1],[]);
+  await new Promise(r=>setImmediate(r));assert.equal(pending.length,3);
+  assert.equal(new URL(pending[2].url,'https://example.test').searchParams.get('cursor'),'next');
+  respond(pending[2],[{report_id:'two',timeline_at:'2026-09-01T01:00:00Z'}]);await first;
+  assert.equal(context.historyState().rows.length,0);assert.equal(state.rows.length,2);
+  context.selDev='a';const second=context.queryHistory();state.to='2026-09-03';const third=context.queryHistory();
+  assert.equal(new URL(pending[5].url,'https://example.test').searchParams.has('cursor'),false);
+  assert.equal(new URL(pending[5].url,'https://example.test').searchParams.get('to'),'2026-09-03T13:59:59.999Z');
+  respond(pending[5],[{report_id:'new',timeline_at:'2026-09-03T00:00:00Z'}]);respond(pending[6],[]);await third;
+  respond(pending[3],[{report_id:'stale',timeline_at:'2026-09-01T00:00:00Z'}]);respond(pending[4],[]);await second;
+  assert.equal(state.rows[0].report_id,'new');assert.equal(state.loading,false);
+  const failed=context.queryHistory();pending[7].resolve({ok:false,json:async()=>({ok:false,msg:'测试错误'})});respond(pending[8],[]);await failed;
+  assert.equal(state.error,'测试错误');assert.equal(state.historical,false);assert.equal(state.loaded,false);
 });
 
 test("远程定位失败不制造历史，流量缺失不伪装为零", async () => {

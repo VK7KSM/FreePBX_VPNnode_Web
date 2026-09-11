@@ -1,3 +1,4 @@
+import {archiveMedia} from './trajectory-media.js';
 import {authJson as json} from './admin-auth.js';
 export const PHOTO_MAX=256*1024;
 const TTL=7*86400000;
@@ -29,6 +30,7 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
     if(p.action==='get')return old?.ready&&old.expires_at>now?json({ok:true,photo:old}):json({ok:false,msg:'照片不可用'},404);
     if(p.action==='removed'){
       if(old&&old.expires_at<=now){
+        if(old.ready)await archiveMedia(storage,old,'photo');
         await storage.delete(old.expiry_key);await storage.delete(k);await storage.delete('manual-photo/'+p.device_id+'/'+p.report_id);
         const devices=await loadDevices(),d=devices.find(d=>d.id===p.device_id);
         if(d?.report_photo?.report_id===p.report_id){delete d.report_photo;await saveDevices(devices);}
@@ -50,14 +52,14 @@ export async function photoMetadata(storage,request,loadDevices,saveDevices,now=
       if(old)return old.sha256===p.sha256&&old.bytes===p.bytes?json({ok:true,photo:old}):json({ok:false,msg:'同次照片内容不一致'},409);
       const expires=now+TTL,expiry='report-photo-expiry/'+String(expires).padStart(13,'0')+'/'+device.id+'/'+p.report_id;
       const photo={device_id:device.id,report_id:p.report_id,bytes:p.bytes,sha256:p.sha256,captured_at:new Date(p.captured_at).toISOString(),
-        report_received_at:report.received_at,expires_at:expires,expiry_key:expiry,ready:false,
+        manual:isManual,report_timeline_at:isManual?null:report.timeline_at,report_received_at:report.received_at,expires_at:expires,expiry_key:expiry,ready:false,
         object_key:'report-photos/'+device.id+'/'+p.report_id+'/'+p.sha256+'.jpg',
         url:'/api/elfremote/report-photo?'+new URLSearchParams({device_id:device.id,report_id:p.report_id})};
       await storage.put(k,photo);await storage.put(expiry,photo);return json({ok:true,photo});
     }
     if(p.action==='commit'){
       if(!old||old.sha256!==p.sha256||old.expires_at<=now)return json({ok:false,msg:'照片接收记录不匹配'},409);
-      old.ready=true;await storage.put(k,old);
+      old.ready=true;await storage.put(k,old);await archiveMedia(storage,old,'photo');
       if(!device.report_photo||old.report_received_at>device.report_photo.report_received_at
         ||(old.report_received_at===device.report_photo.report_received_at&&old.report_id>device.report_photo.report_id)){
         device.report_photo={report_id:old.report_id,captured_at:old.captured_at,bytes:old.bytes,sha256:old.sha256,

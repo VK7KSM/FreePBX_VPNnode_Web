@@ -23,6 +23,7 @@ on:
       - "terminal-assets.js"
       - "admin-session.js"
       - "location-history.js"
+      - "trajectory-media.js"
       - "device-identity.js"
       - "release-channels.js"
       - "traffic.js"

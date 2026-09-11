@@ -40,22 +40,32 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
   const event=normalizeReportEvent(data.report_event);
   const content = JSON.stringify({ reported_at: reported, gps: data.gps || null, wifi: data.wifi || null,
     cell: data.cell || null, network: data.network || "unknown", battery: data.battery ?? null,
+    charging: typeof data.charging === "boolean" ? data.charging : null, battery_present: typeof data.battery_present === "boolean" ? data.battery_present : null,
     app_version: data.app_version || "", os_version: data.os_version || "", ready: data.ready ?? null,
     status_request_id: data.status_request_id || null, ...(data.radio ? {radio:data.radio} : {}), ...(traffic == null ? {} : { traffic }),...(event?{report_event:event}:{}) });
   const hash = await sha(content);
   const previous = await storage.get(dedupKey);
   if (previous) {
-    if (previous.hash !== hash) throw new Error("同一上报编号的内容不一致");
+    let expected = hash;
+    // 旧去重合同没有充电字段；升级不能拒绝客户端队列中的原报告重试。
+    if (previous.hash_version !== 2) {
+      const legacy = JSON.parse(content); delete legacy.charging; delete legacy.battery_present;
+      expected = await sha(JSON.stringify(legacy));
+    }
+    if (previous.hash !== expected) throw new Error("同一上报编号的内容不一致");
     return { duplicate: true, record: await storage.get(previous.key) };
   }
   const record = { device_id: device, installation_id: installation, report_id: id, reported_at: reported, received_at: received,
     report_reason: event?.type || String(data.report_reason || (data.status_request_id ? "requested" : "unknown")).slice(0,40),
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
+    battery: data.battery!=null&&Number.isFinite(Number(data.battery))?Math.max(0,Math.min(100,Math.round(Number(data.battery)))):null,
+    charging:typeof data.charging==='boolean'?data.charging:null,battery_present:typeof data.battery_present==='boolean'?data.battery_present:null,
+    report_interval_ms:data.network==='wifi'||data.network==='ethernet'?900000:3600000,
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
     location_reason: String(data.location_reason || "").slice(0,120), ...(data.network_location_reason ? {network_location_reason:String(data.network_location_reason).slice(0,40)} : {}), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };
   const key = prefix(device) + timeline + "/" + id;
   await storage.put(key, record);
-  await storage.put(dedupKey, { key, hash });
+  await storage.put(dedupKey, { key, hash, hash_version: 2 });
   return { duplicate: false, record };
 }
 
