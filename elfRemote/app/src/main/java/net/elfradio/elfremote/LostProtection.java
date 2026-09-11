@@ -150,8 +150,8 @@ final class LostProtection implements Closeable {
             JSONObject s=edit(value->{});long wall=System.currentTimeMillis(),elapsed=SystemClock.elapsedRealtime();String boot=boot();
             long left=LostTimer.remaining(s,wall,elapsed,boot);
             if(s.has("manual_task")&&"armed".equals(s.optString("wipe_state")))left=Math.max(0,s.optLong("manual_due")-wall);
-            if(left==Long.MAX_VALUE){wake.cancel("lost-deadline");notification(0);return;}
-            notification(wall+left);
+            if(left==Long.MAX_VALUE){wake.cancel("lost-deadline");notification(0,s.optBoolean("enabled"));return;}
+            notification(wall+left,s.optBoolean("enabled"));
             if(left>0){wake.schedule("lost-deadline",left,this::evaluate);return;}
             final boolean[] start={false};
             edit(current->{
@@ -168,10 +168,10 @@ final class LostProtection implements Closeable {
             finally{wake.release("lost-wipe");}
         }catch(Exception error){RuntimeLog.event("lost-guard-state-unavailable");wake.cancel("lost-deadline");}
     }
-    private void notification(long deadline){
+    private void notification(long deadline,boolean enabled){
         try{
             // Android 8的锁屏不会可靠显示root UID通知，交给应用UID显示；广播仅刷新只读状态。
-            java.lang.Process p=new ProcessBuilder("/system/bin/am","broadcast","--user","0","-n",BuildConfig.APPLICATION_ID+"/net.elfradio.elfremote.LostNoticeReceiver","--el","deadline_at",Long.toString(deadline)).redirectErrorStream(true).start();
+            java.lang.Process p=new ProcessBuilder("/system/bin/am","broadcast","--user","0","-n",BuildConfig.APPLICATION_ID+"/net.elfradio.elfremote.LostNoticeReceiver","--el","deadline_at",Long.toString(deadline),"--ez","lost_enabled",Boolean.toString(enabled)).redirectErrorStream(true).start();
             if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();RuntimeLog.event("lost-notice-dispatch-pending");}
         }catch(Exception error){RuntimeLog.error("lost-notice-dispatch-failed",error);}
     }

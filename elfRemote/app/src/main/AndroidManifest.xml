@@ -53,6 +53,7 @@
 
         <receiver android:name=".WakeReceiver" android:exported="false" />
         <receiver android:name=".LostNoticeReceiver" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".LostScreenActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTop" android:theme="@android:style/Theme.Material.NoActionBar" />
 
         <receiver
             android:name=".BootReceiver"

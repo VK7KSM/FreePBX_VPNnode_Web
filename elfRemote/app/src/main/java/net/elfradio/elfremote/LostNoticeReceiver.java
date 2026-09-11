@@ -11,6 +11,7 @@ public final class LostNoticeReceiver extends BroadcastReceiver {
         try{
             JSONObject mode=CoreClient.request("/lost/status",null);if(mode==null)return;
             display(context,mode.optLong("deadline_at"));
+            LostScreenActivity.refresh(context,mode);
         }catch(Exception error){RuntimeLog.error("lost-notice-pending",error);}
     }
     static synchronized void display(Context context,long deadline){
@@ -30,7 +31,11 @@ public final class LostNoticeReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context,Intent intent){
         PendingResult pending=goAsync();new Thread(()->{try{
             // 显式广播受DUMP权限保护；直接使用独立核心的截止时间，避免通知依赖本机HTTP。
-            if(intent.hasExtra("deadline_at"))display(context,intent.getLongExtra("deadline_at",0));else update(context);
+            if(intent.hasExtra("deadline_at")){
+                long deadline=intent.getLongExtra("deadline_at",0);display(context,deadline);
+                try{LostScreenActivity.refresh(context,new JSONObject().put("enabled",intent.getBooleanExtra("lost_enabled",false)).put("deadline_at",deadline));}
+                catch(Exception error){RuntimeLog.error("lost-screen-pending",error);}
+            }else update(context);
         }finally{pending.finish();}},"elfremote-lost-notice").start();
     }
 }

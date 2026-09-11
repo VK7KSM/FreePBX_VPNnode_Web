@@ -26,7 +26,7 @@ final class LostMode {
                 if(input.optBoolean("enabled")||!"lost-dismiss-failed".equals(failure.getMessage()))throw failure;
                 RuntimeLog.event("lost-exit-refresh-retry");result=admin(request);
             }
-            LostNoticeReceiver.display(context,result.optLong("deadline_at"));return result;
+            LostNoticeReceiver.display(context,result.optLong("deadline_at"));LostScreenActivity.refresh(context,result);return result;
         }
         JSONObject params=LostModePolicy.params(input);
         if(params.getBoolean("enabled") && !state.contains("original")) {
