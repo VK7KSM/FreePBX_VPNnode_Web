@@ -103,7 +103,7 @@ final class LostProtection implements Closeable {
                 }
                 // 先保存恢复材料；系统调用中断也不能丢掉已设置的密码。
                 s.put("credential",password).put("state","pending");RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
-                android.provider.Settings.Global.putInt(context.getContentResolver(),"require_password_to_decrypt",0);
+                system.decryptSetting("0");
                 system.password(password,existing);if(!system.secure()||!system.verify(password))throw new IllegalStateException("lost-system-password-failed");
                 system.owner(new JSONObject().put("enabled",true).put("message",input.getString("message")));system.lock();
                 if(!system.locked())throw new IllegalStateException("lost-system-lock-pending");
@@ -120,7 +120,7 @@ final class LostProtection implements Closeable {
                 if(s.has("original_owner")){
                     system.owner(s.getJSONObject("original_owner"));
                     system.disabled(s.optBoolean("original_lock_disabled"));
-                    android.provider.Settings.Global.putString(context.getContentResolver(),"require_password_to_decrypt",s.has("original_decrypt_setting")?s.getString("original_decrypt_setting"):null);
+                    system.decryptSetting(s.has("original_decrypt_setting")?s.getString("original_decrypt_setting"):null);
                 }
                 for(String key:new String[]{"credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled"})s.remove(key);
             }
