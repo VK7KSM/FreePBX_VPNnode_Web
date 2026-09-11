@@ -17,7 +17,7 @@ test('丢失模式退出关闭自毁，状态回执和公开结果不返回密�
   assert.equal(d.task.state,'running');
 });
 test('擦除确认绑定设备且两分钟过期，旧客户端或离线设备不能准备',()=>{
-  const now=Date.now(),d={managed_lost_v2:true,managed_wipe_v1:true,last_seen:new Date(now).toISOString()};
+  const now=Date.now(),d={managed_lost_v2:true,managed_wipe_v1:true,managed_lost_safety_v1:true,lost_mode:{revision:"initial",revision_seq:0,state:"disabled"},last_seen:new Date(now).toISOString()};
   const c=prepareWipe(d,'擦除数据',now),params={phrase:'擦除数据',confirmation_id:c.id};
   assert.equal(authorizeWipe(d,params,now+119999),now+120000);
   assert.throws(()=>authorizeWipe(d,params,now+120000));
@@ -28,7 +28,7 @@ test('擦除确认绑定设备且两分钟过期，旧客户端或离线设备�
 });
 test('擦除HTTP入口必须先准备确认，确认消耗后不能重复下发，不接受成功假回执',async()=>{
   const token='fixture-wipe-device-token';
-  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'test',status_only:true,enabled:true,last_seen:new Date().toISOString(),managed_lost_v2:true,managed_wipe_v1:true,token_sha256:createHash('sha256').update(token).digest('hex')}]});
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'test',status_only:true,enabled:true,last_seen:new Date().toISOString(),managed_lost_v2:true,managed_wipe_v1:true,managed_lost_safety_v1:true,lost_mode:{revision:"initial",revision_seq:0,state:"disabled"},token_sha256:createHash('sha256').update(token).digest('hex')}]});
   const cookie=await login(f),call=body=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'test',...body},cookie),f.env);
   assert.equal((await call({type:'wipe_data',params:{phrase:'擦除数据',confirmation_id:crypto.randomUUID()}})).status,400);
   const prepared=await (await call({action:'prepare_wipe',phrase:'擦除数据'})).json();assert.equal(prepared.ok,true);
@@ -42,7 +42,7 @@ test('擦除HTTP入口必须先准备确认，确认消耗后不能重复下发�
 test('丢失页面只保留锁屏和清除，切换设备后不得继续确认旧设备',async()=>{
   const source=await readFile('devices-client.js','utf8');
   const block=source.slice(source.indexOf('function pageLost('),source.indexOf('function lostRecTable'));
-  let device={id:'test',name:'测试设备',managed_lost_v2:true,managed_wipe_v1:true},calls=[];
+  let device={id:'test',name:'测试设备',managed_lost_v2:true,managed_wipe_v1:true,managed_lost_safety_v1:true,lost_mode:{revision:"initial",revision_seq:0,state:"disabled"}},calls=[];
   const elements={lostWipePhrase:{value:'擦除数据'}};
   const ctx={currentDev:()=>device,esc:s=>String(s),$:id=>elements[id],confirm:()=>true,crypto,Date,alert:()=>{},loadDevices:()=>{},fileApi:async(path,body)=>{calls.push(body);device={...device,id:'other'};return {confirmation:{id:crypto.randomUUID()}};}};
   vm.createContext(ctx);vm.runInContext(block,ctx);

@@ -60,20 +60,25 @@ final class LostMode {
         } catch(Exception error) {state.edit().putString("state","pending").commit();throw error;}
     }
     synchronized JSONObject snapshot() throws org.json.JSONException {
-        if(LostProtection.supported())try{JSONObject live=CoreClient.request("/lost/status",null);if(live!=null)return live;}catch(Exception ignored){}
+        if(LostProtection.supported()){
+            try{JSONObject live=CoreClient.request("/lost/status",null);if(live!=null){state.edit().putString("last_verified",live.toString()).apply();return live;}}catch(Exception ignored){}
+            JSONObject last=new JSONObject(state.getString("last_verified","{}"));return last.put("version",2).put("state","unknown");
+        }
         return new JSONObject().put("enabled",state.getBoolean("enabled",false)).put("message",state.getString("message",""))
                 .put("state",state.getString("state","disabled"));
     }
     synchronized JSONObject wipe(JSONObject input)throws Exception {return admin(new JSONObject(input.toString()).put("action","wipe"));}
     void contact(JSONObject reply){
         if(!LostProtection.supported())return;
-        try{admin(new JSONObject().put("action","contact").put("paired",reply.getBoolean("paired")).put("unpaired_at_ms",reply.optLong("unpaired_at_ms")));}
+        try{admin(new JSONObject().put("action","contact").put("paired",reply.getBoolean("paired")).put("unpaired_at_ms",reply.optLong("unpaired_at_ms")).put("server_time",reply.optLong("server_time")));}
         catch(Exception error){RuntimeLog.event("lost-contact-pending");}
     }
     boolean localUnlock()throws Exception {
-        JSONObject mode=snapshot();
-        if(mode.optInt("version")!=2||!mode.optBoolean("enabled")||mode.optBoolean("locked"))return false;
-        admin(new JSONObject().put("action","set").put("version",2).put("enabled",false).put("auto_wipe_enabled",false).put("task_id","local-"+java.util.UUID.randomUUID()).put("local_unlocked",true));
+        JSONObject mode=admin(new JSONObject().put("action","read"));
+        if(mode.optInt("version")!=2||(!mode.optBoolean("enabled")&&!"pending".equals(mode.optString("state")))||mode.optBoolean("locked")||"unknown".equals(mode.optString("state")))return false;
+        JSONObject exit=new JSONObject().put("version",2).put("enabled",false).put("auto_wipe_enabled",false).put("task_id","local-"+java.util.UUID.randomUUID()).put("local_unlocked",true);
+        // 正确系统密码后先取消计时；恢复异常按同一任务继续，不要求联网。
+        for(int attempt=0;;attempt++)try{set(exit);break;}catch(Exception failure){if(attempt>=2)throw failure;Thread.sleep(1000);}
         return true;
     }
     private synchronized JSONObject admin(JSONObject input)throws Exception {

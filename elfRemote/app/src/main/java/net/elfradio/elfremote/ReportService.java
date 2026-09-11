@@ -484,6 +484,7 @@ public final class ReportService extends Service {
         body.put("managed_config_tasks", WatchdogInstaller.ready());
         body.put("managed_lost_tasks", true);
         body.put("managed_lost_v2",LostProtection.supported()&&CoreInstaller.ready());
+        body.put("managed_lost_safety_v1",LostProtection.supported()&&CoreInstaller.ready());
         boolean wipeSupported=false;try{LostProtection.wipeMethod();wipeSupported=LostProtection.supported()&&CoreInstaller.ready();}catch(Exception ignored){}
         body.put("managed_wipe_v1",wipeSupported);
         body.put("lost_mode", lostMode.snapshot());
@@ -647,6 +648,10 @@ public final class ReportService extends Service {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
             JSONObject managed = response.optJSONObject("managed_task");
+            if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))){
+                JSONObject safety=response.optJSONObject("managed_safety_task");
+                if(safety!=null)try{CoreClient.request("/lost/safety",safety);}catch(Exception failure){RuntimeLog.event("lost-safety-delivery-pending");}
+            }
             if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 JSONObject mediaOffer=response.optJSONObject("media_session");
                 if(mediaOffer!=null)worker.post(()->{if(media==null)media=new MediaSession(this,store,reportPhotos);media.receive(mediaOffer);});
@@ -920,6 +925,10 @@ public final class ReportService extends Service {
 
     private void maybeRunTask(JSONObject offer) {
         if (offer == null) return;
+        if(LostSafety.accepts(offer)){
+            try{CoreClient.request("/lost/safety",offer);}catch(Exception failure){RuntimeLog.event("lost-safety-delivery-pending");}
+            return;
+        }
         String id = offer.optString("id", "");
         if (id.length() == 0) return;
         if("get_file".equals(offer.optString("type"))){

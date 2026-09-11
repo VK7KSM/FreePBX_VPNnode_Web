@@ -17,7 +17,8 @@ final class LostProtection implements Closeable {
     private final HandlerThread thread;
     private final Handler handler;
     private final CoreWake wake;
-    private long modified=-1;
+    private long modified=-1,nextCheck;
+    private int failures;
     private boolean closed;
     interface Edit {void apply(JSONObject s)throws Exception;}
     static String boot()throws Exception{return RescueFiles.read(new File("/proc/sys/kernel/random/boot_id"),128).trim();}
@@ -32,9 +33,9 @@ final class LostProtection implements Closeable {
             }
         }
     }
-    static void contact(Boolean paired,long unpairedAt){
+    static void contact(Boolean paired,long unpairedAt,long serverTime){
         if(!FILE.isFile())return;
-        try{edit(s->{if(s.optBoolean("auto_wipe_enabled"))LostTimer.contact(s,paired,unpairedAt,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());});}
+        try{edit(s->{if(s.optBoolean("auto_wipe_enabled"))LostTimer.contact(s,paired,unpairedAt,serverTime>0?serverTime:System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());});}
         catch(Exception e){RuntimeLog.event("lost-contact-persistence-failed");}
     }
     static boolean supported(){
@@ -48,18 +49,19 @@ final class LostProtection implements Closeable {
         long left=LostTimer.remaining(s,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
         boolean active=s.optBoolean("enabled");
         boolean manual=s.has("manual_task")&&"armed".equals(s.optString("wipe_state"));
-        if(manual)left=Math.max(0,s.optLong("manual_due")-System.currentTimeMillis());
+        if(manual)left=boot().equals(s.optString("manual_boot"))?Math.max(0,s.optLong("manual_elapsed")-SystemClock.elapsedRealtime()):Long.MAX_VALUE;
         return new JSONObject().put("version",2).put("enabled",active).put("state",s.optString("state",active?"enabled":"disabled"))
                 .put("message",active?s.optString("message"):"").put("locked",new SystemLock(context).locked())
                 .put("auto_wipe_enabled",s.optBoolean("auto_wipe_enabled")).put("timeout_hours",s.optInt("timeout_hours",24))
                 .put("deadline_at",left==Long.MAX_VALUE?0:System.currentTimeMillis()+left)
                 .put("trigger",manual?"manual":left==Long.MAX_VALUE?"":LostTimer.trigger(s,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot()))
-                .put("wipe_state",s.optString("wipe_state","idle"));
+                .put("wipe_state",s.optString("wipe_state","idle")).put("revision",LostRevision.current(s)).put("revision_seq",s.optLong("revision_seq"))
+                .put("restored",s.optBoolean("restored",!s.has("original_owner"))).put("clock_rebased",s.optBoolean("clock_rebased"));
     }
     static JSONObject request(Context context,JSONObject req)throws Exception {
         if(!supported())throw new IllegalStateException("lost-system-credential-unsupported");
         String action=req.getString("action");
-        if(action.equals("contact")){contact(req.has("paired")?req.getBoolean("paired"):null,req.optLong("unpaired_at_ms"));return snapshot(context,edit(s->{}));}
+        if(action.equals("contact")){contact(req.has("paired")?req.getBoolean("paired"):null,req.optLong("unpaired_at_ms"),req.optLong("server_time"));return snapshot(context,edit(s->{}));}
         if(action.equals("read"))return snapshot(context,edit(s->{}));
         if(action.equals("wipe")){
             String id=req.getString("task_id");long expiry=req.getLong("expires_at");
@@ -67,8 +69,9 @@ final class LostProtection implements Closeable {
             wipeMethod();
             return snapshot(context,edit(s->{
                 if(id.equals(s.optString("last_wipe_task")))return;
+                LostRevision.require(s,req);
                 if("started".equals(s.optString("wipe_state")))throw new IllegalStateException("lost-wipe-already-started");
-                s.put("last_wipe_task",id).put("manual_task",id).put("manual_due",System.currentTimeMillis()+5000).put("manual_expiry",expiry).put("wipe_state","armed");
+                s.put("last_wipe_task",id).put("manual_task",id).put("manual_due",System.currentTimeMillis()+5000).put("manual_elapsed",SystemClock.elapsedRealtime()+5000).put("manual_boot",boot()).put("manual_expiry",expiry).put("wipe_state","armed");
             }));
         }
         if(!action.equals("set"))throw new IllegalArgumentException("lost-invalid-action");
@@ -81,6 +84,18 @@ final class LostProtection implements Closeable {
             if(task.equals(s.optString("last_config_task")))return;
             if("started".equals(s.optString("wipe_state")))throw new IllegalStateException("lost-wipe-already-started");
             boolean active=input.getBoolean("enabled");
+            boolean cancelOnly=req.optBoolean("cancel_auto");
+            if(req.optBoolean("local_unlocked")&&system.locked())throw new IllegalStateException("lost-local-auth-required");
+            if(active&&!cancelOnly)LostRevision.require(s,req);
+            if(active&&s.has("restore_phase")&&!cancelOnly)throw new IllegalStateException("lost-restore-pending");
+            if(!active||cancelOnly){
+                // 取消先落盘并作废旧策略，随后恢复可能失败也不能继续自动清除。
+                s.put("auto_wipe_enabled",false).put("wipe_state","idle");s.remove("manual_task");
+                if(!task.equals(s.optString("cancellation_task"))){LostRevision.advance(s);s.put("cancellation_task",task);}
+                if(!active&&!cancelOnly)s.put("state","pending");
+                persist(s);
+                if(cancelOnly){s.put("last_config_task",task);return;}
+            }
             if(!active||!input.optBoolean("auto_wipe_enabled")){
                 s.put("auto_wipe_enabled",false).put("wipe_state","idle");s.remove("manual_task");
                 RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
@@ -106,57 +121,55 @@ final class LostProtection implements Closeable {
                     if(system.secure())s.put("original_credential",existing);
                 }
                 // 先保存恢复材料；系统调用中断也不能丢掉已设置的密码。
-                s.put("credential",password).put("pending_old_credential",existing).put("state","pending");RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
+                s.put("restored",false).put("credential",password).put("pending_old_credential",existing).put("state","pending");RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
+                LostDebugGuard.restrict(s,()->persist(s));
                 system.decryptSetting("0");
                 system.password(password,existing);if(!system.secure()||!system.verify(password))throw new IllegalStateException("lost-system-password-failed");
                 s.remove("pending_old_credential");
                 system.owner(new JSONObject().put("enabled",true).put("message",input.getString("message")));system.lock();
                 if(!system.locked())throw new IllegalStateException("lost-system-lock-pending");
             }else{
-                String password=s.optString("credential");
-                if(!password.isEmpty()&&system.secure()&&!system.verify(password)&&!s.optString("pending_old_credential").isEmpty()&&system.verify(s.optString("pending_old_credential")))password=s.optString("pending_old_credential");
-                if(!password.isEmpty()&&system.secure()){
-                    if(!system.verify(password)){
-                        if(!req.optBoolean("local_unlocked")||system.locked())throw new IllegalStateException("lost-current-password-changed");
-                    }else{
-                        system.password("",password);system.disabled(true);system.dismiss();
-                        if(s.optBoolean("original_secure"))system.password(s.getString("original_credential"),"");
-                    }
-                }
-                if(s.has("original_owner")){
-                    system.owner(s.getJSONObject("original_owner"));
-                    system.disabled(s.optBoolean("original_lock_disabled"));
-                    system.decryptSetting(s.has("original_decrypt_setting")?s.getString("original_decrypt_setting"):null);
-                }
-                if(!system.secure()&&system.locked())system.dismiss();
-                for(String key:new String[]{"credential","pending_old_credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled"})s.remove(key);
+                LostRecovery.restore(s,system,()->persist(s));
+                LostDebugGuard.restore(s);
+                for(String key:new String[]{"credential","pending_old_credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled","restore_phase","original_debug"})s.remove(key);
             }
             boolean wasArmed=s.optBoolean("auto_wipe_enabled");
             LostTimer.arm(s,active&&input.optBoolean("auto_wipe_enabled"),input.optInt("timeout_hours",24),req.optBoolean("paired",true),System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
             if(wasArmed&&active)LostTimer.contact(s,req.optBoolean("paired",true),req.optLong("unpaired_at_ms"),System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
+            if(active)LostRevision.advance(s);
             s.put("enabled",active).put("message",active?input.getString("message"):"").put("state",active?"enabled":"disabled").put("last_config_task",task);
         });
         return snapshot(context,result);
     }
+    private static void persist(JSONObject s)throws Exception {RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);}
     LostProtection()throws Exception {
         context=CoreWake.systemContext();thread=new HandlerThread("elfremote-lost-guard");thread.start();handler=new Handler(thread.getLooper());wake=new CoreWake(context,handler);refresh();
     }
     void refresh(){
-        if(closed)return;long next=FILE.lastModified();if(next==modified)return;modified=next;handler.post(this::evaluate);
+        if(closed)return;long now=SystemClock.elapsedRealtime(),next=FILE.lastModified();
+        if(next==modified&&(nextCheck==0||now<nextCheck))return;
+        modified=next;nextCheck=now+60000;handler.post(this::evaluate);
     }
     private void evaluate(){
         if(closed)return;
         try{
-            JSONObject s=edit(value->{});long wall=System.currentTimeMillis(),elapsed=SystemClock.elapsedRealtime();String boot=boot();
-            long left=LostTimer.remaining(s,wall,elapsed,boot);
-            if(s.has("manual_task")&&"armed".equals(s.optString("wipe_state")))left=Math.max(0,s.optLong("manual_due")-wall);
+            JSONObject s=edit(value->{
+                LostTimer.checkpoint(value,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
+                if(value.optBoolean("enabled")&&!value.has("restore_phase")&&!"pending".equals(value.optString("state")))LostDebugGuard.restrict(value,()->persist(value));
+            });
+            long left=LostTimer.remaining(s,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
+            if(s.has("manual_task")&&"armed".equals(s.optString("wipe_state"))){
+                if(!boot().equals(s.optString("manual_boot"))){edit(value->{value.remove("manual_task");value.put("wipe_state","failed");});return;}
+                left=Math.max(0,s.optLong("manual_elapsed")-SystemClock.elapsedRealtime());
+            }
+            failures=0;nextCheck=(s.optBoolean("enabled")||s.optBoolean("auto_wipe_enabled"))?SystemClock.elapsedRealtime()+60000:0;
             if(left==Long.MAX_VALUE){wake.cancel("lost-deadline");notification(0,s.optBoolean("enabled"));return;}
-            notification(wall+left,s.optBoolean("enabled"));
+            notification(System.currentTimeMillis()+left,s.optBoolean("enabled"));
             if(left>0){wake.schedule("lost-deadline",left,this::evaluate);return;}
             final boolean[] start={false};
             edit(current->{
                 boolean manual=current.has("manual_task")&&"armed".equals(current.optString("wipe_state"));
-                if(manual&&current.optLong("manual_due")>System.currentTimeMillis())return;
+                if(manual&&(current.optLong("manual_elapsed")>SystemClock.elapsedRealtime()||!boot().equals(current.optString("manual_boot"))))return;
                 if(manual&&current.optLong("manual_expiry")<=System.currentTimeMillis()){current.remove("manual_task");current.put("wipe_state","failed");return;}
                 if(!manual&&LostTimer.remaining(current,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot())!=0)return;
                 current.put("wipe_state","started").put("wipe_started_at",System.currentTimeMillis());start[0]=true;
@@ -166,7 +179,11 @@ final class LostProtection implements Closeable {
             try{wake.hold("lost-wipe",120000);wipeMethod().invoke(null,context,false,"elfRemote 数据清除",true);}
             catch(Exception error){edit(current->{current.put("wipe_state","failed");});RuntimeLog.event("lost-wipe-failed");}
             finally{wake.release("lost-wipe");}
-        }catch(Exception error){RuntimeLog.event("lost-guard-state-unavailable");wake.cancel("lost-deadline");}
+        }catch(Exception error){
+            RuntimeLog.event("lost-guard-state-unavailable");
+            long retry=Math.min(60000,1000L<<Math.min(6,failures++));nextCheck=SystemClock.elapsedRealtime()+retry;
+            wake.schedule("lost-guard-retry",retry,this::evaluate);
+        }
     }
     private void notification(long deadline,boolean enabled){
         try{

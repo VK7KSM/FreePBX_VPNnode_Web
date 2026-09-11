@@ -8,11 +8,14 @@ import java.nio.charset.StandardCharsets;
 
 /** 应用与独立维护核心之间的本机通道。 */
 final class CoreClient {
+    private static volatile File authFile=new File("/data/user/0/"+BuildConfig.APPLICATION_ID+"/files/"+CoreAuth.NAME);
+    static void initialize(android.content.Context context)throws Exception {authFile=new File(context.getFilesDir(),CoreAuth.NAME);CoreAuth.ensure(context.getFilesDir());}
     static JSONObject request(String path, JSONObject body) throws Exception {
         return request(path,body,3000);
     }
     static JSONObject request(String path, JSONObject body, int readTimeout) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:8765" + path).openConnection();
+        c.setRequestProperty("Authorization","Bearer "+CoreAuth.read(authFile));
         c.setConnectTimeout(1500); c.setReadTimeout(readTimeout); c.setInstanceFollowRedirects(false);
         try {
             if (body != null) {

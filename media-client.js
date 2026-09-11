@@ -26,7 +26,7 @@ window.ElfMedia=(function(){
     }
   }
   async function start(mode,requestedCamera){
-    var d=currentDev();if(!d||!d.managed_media||d.enabled===false)return;
+    var d=currentDev();if(!d||!ElfMediaCapabilities.allows(d,mode))return;
     if(active){if(active.mode===mode)await stop();return;}
     if(typeof trajectoryReturnLive==='function')trajectoryReturnLive();
     var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false};active=s;lastMessage='';render();
@@ -101,8 +101,8 @@ window.ElfMedia=(function(){
     }
     updateTime(s);
   }
-  function preview(d,fallback){if(active&&(!d||active.device.id!==d.id)){stop('已切换设备，通信结束');return fallback;}if(active)return '<div class="remote-preview media-live"></div>';if(d&&d.managed_media&&d.media_cameras>1){var at=fallback.lastIndexOf('</div>');fallback=fallback.slice(0,at)+'<button type="button" class="media-camera-switch" aria-label="切换摄像头并拍照" onclick="ElfMedia.switchPhoto()">⇄</button>'+fallback.slice(at);}return fallback;}
-  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','响铃']];return rows.map(function(row){var selected=active&&active.mode===row[0],disabled=!d||!d.managed_media||d.enabled===false||active&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
+  function preview(d,fallback){if(active&&(!d||active.device.id!==d.id)){stop('已切换设备，通信结束');return fallback;}if(active)return '<div class="remote-preview media-live"></div>';if(d&&ElfMediaCapabilities.allows(d,'photo')&&d.media_cameras>1){var at=fallback.lastIndexOf('</div>');fallback=fallback.slice(0,at)+'<button type="button" class="media-camera-switch" aria-label="切换摄像头并拍照" onclick="ElfMedia.switchPhoto()">⇄</button>'+fallback.slice(at);}return fallback;}
+  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','响铃']];return rows.map(function(row){var selected=active&&active.mode===row[0],disabled=!d||!ElfMediaCapabilities.allows(d,row[0])||active&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
   function feedback(d){var text=active?active.message:d&&lastDevice===d.id?lastMessage:'';return text?'<span class="media-feedback" role="status">'+esc(text)+'</span>':'';}
   window.addEventListener('pagehide',function(){stop();});
   return {isActive:function(){return !!active;},switchPhoto:function(){var d=currentDev();if(!d||active)return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};

@@ -1,5 +1,7 @@
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel } from './release-channels.js';
 import mediaClientSource from './media-client-source.js';
+import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
+import faultClientSource from './fault-client-source.js';
 // =========================================================================
 // elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
 // 升级：通话组 + 网关账户 + 分级分机目录
@@ -38,7 +40,7 @@ import {
   repairOfferPayload,
   normalizeAlarm,
   normalizeLostMode,
-  prepareWipe, authorizeWipe,
+  prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
   CONFIG_TYPES,
   repairExpired
 } from "./elfRemote/control-plane.js";
@@ -714,7 +716,7 @@ const app = {
         const task = await findRepairTask(env.__storage, device, id);
         return task ? json({ok:true,task:publicRepair(task)}) : json({ok:false,msg:"未找到该任务"},404);
       }
-      return json({ok:true,tasks:[device.task,...await repairHistory(env.__storage,device.id)].filter(Boolean).map(publicRepair)});
+      return json({ok:true,tasks:[device.safety_task,device.task,...await repairHistory(env.__storage,device.id)].filter(Boolean).map(publicRepair)});
     }
     if (pathname === "/api/elfremote/task-progress" && method === "POST") {
       return handleElfTaskProgress(env, request);
@@ -725,7 +727,8 @@ const app = {
     if (pathname === "/api/devices/pair" && method === "POST") {
       return handleDevicePair(env, request);
     }
-    if(pathname==="/media-client.js")return new Response(mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/media-client.js")return new Response(mediaCapabilitiesSource+"\n"+mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if (pathname === "/devices-client.js") {
       return new Response(devicesClientSource, {
         headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }
@@ -1142,6 +1145,7 @@ function publicDevice(d, modelName, model = {}) {
     wifi_scan: d.wifi_scan || null,
     alarm: d.alarm || null,
     lost_mode: d.lost_mode || null,
+    safety_task: publicRepair(d.safety_task), managed_lost_safety_v1:d.managed_lost_safety_v1===true,
     managed_lost_tasks: d.managed_lost_tasks === true,
     managed_lost_v2: d.managed_lost_v2 === true, managed_wipe_v1: d.managed_wipe_v1 === true,
     managed_exec_tasks: d.managed_exec_tasks === true,
@@ -1152,6 +1156,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_adbd_tasks: d.managed_adbd_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
     managed_media: d.managed_media === true,
+    ...mediaCapabilityFields(d),
     media_cameras: Number(d.media_cameras)||0,
     managed_file_tasks: d.managed_file_tasks === true,
     managed_file_return: d.managed_file_return === true,
@@ -1572,7 +1577,7 @@ async function handleDeviceReport(env, request) {
     const history = await appendLocationHistory(env.__storage, deviceId, data, observedIp, reportLocation, Date.now(), matched.installation_id);
     await acknowledgeStatus(env.__storage, deviceId, data);
     if (history.duplicate) {
-      const body = { ok: true, paired: matched.paired !== false, unpaired_at_ms: matched.unpaired_at_ms || 0, duplicate: true, report_id: history.record.report_id };
+      const body = { ok: true, paired: matched.paired !== false, server_time:Date.now(), unpaired_at_ms: matched.unpaired_at_ms || 0, duplicate: true, report_id: history.record.report_id };
       addManagedTaskOffer(body, matched, data, Date.now());
       return json(body);
     }
@@ -1608,15 +1613,18 @@ async function handleDeviceReport(env, request) {
       list[i].managed_adbd_tasks = data.managed_adbd_tasks === true;
       list[i].managed_adb_session = data.managed_adb_session === true;
       list[i].managed_media = data.managed_media === true;
+      applyMediaCapabilities(list[i],data);
+      env.__media?.updateCapabilities(list[i]);
       list[i].media_cameras = Math.min(4,Math.max(0,Number(data.media_cameras)||0));
       list[i].managed_wifi_scan_tasks = data.managed_wifi_scan_tasks === true;
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
       list[i].managed_config_tasks = data.managed_config_tasks === true;
       list[i].managed_lost_tasks = data.managed_lost_tasks === true;
+      list[i].managed_lost_safety_v1=data.managed_lost_safety_v1===true;
       list[i].managed_lost_v2 = data.managed_lost_v2 === true; list[i].managed_wipe_v1 = data.managed_wipe_v1 === true;
       const lost = normalizeLostMode(data.lost_mode);
-      if (lost) list[i].lost_mode = lost;
+      if (lost) mergeLostMode(list[i],lost,Date.parse(history.record.timeline_at));
       const alarm = normalizeAlarm(data.alarm);
       if (alarm) list[i].alarm = alarm;
       list[i].managed_update = data.managed_update === true;
@@ -1661,8 +1669,8 @@ async function handleDeviceReport(env, request) {
     await queueZelloRestore(found,env.__storage,now);
     await queueSystemRestore(found,env.__storage,now);
     await saveDevices(env, list);
-    const body = { ok: true, paired: found.paired !== false, unpaired_at_ms: found.unpaired_at_ms || 0, report_id: history.record.report_id };
-    if(found.enabled!==false&&data.managed_media===true)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
+    const body = { ok: true, paired: found.paired !== false, server_time:Date.now(), unpaired_at_ms: found.unpaired_at_ms || 0, report_id: history.record.report_id };
+    if(found.enabled!==false&&mediaModes(found).length>0)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     addManagedTaskOffer(body, found, data, now);
@@ -1965,6 +1973,8 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
+  if(report.managed_lost_safety_v1===true&&device.safety_task&&shouldOfferRepair({task:device.safety_task},now))
+    body.managed_safety_task={...repairOfferPayload(device.safety_task),managed_lost_v1:true};
   if(device.enabled!==false && report.status_only===true && report.managed_lost_tasks===true
       && device.task?.managed_lost_v1===true && ["set_lost_mode","wipe_data"].includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_lost_v1:true};
@@ -1983,12 +1993,14 @@ async function handleElfEnqueueTask(env, request) {
       break;
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
-    if(found.enabled===false) return json({ok:false,msg:"设备已停用"},409);
+    if(found.enabled===false&&!isLostSafety(data)) return json({ok:false,msg:"设备已停用"},409);
     if(data.action==='prepare_wipe') {
       const confirmation=prepareWipe(found,data.phrase);await saveDevices(env,list);return json({ok:true,confirmation});
     }
     if(data.type==='set_lost_mode' && data.params?.version===2 && !found.managed_lost_v2)return json({ok:false,msg:'请更新客户端后使用系统锁屏'},409);
-    if(data.type==='wipe_data')data.expires_at=authorizeWipe(found,data.params);
+    if(data.type==='set_lost_mode'&&data.params?.version===2&&!isLostSafety(data)&&!found.managed_lost_safety_v1)return json({ok:false,msg:'请先更新客户端的丢失模式安全修复'},409);
+    if(data.type==='wipe_data'){data.expires_at=authorizeWipe(found,data.params);if(found.managed_lost_safety_v1)data.params={...data.params,expected_revision:found.lost_mode?.revision};}
+    if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);
     if(data.action==='cancel') {
       if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
@@ -2059,6 +2071,7 @@ async function handleElfEnqueueTask(env, request) {
         : "无法入队";
       return json({ ok: false, msg, reason: queued.reason }, 400);
     }
+    if(isLostSafety(data)&&found.managed_lost_safety_v1){await saveDevices(env,list);return json({ok:true,duplicate:!!queued.duplicate,task:publicRepair(queued.task)});}
     if(!queued.duplicate && ['system_config','root_exec','file_manage','configure_sip','configure_zello'].includes(data.type)) found.task.managed_exec_v1=true;
     if(!queued.duplicate && data.type==="send_file") found.task.managed_file_v1=true;
     if(!queued.duplicate && data.type==="get_file") found.task.managed_file_return_v1=true;
@@ -2097,6 +2110,10 @@ async function handleElfTaskProgress(env, request) {
       if (list[i].id !== deviceId) continue;
       if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
+      }
+      if(list[i].safety_task?.id===taskId){
+        applyRepairProgress(list[i],taskId,state,data.detail,data.result);
+        await saveDevices(env,list);return json({ok:true,task:publicRepair(list[i].safety_task)});
       }
       if (list[i].task?.id !== taskId) {
         const previous = await findRepairTask(env.__storage,list[i],taskId);
@@ -2967,6 +2984,7 @@ function renderDevicesHtml() {
     '<script src="/admin-session.js"><\/script>',
     '<script src="/panel-events.js"><\/script>',
     '<script src="/media-client.js"><\/script>',
+    '<script src="/fault-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'
   ].join("\n");

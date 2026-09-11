@@ -376,6 +376,7 @@ export async function repairHistory(storage, deviceId, nowMs = Date.now()) {
 }
 
 export async function findRepairTask(storage, device, id) {
+  if (device.safety_task?.id === id) return device.safety_task;
   if (device.task?.id === id) return device.task;
   const task = storage ? await storage.get("repair-history/" + encodeURIComponent(device.id) + "/" + encodeURIComponent(id)) : null;
   return task && !repairHistoryExpired(task, Date.now()) ? task : null;
@@ -392,8 +393,22 @@ export async function archiveRepair(storage, device, nowMs) {
     for (const [key, old] of page) if (repairHistoryExpired(old, nowMs)) await storage.delete(key);
 }
 
+export function isLostSafety(input){return input?.type==='set_lost_mode'&&input.params?.version===2&&(input.params.enabled===false||input.params.cancel_auto===true);}
+async function enqueueSafetyTask(device,input,now,storage){
+  const task=makeRepairTask(input,now);task.request_digest=await repairDigest(task);
+  const previous=[device.safety_task,device.task,...await repairHistory(storage,device.id,now)].filter(Boolean).find(t=>t.id===task.id||t.idempotency_key===task.idempotency_key);
+  if(previous)return previous.request_digest===task.request_digest?{ok:true,duplicate:true,task:previous}:{ok:false,reason:'idempotency-conflict'};
+  if(repairExpired(task,now))return {ok:false,reason:'expired'};
+  if(device.safety_task){
+    const old={...device.safety_task};if(repairInflight(old)){old.state='rejected';old.completed_at=new Date(now).toISOString();old.detail='已被新的安全退出替代';}
+    await archiveRepair(storage,{...device,task:old},now);
+  }
+  task.created_at=task.updated_at=new Date(now).toISOString();task.managed_lost_v1=true;device.safety_task=task;
+  return {ok:true,task};
+}
 export async function enqueueRepairTask(device, input, nowMs, storage) {
   if (!device) return { ok: false, reason: "missing-device" };
+  if(isLostSafety(input)&&device.managed_lost_safety_v1)return enqueueSafetyTask(device,input,nowMs,storage);
   const task = makeRepairTask(input || {}, nowMs);
   if (!task) return { ok: false, reason: "unknown-type" };
   if(task.type==='configure_sip'){
@@ -439,6 +454,10 @@ export function canAdvanceRepair(from, to) {
 }
 
 export function applyRepairProgress(device, taskId, state, detail, result, nowMs = Date.now()) {
+  if(device?.safety_task?.id===taskId){
+    const view={...device,task:device.safety_task,safety_task:null};applyRepairProgress(view,taskId,state,detail,result,nowMs);
+    device.safety_task=view.task;if(view.lost_mode){device.lost_mode=view.lost_mode;device.lost_mode_observed_at=view.lost_mode_observed_at;}return device;
+  }
   if (!device || !device.task || device.task.id !== taskId) return device;
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
@@ -459,7 +478,21 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
-  if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending" || (device.task.params?.version===2 && (lost.version!==2 || (lost.enabled && !lost.locked))))) throw new Error("缺少丢失模式完成状态");
+  if(device.task.type === "set_lost_mode" && state === "success"){
+    const wanted=device.task.params||{};
+    if(!lost||['pending','unknown'].includes(lost.state))throw Error('缺少丢失模式完成状态');
+    if(wanted.version===2){
+      const raw=result?.lost_mode;
+      if(typeof raw?.enabled!=='boolean'||typeof raw.auto_wipe_enabled!=='boolean'||typeof raw.locked!=='boolean'||!Number.isSafeInteger(raw.deadline_at)||!['idle','armed','started','failed'].includes(raw.wipe_state))throw Error('缺少完整设备状态');
+      if(device.managed_lost_safety_v1&&(!Number.isSafeInteger(raw.revision_seq)||raw.revision_seq<0))throw Error('缺少策略顺序');
+      if(lost.version!==2||lost.auto_wipe_enabled!==(wanted.cancel_auto?false:wanted.auto_wipe_enabled))throw Error('自毁开关回执不匹配');
+      if(!wanted.cancel_auto&&lost.enabled!==wanted.enabled)throw Error('丢失模式回执与请求不匹配');
+      if(!wanted.cancel_auto&&wanted.enabled&&(!lost.locked||lost.timeout_hours!==wanted.timeout_hours))throw Error('缺少系统锁屏完成状态');
+      if((!wanted.enabled||wanted.cancel_auto)&&(lost.deadline_at!==0||lost.wipe_state!=='idle'))throw Error('清除调度尚未取消');
+      if(!wanted.enabled&&!wanted.cancel_auto&&(lost.state!=='disabled'||(lost.restored!==true&&lost.locked)))throw Error('原锁屏设置尚未恢复');
+      if(device.managed_lost_safety_v1&&(!lost.revision||(!wanted.enabled&&!wanted.cancel_auto&&lost.restored!==true)))throw Error('缺少安全恢复证明');
+    }
+  }
   if(device.task.type==='configure_zello' && state==='success' && device.task.params?.password)device.account_configs={...device.account_configs,zello:{params:zelloAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
   if(device.task.type==='configure_sip' && state==='success' && device.task.params?.password){
     const key=modernSip?sipKey(device.task.sip_destination):'linphone';
@@ -480,7 +513,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
-  if (lost) device.lost_mode = lost;
+  if (lost) mergeLostMode(device,lost,nowMs);
   if(["set_lost_mode","wipe_data"].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if((device.task.type==="system_config"||CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
@@ -507,19 +540,22 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
 export function lostModeParams(value={}) {
   if(typeof value?.enabled!=="boolean") throw new Error("丢失模式状态无效");
   const message=typeof value.message==="string"?value.message.trim():"";
-  if(value.enabled && (!message || message.length>300 || message.includes('\0'))) throw new Error("请填写不超过300字的锁屏文字");
+  if(value.enabled && value.cancel_auto!==true && (!message || message.length>300 || message.includes('\0'))) throw new Error("请填写不超过300字的锁屏文字");
   const out={enabled:value.enabled,message:value.enabled?message:""};
   if(value.version===2){
     const password=value.password??'';
     if(typeof password!=='string'||(password!==''&&!/^[A-Za-z0-9]{4,32}$/.test(password)))throw new Error('密码须为4至32位数字或英文字母');
     if(typeof value.auto_wipe_enabled!=='boolean')throw new Error('自毁开关无效');
     const hours=value.timeout_hours??24;if(!Number.isInteger(hours)||hours<1||hours>168)throw new Error('清除时限须为1至168小时');
-    Object.assign(out,{version:2,password,auto_wipe_enabled:value.enabled&&value.auto_wipe_enabled,timeout_hours:hours});
+    Object.assign(out,{version:2,password,auto_wipe_enabled:value.cancel_auto?false:value.enabled&&value.auto_wipe_enabled,timeout_hours:hours});
+    if(value.cancel_auto===true)out.cancel_auto=true;
+    if(value.expected_revision!==undefined){if(typeof value.expected_revision!=='string'||!/^(initial|[a-f0-9-]{36})$/.test(value.expected_revision))throw Error('策略版本无效');out.expected_revision=value.expected_revision;}
   }
   return out;
 }
 export function normalizeLostMode(value) {
   if(!value) return null;
+  if(value.version===2&&value.state==='unknown')return {version:2,state:'unknown'};
   const params=lostModeParams({enabled:value.enabled,message:value.message});
   if(!["pending","enabled","disabled"].includes(value.state) || (value.state!=="pending" && (value.state==="enabled")!==params.enabled)) throw new Error("丢失模式回执无效");
   const out={...params,state:value.state};
@@ -527,24 +563,33 @@ export function normalizeLostMode(value) {
     const deadline=Number(value.deadline_at)||0;
     if(!Number.isSafeInteger(deadline)||deadline<0)throw new Error('清除时间无效');
     Object.assign(out,{version:2,auto_wipe_enabled:value.auto_wipe_enabled===true,timeout_hours:Math.max(1,Math.min(168,Number(value.timeout_hours)||24)),deadline_at:deadline,
-      trigger:['offline','unpaired','manual'].includes(value.trigger)?value.trigger:'',wipe_state:['armed','started','failed'].includes(value.wipe_state)?value.wipe_state:'idle',locked:value.locked===true});
+      trigger:['offline','unpaired','manual'].includes(value.trigger)?value.trigger:'',wipe_state:['armed','started','failed'].includes(value.wipe_state)?value.wipe_state:'idle',locked:value.locked===true,restored:value.restored===true,revision:typeof value.revision==='string'&&/^(initial|[a-f0-9-]{36})$/.test(value.revision)?value.revision:'',clock_rebased:value.clock_rebased===true});
   }
+  if(value.version===2&&Number.isSafeInteger(value.revision_seq)&&value.revision_seq>=0)out.revision_seq=value.revision_seq;
   return out;
+}
+export function mergeLostMode(device,lost,observedAt=Date.now()){
+  const previous=device.lost_mode;
+  if(lost.state!=='unknown'&&previous&&Number.isSafeInteger(previous.revision_seq)&&(!Number.isSafeInteger(lost.revision_seq)||lost.revision_seq<previous.revision_seq))return;
+  if(previous&&lost.revision===previous.revision&&observedAt<(device.lost_mode_observed_at||0))return;
+  device.lost_mode=lost.state==='unknown'?{...previous,...lost}:lost;device.lost_mode_observed_at=observedAt;
 }
 export function wipeParams(value={}) {
   if(value.phrase!=='擦除数据'||typeof value.confirmation_id!=='string'||!/^[a-f0-9-]{36}$/.test(value.confirmation_id))throw new Error('请完成两次擦除确认');
-  return {phrase:'擦除数据',confirmation_id:value.confirmation_id};
+  return {phrase:'擦除数据',confirmation_id:value.confirmation_id,...(typeof value.expected_revision==='string'?{expected_revision:value.expected_revision}:{})};
 }
 export function prepareWipe(device,phrase,now=Date.now()){
   if(phrase!=='擦除数据')throw new Error('请输入“擦除数据”');
-  if(device.managed_lost_v2!==true||device.managed_wipe_v1!==true)throw new Error('客户端尚未支持清除数据');
+  if(device.managed_lost_v2!==true||device.managed_wipe_v1!==true||device.managed_lost_safety_v1!==true)throw new Error('请先更新客户端的丢失模式安全修复');
+  if(!device.lost_mode?.revision||device.lost_mode.state==='unknown')throw Error('请先确认设备当前策略');
   const seen=Date.parse(device.last_seen);if(!Number.isFinite(seen)||now-seen>120000)throw new Error('请先确认设备在线后再清除');
-  device.wipe_confirmation={id:crypto.randomUUID(),expires_at:now+120000};
+  device.wipe_confirmation={id:crypto.randomUUID(),expires_at:now+120000,revision:device.lost_mode?.revision||null};
   return {...device.wipe_confirmation};
 }
 export function authorizeWipe(device,params,now=Date.now()){
   const p=wipeParams(params),c=device.wipe_confirmation;
   if(device.managed_wipe_v1!==true||!c||c.id!==p.confirmation_id||c.expires_at<=now)throw new Error('擦除确认已失效，请重新确认');
+  if(device.managed_lost_safety_v1&&(!c.revision||c.revision!==device.lost_mode?.revision))throw Error("设备策略已改变，请重新确认");
   return c.expires_at;
 }
 export function configParams(type,value={}) {

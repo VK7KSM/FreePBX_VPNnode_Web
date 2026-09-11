@@ -51,6 +51,8 @@ final class RescueHttpServer extends NanoHTTPD {
             InetAddress peer = InetAddress.getByName(session.getRemoteIpAddress());
             if (!peer.isSiteLocalAddress() && !peer.isLoopbackAddress())
                 return response(Response.Status.FORBIDDEN, "仅开放局域网");
+            if(uid>=0&&!CoreAuth.allowed(new java.io.File(CoreInstaller.DIR,CoreAuth.NAME),session.getHeaders().get("authorization")))
+                return response(Response.Status.UNAUTHORIZED,"本机维护认证失败");
             String path = session.getUri();
             if(session.getMethod()==Method.POST && "/permissions/initialize".equals(path)) {
                 if(session.getHeaders().containsKey("origin")||!peer.isLoopbackAddress())return response(Response.Status.FORBIDDEN,"仅供本机初始化");
@@ -94,7 +96,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 JSONObject result=jobs.cancel(path.substring(6,path.length()-7));
                 return result==null ? response(Response.Status.NOT_FOUND,"任务不存在") : json(Response.Status.ACCEPTED,result);
             }
-            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/system-settings".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)||("/adb/open".equals(path)&&adb!=null)||(push!=null&&("/push/config".equals(path)||"/push/hint".equals(path)||"/push/disable".equals(path)))))
+            if (session.getMethod() != Method.POST || !("/exec".equals(path)||"/file-commit".equals(path)||"/file-snapshot".equals(path)||"/file-manage".equals(path)||"/system-settings".equals(path)||"/sip-account".equals(path)||"/zello-account".equals(path)||("/adb/open".equals(path)&&adb!=null)||(push!=null&&("/lost/safety".equals(path)||"/push/config".equals(path)||"/push/hint".equals(path)||"/push/disable".equals(path)))))
                 return response(Response.Status.NOT_FOUND, "使用 POST /exec 或 GET /jobs/任务号");
             // 本批仅开放本机回环，云端复用既有管理员登录与设备凭据。
             String contentType = session.getHeaders().get("content-type");
@@ -114,6 +116,7 @@ final class RescueHttpServer extends NanoHTTPD {
                 offset += count;
             }
             JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            if("/lost/safety".equals(path)){push.safety(request);return json(Response.Status.ACCEPTED,new JSONObject().put("ok",true));}
             if("/push/config".equals(path))return json(Response.Status.OK,push.configure(request));
             if("/push/hint".equals(path)){push.hint();return json(Response.Status.OK,push.status());}
             if("/push/disable".equals(path)){push.disable();return json(Response.Status.OK,push.status());}

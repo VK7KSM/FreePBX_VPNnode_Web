@@ -25,7 +25,8 @@ final class CoreInstaller {
             try {
                 File stage = new File(app.getFilesDir(), "core-stage");
                 if (!stage.isDirectory() && !stage.mkdirs()) throw new IOException("core-stage");
-                su(stage, loopbackRule(android.os.Process.myUid()));
+                CoreClient.initialize(app);
+                su(stage, "mkdir -p "+DIR+"\nchmod 0700 "+DIR+"\ncp "+RescueFiles.quote(new File(app.getFilesDir(),CoreAuth.NAME).getPath())+" "+DIR+"/"+CoreAuth.NAME+".new\nchmod 0600 "+DIR+"/"+CoreAuth.NAME+".new\nmv "+DIR+"/"+CoreAuth.NAME+".new "+DIR+"/"+CoreAuth.NAME+"\n"+loopbackRule(android.os.Process.myUid()));
                 JSONObject health = null;
                 try { health = CoreClient.health(); } catch (Exception unavailable) { }
                 if (health == null || health.optInt("version_code") != BuildConfig.VERSION_CODE) install(app);

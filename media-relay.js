@@ -1,5 +1,6 @@
 // WebSocket仅承载控制和协商；音视频经Cloudflare Realtime传输。
-export const MEDIA_MODES=['ptt','call','microphone','video','photo','alarm'];
+import {MEDIA_MODES,mediaAllowed} from './media-capabilities.js';
+export {MEDIA_MODES};
 export function mediaDirections(mode,role){
   return {audio:role==='browser'?['ptt','call'].includes(mode):['call','microphone','video'].includes(mode),video:role==='device'&&mode==='video'};
 }
@@ -8,7 +9,7 @@ export class MediaRelay {
     this.env=env;this.now=now;this.schedule=schedule;this.cancel=cancel;this.fetcher=fetcher;this.sessions=new Map();
   }
   create(device,mode,camera='front'){
-    if(!device||device.enabled===false||device.managed_media!==true)throw Error('请先更新设备客户端');
+    if(!mediaAllowed(device,mode))throw Error('设备尚不支持此通信操作');
     if(!MEDIA_MODES.includes(mode)||!['front','back'].includes(camera))throw Error('通信操作无效');
     if(!['photo','alarm'].includes(mode)&&!this.env.ELF_REALTIME)throw Error('实时服务未配置');
     if([...this.sessions.values()].some(s=>s.deviceId===device.id))throw Error('请先结束该设备当前通信');
@@ -29,6 +30,9 @@ export class MediaRelay {
   offer(deviceId,origin){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.roles.device);
     return s?{session_id:s.id,token:s.token,mode:s.mode,camera:s.camera,expires_at:s.created+45000,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/media/device?session_id='+s.id}:null;
+  }
+  updateCapabilities(device){
+    for(const s of this.sessions.values())if(s.deviceId===device.id&&!mediaAllowed(device,s.mode))this.close(s,'设备已不再支持本次通信');
   }
   get(id,role,token){
     const s=this.sessions.get(id);if(!s||s.closed)throw Error('通信已结束');

@@ -6,12 +6,22 @@ import org.json.JSONObject;
 final class LostTimer {
     static final long HOUR=3600000L;
     static void mark(JSONObject state,String prefix,long wall,long elapsed,String boot)throws Exception {
-        state.put(prefix+"_wall",wall).put(prefix+"_elapsed",elapsed).put(prefix+"_boot",boot);
+        state.put(prefix+"_wall",wall).put(prefix+"_elapsed",elapsed).put(prefix+"_boot",boot).put(prefix+"_age",0);
     }
     static long age(JSONObject state,String prefix,long wall,long elapsed,String boot) {
         if(!state.has(prefix+"_wall"))return 0;
-        return Math.max(0,boot.equals(state.optString(prefix+"_boot"))
-                ?elapsed-state.optLong(prefix+"_elapsed"):wall-state.optLong(prefix+"_wall"));
+        long saved=Math.max(0,state.optLong(prefix+"_age"));
+        // 重启后不相信可任意修改的墙上时间；保留已消耗时长，累计本次开机时间。
+        long delta=boot.equals(state.optString(prefix+"_boot"))?Math.max(0,elapsed-state.optLong(prefix+"_elapsed")):Math.max(0,elapsed);
+        return Math.min(168*HOUR, saved+Math.min(168*HOUR,delta));
+    }
+    static void checkpoint(JSONObject s,long wall,long elapsed,String boot)throws Exception {
+        if(!s.optBoolean("auto_wipe_enabled"))return;
+        for(String prefix:new String[]{"contact","unpaired"})if(s.has(prefix+"_wall")){
+            long used=age(s,prefix,wall,elapsed,boot);
+            if(!boot.equals(s.optString(prefix+"_boot")))s.put("clock_rebased",true);
+            s.put(prefix+"_age",used).put(prefix+"_elapsed",elapsed).put(prefix+"_boot",boot);
+        }
     }
     static long remaining(JSONObject s,long wall,long elapsed,String boot) {
         if(!s.optBoolean("auto_wipe_enabled")||!s.optString("wipe_state","idle").equals("idle"))return Long.MAX_VALUE;
@@ -29,7 +39,7 @@ final class LostTimer {
             boolean previous=s.optBoolean("paired",true);s.put("paired",paired);
             if(!paired&&previous){
                 long since=unpairedAt>0?Math.max(s.optLong("armed_wall",wall),Math.min(wall,unpairedAt)):wall;
-                mark(s,"unpaired",since,Math.max(0,elapsed-(wall-since)),boot);
+                mark(s,"unpaired",since,elapsed,boot);s.put("unpaired_age",Math.min(168*HOUR,wall-since));
             }
             if(paired)for(String key:new String[]{"unpaired_wall","unpaired_elapsed","unpaired_boot"})s.remove(key);
         }

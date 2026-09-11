@@ -12,6 +12,16 @@ import static org.junit.Assert.*;
 public class RescueTest {
     @Rule public TemporaryFolder temp = new TemporaryFolder();
 
+    @Test public void productionHttpNeverExecutesWithoutLocalCredential()throws Exception {
+        RescueJobs jobs=new RescueJobs(temp.newFolder(),(f,c,t)->{fail("未认证请求不得执行");return null;});
+        RescueHttpServer server=new RescueHttpServer(0,jobs,()->"cached",0);server.start(1000,true);
+        try{
+            assertEquals(401,http(server,"/health",null,null));
+            assertEquals(401,http(server,"/exec","{\"id\":\"noauth\",\"command\":\"id\"}",null));
+            assertFalse(jobs.isBusy());
+        }finally{server.stop();}
+    }
+
     @Test public void coreLoopbackExceptionIsLimitedToOwnUidAndPort() {
         String command=CoreInstaller.loopbackRule(10123);
         assertTrue(command.contains("-o lo -d 127.0.0.1/32 -p tcp --dport 8765 -m owner --uid-owner 10123"));

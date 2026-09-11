@@ -7,7 +7,7 @@ final class LostModePolicy {
         if(!(input.opt("enabled") instanceof Boolean)) throw new IllegalArgumentException("lost-invalid-enabled");
         boolean enabled=input.optBoolean("enabled");
         String message=input.optString("message","").trim();
-        if(enabled && (message.isEmpty() || message.length()>300 || message.indexOf('\0')>=0))
+        if(enabled && !input.optBoolean("cancel_auto") && (message.isEmpty() || message.length()>300 || message.indexOf('\0')>=0))
             throw new IllegalArgumentException("lost-invalid-message");
         JSONObject out=new JSONObject().put("enabled",enabled).put("message",enabled?message:"");
         if(input.optInt("version")==2){

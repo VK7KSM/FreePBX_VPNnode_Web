@@ -1,4 +1,5 @@
 import { authJson } from "./admin-auth.js";
+import {shouldOfferRepair,repairOfferPayload} from './elfRemote/control-plane.js';
 
 const TTL = 5 * 60000;
 const key = id => "push/request/" + encodeURIComponent(id);
@@ -19,7 +20,7 @@ export async function pendingStatus(storage, id, now = Date.now()) {
 }
 export function statusNotification(value) {
   return value?.state === "pending" ? { type: "status_request", request_id: value.request_id,
-    version: value.version, expires_at_ms: value.expires_at_ms } : null;
+    version: value.version, expires_at_ms: value.expires_at_ms,...(value.managed_safety?{managed_safety:true}:{}) } : null;
 }
 export async function acknowledgeStatus(storage, deviceId, data, now = Date.now()) {
   if (data.status_only !== true || typeof data.report_id !== "string" || !data.status_request_id) return;
@@ -39,7 +40,8 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
     const id = typeof data.device_id === "string" ? data.device_id : "";
     const device = (await loadDevices()).find(d => d.id === id);
     if (!device) fail(404, "未找到该设备");
-    if (device.enabled === false) fail(409, "设备已停用");
+    const safetyPending=device.safety_task&&['pending','claimed','running'].includes(device.safety_task.state);
+    if (device.enabled === false&&!safetyPending&&!(device.managed_lost_safety_v1&&['config','sync'].includes(action))) fail(409, "设备已停用");
     if (action === "config" || action === "sync") {
       if (typeof data.token !== "string" || !data.token || await digest(data.token) !== device.token_sha256) fail(401, "设备凭证无效");
       if (action === "config") return authJson({ ok: true, username: await mqttUsername(id,device.installation_id) });
@@ -48,15 +50,16 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
         current.received_at = new Date(now).toISOString();
         await storage.put(key(id), current);
       }
-      return authJson({ ok: true, status_request: statusNotification(current) });
+      return authJson({ ok: true, status_request: statusNotification(current),server_time:now,paired:device.paired!==false,unpaired_at_ms:device.unpaired_at_ms||0,
+        ...(device.managed_lost_safety_v1&&shouldOfferRepair({task:device.safety_task},now)?{managed_safety_task:repairOfferPayload(device.safety_task)}:{}) });
     }
     if (action === "read") return authJson({ ok: true, request: await pendingStatus(storage, id, now) });
     if (action === "prepare") {
       let current = await pendingStatus(storage, id, now);
-      if (current?.state !== "pending") {
+      if (current?.state !== "pending" || (safetyPending&&current.safety_task_id!==device.safety_task.id)) {
         current = { request_id: crypto.randomUUID(), version: (current?.version || 0) + 1,
           state: "pending", created_at: new Date(now).toISOString(), expires_at_ms: now + TTL,
-          publish_attempts: 0, published: false };
+          publish_attempts: 0, published: false,...(safetyPending?{managed_safety:true,safety_task_id:device.safety_task.id}:{}) };
       }
       const shouldPublish = current.publish_attempts < 3 && (!current.last_publish_at_ms || now - current.last_publish_at_ms >= 5000);
       if (shouldPublish) {

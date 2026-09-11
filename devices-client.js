@@ -1286,10 +1286,12 @@ function selectTrafficBar(i){
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
-function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置')readSystemSettings();}
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录')readSystemSettings();}
 function pageSystem(dis){
-  var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+Object.keys(SYSTEM_GROUPS).map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
+  var tabs=Object.keys(SYSTEM_GROUPS),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(SYSTEM_TAB==='故障记录'&&!faults)SYSTEM_TAB='Wi-Fi';
+  var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
+  if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
   return h+pageSystemSettings(dis)+'</section></div>';
 }
@@ -1507,19 +1509,22 @@ function pageAlarm(dis){
 }
 
 function pageLost(dis){
-  var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_v2?'':' disabled');
+  var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_safety_v1&&m.state!=='unknown'?'':' disabled'),exitOff=d&&d.managed_lost_v2?'':' disabled';
   var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<input id="lostMessage" class="inp" maxlength="300" value="'+esc(m.message||'')+'"'+off+'></label>';
-  h+='<label style="display:flex;flex-direction:column;gap:4px">解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+off+'>退出</button></div>';
-  h+='<div class="ops-actions" style="margin-top:16px"><label><input id="lostAutoWipe" type="checkbox"'+(m.auto_wipe_enabled?' checked':'')+off+'> 自毁程序</label><span class="muted">失联或解除配对持续</span><input id="lostTimeout" class="inp" type="number" min="1" max="168" value="'+(m.timeout_hours||24)+'" style="width:70px"'+off+'><span class="muted">小时后清除；退出丢失模式同时关闭</span></div>';
-  h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'设置尚未完成'})[m.state]||'未启用')+(m.deadline_at?' · '+esc(m.trigger==='manual'?'手动':m.trigger==='unpaired'?'未配对':'失联')+'清除时间 '+esc(new Date(m.deadline_at).toLocaleString('zh-CN',{timeZone:'Australia/Sydney',hour12:false})): '')+'</p>';
+  h+='<label style="display:flex;flex-direction:column;gap:4px">解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+exitOff+'>退出</button></div>';
+  h+='<div class="ops-actions" style="margin-top:16px"><label><input id="lostAutoWipe" type="checkbox" onchange="lostAutoChanged(this)"'+(m.auto_wipe_enabled?' checked':'')+(m.auto_wipe_enabled&&d&&d.managed_lost_safety_v1?'':off)+'> 自毁程序</label><span class="muted">失联或解除配对持续</span><input id="lostTimeout" class="inp" type="number" min="1" max="168" value="'+(m.timeout_hours||24)+'" style="width:70px"'+off+'><span class="muted">小时后清除；退出丢失模式同时关闭</span></div>';
+  h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'设置尚未完成',unknown:'设备状态暂未确认'})[m.state]||'设备状态暂未确认')+(m.deadline_at?' · '+esc(m.trigger==='manual'?'手动':m.trigger==='unpaired'?'未配对':'失联')+'清除时间 '+esc(new Date(m.deadline_at).toLocaleString('zh-CN',{timeZone:'Australia/Sydney',hour12:false})): '')+'</p>';
+  h+='<p class="muted">'+(m.auto_wipe_enabled?'自毁程序：已开启':'自毁程序：'+(m.state==='unknown'?'未确认':'已关闭'))+'</p>';
+  if(d&&d.safety_task)h+='<p class="muted">'+esc(d.safety_task.label)+' · '+esc(lostTaskText(d.safety_task.detail))+'</p>';
+  if(m.wipe_state==='failed'||m.wipe_state==='started')h+='<p style="color:#fca5a5">'+(m.wipe_state==='failed'?'数据清除执行失败，尚未完成':'数据清除已开始，离线不代表已完成')+'</p>';
   if(d&&d.task&&['set_lost_mode','wipe_data'].includes(d.task.type))h+='<p class="muted">'+esc(d.task.label)+' · '+esc(lostTaskText(d.task.detail))+'</p>';
   h+='<div style="border-top:1px solid #334155;margin-top:20px;padding-top:16px"><p style="color:#fca5a5">永久清除设备内部数据，保留操作系统；此操作无法撤销。</p><div class="ops-actions"><input id="lostWipePhrase" class="inp" autocomplete="off" placeholder="请输入：擦除数据" oninput="lostWipeInput()" style="width:210px"><button id="lostWipeNext" class="btn-gray" style="background:#783c49;color:#fff" onclick="lostWipe()" disabled>继续</button></div></div>';
   return h;
 }
 function lostTaskText(detail){return ({'lost-enabled':'系统锁屏已启用','lost-disabled':'已退出并关闭自毁程序','lost-password-required':'请填写解锁密码','lost-current-password-required':'设备已有系统密码，请填写当前密码','lost-current-password-changed':'系统密码已改变，请先核对','lost-system-credential-unsupported':'该系统的锁屏接口尚未适配','lost-system-operation-failed':'系统操作失败，未确认完成','lost-boot-setting-unavailable':'无法读取开机解密设置，已停止操作','lost-boot-setting-failed':'开机解密设置未保存，已停止操作','lost-boot-password-required':'设备需要开机解密密码，暂不能远程更改锁屏','lost-system-lock-pending':'系统尚未确认锁屏，请检查状态','lost-system-password-failed':'系统未成功保存解锁密码'})[detail]||detail||'';}
-function lostWipeInput(){var d=currentDev(),b=$('lostWipeNext');if(b)b.disabled=!d||!d.managed_wipe_v1||$('lostWipePhrase').value!=='擦除数据';}
+function lostWipeInput(){var d=currentDev(),b=$('lostWipeNext');if(b)b.disabled=!d||!d.managed_wipe_v1||!d.managed_lost_safety_v1||d.lost_mode?.state==='unknown'||$('lostWipePhrase').value!=='擦除数据';}
 async function lostWipe(){
-  var d=currentDev(),id=d&&d.id,phrase=$('lostWipePhrase')&&$('lostWipePhrase').value;if(!id||phrase!=='擦除数据'||!d.managed_wipe_v1)return;
+  var d=currentDev(),id=d&&d.id,phrase=$('lostWipePhrase')&&$('lostWipePhrase').value;if(!id||phrase!=='擦除数据'||!d.managed_wipe_v1||!d.managed_lost_safety_v1||d.lost_mode?.state==='unknown')return;
   if(!confirm('第一次确认：清除 '+d.name+' 内部存储的账号、应用和文件，保留操作系统。是否继续？'))return;
   try{
     var p=await fileApi('/api/elfremote/task',{device_id:id,action:'prepare_wipe',phrase:phrase});
@@ -1762,8 +1767,20 @@ function alarmPlay(){
 function lostRec(){
   unavailableAction('远程录音');
 }
+async function lostAutoChanged(box){
+  var d=currentDev(),m=d&&d.lost_mode||{};if(!d)return;
+  if(box.checked){if(!m.auto_wipe_enabled)alert('选择时限后点击“启用”保存；当前尚未开启自毁程序。');return;}
+  if(!m.auto_wipe_enabled)return;
+  box.checked=true;box.disabled=true;
+  await enqueueRepair('set_lost_mode',{version:2,enabled:!!m.enabled,cancel_auto:true,auto_wipe_enabled:false,timeout_hours:m.timeout_hours||24});
+  if(currentDev()&&currentDev().id===d.id)renderOps();
+}
 function setLostMode(enabled){
-  return enqueueRepair('set_lost_mode',{version:2,enabled:enabled,message:enabled?$('lostMessage').value:'',password:enabled?$('lockPw').value:'',auto_wipe_enabled:enabled&&$('lostAutoWipe').checked,timeout_hours:Number($('lostTimeout').value)||24});
+  var d=currentDev(),m=d&&d.lost_mode||{};if(!d)return;
+  var auto=enabled&&$('lostAutoWipe').checked,hours=Number($('lostTimeout').value)||24;
+  if(enabled&&(!d.managed_lost_safety_v1||m.state==='unknown'||!m.revision))return;
+  if(auto&&!confirm('启用 '+d.name+' 的自毁程序：失联或解除配对持续 '+hours+' 小时后清除设备数据。输入正确系统密码可在设备上取消。确定启用？'))return;
+  return enqueueRepair('set_lost_mode',{version:2,enabled:enabled,message:enabled?$('lostMessage').value:'',password:enabled?$('lockPw').value:'',auto_wipe_enabled:auto,timeout_hours:hours,...(enabled?{expected_revision:m.revision}:{})});
 }
 function lostVideo(cam){
   unavailableAction('远程录像');

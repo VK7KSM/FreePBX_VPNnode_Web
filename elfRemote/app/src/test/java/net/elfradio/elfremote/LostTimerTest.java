@@ -37,7 +37,11 @@ public class LostTimerTest {
         assertEquals(DAY-5000,LostTimer.remaining(s,1,6000,"boot1"));
     }
     @Test public void rebootKeepsDeadlineInsteadOfRearming()throws Exception {
-        JSONObject s=armed(true);assertEquals(DAY-3600000,LostTimer.remaining(s,4600000,2000,"boot2"));
+        JSONObject s=armed(true);LostTimer.checkpoint(s,4600000,3601000,"boot1");
+        assertEquals(DAY-3602000,LostTimer.remaining(s,999999999999L,2000,"boot2"));
+        assertEquals(DAY-3602000,LostTimer.remaining(s,1,2000,"boot2"));
+        LostTimer.checkpoint(s,1,2000,"boot2");
+        assertEquals(DAY-3605000,LostTimer.remaining(s,1,3000,"boot3"));
     }
     @Test public void startedOrFailedNeverRepeatsDestruction()throws Exception {
         for(String state:new String[]{"started","failed"}){

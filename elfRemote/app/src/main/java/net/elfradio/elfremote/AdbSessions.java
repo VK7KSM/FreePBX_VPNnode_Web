@@ -26,6 +26,7 @@ final class AdbSessions implements Closeable {
         return uri;
     }
     synchronized JSONObject open(JSONObject request)throws Exception {
+        if(LostProtection.edit(s->{}).optBoolean("enabled"))throw new IllegalStateException("丢失模式期间请使用已认证的通用终端");
         URI uri=validate(request,System.currentTimeMillis());String id=request.getString("session_id");
         if(current!=null&&current.id.equals(id))return new JSONObject().put("accepted",true);
         if(jobs.isBusy())throw new IllegalStateException("设备正在执行维护任务，请稍后连接ADB");

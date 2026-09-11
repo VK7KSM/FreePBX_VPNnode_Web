@@ -79,7 +79,7 @@ final class CorePush implements Closeable {
                         if(client!=source)return;
                         if(topic.equals(received)&&bytes.length<=4096){
                             JSONObject notice=null;try{notice=new JSONObject(new String(bytes,StandardCharsets.UTF_8));}catch(Exception malformed){RuntimeLog.event("core_push_invalid_notice");}
-                            if(notice!=null)state.notice(expectedKey,notice,System.currentTimeMillis());
+                            if(notice!=null){state.notice(expectedKey,notice,System.currentTimeMillis());if(notice.optBoolean("managed_safety"))sync();}
                         }
                         source.messageArrivedComplete(message.getId(),message.getQos());deliver();
                     }catch(Exception error){retry(error);}finally{wake.release("notice");}});
@@ -108,9 +108,25 @@ final class CorePush implements Closeable {
         if(closed)return;
         wake.hold("sync",45000);
         try{JSONObject identity=state.snapshot(),reply=post(Protocol.pushSyncPath(),identityBody(identity));JSONObject notice=reply.optJSONObject("status_request");
-            if(notice!=null)state.notice(CorePushState.key(identity),notice,System.currentTimeMillis());deliver();LostProtection.contact(null,0);RuntimeLog.event("core_push_sync_ok");
+            if(notice!=null)state.notice(CorePushState.key(identity),notice,System.currentTimeMillis());
+            JSONObject safety=reply.optJSONObject("managed_safety_task");if(safety!=null)safety(safety);
+            deliver();LostProtection.contact(reply.has("paired")?reply.getBoolean("paired"):null,reply.optLong("unpaired_at_ms"),reply.optLong("server_time"));RuntimeLog.event("core_push_sync_ok");
         }catch(Exception error){RuntimeLog.error("core_push_sync_failed",error);if(!closed&&connected){long delay=60000;try{delay=Math.max(delay,httpRetry.remaining(Protocol.pushSyncPath(),SystemClock.elapsedRealtime()));}catch(Exception ignored){}RuntimeLog.event("core_push_sync_retry delay_ms="+delay);wake.schedule("sync",delay,this::sync);}}
         finally{wake.release("sync");}
+    }
+    void safety(JSONObject offer)throws Exception{if(!LostSafety.accepts(offer))throw new IllegalArgumentException("lost-invalid-safety-task");String identityKey=CorePushState.key(state.snapshot());worker.post(()->runSafety(offer,0,identityKey));}
+    private void runSafety(JSONObject offer,int attempt,String identityKey){
+        if(closed)return;wake.hold("safety",120000);
+        try{
+            JSONObject identity=state.snapshot();if(!identityKey.equals(CorePushState.key(identity)))return;
+            TaskReceipts receipts=new TaskReceipts(new File(directory,"safety-receipts/"+PairingStore.sha256Hex(CorePushState.key(identity))));
+            LostSafety.run(offer,receipts,p->LostProtection.request(CoreWake.systemContext(),p),(id,phase,detail,result)->{
+                JSONObject body=identityBody(identity).put("task_id",id).put("state",phase).put("detail",detail);if(result!=null)body.put("result",result);
+                JSONObject reply=post(Protocol.taskProgressPath(),body),task=reply.optJSONObject("task");
+                if(task==null||!id.equals(task.optString("id"))||(TaskReceipts.terminal(phase)&&!phase.equals(task.optString("state"))))throw new IOException("lost-safety-receipt-pending");
+            },System.currentTimeMillis());
+        }catch(Exception error){RuntimeLog.event("lost-safety-pending");if(!closed&&attempt<3)wake.schedule("safety-retry",Math.min(60000,5000L<<attempt),()->runSafety(offer,attempt+1,identityKey));}
+        finally{wake.release("safety");}
     }
     private void deliver(){
         try {
@@ -162,7 +178,7 @@ final class CorePush implements Closeable {
         public void stop(){running=false;wake.cancel("ping");wake.release("ping");}
         public void schedule(long delay){if(running)wake.schedule("ping",delay,this::fire);}
         private void fire(){if(!running)return;wake.hold("ping",30000);RuntimeLog.event("core_mqtt_ping_wake");
-            try{MqttToken token=comms.checkForActivity(new IMqttActionListener(){public void onSuccess(IMqttToken t){wake.release("ping");LostProtection.contact(null,0);RuntimeLog.event("core_mqtt_ping_ok");}public void onFailure(IMqttToken t,Throwable error){wake.release("ping");}});if(token==null)wake.release("ping");}
+            try{MqttToken token=comms.checkForActivity(new IMqttActionListener(){public void onSuccess(IMqttToken t){wake.release("ping");RuntimeLog.event("core_mqtt_ping_ok");}public void onFailure(IMqttToken t,Throwable error){wake.release("ping");}});if(token==null)wake.release("ping");}
             catch(Exception error){wake.release("ping");retry(error);}
         }
     }
