@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {systemSettingsParams,applySystemSettingsResult} from './system-settings.js';
+import {systemSettingsParams,applySystemSettingsResult,systemSettingAllowed} from './system-settings.js';
 import {enqueueRepairTask,applyRepairProgress,publicRepair,queueSystemRestore} from './elfRemote/control-plane.js';
 
 test('系统配置拒绝错误类型、越界值与未声明的操作',()=>{
@@ -70,4 +70,17 @@ test('系统配置失败保留此前目标，多项应用权限不互相覆盖',
  const before=structuredClone(d.system_targets);assert.equal(Object.keys(before).length,2);
  await enqueueRepairTask(d,{type:'system_config',id:'fail',params:{group:'sound',action:'set',key:'brightness',value:90}},2000);d.task.state='running';applyRepairProgress(d,'fail','failed','失败',null,2001);
  assert.deepEqual(d.system_targets,before);
+});
+
+
+test('D31未读取设置及自定义型号仍受写入合同限制，D22跨应用恢复不误封',()=>{
+ for(const d of [{model_id:'mdl_d31'},{update_channel:'d31'},{hardware_identity:{variant:'d31'}}]){
+  for(const [group,key] of [['wifi','connect'],['network','mobile_data'],['sound','font_scale'],['time','locale'],['apps','permission'],['apps','notifications'],['apps','background']])assert.equal(systemSettingAllowed(d,group,key,'test.app'),false);
+  for(const [group,key] of [['sound','media'],['sound','brightness'],['time','timezone'],['apps','enabled']])assert.equal(systemSettingAllowed(d,group,key,'test.app'),true);
+ }
+ const d={model_id:'mdl_d22',system_settings:{apps:{package:'test.other',unavailable:['notifications']},network:{unavailable:{network_write:'尚未适配'}}}};
+ assert.equal(systemSettingAllowed(d,'apps','notifications','test.app'),true);
+ assert.equal(systemSettingAllowed(d,'apps','notifications','test.other'),false);
+ assert.equal(systemSettingAllowed(d,'network','mobile_data'),false);
+ assert.equal(systemSettingAllowed({model_id:'mdl_d22'},'wifi','connect'),true);
 });

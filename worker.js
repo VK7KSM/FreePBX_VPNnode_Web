@@ -2,6 +2,10 @@ import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestC
 import mediaClientSource from './media-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
+import {systemSettingAllowed} from './system-settings.js';
+import {panelLifecycleSource} from './panel-lifecycle.js';
+import {cfUsageResponse} from './cf-usage.js';
+import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.js';
 // =========================================================================
 // elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
 // 升级：通话组 + 网关账户 + 分级分机目录
@@ -392,6 +396,10 @@ export class ElfStore {
 function singleStoreRead(path,method) {
   return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
 }
+// 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
+function storeAuthenticates(path,method){
+  return method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models'].includes(path);
+}
 
 const quotaCooldown=new WeakMap();
 function isQuotaError(error){return /Exceeded allowed volume of requests in Durable Objects free tier/i.test(error?.message||'');}
@@ -422,6 +430,8 @@ const app = {
     if(pathname==='/file-hash.js')return new Response(fileHashSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
     if(pathname==='/panel-events.js')return new Response(panelEventsSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-cache'}});
+    if(pathname==='/panel-lifecycle.js')return new Response(panelLifecycleSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-cache'}});
+    if(pathname==='/cf-usage.js')return new Response(cfUsageClientSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-cache'}});
     if (pathname === "/admin-session.js") {
       return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
     }
@@ -435,9 +445,12 @@ const app = {
         if (method !== (action === "session" ? "GET" : "POST")) return authJson({ ok: false }, 405);
         return adminRpc(env, request, action);
       }
-      const session = await adminRpc(env, request, "session");
-      if (!session.ok) return session;
+      if(!storeAuthenticates(pathname,method)){
+        const session = await adminRpc(env, request, "session");
+        if (!session.ok) return session;
+      }
     }
+    if(pathname==='/api/cf-usage')return method==='GET'?cfUsageResponse(env):authJson({ok:false},405);
     if(pathname==='/api/admin/prepare-kv'&&method==='POST')return elfDoStub(env).fetch('https://elf-store/__panel_migrate',{method:'POST'});
     if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
       const stub=elfDoStub(env);
@@ -779,7 +792,7 @@ export default {
   ...app,
   async fetch(request,env,ctx){
     const path=new URL(request.url).pathname;
-    const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull'].includes(path);
+    const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
     if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
     try{return await app.fetch(request,env,ctx);}
     catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);return quotaUnavailable();}
@@ -2054,6 +2067,8 @@ async function handleElfEnqueueTask(env, request) {
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
+    if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package))return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
+    if(data.type==='connect_wifi'&&!systemSettingAllowed(found,'wifi','connect'))return json({ok:false,msg:'设备网络修改尚未接通，未下发修改'},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
     if(data.type==="configure_sip"){
       try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
@@ -2338,12 +2353,14 @@ function renderHtml() {
     '<!DOCTYPE html>',
     '<html lang="zh-CN">',
     '<head>',
+    '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
     '<title>elfRadio SIP/VPN Manage</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
+    cfUsageStyle,
     'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
     '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
@@ -2398,6 +2415,7 @@ function renderHtml() {
     '<\/div>',
     '<div style="display:flex;gap:.6rem">',
     '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',
+    cfUsageMarkup,
     '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
     '<\/div>',
     '<\/div>',
@@ -2625,12 +2643,14 @@ function renderSipHtml() {
     '<!DOCTYPE html>',
     '<html lang="zh-CN">',
     '<head>',
+    '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
     '<title>elfRadio SIP/VPN Manage</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
+    cfUsageStyle,
     'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
     '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
@@ -2694,6 +2714,7 @@ function renderSipHtml() {
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:1rem">',
     '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin:0;white-space:nowrap">等待同步状态...<\/p>',
+    cfUsageMarkup,
     '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
     '<\/div>',
     '<\/div><\/header>',
@@ -2825,6 +2846,7 @@ function renderDevicesHtml() {
     '<!DOCTYPE html>',
     '<html lang="zh-CN">',
     '<head>',
+    '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
     '<title>elfRadio SIP/VPN Manage</title>',
@@ -2835,6 +2857,7 @@ function renderDevicesHtml() {
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"><\/script>',
     '<style>',
+    cfUsageStyle,
     'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0}',
     '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
     '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
@@ -2958,7 +2981,7 @@ function renderDevicesHtml() {
     '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
-    '<div><button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',
+    '<div style="display:flex;align-items:center;gap:12px">'+cfUsageMarkup+'<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',
     '<\/div><\/header>',
     '<main style="max-width:1280px;margin:1.2rem auto;padding:0 1.5rem">',
     '<div class="layout">',

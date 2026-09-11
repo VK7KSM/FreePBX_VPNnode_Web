@@ -3,7 +3,7 @@
   "main": "worker.js",
   "compatibility_date": "2024-09-23",
   "workers_dev": true,
-  "vars": { "PANEL_KV_ENABLED": "1" },
+  "vars": { "PANEL_KV_ENABLED": "1", "CF_USAGE_ENABLED": "1" },
   "assets": {
     "directory": "./.generated-assets",
     "binding": "ASSETS",

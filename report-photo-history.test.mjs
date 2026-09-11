@@ -35,7 +35,7 @@ test('七天到期即停止访问，R2删除失败保留索引供下次重试',a
 
 test('照片按拍摄时间翻看，自动刷新保留选择，切设备不串台，边界与过期照片不可选',async()=>{
   const c=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},URLSearchParams});vm.runInContext(source,c);
-  const a={id:'a'},b={id:'b'};c.DEV=[a,b];c.selDev='a';let renders=0;c.renderRemoteConsole=()=>renders++;
+  const a={id:'a'},b={id:'b'};c.DEV=[a,b];c.selDev='a';let renders=0;c.renderRemoteConsole=()=>renders++;c.setServiceError=()=>{};
   const p=n=>({report_id:String(n),captured_at:'2026-09-09T00:00:0'+n+'Z',expires_at:Date.now()+60000});
   let finish;c.fetch=()=>new Promise(r=>finish=r);const loading=c.loadReportPhotos(a);
   c.selDev='b';finish({ok:true,json:async()=>({ok:true,photos:[p(1),p(2)],next:null})});await loading;

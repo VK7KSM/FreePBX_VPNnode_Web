@@ -149,7 +149,7 @@ function logout(){ if(panelEvents)panelEvents.stop();return adminSession.logout(
 
 var SERVICE_ERRORS={};
 function serviceErrorText(){
-  var d=currentDev(),errors=[SERVICE_ERRORS.devices,d&&SERVICE_ERRORS['traffic:'+d.id]].filter(Boolean);
+  var d=currentDev(),errors=[SERVICE_ERRORS.devices,d&&SERVICE_ERRORS['traffic:'+d.id],d&&SERVICE_ERRORS['photos:'+d.id]].filter(Boolean);
   var quota=errors.find(function(e){return e.code==='storage_quota_exceeded';});
   return quota?quota.message:Array.from(new Set(errors.map(function(e){return e.message;}))).join(' · ');
 }
@@ -162,7 +162,8 @@ async function readServiceJson(r){
   var data;try{data=await r.json();}catch(e){if(r.ok)throw Error('服务器返回的数据无效');data={};}
   if(!r.ok||data.ok===false){
     var e=Error(data.code==='storage_quota_exceeded'?'CF 额度已用尽，等待恢复':r.status>=500?'服务器暂不可用':data.msg||'请求失败（'+r.status+'）');
-    e.code=data.code;e.retryAfter=Math.min(900,Math.max(0,Number(r.headers&&r.headers.get('Retry-After'))||0))*1000;throw e;
+    var retry=r.headers&&r.headers.get('Retry-After'),seconds=Number(retry);if(retry&&!Number.isFinite(seconds))seconds=(Date.parse(retry)-Date.now())/1000;
+    e.code=data.code;e.retryAfter=Math.min(2147483,Math.max(0,seconds||0))*1000;throw e;
   }return data;
 }
 function loadDevices(){
@@ -190,7 +191,7 @@ function loadDevices(){
         savedInputs.forEach(function(saved){if(saved.id==='sipAccountSlot'||((saved.id.indexOf('sipAccount')===0||saved.id.indexOf('managedSip')===0)&&previousSip!==(uiOf()&&uiOf().sipSelection)))return;var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
       }
     }
-    if(editing) renderRemoteConsole();
+    if(editing){renderRemoteConsole();if(selFn==='update'&&$('updateProgressLive'))$('updateProgressLive').innerHTML=kv("安装进展",installationProgress(currentDev().update||{}))+'<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(currentDev().update||{})+'</div></div>';}
 
     setServiceError('devices',null);
     devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();
@@ -970,12 +971,15 @@ function compareReleaseVersion(current,latest){
   return 0;
 }
 function updateBusy(u){return ['pending','claimed','downloading','verifying','installing','wait_health','rollback'].includes(u.state);}
+function updateDetail(detail){
+  var reasons={'waiting-wifi':'等待连接Wi-Fi后自动下载。','download-interrupted':'下载中断，稍后自动重试。','download-failed':'多次下载失败，请检查网络后重新下发。','bad-task':'安装任务无效，请重新下发。','wrong-device':'安装包指定的设备与当前设备不符。',expired:'更新任务已过期，请重新下发。','insufficient-storage':'安装程序检查可用存储空间未通过，请检查设备存储。','hash-mismatch':'下载的安装包校验不通过，请重新下发。','cert-mismatch':'安装包签名与客户端要求不一致，未继续安装。','apk-metadata-mismatch':'安装包的包名或版本与发布记录不一致。','install-fail':'系统安装失败，正在等待设备报告恢复结果。','health-timeout':'等待新版本正常启动的时间已超过限制。','rollback-fail':'恢复旧版本失败，请拉取日志检查原因。'};
+  return ['health-ok','already-healthy'].includes(detail)?'':reasons[detail]||detail||'';
+}
 function updateProgress(u){
   var states={pending:'更新已发送，等待设备接收。',claimed:'设备已接收更新，正在准备下载安装包。',downloading:'设备正在下载安装包，请稍候。',verifying:'下载完成，正在检查安装包是否完整、签名是否正确。',installing:'正在设备上安装新版本，请等待安装结果。',wait_health:'新版本已安装，正在确认客户端能正常启动和上报。',success:'这次更新已完成，设备已确认客户端运行正常。',rollback:'更新后未能确认运行正常，正在恢复之前可用的版本。',recovered:'已恢复之前可用的版本，本次更新未完成。',rejected:'设备未执行本次更新。'};
-  var reasons={'waiting-wifi':'等待连接Wi-Fi后自动下载。','download-interrupted':'下载中断，稍后自动重试。','download-failed':'多次下载失败，请检查网络后重新下发。','bad-task':'安装任务无效，请重新下发。','wrong-device':'安装包指定的设备与当前设备不符。',expired:'更新任务已过期，请重新下发。','insufficient-storage':'安装程序检查可用存储空间未通过，请检查设备存储。','hash-mismatch':'下载的安装包校验不通过，请重新下发。','cert-mismatch':'安装包签名与客户端要求不一致，未继续安装。','apk-metadata-mismatch':'安装包的包名或版本与发布记录不一致。','install-fail':'系统安装失败，正在等待设备报告恢复结果。','health-timeout':'等待新版本正常启动的时间已超过限制。','rollback-fail':'恢复旧版本失败，请拉取日志检查原因。'};
   if(!u.state)return '尚未从网页发起过客户端更新。';
   var prefix=u.target?'最近一次更新（'+u.target+'）：':'';
-  return prefix+(states[u.state]||'设备尚未返回可识别的安装进展，请拉取最新信息。')+(reasons[u.detail]||'');
+  return prefix+(states[u.state]||'设备尚未返回可识别的安装进展，请拉取最新信息。')+updateDetail(u.detail);
 }
 function installationProgress(u,now){
   var labels={pending:'等待设备接收',claimed:'准备下载',downloading:'下载中',verifying:'下载完成，正在校验安装包',installing:'安装中',wait_health:'安装完成，正在确认客户端正常运行',success:'安装完成',rollback:'正在重新安装之前可用的版本',recovered:'旧版本已恢复',rejected:'安装未执行'};
@@ -983,6 +987,7 @@ function installationProgress(u,now){
   var text=labels[u.state]||'等待设备返回安装进展';
   if(u.detail==='install-fail')text='系统安装失败，等待设备报告后续处理结果';
   if(u.detail==='rollback-fail')text='旧版本重新安装失败，等待设备报告后续处理结果';
+  if(u.detail&&!['install-fail','rollback-fail','health-ok','already-healthy'].includes(u.detail))text+=' · '+updateDetail(u.detail);
   var at=Date.parse(u.updated_at);
   if(updateBusy(u) && (!Number.isFinite(at) || (now||Date.now())-at>60000))text+=' · 尚未收到后续进展'+(Number.isFinite(at)?'（最后更新 '+sydney(u.updated_at)+'）':'');
   return text;
@@ -1008,8 +1013,9 @@ function pageUpdate(dis){
   var busy=updateBusy(u),updateDisabled=dis || (!d || !d.can_update || busy || RELEASE_DEVICE!==d.id?' disabled':'');
   if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+(latest.expired?' disabled':updateDisabled)+'>更新</button>';
   h += '</div></div>';
-  h += kv("安装进展", installationProgress(u));
+  h += '<div id="updateProgressLive" style="display:contents">'+kv("安装进展", installationProgress(u));
   h += '<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(u)+'</div></div>';
+  h += "</div>";
   h += "</div>";
   var status=functionSection('更新状态',h);h='';
   if(d && !d.can_update)h+='<p class="muted">设备尚未启用客户端更新功能</p>';
@@ -1028,6 +1034,7 @@ function pageWifi(dis){
   var u = uiOf();
   var device = currentDev();
   var scan = device && device.wifi_scan;
+  var connectBlocked=dis||(!systemSettingAllowed(device,'wifi','connect')?' disabled':'');
   var list = scan ? scan.networks : [];
   var sel = u ? u.wifiSel : "";
   var last = scan ? sydney(scan.sampled_at_ms) : "";
@@ -1045,9 +1052,9 @@ function pageWifi(dis){
   }
   h += "</tbody></table>";
   h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<input id="wifiSsid" class="inp" placeholder="SSID" value="'+esc(sel)+'" style="max-width:200px"'+dis+'>';
-  h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+dis+'>';
-  h += '<button class="btn-green" onclick="wifiConnect()"'+dis+'>连接</button>';
+  h += '<input id="wifiSsid" class="inp" placeholder="SSID" value="'+esc(sel)+'" style="max-width:200px"'+connectBlocked+'>';
+  h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+connectBlocked+'>';
+  h += '<button class="btn-green" onclick="wifiConnect()"'+connectBlocked+'>连接</button>';
   h += "</div>";
   h += '<p class="muted">'+(device&&device.managed_system_settings?'已保存网络留空则沿用密码，填写新密码则修改。连接失败自动恢复原网络。':'已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。')+'</p>';
   if(device&&device.managed_system_settings){var ws=systemSettingsState();h+='<span role="status">'+esc(ws.message||'')+'</span>';}
@@ -1157,21 +1164,22 @@ function photoHistory(d){
   return PHOTO_HISTORY[d.id];
 }
 function visiblePhotos(state){return state.photos.filter(function(p){return p.expires_at>Date.now();});}
-function loadReportPhotos(d){
+function loadReportPhotos(d,force){
   var state=photoHistory(d),latest=d.report_photo&&d.report_photo.report_id||'';
   if(state.pending)return state.promise;
-  if(Date.now()<state.retry||(state.loaded&&state.latest===latest&&Date.now()-state.loaded<300000))return;
-  state.pending=true;state.error='';var rows=[];
+  if(Date.now()<Math.max(state.retry,devicePollRetryAt)||(state.loaded&&state.latest===latest&&!force))return;
+  state.pending=true;state.error='';var rows=[],seen=new Set();
   function page(cursor){
-    return fetch('/api/elfremote/report-photo?'+new URLSearchParams({device_id:d.id,list:'1',cursor:cursor||''})).then(function(r){if(!r.ok)throw Error('照片读取失败');return r.json();}).then(function(x){
-      if(!x.ok)throw Error('照片读取失败');rows=rows.concat(x.photos);return x.next?page(x.next):rows;
+    if(seen.has(cursor||''))return Promise.reject(Error('照片分页重复，已停止读取'));seen.add(cursor||'');
+    return fetch('/api/elfremote/report-photo?'+new URLSearchParams({device_id:d.id,list:'1',cursor:cursor||''})).then(readServiceJson).then(function(x){
+      if(!Array.isArray(x.photos))throw Error('照片读取失败');rows=rows.concat(x.photos);return x.next?page(x.next):rows;
     });
   }
   return state.promise=page('').then(function(){
     state.photos=rows.sort(function(a,b){return b.captured_at.localeCompare(a.captured_at)||b.report_id.localeCompare(a.report_id);});
-    state.loaded=Date.now();state.latest=latest;
+    state.loaded=Date.now();state.latest=latest;state.failures=0;state.retry=0;setServiceError('photos:'+d.id,null);
     if(state.selected&&!state.photos.some(function(p){return p.report_id===state.selected;}))state.selected=null;
-  }).catch(function(){state.error='照片读取失败';state.retry=Date.now()+15000;}).finally(function(){
+  }).catch(function(e){state.error=e.message;state.failures=(state.failures||0)+1;state.retry=Date.now()+Math.max(e.retryAfter||0,Math.min(300000,15000*Math.pow(2,Math.min(5,state.failures-1))));setServiceError('photos:'+d.id,e);}).finally(function(){
     state.pending=false;if(currentDev()&&currentDev().id===d.id)renderRemoteConsole();renderMediaHistory();
   });
 }
@@ -1189,7 +1197,7 @@ function openMediaHistory(){
     wrap.onclick=function(e){if(e.target===wrap)closeMediaHistory();};document.body.appendChild(wrap);
   }
   $('mediaHistoryWrap').style.display='flex';renderMediaHistory();
-  Promise.resolve(loadReportPhotos(d)).then(renderMediaHistory);
+  Promise.resolve(loadReportPhotos(d,true)).then(renderMediaHistory);
   MEDIA_RECORDS[d.id]=null;fetch('/api/elfremote/media-recordings?'+new URLSearchParams({device_id:d.id,list:'1'})).then(function(r){if(!r.ok)throw Error('历史记录读取失败');return r.json();}).then(function(x){MEDIA_RECORDS[d.id]=x.records;renderMediaHistory();}).catch(function(){MEDIA_RECORDS[d.id]={error:'历史记录读取失败'};renderMediaHistory();});
 }
 function closeMediaHistory(){MEDIA_HISTORY.device=null;var wrap=$('mediaHistoryWrap');if(wrap){wrap.querySelectorAll('audio,video').forEach(function(el){el.pause();});wrap.style.display='none';}}
@@ -1300,8 +1308,9 @@ var SYSTEM_GROUP_IDS={'Wi-Fi':'wifi','网络与连接':'network','应用':'apps'
 function systemSettingsState(){var u=uiOf();return u.systemSettings||(u.systemSettings={pending:false,message:'',package:'',offset:0});}
 function systemSnapshot(){var d=currentDev();return d&&d.system_settings&&d.system_settings[SYSTEM_GROUP_IDS[SYSTEM_TAB]];}
 function systemField(key,label,control,blocked){return '<form class="system-setting-row" onsubmit="event.preventDefault();saveSystemField(\''+key+'\')"><label for="setting-'+key+'">'+esc(label)+'</label>'+control+'<button class="btn-green" type="submit"'+blocked+'>保存</button></form>';}
-function systemNumber(key,label,value,min,max,step,blocked){return systemField(key,label,'<input class="inp" id="setting-'+key+'" type="number" value="'+esc(value)+'" min="'+min+'" max="'+max+'" step="'+step+'" required'+blocked+'>',blocked);}
-function systemToggle(key,label,value,blocked){return systemField(key,label,'<select class="inp" id="setting-'+key+'"'+blocked+'><option value="true"'+(value?' selected':'')+'>开启</option><option value="false"'+(!value?' selected':'')+'>关闭</option></select>',blocked);}
+function systemWriteBlocked(key,blocked){var snapshot=systemSnapshot();return blocked||(!systemSettingAllowed(currentDev(),SYSTEM_GROUP_IDS[SYSTEM_TAB],key,snapshot&&snapshot.package)?' disabled':'');}
+function systemNumber(key,label,value,min,max,step,blocked){blocked=systemWriteBlocked(key,blocked);if(!Number.isFinite(value))return '<div class="system-setting-row"><label>'+esc(label)+'</label><span class="muted">不可用</span></div>';return systemField(key,label,'<input class="inp" id="setting-'+key+'" type="number" value="'+esc(value)+'" min="'+min+'" max="'+max+'" step="'+step+'" required'+blocked+'>',blocked);}
+function systemToggle(key,label,value,blocked){blocked=systemWriteBlocked(key,blocked);if(typeof value!=='boolean')return '<div class="system-setting-row"><label>'+esc(label)+'</label><span class="muted">不可用</span></div>';return systemField(key,label,'<select class="inp" id="setting-'+key+'"'+blocked+'><option value="true"'+(value?' selected':'')+'>开启</option><option value="false"'+(!value?' selected':'')+'>关闭</option></select>',blocked);}
 function systemBackgroundSetting(data,blocked){
   if(data.background_supported===false)return '<div class="system-setting-row"><label>允许后台运行</label><span class="muted">此系统不支持单独设置</span></div>';
   return systemToggle('background','允许后台运行',data.background,blocked);
@@ -1312,23 +1321,25 @@ function pageSystemSettings(dis){
   var h='<div class="ops-actions"><button class="btn-gray" onclick="readSystemSettings()"'+blocked+'>读取当前设置</button><span role="status">'+esc(state.message||(!d.managed_system_settings?'请更新客户端后使用':data?'读取于 '+sydney(data.sampled_at):'尚未读取设备设置'))+'</span></div>';
   if(!data)return h;
   if(group==='sound'){
-    h+='<div class="system-settings-grid">';[['media','媒体音量'],['ring','铃声音量'],['alarm','闹钟音量'],['call','通话音量']].forEach(function(item){h+=systemNumber(item[0],item[1],data[item[0]],0,data.maximum[item[0]],1,blocked);});
+    h+='<div class="system-settings-grid">';[['media','媒体音量'],['ring','铃声音量'],['alarm','闹钟音量'],['call','通话音量']].forEach(function(item){h+=systemNumber(item[0],item[1],data[item[0]],0,(data.maximum||{})[item[0]],1,blocked);});
     h+=systemToggle('brightness_auto','自动亮度',data.brightness_auto,blocked)+systemNumber('brightness','屏幕亮度',data.brightness,1,255,1,blocked||(data.brightness_auto?' disabled':''))+systemNumber('font_scale','字体大小',data.font_scale,.85,1.5,.05,blocked)+'</div>';
   }else if(group==='time'){
     h+='<div class="system-settings-grid">'+systemToggle('auto_time','自动时间',data.auto_time,blocked)+systemToggle('auto_time_zone','自动时区',data.auto_time_zone,blocked);
+    var localeBlocked=systemWriteBlocked('locale',blocked);
     var locales=Array.from(new Set([data.locale].concat(data.locales||[]))).filter(Boolean),names;try{names=new Intl.DisplayNames(['zh-CN'],{type:'language'});}catch(e){}
-    h+=systemField('locale','系统语言','<select class="inp" id="setting-locale"'+blocked+'>'+locales.map(function(l){var label=l;try{if(names)label=names.of(l);}catch(e){}return '<option value="'+esc(l)+'"'+(l===data.locale?' selected':'')+'>'+esc(label)+' · '+esc(l)+'</option>';}).join('')+'</select>',blocked);
+    h+=systemField('locale','系统语言','<select class="inp" id="setting-locale"'+localeBlocked+'>'+locales.map(function(l){var label=l;try{if(names)label=names.of(l);}catch(e){}return '<option value="'+esc(l)+'"'+(l===data.locale?' selected':'')+'>'+esc(label)+' · '+esc(l)+'</option>';}).join('')+'</select>',localeBlocked);
     var zones;try{zones=Intl.supportedValuesOf('timeZone');}catch(e){zones=['Australia/Sydney','Australia/Brisbane','Australia/Perth','UTC'];}zones=Array.from(new Set([data.timezone,'UTC'].concat(zones))).filter(function(zone){return !data.timezones||data.timezones.includes(zone);});
     var zoneDisabled=blocked||(data.auto_time_zone?' disabled':'');
     h+=systemField('timezone','时区','<select class="inp" id="setting-timezone"'+zoneDisabled+'>'+zones.map(function(z){return '<option value="'+esc(z)+'"'+(z===data.timezone?' selected':'')+'>'+esc(z)+'</option>';}).join('')+'</select>',zoneDisabled)+'</div>';
   }else if(group==='network'){
     h+='<div class="system-settings-grid">'+systemToggle('mobile_data',data.mobile_available?'移动数据':'未检测到SIM卡',data.mobile_data,blocked||(!data.mobile_available?' disabled':''))+systemToggle('bluetooth',data.bluetooth_supported?'蓝牙':'设备无蓝牙',data.bluetooth,blocked||(!data.bluetooth_supported?' disabled':''))+'</div>';
-    h+='<div class="system-setting-section"><h4>热点</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemHotspot(true)"><input class="inp" id="setting-hotspot-name" aria-label="热点名称" placeholder="热点名称" value="'+esc(data.hotspot.ssid||'')+'" required'+blocked+'><input class="inp" id="setting-hotspot-password" type="password" aria-label="热点密码" placeholder="热点密码" minlength="8" maxlength="63" autocomplete="new-password" required'+blocked+'><button class="btn-green"'+blocked+'>保存并开启</button><button type="button" class="btn-gray" onclick="saveSystemHotspot(false)"'+(blocked||(!data.hotspot.enabled?' disabled':''))+'>关闭热点</button><span>'+esc(data.hotspot.enabled?'已开启':'已关闭')+'</span></form></div>';
+    var hotspot=data.hotspot||{},hotspotBlocked=systemWriteBlocked('hotspot',blocked)||(!data.hotspot||typeof hotspot.enabled!=='boolean'?' disabled':'');
+    h+='<div class="system-setting-section"><h4>热点</h4><form class="ops-actions" onsubmit="event.preventDefault();saveSystemHotspot(true)"><input class="inp" id="setting-hotspot-name" aria-label="热点名称" placeholder="热点名称" value="'+esc(hotspot.ssid||'')+'" required'+hotspotBlocked+'><input class="inp" id="setting-hotspot-password" type="password" aria-label="热点密码" placeholder="热点密码" minlength="8" maxlength="63" autocomplete="new-password" required'+hotspotBlocked+'><button class="btn-green"'+hotspotBlocked+'>保存并开启</button><button type="button" class="btn-gray" onclick="saveSystemHotspot(false)"'+(hotspotBlocked||(!hotspot.enabled?' disabled':''))+'>关闭热点</button><span>'+esc(typeof hotspot.enabled!=='boolean'?'不可用':hotspot.enabled?'已开启':'已关闭')+'</span></form></div>';
     h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((data.paired||[]).length?'<div class="system-items">'+data.paired.map(function(p){return '<div><span>'+esc(p.name||'蓝牙设备')+'</span><span>'+esc(p.address)+'</span></div>';}).join('')+'</div>':'<p class="muted">'+(data.bluetooth?'暂无已配对设备':'蓝牙已关闭')+'</p>')+'</div><div class="system-items"><div><span>USB模式</span><span>'+esc((data.usb||'none').split(',').map(function(mode){return {mtp:'文件传输',adb:'USB调试',rndis:'USB网络共享',ptp:'照片传输',none:'未启用'}[mode]||mode;}).join(' · '))+'</span></div></div>';
   }else if(group==='apps'){
     if(data.package){
       h+='<div class="system-setting-section"><div class="ops-actions"><button class="btn-gray" onclick="systemChooseApp(\'\')"'+blocked+'>返回应用列表</button><span>'+esc(data.name)+' · '+esc(data.version||'')+'</span></div><p class="muted">'+esc(data.package)+'</p></div><div class="system-settings-grid">'+systemToggle('enabled','应用启用',data.enabled,blocked)+systemToggle('notifications','允许通知',data.notifications,blocked)+systemBackgroundSetting(data,blocked)+'</div><div class="system-setting-section"><h4>运行时权限</h4><div class="system-items">';
-      (data.permissions||[]).forEach(function(p,i){h+='<div><span>'+esc(p.label||p.name)+'</span><button class="'+(p.granted?'btn-gray':'btn-green')+'" onclick="systemPermission('+i+')"'+blocked+'>'+esc(p.granted?'撤销':'允许')+'</button></div>';});h+=data.permissions.length?'':'<p class="muted">该应用没有可调整的运行时权限</p>';h+='</div></div>';
+      (data.permissions||[]).forEach(function(p,i){h+='<div><span>'+esc(p.label||p.name)+'</span><button class="'+(p.granted?'btn-gray':'btn-green')+'" onclick="systemPermission('+i+')"'+systemWriteBlocked('permission',blocked)+'>'+esc(p.granted?'撤销':'允许')+'</button></div>';});h+=(data.permissions||[]).length?'':'<p class="muted">该应用没有可调整的运行时权限</p>';h+='</div></div>';
     }else{
       h+='<div class="system-setting-section function-table"><table><thead><tr><th>应用</th><th>状态</th><th></th></tr></thead><tbody>'+(data.apps||[]).map(function(a){return '<tr><td>'+esc(a.name)+'<br><span class="muted">'+esc(a.package)+'</span></td><td>'+esc(a.enabled?'已启用':'已停用')+'</td><td><button class="btn-gray" data-package="'+esc(a.package)+'" onclick="systemChooseApp(this.dataset.package)"'+blocked+'>设置</button></td></tr>';}).join('')+'</tbody></table></div><div class="ops-actions"><button class="btn-gray" onclick="systemAppsPage(-1)"'+(blocked||data.offset===0?' disabled':'')+'>上一页</button><span>共 '+data.total+' 个应用</span><button class="btn-gray" onclick="systemAppsPage(1)"'+(blocked||data.next<0?' disabled':'')+'>下一页</button></div>';
     }
@@ -1336,7 +1347,7 @@ function pageSystemSettings(dis){
   return h;
 }
 async function runSystemSettings(params){
-  var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(state.pending){if(params.action==='read')state.nextRead=params;return;}
+  var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(params.action==='set'&&!systemSettingAllowed(d,params.group,params.key,params.package)){state.message='设备尚不支持此设置';renderOps();return;}if(state.pending){if(params.action==='read')state.nextRead=params;return;}
   state.pending=true;state.message=params.action==='set'?'正在应用设置':'正在读取设备设置';renderOps();
   try{
     var r=await fileApi('/api/elfremote/task',{device_id:d.id,type:'system_config',id:'settings-'+crypto.randomUUID(),params:params}),task;
@@ -1734,6 +1745,7 @@ function wifiPick(ssid){
   renderOps();
 }
 function wifiConnect(){
+  if(!systemSettingAllowed(currentDev(),'wifi','connect'))return;
   if(currentDev()&&currentDev().managed_system_settings)return runSystemSettings({group:'wifi',action:'set',key:'connect',value:{ssid:$('wifiSsid').value.trim(),password:$('wifiPw').value}});
   var ssid=$('wifiSsid').value,password=$('wifiPw').value;
   return enqueueRepair('connect_wifi',{ssid:ssid,password:password});

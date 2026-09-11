@@ -1,5 +1,18 @@
 // 系统配置复用既有设备任务与回执；不提供第二套管理入口。
 const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot'],wifi:['connect'],apps:['enabled','permission','notifications','background']};
+// 仅依赖已保存的读取回执；不把尚未透传的客户端 write_keys 当成协议。
+export function systemSettingAllowed(device,group,key,pkg){
+  if(!device)return false;
+  const d31=device.model_id==='mdl_d31'||device.update_channel==='d31'||device.hardware_identity?.variant==='d31'||String(device.model_name||'').toLowerCase()==='d31'||device.client_package==='net.elfradio.d31bootstrap';
+  // 当前D31已冻结的写入范围；后续网络事务必须另行冻结恢复与确认合同。
+  if(d31&&!({sound:['media','ring','alarm','call','brightness','brightness_auto'],time:['auto_time','auto_time_zone','timezone'],apps:['enabled']}[group]||[]).includes(key))return false;
+  const snapshot=device.system_settings&&device.system_settings[group];
+  const unavailable=snapshot&&(group!=='apps'||!pkg||snapshot.package===pkg)&&snapshot.unavailable;
+  const denied=name=>Array.isArray(unavailable)?unavailable.includes(name):!!unavailable&&Object.prototype.hasOwnProperty.call(unavailable,name);
+  if(denied(key)||denied(key+'_write')||((group==='network'||group==='wifi')&&denied('network_write')))return false;
+  if(key==='hotspot'&&snapshot&&(!snapshot.hotspot||typeof snapshot.hotspot.enabled!=='boolean'))return false;
+  return true;
+}
 export function systemSettingsParams(p={}){
   const group=p.group,action=p.action??'read',pkg=p.package??'',offset=p.offset??0;
   if(!Object.hasOwn(keys,group)||!['read','set'].includes(action)||typeof pkg!=='string'||(pkg&&!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(pkg))||!Number.isInteger(offset)||offset<0||offset>10000)throw Error('系统配置参数无效');

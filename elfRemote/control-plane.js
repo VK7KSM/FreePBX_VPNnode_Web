@@ -1,4 +1,4 @@
-import {systemSettingsParams,applySystemSettingsResult} from "../system-settings.js";
+import {systemSettingsParams,applySystemSettingsResult,systemSettingAllowed} from "../system-settings.js";
 import {sipDestination,sipKey,sipAllowed,checkSipTarget,validateSipResult,sipConfigurationResult,redactSipText} from '../sip-accounts.js';
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
@@ -282,6 +282,7 @@ export async function queueSystemRestore(device,storage,now) {
   for(const saved of targets) {
     if(!restoreDue(saved,device,now))continue;
     let params;try{params=systemSettingsParams(saved.params);}catch{saved.restore.blocked='设置已不再支持';continue;}
+    if(!systemSettingAllowed(device,params.group,params.key,params.package))continue;
     // 没有密码的Wi-Fi目标依赖设备已有保存网络，刷后不能假设仍然存在。
     const result=await enqueueRepairTask(device,{type:'system_config',id:'settings-restore-'+crypto.randomUUID(),params},now,storage);
     if(!result.ok)return false;

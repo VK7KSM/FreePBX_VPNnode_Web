@@ -6,6 +6,7 @@ import path from "node:path";
 import source from "./devices-client-source.js";
 import vm from "node:vm";
 import crypto from "node:crypto";
+import {systemSettingAllowed} from "./system-settings.js";
 
 test('文件列表名称只作为文字，点击用索引，切设备后不覆盖当前文件页',()=>{
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({})}});
@@ -159,7 +160,7 @@ test("同地点按实际距离分组，显示锚点与缩放无关，不改真�
 test("devices-client-source 必须与 devices-client.js 逐字一致", () => {
   const root = path.dirname(fileURLToPath(import.meta.url));
   const raw = fs.readFileSync(path.join(root, "devices-client.js"), "utf8");
-  assert.equal(source, raw.replace(/\r\n/g, "\n"));
+  assert.equal(source, systemSettingAllowed.toString()+"\n"+raw.replace(/\r\n/g, "\n"));
 });
 
 test("远程ADB 含快捷任务，顶栏保留更新客户端，没有修机项", () => {
@@ -337,4 +338,33 @@ test('切换机型时旧发布请求不能覆盖新设备，未启用更新器�
  assert.doesNotMatch(context.pageUpdate(''),/D22版/);assert.match(context.pageUpdate(''),/尚未启用客户端更新/);
  context.assignUpdate(68);assert.equal(sent.length,0);context.DEV[1].can_update=true;context.assignUpdate(68);
  assert.equal(sent.length,1);assert.equal(sent[0].channel,'d31');assert.equal(sent[0].device_id,'d31');
+});
+
+
+test('D31有限设置回执及缺少热点仍可渲染，音量和应用启停可用',()=>{
+ const c=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});vm.runInContext(source,c);
+ c.DEV=[{id:'fixture',update_channel:'d31',managed_system_settings:true,system_settings:{
+ sound:{media:3,maximum:{media:10},font_scale:1,unavailable:['font_scale_write']},
+ network:{unavailable:{network_write:'未接通'}},
+ apps:{package:'test.app',enabled:true,notifications:true,unavailable:['notifications','permission_write','background']}
+ }}];c.selDev='fixture';
+ c.SYSTEM_TAB='声音与显示';let h=c.pageSystemSettings('');assert.match(h,/id="setting-media"[^>]*required>/);assert.match(h,/id="setting-font_scale"[^>]*disabled/);
+ c.SYSTEM_TAB='网络与连接';h=c.pageSystemSettings('');assert.match(h,/不可用/);assert.match(h,/保存并开启/);assert.match(h,/id="setting-hotspot-name"[^>]*disabled/);
+ c.SYSTEM_TAB='应用';h=c.pageSystemSettings('');assert.match(h,/id="setting-enabled"[^>]*>/);assert.doesNotMatch(h,/id="setting-enabled"[^>]*disabled/);assert.match(h,/id="setting-notifications"[^>]*disabled/);
+});
+
+test('安装阶段不变时冲突详情及时呈现，不冒充成功',()=>{
+ const c=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});vm.runInContext(source,c);
+ const u={state:'installing',updated_at:new Date().toISOString(),detail:'正在安装'};
+ assert.match(c.installationProgress(u),/正在安装/);u.detail='检测到外部版本，保留现场等待核查';
+ assert.match(c.installationProgress(u),/保留现场等待核查/);assert.doesNotMatch(c.installationResult(u),/>成功</);
+});
+
+test('照片无变化不重复查历史，手动查看可刷新，503退避且保留旧照片',async()=>{
+ let calls=0,fail=false;const c=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},URLSearchParams,fetch:async()=>{calls++;return new Response(JSON.stringify(fail?{ok:false}:{ok:true,photos:[{report_id:'p',captured_at:'2026-09-12',expires_at:Date.now()+1000000}],next:null}),{status:fail?503:200,headers:{'Retry-After':'600'}});}});vm.runInContext(source,c);
+ c.renderRemoteConsole=c.renderMediaHistory=c.setServiceError=()=>{};const d={id:'fixture',report_photo:{report_id:'p'}};c.DEV=[d];c.selDev=d.id;
+ await c.loadReportPhotos(d);assert.equal(calls,1);const state=c.photoHistory(d);state.loaded=Date.now()-600001;
+ await c.loadReportPhotos(d);assert.equal(calls,1);
+ fail=true;await c.loadReportPhotos(d,true);assert.equal(calls,2);assert.equal(state.photos.length,1);assert.ok(state.retry>Date.now()+590000);
+ await c.loadReportPhotos(d,true);assert.equal(calls,2);
 });

@@ -41,7 +41,7 @@ test('D31仅声明重启adbd时仅该维护按钮可用，任务占用与结束�
 test('后台设置能力随真实配置回执保留，明确不支持时无开关，旧D22快照兼容',()=>{
   const ctx=browser();
   for(const flag of [false,true,undefined]){
-    const snapshot={group:'apps',package:'test.app',name:'测试应用',sampled_at:1000,background:true,permissions:[],...(flag===undefined?{}:{background_supported:flag})};
+    const snapshot={group:'apps',package:'test.app',name:'测试应用',sampled_at:1000,background:true,notifications:true,enabled:true,permissions:[],...(flag===undefined?{}:{background_supported:flag})};
     const d={id:'device',managed_system_settings:true,task:{state:'running',params:{group:'apps',action:'read'}}};
     applySystemSettingsResult(d,{exit_code:0,action:'completed',text:JSON.stringify(snapshot)},1001);
     assert.equal(d.system_settings.apps.background_supported,flag);ctx.DEV=[d];ctx.selDev=d.id;ctx.SYSTEM_TAB='应用';

@@ -1,4 +1,4 @@
-import {kvJson,panelEnabled} from './panel-kv.js';
+import {kvJson,panelEnabled,putKvJson,deleteKvJson} from './panel-kv.js';
 const COOKIE = "elf_admin";
 const ITERATIONS = 100000;
 const SESSION_MS = 14 * 86400000;
@@ -157,9 +157,12 @@ const attempts=new WeakMap();
 export async function handleKvAuth(env,request,action,body,now=Date.now()){
  const kv=env.SUB_STORE_KV;if(!kv)return authJson({ok:false,msg:'登录存储不可用'},503);
  try{
-  const auth=await kvJson(env,'panel/auth');
-  if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
   const token=cookieToken(request);
+  if(action!=='login'&&!/^(?:[a-f0-9]{64}|v2\.[A-Za-z0-9_-]{1,1800}\.[a-f0-9]{64})$/.test(token)){
+   return action==='logout'?authJson({ok:true},200,{'Set-Cookie':cookie('',0)}):authJson({ok:false,msg:'请先登录'},401);
+  }
+  const auth=await kvJson(env,'panel/auth',{request});
+  if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
   if(action==='login'){
    const input=body===undefined?await jsonInput(request):body;
    let peers=attempts.get(kv);if(!peers){peers=new Map();attempts.set(kv,peers);}
@@ -182,13 +185,13 @@ export async function handleKvAuth(env,request,action,body,now=Date.now()){
    const parts=token.split('.');
    if(parts.length===3&&equal(await mac(auth,parts[1]),parts[2])){
     try{entry=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));}catch{}
-    if(entry&&await kvJson(env,'panel/revoked/'+await digest(token)))entry=null;
+    if(entry&&await kvJson(env,'panel/revoked/'+await digest(token),{request}))entry=null;
    }
-  }else if(/^[a-f0-9]{64}$/.test(token))entry=await kvJson(env,'panel/legacy-session/'+await digest(token));
+  }else if(/^[a-f0-9]{64}$/.test(token))entry=await kvJson(env,'panel/legacy-session/'+await digest(token),{request});
   if(action==='logout'){
    if(entry?.expires>now){
-    if(token.startsWith('v2.'))await kv.put('panel/revoked/'+await digest(token),'true',{expirationTtl:Math.max(60,Math.ceil((entry.expires-now)/1000))});
-    else await kv.delete('panel/legacy-session/'+await digest(token));
+    if(token.startsWith('v2.'))await putKvJson(env,'panel/revoked/'+await digest(token),true,{expirationTtl:Math.max(60,Math.ceil((entry.expires-now)/1000))});
+    else await deleteKvJson(env,'panel/legacy-session/'+await digest(token));
    }
    return authJson({ok:true},200,{'Set-Cookie':cookie('',0)});
   }
@@ -197,7 +200,7 @@ export async function handleKvAuth(env,request,action,body,now=Date.now()){
   if(action==='password'){
    const input=body===undefined?await jsonInput(request):body,password=input.password;
    if(typeof password!=='string'||!password||password.length>1024)return authJson({ok:false,msg:'密码长度无效'},400);
-   const salt=random();await kv.put('panel/auth',JSON.stringify({...auth,salt,hash:await passwordHash(password,salt),revision:random(),session_key:random()}));
+   const salt=random();await putKvJson(env,'panel/auth',{...auth,salt,hash:await passwordHash(password,salt),revision:random(),session_key:random()});
    return authJson({ok:true,credentials_changed:true},200,{'Set-Cookie':cookie('',0)});
   }
   return authJson({ok:false,msg:'接口不存在'},404);
@@ -206,10 +209,10 @@ export async function handleKvAuth(env,request,action,body,now=Date.now()){
 
 export async function migratePanelAuth(storage,env,now=Date.now()){
  const auth=await credentials(storage,env);if(!auth)throw Error('当前登录资料不存在');
- const snapshot={...auth,session_key:random()};await env.SUB_STORE_KV.put('panel/auth',JSON.stringify(snapshot));
+ const snapshot={...auth,session_key:random()};await putKvJson(env,'panel/auth',snapshot);
  let sessions=0;
  for(const [key,value] of await storage.list({prefix:'auth/session/'}))if(value.expires>now&&value.revision===auth.revision){
-  await env.SUB_STORE_KV.put('panel/legacy-session/'+key.slice('auth/session/'.length),JSON.stringify(value),{expirationTtl:Math.max(60,Math.ceil((value.expires-now)/1000))});sessions++;
+  await putKvJson(env,'panel/legacy-session/'+key.slice('auth/session/'.length),value,{expirationTtl:Math.max(60,Math.ceil((value.expires-now)/1000))});sessions++;
  }
  return {sessions,auth_revision:auth.revision};
 }

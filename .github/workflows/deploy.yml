@@ -13,6 +13,8 @@ on:
       - "panel-kv.js"
       - "panel-events.js"
       - "panel-events-client.js"
+      - "panel-lifecycle.js"
+      - "cf-usage*.js"
       - "build-static-assets.mjs"
       - "adb-relay.js"
       - "media-relay.js"

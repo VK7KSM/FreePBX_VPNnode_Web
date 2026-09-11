@@ -2,7 +2,11 @@
 export const adminSessionSource = String.raw`(function installAdminSession() {
   var nativeFetch = window.fetch.bind(window);
   var state = { authenticated: false };
-  var checkTimer=null,checkFailures=0;
+  var checkTimer=null,checkFailures=0,checkPromise=null,checkCallbacks=[];
+  function retryDelay(value){
+    var seconds=Number(value);if(value&&Number.isFinite(seconds))return Math.max(0,seconds*1000);
+    var date=Date.parse(value);return Number.isFinite(date)?Math.max(0,date-Date.now()):0;
+  }
   function expire() {
     state.authenticated = false;
     var form = document.getElementById("loginWrap");
@@ -20,14 +24,16 @@ export const adminSessionSource = String.raw`(function installAdminSession() {
     });
   };
   state.check = function(ready) {
+    if(typeof ready==='function'&&checkCallbacks.indexOf(ready)<0)checkCallbacks.push(ready);
+    if(checkPromise)return checkPromise;
     if(checkTimer!==null){clearTimeout(checkTimer);checkTimer=null;}
     var wait=0;
     function later(){
       checkTimer=setTimeout(function(){checkTimer=null;if(document.hidden){later();return;}state.check(ready);},wait);
     }
-    return window.fetch("/api/session", { cache: "no-store" }).then(function(r) {
-      if(r.status===401){expire();return null;}
-      if(!r.ok){wait=Math.min(900000,Math.max(60000,(Number(r.headers.get('Retry-After'))||0)*1000));throw Error('service unavailable');}
+    checkPromise=window.fetch("/api/session", { cache: "no-store" }).then(function(r) {
+      if(r.status===401){expire();checkCallbacks=[];return null;}
+      if(!r.ok){wait=retryDelay(r.headers.get('Retry-After'));throw Error('service unavailable');}
       return r.json();
     }).then(function(d) {
       if(!d)return;
@@ -35,12 +41,13 @@ export const adminSessionSource = String.raw`(function installAdminSession() {
       state.authenticated=true;checkFailures=0;
       document.getElementById("loginWrap").style.display="none";
       var hint=document.getElementById('lerr');if(hint)hint.style.display='none';
-      ready();
+      var callbacks=checkCallbacks;checkCallbacks=[];callbacks.forEach(function(callback){callback();});
     }).catch(function(){
       var hint=document.getElementById('lerr');if(hint){hint.style.display='block';hint.textContent='服务器暂不可用，恢复后自动重试。';}
-      wait=wait||Math.min(900000,60000*Math.pow(2,Math.min(checkFailures++,4)));
+      wait=Math.min(2147483647,Math.max(wait,Math.min(900000,60000*Math.pow(2,Math.min(checkFailures++,4)))));
       later();
-    });
+    }).finally(function(){checkPromise=null;});
+    return checkPromise;
   };
   state.accept = function() { state.authenticated = true; };
   state.expire = expire;

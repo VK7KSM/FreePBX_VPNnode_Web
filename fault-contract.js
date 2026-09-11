@@ -55,3 +55,15 @@ export function faultArchiveQuery(q,r) {
   faultRequire(q?.eventId===r.eventId&&q.export?.archived===true&&q.export.state==='EXPORTED'&&q.export.receipt?.sha256===r.sha256&&q.export.receipt.bytes===r.bytes&&q.export.receipt.manifestSha256===r.manifestSha256,'独立查询尚未确认同一故障包归档');
 }
 export function faultNumber(n){return Number.isSafeInteger(n)&&n>=0?String(n):'未知';}
+export function faultCapacitySummary(x) {
+  const n=faultNumber, continuous=x.admissionPolicy==='IN_FLIGHT_AND_RETAINED_BUDGETS';
+  const limits={ACTIVE_EVENT_LIMIT:'未归档事件名额已满',COLLECTING_EVENT_LIMIT:'在途采集名额已满',RETAINED_EVENT_LIMIT:'保留事件已满',ACTIVE_RESERVATION_LIMIT:'采集空间预留不足',ARCHIVE_BYTE_LIMIT:'原件总字节上限',EXPORT_HEADROOM_LIMIT:'导出预留空间不足',FREE_SPACE_RESERVE:'剩余空闲空间不足'};
+  return [
+    continuous?`采集中 ${n(x.collectingEvents)} / ${n(x.maxCollectingEvents)}　采完待归档 ${n(x.awaitingArchiveEvents)}　未归档合计 ${n(x.activeEvents)}`:`未归档 ${n(x.activeEvents)} / ${n(x.maxActiveEvents)}　采集中 ${n(x.collectingEvents)}　采完待归档 ${n(x.awaitingArchiveEvents)}`,
+    `已归档 ${n(x.archivedEvents)}　保留 ${n(x.retainedEvents)} / ${n(x.maxRetainedEvents)}　原件 ${n(x.retainedBytes)} / ${n(x.maxArchiveBytes)} 字节`,
+    `采集策略：${continuous?'在途采集与保留容量分别限制':x.admissionPolicy==='UNARCHIVED_EVENT_LIMIT'?'按未归档事件数限制':'未知'}　索引错误 ${n(x.eventIndexErrors)}`,
+    `限制：${Array.isArray(x.admissionBlockedBy)?x.admissionBlockedBy.map(k=>limits[k]||k).join(' / ')||'未报告':'未知'}`,
+    `后续处理：${x.continuationAction==='NONE'?'未要求额外处理':x.continuationAction==='HOST_VERIFY_EXPORT_AND_ACK_OR_RETAINED_CAPACITY_REVIEW'?'先取回验包并确认归档；若仍受保留数量或原件字节限制，需检查保留容量':'未知'}　未采集源可能过期：${x.uncollectedSourcesMayExpire===true?'是':x.uncollectedSourcesMayExpire===false?'否':'未知'}`,
+    '归档不删除设备原件，不释放保留数量或原件字节。'
+  ];
+}
