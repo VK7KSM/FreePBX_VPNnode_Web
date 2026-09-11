@@ -106,7 +106,7 @@ test('SIP页面只显示声明账号、分别呈现失败和过期；切换预�
  const d=make();d.online=true;d.sip_accounts=publicSipAccounts(d,true);d.sip_accounts[0].label='<script>fixture</script>';d.sip_accounts[1].configuration={server:'second.invalid',username:'second'};
  d.sip_accounts[1].registration={state:'failed',reason:'认证失败',fresh:true,sampled_at:Date.now()};
  const c=browser();c.DEV=[d];c.selDev=d.id;c.renderOps=()=>{};
- let html=c.pageSipAccount('');assert.match(html,/SIP|配置账号/);assert.match(html,/注册失败/);assert.doesNotMatch(html,/<script>fixture/);assert.match(html,/sipAccountAuth/);
+ let html=c.pageSipAccount('');assert.match(html,/SIP|配置账号/);assert.match(html,/注册失败/);assert.doesNotMatch(html,/<script>fixture/);assert.doesNotMatch(html,/sipAccountAuth|sipAccountRealm/);
  c.selectSipAccount(1);html=c.pageSipAccount('');assert.match(html,/value="second.invalid"/);assert.equal(c.uiOf().sipSelection,'nexui|line-b');
  c.selectSipAccount(2);html=c.pageSipAccount('');assert.doesNotMatch(html,/sipAccountAuth|second.invalid/);
  d.online=false;assert.match(c.pageSipAccount(''),/设备离线，注册状态待确认/);

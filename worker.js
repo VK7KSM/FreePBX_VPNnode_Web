@@ -8,6 +8,7 @@ import mediaClientSource from './media-client-source.js';
 import { LOGO_PNG_B64 } from "./logo.js";
 import { AdbRelay } from "./adb-relay.js";
 import {normalizeSipTargets,applySipRegistrations,publicSipAccounts,checkSipTarget,sipAllowed} from './sip-accounts.js';
+import {sipDirectory,managedSipParams} from './sip-provisioning.js';
 import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 import { googleLocation } from "./google-geolocation.js";
@@ -517,6 +518,10 @@ const app = {
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
       }
+    }
+
+    if (pathname === "/api/devices/sip-directory" && method === "GET") {
+      return json({ok:true,accounts:sipDirectory(await loadSipBundle(env))});
     }
 
     if (pathname === "/api/sip" && method === "GET") {
@@ -2005,6 +2010,12 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
+    if(data.type==='configure_sip' && params?.source!==undefined){
+      try {
+        params=managedSipParams(params,await loadSipBundle(env));
+        checkSipTarget(found,params);
+      } catch(e) { return json({ok:false,msg:e.message},400); }
+    }
     if(data.type==='get_file'){
       if(!found.managed_file_return)return json({ok:false,msg:'客户端尚未支持取回文件'},409);
       params=returnParams(params);data.expires_at=Math.min(Date.now()+86400000,Number(data.expires_at)||Infinity);

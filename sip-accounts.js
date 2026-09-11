@@ -13,7 +13,7 @@ export function normalizeSipTargets(rows){
   return rows.map(row=>{
     if(!row||!targets.has(row.target)||seen.has(row.target)||!Array.isArray(row.accounts)||row.accounts.length>32)throw Error('SIP目标声明无效');
     seen.add(row.target);const accounts=new Set();
-    return {target:row.target,label:String(row.label||row.target).slice(0,80),auth_username_supported:row.auth_username_supported===true,accounts:row.accounts.map(a=>{
+    return {target:row.target,label:String(row.label||row.target).slice(0,80),auth_username_supported:row.auth_username_supported===true,...(row.realm_supported===false?{realm_supported:false}:{}),accounts:row.accounts.map(a=>{
       if(!a||!id(a.account_id)||accounts.has(a.account_id))throw Error('SIP账号声明无效');
       accounts.add(a.account_id);return {account_id:a.account_id,label:String(a.label||a.account_id).slice(0,80)};
     })};
@@ -28,6 +28,7 @@ export function sipAllowed(d,p){
 export function checkSipTarget(d,p){
   if(!sipAllowed(d,p))throw Error('设备尚未声明此SIP配置目标或账号');
   if(p.target&&d.sip_targets.find(t=>t.target===p.target).auth_username_supported!==true&&p.auth_username!==undefined&&p.auth_username!==p.username)throw Error('此配置目标不支持独立认证账号');
+  if(p.target&&d.sip_targets.find(t=>t.target===p.target).realm_supported===false&&p.realm!==undefined)throw Error('此配置目标不支持认证域');
 }
 export function redactSipText(d,text){
   let value=String(text||'');

@@ -146,7 +146,7 @@ function loadDevices(){
     if(!editing){
       renderOps();
       if(previousId===selDev){
-        savedInputs.forEach(function(saved){if(saved.id==='sipAccountSlot'||(saved.id.indexOf('sipAccount')===0&&previousSip!==(uiOf()&&uiOf().sipSelection)))return;var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
+        savedInputs.forEach(function(saved){if(saved.id==='sipAccountSlot'||((saved.id.indexOf('sipAccount')===0||saved.id.indexOf('managedSip')===0)&&previousSip!==(uiOf()&&uiOf().sipSelection)))return;var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
       }
     }
     if(editing) renderRemoteConsole();
@@ -1172,16 +1172,65 @@ function sipRegistrationLabel(d,a){
   if(!r.fresh)return '注册状态已过期，等待更新';
   return {registered:'已注册',registering:'正在注册',unregistered:'未注册',failed:'注册失败',unknown:'注册状态未知'}[r.state]||'注册状态未知';
 }
+var SIP_DIRECTORY=null,SIP_DIRECTORY_REQUEST=null,SIP_DIRECTORY_ATTEMPTED=false;
+function managedSipOptions(target){
+  return '<option value="">请选择分机</option>'+(SIP_DIRECTORY||[]).map(function(a){
+    var disabled=!a.available||(target==='quik'&&!a.sms);
+    return '<option value="'+esc(a.extension)+'"'+(disabled?' disabled':'')+'>'+esc(a.extension+(a.name?' · '+a.name:'')+(!a.available?' · 未设置密码':target==='quik'&&!a.sms?' · 未开启短信':''))+'</option>';
+  }).join('');
+}
+async function loadManagedSipDirectory(){
+  if(SIP_DIRECTORY_REQUEST)return SIP_DIRECTORY_REQUEST;
+  SIP_DIRECTORY_ATTEMPTED=true;
+  SIP_DIRECTORY_REQUEST=(async function(){
+    try{
+      var body=await readServiceJson(await fetch('/api/devices/sip-directory'));
+      if(!body.ok||!Array.isArray(body.accounts))throw Error(body.msg||'读取分机列表失败');
+      SIP_DIRECTORY=body.accounts;
+      var select=$('managedSipExtension');
+      if(select){var old=select.value;select.innerHTML=managedSipOptions(select.dataset.target);select.value=old;}
+      if($('managedSipFeedback'))$('managedSipFeedback').textContent=SIP_DIRECTORY.length?'':'SIP管理中暂无分机';
+    }catch(e){if($('managedSipFeedback'))$('managedSipFeedback').textContent=e.message;}
+    finally{SIP_DIRECTORY_REQUEST=null;}
+  })();
+  return SIP_DIRECTORY_REQUEST;
+}
+async function configureManagedSip(event){
+  event.preventDefault();var d=currentDev(),a=selectedSipAccount(),form=$('managedSipForm');
+  if(!d||!a||!maintenanceAvailable(d,'configure_sip'))return;
+  var selection=a.target+'|'+a.account_id;
+  if(form.dataset.sipSelection!==selection){renderOps();return;}
+  var params={source:'managed',target:a.target,account_id:a.account_id,extension:$('managedSipExtension').value};
+  if(!params.extension)return;
+  var button=form.querySelector('button[type=submit]');button.disabled=true;
+  try{
+    await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_sip',id:'sip-'+crypto.randomUUID(),params:params});
+    if(selDev===d.id&&uiOf().sipSelection===selection&&$('managedSipFeedback'))$('managedSipFeedback').textContent='已发送，等待设备配置';
+    loadDevices();
+  }catch(e){if(selDev===d.id&&uiOf().sipSelection===selection&&$('managedSipFeedback'))$('managedSipFeedback').textContent=e.message;}
+  finally{if(button.isConnected)button.disabled=false;}
+}
 function pageMultiSipAccount(dis,preset){
   var d=currentDev(),rows=sipAccountRows(d),a=selectedSipAccount();
   if(!a&&!preset)return '<p class="muted">设备尚未开放可配置的SIP线路或账号</p>';
   var available=!!a;a=a||{target:preset,account_id:''};
-  var target=(d.sip_targets||[]).find(function(t){return t.target===a.target;})||{auth_username_supported:preset==='nexui'},saved=a.configuration||{},blocked=dis||(!available||!maintenanceAvailable(d,'configure_sip')?' disabled':'');
+  var target=(d.sip_targets||[]).find(function(t){return t.target===a.target;})||{},saved=a.configuration||{},blocked=dis||(!available||!maintenanceAvailable(d,'configure_sip')?' disabled':'');
   var h=available?'<div class="ops-actions"><label for="sipAccountSlot">配置账号</label><select id="sipAccountSlot" class="inp" onchange="selectSipAccount(this.value)">'+rows.map(function(row,i){return '<option value="'+i+'"'+(row.target===a.target&&row.account_id===a.account_id?' selected':'')+'>'+esc(row.target_label+' · '+row.label)+'</option>';}).join('')+'</select></div>':'';
   if(available)h+='<div class="function-table"><table><thead><tr><th>应用 / 线路</th><th>配置结果</th><th>注册状态</th></tr></thead><tbody>'+rows.map(function(row){var r=row.registration,c=row.configuration_result;return '<tr><td>'+esc(row.target_label+' · '+row.label)+'</td><td>'+esc(sipConfigurationLabel(row))+(c?.detail?'<br><span class="muted">'+esc(c.detail)+'</span>':'')+(c?.at?'<br><span class="muted">'+esc(sydney(c.at))+'</span>':'')+'</td><td>'+esc(sipRegistrationLabel(d,row))+(r?'<br><span class="muted">'+esc(sydney(r.sampled_at))+(r.reason?' · '+esc(r.reason):'')+'</span>':'')+'</td></tr>';}).join('')+'</tbody></table></div>';
+  var integrated=a.target==='nexui'||a.target==='quik';
+  if(integrated){
+    h+='<form id="managedSipForm" data-sip-selection="'+esc(a.target+'|'+a.account_id)+'" onsubmit="configureManagedSip(event)"><div class="ops-actions"><label for="managedSipExtension">SIP 管理账号</label><select id="managedSipExtension" class="inp" style="width:260px;max-width:100%" data-target="'+a.target+'" required'+blocked+'>'+managedSipOptions(a.target)+'</select><button type="submit" class="btn-green"'+blocked+'>一键配置</button><button type="button" class="btn-gray" onclick="loadManagedSipDirectory()">刷新分机</button></div><p id="managedSipFeedback" class="muted" role="status">'+(!available?'等待客户端支持':'')+'</p></form><details id="sipThirdParty" class="function-extra"'+(uiOf().sipThirdPartyOpen?' open':'')+' ontoggle="uiOf().sipThirdPartyOpen=this.open"><summary>第三方服务器</summary>';
+    if(!SIP_DIRECTORY_ATTEMPTED){SIP_DIRECTORY_ATTEMPTED=true;setTimeout(loadManagedSipDirectory,0);}
+  }
   h+='<form id="sipAccountForm" data-sip-selection="'+esc(a.target+'|'+a.account_id)+'" class="account-fields" onsubmit="configureMultiSipAccount(event)"><label>服务器<input id="sipAccountServer" class="inp" required autocomplete="off" value="'+esc(saved.server||'')+'"'+blocked+'></label><label>账号<input id="sipAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label>';
-  if(target.auth_username_supported)h+='<label>认证账号<input id="sipAccountAuth" class="inp" placeholder="留空时使用账号" autocomplete="off" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label>';
-  h+='<label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>认证域（可选）<input id="sipAccountRealm" class="inp" autocomplete="off" value="'+esc(saved.realm||'')+'"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存配置</button><span id="sipAccountFeedback" role="status">'+esc(!available?'等待客户端支持':sipConfigurationLabel(a)+(a.configuration_result?.detail?' · '+a.configuration_result.detail:''))+'</span></div></form>';
+  h+='<label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label>';
+  if(a.target!=='nexui'){
+    h+='<details id="sipAdvanced" style="grid-column:1/-1"'+(uiOf().sipAdvancedOpen?' open':'')+' ontoggle="uiOf().sipAdvancedOpen=this.open"><summary>高级设置</summary><div class="account-fields">';
+    if(target.auth_username_supported)h+='<label>认证账号<input id="sipAccountAuth" class="inp" placeholder="留空时使用账号" autocomplete="off" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label>';
+    h+='<label>认证域（可选）<input id="sipAccountRealm" class="inp" autocomplete="off" value="'+esc(saved.realm||'')+'"'+blocked+'></label></div></details>';
+  }
+  h+='<div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存配置</button><span id="sipAccountFeedback" role="status">'+esc(!available?'等待客户端支持':sipConfigurationLabel(a)+(a.configuration_result?.detail?' · '+a.configuration_result.detail:''))+'</span></div></form>';
+  if(integrated)h+='</details>';
   return h;
 }
 async function configureMultiSipAccount(event){
@@ -1189,7 +1238,7 @@ async function configureMultiSipAccount(event){
   if($('sipAccountForm').dataset.sipSelection!==a.target+'|'+a.account_id){renderOps();if($('sipAccountFeedback'))$('sipAccountFeedback').textContent='账号列表已变化，请检查所选账号后重新填写';return;}
   var selection=a.target+'|'+a.account_id,params={target:a.target,account_id:a.account_id,server:$('sipAccountServer').value.trim(),username:$('sipAccountUser').value.trim(),password:$('sipAccountPassword').value,transport:$('sipAccountTransport').value,port:Number($('sipAccountPort').value)};
   if($('sipAccountAuth')&&$('sipAccountAuth').value.trim())params.auth_username=$('sipAccountAuth').value.trim();
-  if($('sipAccountRealm').value.trim())params.realm=$('sipAccountRealm').value.trim();
+  if($('sipAccountRealm')&&$('sipAccountRealm').value.trim())params.realm=$('sipAccountRealm').value.trim();
   var button=$('sipAccountForm').querySelector('button[type=submit]');button.disabled=true;
   try{await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_sip',id:'sip-'+crypto.randomUUID(),params:params});if(selDev===d.id&&uiOf().sipSelection===selection&&$('sipAccountPassword')){$('sipAccountPassword').value='';$('sipAccountFeedback').textContent='已发送，等待设备配置';}loadDevices();}
   catch(e){if(selDev===d.id&&uiOf().sipSelection===selection&&$('sipAccountFeedback'))$('sipAccountFeedback').textContent=e.message;}

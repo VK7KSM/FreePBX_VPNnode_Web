@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import vm f
 function browser(){const c=vm.createContext({Date,adminSession:{check(){}},setTimeout(){},setInterval(){}});vm.runInContext(source,c);c.renderOps=()=>{};return c;}
 test('旧D31未声明能力也显示Nexui与QUIK预设表单，不能提交或退回D22软件',()=>{
  const c=browser();c.DEV=[{id:'d31',model_id:'mdl_d31',model_name:'D31',enabled:true,status_only:true,managed_sip_account:false}];c.selDev='d31';
- let html=c.pageAccountSettings('');assert.match(html,/Nexui 电话/);assert.match(html,/QUIK 短信/);assert.doesNotMatch(html,/Linphone|Zello|保存并登录/);assert.match(html,/id="sipAccountAuth"/);assert.match(html,/type="submit" class="btn-green" disabled/);
+ let html=c.pageAccountSettings('');assert.match(html,/Nexui 电话/);assert.match(html,/QUIK 短信/);assert.doesNotMatch(html,/Linphone|Zello|保存并登录|id="sipAccountAuth"|id="sipAccountRealm"/);assert.match(html,/type="submit" class="btn-green" disabled/);
  c.selectAccountTab('QUIK');html=c.pageAccountSettings('');assert.doesNotMatch(html,/id="sipAccountAuth"/);assert.match(html,/data-sip-selection="quik\|"/);assert.match(html,/等待客户端支持/);
 });
 test('型号改名不改软件预设，D22与D31切换不继承对方账号页，未适配型号不冒充D22',()=>{
