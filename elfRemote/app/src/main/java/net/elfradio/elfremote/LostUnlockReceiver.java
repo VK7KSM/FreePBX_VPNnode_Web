@@ -7,7 +7,7 @@ public final class LostUnlockReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context,Intent intent){
         if(!Intent.ACTION_USER_PRESENT.equals(intent.getAction()))return;
         PendingResult pending=goAsync();
-        new Thread(()->{try{new LostMode(context).localUnlock();ServiceStarter.start(context);}
+        new Thread(()->{try{if(new LostMode(context).localUnlock())ServiceStarter.startNow(context);}
             catch(Exception e){RuntimeLog.event("lost-local-unlock-pending");}finally{pending.finish();}},"elfremote-local-unlock").start();
     }
 }

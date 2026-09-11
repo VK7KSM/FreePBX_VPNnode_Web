@@ -119,7 +119,7 @@ final class LostProtection implements Closeable {
                     if(!system.verify(password)){
                         if(!req.optBoolean("local_unlocked")||system.locked())throw new IllegalStateException("lost-current-password-changed");
                     }else{
-                        system.password("",password);system.dismiss();
+                        system.password("",password);system.disabled(true);system.dismiss();
                         if(s.optBoolean("original_secure"))system.password(s.getString("original_credential"),"");
                     }
                 }

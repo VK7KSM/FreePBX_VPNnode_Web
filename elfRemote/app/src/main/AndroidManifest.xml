@@ -52,9 +52,6 @@
             android:stopWithTask="false" />
 
         <receiver android:name=".WakeReceiver" android:exported="false" />
-        <receiver android:name=".LostUnlockReceiver" android:exported="true">
-            <intent-filter><action android:name="android.intent.action.USER_PRESENT" /></intent-filter>
-        </receiver>
 
         <receiver
             android:name=".BootReceiver"

@@ -62,10 +62,11 @@ final class LostMode {
         try{admin(new JSONObject().put("action","contact").put("paired",reply.getBoolean("paired")).put("unpaired_at_ms",reply.optLong("unpaired_at_ms")));}
         catch(Exception error){RuntimeLog.event("lost-contact-pending");}
     }
-    void localUnlock()throws Exception {
+    boolean localUnlock()throws Exception {
         JSONObject mode=snapshot();
-        if(mode.optInt("version")!=2||!mode.optBoolean("enabled")||mode.optBoolean("locked"))return;
+        if(mode.optInt("version")!=2||!mode.optBoolean("enabled")||mode.optBoolean("locked"))return false;
         admin(new JSONObject().put("action","set").put("version",2).put("enabled",false).put("auto_wipe_enabled",false).put("task_id","local-"+java.util.UUID.randomUUID()).put("local_unlocked",true));
+        return true;
     }
     private synchronized JSONObject admin(JSONObject input)throws Exception {
         File file=new File(context.getFilesDir(),"lost-admin-request.json"),response=new File(context.getFilesDir(),"lost-admin-response.json");

@@ -48,6 +48,7 @@ public final class ReportService extends Service {
     private MovementReports movementReports;
     private boolean movementSampling;
     private android.content.BroadcastReceiver batteryReceiver;
+    private LostUnlockReceiver lostUnlockReceiver;
     private AlarmPlayer alarm;
     private MediaSession media;
     private String locatingTask = "";
@@ -128,6 +129,10 @@ public final class ReportService extends Service {
         if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
         RuntimeLog.event("service_start status_only=" + BuildConfig.STATUS_ONLY);
         startForeground(7, buildNotification());
+        if(LostProtection.supported()){
+            lostUnlockReceiver=new LostUnlockReceiver();
+            registerReceiver(lostUnlockReceiver,new android.content.IntentFilter(Intent.ACTION_USER_PRESENT));
+        }
         lastNotifyText = notifyText();
         if (workerThread == null) {
             workerThread = new HandlerThread("elfremote-net", Process.THREAD_PRIORITY_BACKGROUND);
@@ -254,6 +259,7 @@ public final class ReportService extends Service {
     @Override
     public void onDestroy() {
         if(batteryReceiver!=null){unregisterReceiver(batteryReceiver);batteryReceiver=null;}
+        if(lostUnlockReceiver!=null){unregisterReceiver(lostUnlockReceiver);lostUnlockReceiver=null;}
         destroyed = true;
         wake.cancel("movement");WakeScheduler.release("movement");
         if(fileTransfer!=null)fileTransfer.stop();
@@ -1007,6 +1013,7 @@ public final class ReportService extends Service {
                 JSONObject outcome=lostMode.set(new JSONObject(offer.getJSONObject("params").toString()).put("task_id",id));
                 if(!outcome.getBoolean("enabled")) alarm.stop();
                 postTask(id,RepairPolicy.ST_SUCCESS,"lost-"+outcome.getString("state"),new JSONObject().put("lost_mode",outcome));
+                writeLastTaskId(id);writeTaskPhase(RepairPolicy.PHASE_DONE);
                 return;
             }
             if("wipe_data".equals(type)) {
