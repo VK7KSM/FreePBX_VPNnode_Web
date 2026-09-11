@@ -19,7 +19,7 @@ final class LostMode {
         apk=context.getApplicationInfo().sourceDir;
     }
     synchronized JSONObject set(JSONObject input) throws Exception {
-        if(input.optInt("version")==2)return admin(new JSONObject(input.toString()).put("action","set"));
+        if(input.optInt("version")==2){JSONObject result=admin(new JSONObject(input.toString()).put("action","set"));LostNoticeReceiver.update(context);return result;}
         JSONObject params=LostModePolicy.params(input);
         if(params.getBoolean("enabled") && !state.contains("original")) {
             JSONObject before=owner(null);

@@ -52,6 +52,7 @@
             android:stopWithTask="false" />
 
         <receiver android:name=".WakeReceiver" android:exported="false" />
+        <receiver android:name=".LostNoticeReceiver" android:exported="true" android:permission="android.permission.DUMP" />
 
         <receiver
             android:name=".BootReceiver"

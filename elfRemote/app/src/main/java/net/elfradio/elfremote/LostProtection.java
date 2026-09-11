@@ -170,14 +170,10 @@ final class LostProtection implements Closeable {
     }
     private void notification(long deadline){
         try{
-            NotificationManager manager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if(deadline==0){manager.cancel(NOTICE);return;}
-            String channel="elfremote-lost";manager.createNotificationChannel(new NotificationChannel(channel,"丢失模式",NotificationManager.IMPORTANCE_LOW));
-            Notification n=new Notification.Builder(context,channel).setSmallIcon(android.R.drawable.ic_lock_lock)
-                    .setContentTitle("设备数据清除倒计时").setContentText("恢复对应的联网或配对状态可重置计时；退出丢失模式可取消")
-                    .setWhen(deadline).setUsesChronometer(true).setChronometerCountDown(true).setShowWhen(true).setOngoing(true).setOnlyAlertOnce(true)
-                    .setVisibility(Notification.VISIBILITY_PUBLIC).build();manager.notify(NOTICE,n);
-        }catch(Exception e){RuntimeLog.event("lost-countdown-display-pending");}
+            // Android 8的锁屏不会可靠显示root UID通知，交给应用UID显示；广播仅刷新只读状态。
+            java.lang.Process p=new ProcessBuilder("/system/bin/am","broadcast","--user","0","-n",BuildConfig.APPLICATION_ID+"/net.elfradio.elfremote.LostNoticeReceiver").redirectErrorStream(true).start();
+            if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();RuntimeLog.event("lost-notice-dispatch-pending");}
+        }catch(Exception error){RuntimeLog.error("lost-notice-dispatch-failed",error);}
     }
     public void close(){closed=true;wake.close();thread.quitSafely();}
 }

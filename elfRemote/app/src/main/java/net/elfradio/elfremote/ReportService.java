@@ -139,6 +139,7 @@ public final class ReportService extends Service {
             workerThread.start();
             worker = new Handler(workerThread.getLooper());
         }
+        worker.post(()->LostNoticeReceiver.update(ReportService.this));
         alarm = new AlarmPlayer(this, new Handler(android.os.Looper.getMainLooper()), () -> {
             Handler target = worker;
             if (target != null) target.post(this::tick);

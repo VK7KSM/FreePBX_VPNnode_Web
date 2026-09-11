@@ -44,9 +44,10 @@ final class SystemLock {
     }
     void dismiss()throws Exception {
         // D22熄屏时仅调用wm不能退出锁屏；先唤醒并发送系统菜单键。
-        for(String key:new String[]{"224","82"}){
+        for(String key:new String[]{"223","224","82"}){
             Process input=new ProcessBuilder("/system/bin/input","keyevent",key).redirectErrorStream(true).start();
             if(!input.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){input.destroy();throw new IllegalStateException("lost-dismiss-timeout");}
+            if(key.equals("223"))Thread.sleep(1000);
         }
         Process p=new ProcessBuilder("/system/bin/wm","dismiss-keyguard").redirectErrorStream(true).start();
         if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();throw new IllegalStateException("lost-dismiss-timeout");}
