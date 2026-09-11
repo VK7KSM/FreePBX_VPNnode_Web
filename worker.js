@@ -218,14 +218,35 @@ export class ElfStore {
     }
     if(url.pathname.startsWith('/api/elfremote/media/')) {
       try {
+        if(url.pathname==='/api/elfremote/media/session'&&request.method==='GET') {
+          const deviceId=url.searchParams.get('device_id');
+          if(!deviceId||!/^[A-Za-z0-9_-]{1,96}$/.test(deviceId))return json({ok:false,msg:'设备编号无效'},400);
+          if(!(await loadDevices({...this.env,__storage:this.ctx.storage})).some(d=>d.id===deviceId))return json({ok:false,msg:'未找到设备'},404);
+          const active=[...this.media.sessions.values()].find(s=>s.deviceId===deviceId&&!s.closed);
+          return json({ok:true,active:!!active,session:active?{mode:active.mode,created_at:active.created,started_at:active.started}:null});
+        }
         if(url.pathname==='/api/elfremote/media/session'&&request.method==='POST') {
           const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
           const data=JSON.parse(raw);
+          if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'通信请求无效'},400);
           return await this.ctx.blockConcurrencyWhile(async()=>{
-            const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
-            const result=this.media.create(d,data.mode,data.camera);
-            if(data.mode==='photo'){const key='manual-photo/'+d.id+'/'+result.session_id,expires=Date.now()+86400000;await this.ctx.storage.put(key,{received_at:new Date().toISOString(),expires_at:expires});await this.ctx.storage.put('manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+result.session_id,key);}
-            return json(result);
+            let created=null,phase='load';const writtenKeys=[];
+            // 拒绝必须在并发回调内转为响应；异常逃出会让生产DO重置。
+            try {
+              const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
+              phase='create';const result=this.media.create(d,data.mode,data.camera);created=result.session_id;phase='save';
+              if(data.mode==='photo'){
+                const key='manual-photo/'+d.id+'/'+result.session_id,expires=Date.now()+86400000;
+                writtenKeys.push(key,'manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+result.session_id);
+                await this.ctx.storage.put(key,{received_at:new Date().toISOString(),expires_at:expires});
+                await this.ctx.storage.put(writtenKeys[1],key);
+              }
+              return json(result);
+            }catch(error){
+              if(created){const session=this.media.sessions.get(created);if(session)this.media.close(session,'通信创建失败');}
+              for(const key of writtenKeys)try{await this.ctx.storage.delete(key);}catch{console.error('media_create_cleanup_pending');}
+              return json({ok:false,msg:phase==='create'?error.message:'通信服务暂不可用'},phase==='create'?400:503);
+            }
           });
         }
         const role=url.pathname==='/api/elfremote/media/browser'?'browser':url.pathname==='/api/elfremote/media/device'?'device':null;
