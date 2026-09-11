@@ -1997,7 +1997,7 @@ async function handleElfEnqueueTask(env, request) {
     if(data.action==='prepare_wipe') {
       const confirmation=prepareWipe(found,data.phrase);await saveDevices(env,list);return json({ok:true,confirmation});
     }
-    if(data.type==='set_lost_mode' && data.params?.version===2 && !found.managed_lost_v2)return json({ok:false,msg:'请更新客户端后使用系统锁屏'},409);
+    if(data.type==='set_lost_mode' && data.params?.version===2 && !found.managed_lost_v2&&!(isLostSafety(data)&&found.managed_lost_safety_v1))return json({ok:false,msg:'请更新客户端后使用系统锁屏'},409);
     if(data.type==='set_lost_mode'&&data.params?.version===2&&!isLostSafety(data)&&!found.managed_lost_safety_v1)return json({ok:false,msg:'请先更新客户端的丢失模式安全修复'},409);
     if(data.type==='wipe_data'){data.expires_at=authorizeWipe(found,data.params);if(found.managed_lost_safety_v1)data.params={...data.params,expected_revision:found.lost_mode?.revision};}
     if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);

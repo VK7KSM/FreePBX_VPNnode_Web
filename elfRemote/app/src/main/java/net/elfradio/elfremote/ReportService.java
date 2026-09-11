@@ -484,7 +484,7 @@ public final class ReportService extends Service {
         body.put("managed_config_tasks", WatchdogInstaller.ready());
         body.put("managed_lost_tasks", true);
         body.put("managed_lost_v2",LostProtection.supported()&&CoreInstaller.ready());
-        body.put("managed_lost_safety_v1",LostProtection.supported()&&CoreInstaller.ready());
+        body.put("managed_lost_safety_v1",LostProtection.supported());
         boolean wipeSupported=false;try{LostProtection.wipeMethod();wipeSupported=LostProtection.supported()&&CoreInstaller.ready();}catch(Exception ignored){}
         body.put("managed_wipe_v1",wipeSupported);
         body.put("lost_mode", lostMode.snapshot());
@@ -650,7 +650,7 @@ public final class ReportService extends Service {
             JSONObject managed = response.optJSONObject("managed_task");
             if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))){
                 JSONObject safety=response.optJSONObject("managed_safety_task");
-                if(safety!=null)try{CoreClient.request("/lost/safety",safety);}catch(Exception failure){RuntimeLog.event("lost-safety-delivery-pending");}
+                if(safety!=null)runLostSafety(safety);
             }
             if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 JSONObject mediaOffer=response.optJSONObject("media_session");
@@ -926,7 +926,7 @@ public final class ReportService extends Service {
     private void maybeRunTask(JSONObject offer) {
         if (offer == null) return;
         if(LostSafety.accepts(offer)){
-            try{CoreClient.request("/lost/safety",offer);}catch(Exception failure){RuntimeLog.event("lost-safety-delivery-pending");}
+            runLostSafety(offer);
             return;
         }
         String id = offer.optString("id", "");
@@ -1213,6 +1213,21 @@ public final class ReportService extends Service {
             writeTaskPhase(RepairPolicy.PHASE_DONE);
             android.util.Log.w("elfRemote", "task failed " + taskError);
         }
+    }
+
+    private final java.util.concurrent.atomic.AtomicBoolean safetyFallback=new java.util.concurrent.atomic.AtomicBoolean();
+    private void runLostSafety(JSONObject offer){
+        try{CoreClient.request("/lost/safety",offer);return;}catch(Exception unavailable){RuntimeLog.event("lost-safety-core-unavailable");}
+        if(!safetyFallback.compareAndSet(false,true))return;
+        new Thread(()->{try{
+            LostSafety.run(offer,taskReceipts(),p->lostMode.set(p),(id,phase,detail,result)->{
+                JSONObject body=new JSONObject().put("device_id",store.deviceId()).put("token",store.token()).put("task_id",id).put("state",phase).put("detail",detail);
+                if(result!=null)body.put("result",result);
+                JSONObject response=new JSONObject(HttpJson.post(Protocol.taskProgressPath(),body.toString())),actual=response.optJSONObject("task");
+                if(!response.optBoolean("ok")||actual==null||!id.equals(actual.optString("id"))||(TaskReceipts.terminal(phase)&&!phase.equals(actual.optString("state"))))throw new java.io.IOException("lost-safety-receipt-pending");
+            },System.currentTimeMillis());
+        }catch(Exception failure){RuntimeLog.event("lost-safety-fallback-pending");}
+        finally{safetyFallback.set(false);}},"elfremote-safety-fallback").start();
     }
 
     private void runManagedReboot(JSONObject offer) {

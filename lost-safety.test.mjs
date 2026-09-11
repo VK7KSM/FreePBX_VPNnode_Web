@@ -45,7 +45,7 @@ test('停用设备仍能收到安全推送且不下发普通任务，旧通知�
   assert.equal((await rpc('sync',{token:'wrong'})).status,401);
 });
 test('HTTP安全退出可用于停用设备，普通任务继续被拒绝',async()=>{
-  const d=device(),f=fixture({admin_pass:'fixture-password',remote_devices:[d]}),cookie=await login(f);
+  const d={...device(),managed_lost_v2:false},f=fixture({admin_pass:'fixture-password',remote_devices:[d]}),cookie=await login(f);
   const call=body=>worker.fetch(request('/api/elfremote/task','POST',{device_id:d.id,...body},cookie),f.env);
   assert.equal((await call({type:'set_lost_mode',params})).status,200);
   assert.equal(f.data.get('remote_devices')[0].task.id,'ordinary');

@@ -1509,7 +1509,7 @@ function pageAlarm(dis){
 }
 
 function pageLost(dis){
-  var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_safety_v1&&m.state!=='unknown'?'':' disabled'),exitOff=d&&d.managed_lost_v2?'':' disabled';
+  var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_safety_v1&&m.state!=='unknown'?'':' disabled'),exitOff=d&&(d.managed_lost_v2||d.managed_lost_safety_v1)?'':' disabled';
   var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<input id="lostMessage" class="inp" maxlength="300" value="'+esc(m.message||'')+'"'+off+'></label>';
   h+='<label style="display:flex;flex-direction:column;gap:4px">解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+exitOff+'>退出</button></div>';
   h+='<div class="ops-actions" style="margin-top:16px"><label><input id="lostAutoWipe" type="checkbox" onchange="lostAutoChanged(this)"'+(m.auto_wipe_enabled?' checked':'')+(m.auto_wipe_enabled&&d&&d.managed_lost_safety_v1?'':off)+'> 自毁程序</label><span class="muted">失联或解除配对持续</span><input id="lostTimeout" class="inp" type="number" min="1" max="168" value="'+(m.timeout_hours||24)+'" style="width:70px"'+off+'><span class="muted">小时后清除；退出丢失模式同时关闭</span></div>';
