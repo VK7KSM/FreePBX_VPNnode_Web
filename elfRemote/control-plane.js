@@ -124,7 +124,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -154,6 +154,7 @@ export const REPAIR_TYPE_LABELS = {
   stop_alarm: "停止警报",
   locate_now: "立即定位",
   set_lost_mode: "设置丢失模式",
+  wipe_data: "清除设备数据",
   connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
 
@@ -222,7 +223,7 @@ export function makeRepairTask(input, nowMs) {
   return {
     id,
     type,
-    params: type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -454,10 +455,11 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if(device.task.type === 'send_file' && state === 'success' && (!result || result.action!=='committed'
       || result.sha256!==device.task.params.sha256 || result.bytes!==device.task.params.size)) throw Error('缺少文件完整接收证据');
   if(device.task.type==='get_file'&&state==='success'&&(!result||result.action!=='uploaded'||!Number.isSafeInteger(result.bytes)||result.bytes<0||!/^[a-f0-9]{64}$/.test(result.sha256||'')))throw Error('缺少文件取回证据');
+  if(device.task.type==='wipe_data'&&state==='success')throw new Error('擦除后离线不能作为成功证明');
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
-  if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending")) throw new Error("缺少丢失模式完成状态");
+  if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending" || (device.task.params?.version===2 && (lost.version!==2 || (lost.enabled && !lost.locked))))) throw new Error("缺少丢失模式完成状态");
   if(device.task.type==='configure_zello' && state==='success' && device.task.params?.password)device.account_configs={...device.account_configs,zello:{params:zelloAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
   if(device.task.type==='configure_sip' && state==='success' && device.task.params?.password){
     const key=modernSip?sipKey(device.task.sip_destination):'linphone';
@@ -479,7 +481,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
   if (lost) device.lost_mode = lost;
-  if(device.task.type==="set_lost_mode" && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
+  if(["set_lost_mode","wipe_data"].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if((device.task.type==="system_config"||CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
@@ -505,14 +507,45 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
 export function lostModeParams(value={}) {
   if(typeof value?.enabled!=="boolean") throw new Error("丢失模式状态无效");
   const message=typeof value.message==="string"?value.message.trim():"";
-  if(value.enabled && (!message || message.length>300 || message.includes('\0'))) throw new Error("请填写不超过300字的失主文字");
-  return {enabled:value.enabled,message:value.enabled?message:""};
+  if(value.enabled && (!message || message.length>300 || message.includes('\0'))) throw new Error("请填写不超过300字的锁屏文字");
+  const out={enabled:value.enabled,message:value.enabled?message:""};
+  if(value.version===2){
+    const password=value.password??'';
+    if(typeof password!=='string'||(password!==''&&!/^[A-Za-z0-9]{4,32}$/.test(password)))throw new Error('密码须为4至32位数字或英文字母');
+    if(typeof value.auto_wipe_enabled!=='boolean')throw new Error('自毁开关无效');
+    const hours=value.timeout_hours??24;if(!Number.isInteger(hours)||hours<1||hours>168)throw new Error('清除时限须为1至168小时');
+    Object.assign(out,{version:2,password,auto_wipe_enabled:value.enabled&&value.auto_wipe_enabled,timeout_hours:hours});
+  }
+  return out;
 }
 export function normalizeLostMode(value) {
   if(!value) return null;
-  const params=lostModeParams(value);
+  const params=lostModeParams({enabled:value.enabled,message:value.message});
   if(!["pending","enabled","disabled"].includes(value.state) || (value.state!=="pending" && (value.state==="enabled")!==params.enabled)) throw new Error("丢失模式回执无效");
-  return {...params,state:value.state};
+  const out={...params,state:value.state};
+  if(value.version===2){
+    const deadline=Number(value.deadline_at)||0;
+    if(!Number.isSafeInteger(deadline)||deadline<0)throw new Error('清除时间无效');
+    Object.assign(out,{version:2,auto_wipe_enabled:value.auto_wipe_enabled===true,timeout_hours:Math.max(1,Math.min(168,Number(value.timeout_hours)||24)),deadline_at:deadline,
+      trigger:['offline','unpaired','manual'].includes(value.trigger)?value.trigger:'',wipe_state:['armed','started','failed'].includes(value.wipe_state)?value.wipe_state:'idle',locked:value.locked===true});
+  }
+  return out;
+}
+export function wipeParams(value={}) {
+  if(value.phrase!=='擦除数据'||typeof value.confirmation_id!=='string'||!/^[a-f0-9-]{36}$/.test(value.confirmation_id))throw new Error('请完成两次擦除确认');
+  return {phrase:'擦除数据',confirmation_id:value.confirmation_id};
+}
+export function prepareWipe(device,phrase,now=Date.now()){
+  if(phrase!=='擦除数据')throw new Error('请输入“擦除数据”');
+  if(device.managed_lost_v2!==true||device.managed_wipe_v1!==true)throw new Error('客户端尚未支持清除数据');
+  const seen=Date.parse(device.last_seen);if(!Number.isFinite(seen)||now-seen>120000)throw new Error('请先确认设备在线后再清除');
+  device.wipe_confirmation={id:crypto.randomUUID(),expires_at:now+120000};
+  return {...device.wipe_confirmation};
+}
+export function authorizeWipe(device,params,now=Date.now()){
+  const p=wipeParams(params),c=device.wipe_confirmation;
+  if(device.managed_wipe_v1!==true||!c||c.id!==p.confirmation_id||c.expires_at<=now)throw new Error('擦除确认已失效，请重新确认');
+  return c.expires_at;
 }
 export function configParams(type,value={}) {
   if(type==='contacts_read') return {};

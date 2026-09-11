@@ -23,7 +23,7 @@ test('丢失模式使用真实回执并将失主文字转义为文本',()=>{
   const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>({value:'测试'})}});
   vm.runInContext(source,context);
   context.DEV=[{id:'a',managed_lost_tasks:true,lost_mode:{state:'pending',enabled:true,message:'<x>"'}}];context.selDev='a';
-  const html=context.pageLost('');assert.match(html,/等待恢复设置/);assert.doesNotMatch(html,/<x>/);
+  const html=context.pageLost('');assert.match(html,/设置尚未完成/);assert.doesNotMatch(html,/<x>/);
   let sent;context.enqueueRepair=(type,params)=>{sent={type,params};};context.setLostMode(false);
   assert.equal(sent.type,'set_lost_mode');assert.equal(sent.params.enabled,false);assert.equal(sent.params.message,'');
 });

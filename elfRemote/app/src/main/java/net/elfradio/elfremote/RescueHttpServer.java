@@ -60,6 +60,10 @@ final class RescueHttpServer extends NanoHTTPD {
                 if(session.getHeaders().containsKey("origin")||!peer.isLoopbackAddress())return response(Response.Status.FORBIDDEN,"仅供本机上报采集");
                 return json(Response.Status.OK,RadioLocation.coreCapture());
             }
+            if(session.getMethod()==Method.GET && "/lost/status".equals(path)) {
+                if(!peer.isLoopbackAddress()||session.getHeaders().containsKey("origin"))return response(Response.Status.FORBIDDEN,"仅供本机状态读取");
+                return json(Response.Status.OK,LostProtection.request(CoreWake.systemContext(),new JSONObject().put("action","read")));
+            }
             if(session.getMethod()==Method.GET && "/diagnostics".equals(path))
                 return json(Response.Status.OK,RescueDiagnostics.collect());
             if(session.getMethod()==Method.GET && "/files/recent".equals(path))return json(Response.Status.OK,jobs.fileHistory());

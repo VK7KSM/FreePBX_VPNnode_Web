@@ -476,6 +476,9 @@ public final class ReportService extends Service {
         body.put("managed_locate_tasks", true);
         body.put("managed_config_tasks", WatchdogInstaller.ready());
         body.put("managed_lost_tasks", true);
+        body.put("managed_lost_v2",LostProtection.supported()&&CoreInstaller.ready());
+        boolean wipeSupported=false;try{LostProtection.wipeMethod();wipeSupported=LostProtection.supported()&&CoreInstaller.ready();}catch(Exception ignored){}
+        body.put("managed_wipe_v1",wipeSupported);
         body.put("lost_mode", lostMode.snapshot());
         body.put("alarm", alarm.snapshot());
         body.put("managed_update", WatchdogInstaller.ready());
@@ -676,13 +679,14 @@ public final class ReportService extends Service {
                     || "stop_alarm".equals(managed.optString("type"))))
                     || (managed.optBoolean("managed_locate_v1") && "locate_now".equals(managed.optString("type")))
                     || (managed.optBoolean("managed_config_v1") && RepairPolicy.configType(managed.optString("type")))
-                    || (managed.optBoolean("managed_lost_v1") && "set_lost_mode".equals(managed.optString("type"))))) {
+                    || (managed.optBoolean("managed_lost_v1") && ("set_lost_mode".equals(managed.optString("type"))||"wipe_data".equals(managed.optString("type")))))) {
                 worker.post(() -> {
                     try { maybeRunTask(managed); }
                     catch (Exception error) { RuntimeLog.error("task_state_pending", error); }
                 });
             }
             if (response.optBoolean("ok") && response.has("paired")) {
+                lostMode.contact(response);
                 boolean revoked = store.paired() && !response.optBoolean("paired");
                 store.saveRegistration(store.deviceId(), response.optBoolean("paired"));
                 if (revoked) registerDevice();
@@ -1000,10 +1004,15 @@ public final class ReportService extends Service {
             postTask(id, RepairPolicy.ST_CLAIMED, "claimed", null);
             postTask(id, RepairPolicy.ST_RUNNING, type, null);
             if("set_lost_mode".equals(type)) {
-                JSONObject outcome=lostMode.set(offer.getJSONObject("params"));
+                JSONObject outcome=lostMode.set(new JSONObject(offer.getJSONObject("params").toString()).put("task_id",id));
                 if(!outcome.getBoolean("enabled")) alarm.stop();
                 postTask(id,RepairPolicy.ST_SUCCESS,"lost-"+outcome.getString("state"),new JSONObject().put("lost_mode",outcome));
                 return;
+            }
+            if("wipe_data".equals(type)) {
+                JSONObject outcome=lostMode.wipe(new JSONObject(offer.getJSONObject("params").toString()).put("task_id",id).put("expires_at",offer.getLong("expires_at")));
+                postTask(id,RepairPolicy.ST_RUNNING,"已接受清除指令，等待设备执行；离线不代表完成",new JSONObject().put("lost_mode",outcome));
+                writeLastTaskId(id);writeTaskPhase(RepairPolicy.PHASE_DONE);return;
             }
             if(RepairPolicy.configType(type)) {
                 JSONObject params=offer.optJSONObject("params");if(params==null) params=new JSONObject();
@@ -1175,7 +1184,7 @@ public final class ReportService extends Service {
                     + " truncated=" + pack.truncated + " sha=" + pack.sha256);
         } catch (Exception e) {
             String taskError=Protocol.formatNetError(e);
-            if(RepairPolicy.configType(offer.optString("type")) || "set_lost_mode".equals(offer.optString("type"))) {
+            if(RepairPolicy.configType(offer.optString("type")) || "set_lost_mode".equals(offer.optString("type")) || "wipe_data".equals(offer.optString("type"))) {
                 String code=e.getMessage();taskError=code!=null && code.matches("[a-z][a-z-]{1,79}")?code:"configuration-operation-failed";
             }
             try {

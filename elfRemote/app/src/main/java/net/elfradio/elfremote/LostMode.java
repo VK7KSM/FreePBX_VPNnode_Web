@@ -11,12 +11,15 @@ final class LostMode {
     private final SharedPreferences state;
     private final File request;
     private final String apk;
+    private final Context context;
     LostMode(Context context) {
+        this.context=context;
         state=context.getSharedPreferences("lost-mode",Context.MODE_PRIVATE);
         request=new File(context.getFilesDir(),"owner-info-request.json");
         apk=context.getApplicationInfo().sourceDir;
     }
     synchronized JSONObject set(JSONObject input) throws Exception {
+        if(input.optInt("version")==2)return admin(new JSONObject(input.toString()).put("action","set"));
         JSONObject params=LostModePolicy.params(input);
         if(params.getBoolean("enabled") && !state.contains("original")) {
             JSONObject before=owner(null);
@@ -28,6 +31,7 @@ final class LostMode {
         return snapshot();
     }
     synchronized void recover() {
+        try{JSONObject current=CoreClient.request("/lost/status",null);if(current!=null&&current.optBoolean("enabled"))return;}catch(Exception ignored){}
         if(!state.contains("original")) return;
         try {reconcile();}catch(Exception error){RuntimeLog.event("lost_recovery_pending");}
     }
@@ -48,8 +52,32 @@ final class LostMode {
         } catch(Exception error) {state.edit().putString("state","pending").commit();throw error;}
     }
     synchronized JSONObject snapshot() throws org.json.JSONException {
+        if(LostProtection.supported())try{JSONObject live=CoreClient.request("/lost/status",null);if(live!=null)return live;}catch(Exception ignored){}
         return new JSONObject().put("enabled",state.getBoolean("enabled",false)).put("message",state.getString("message",""))
                 .put("state",state.getString("state","disabled"));
+    }
+    synchronized JSONObject wipe(JSONObject input)throws Exception {return admin(new JSONObject(input.toString()).put("action","wipe"));}
+    void contact(JSONObject reply){
+        if(!LostProtection.supported())return;
+        try{admin(new JSONObject().put("action","contact").put("paired",reply.getBoolean("paired")).put("unpaired_at_ms",reply.optLong("unpaired_at_ms")));}
+        catch(Exception error){RuntimeLog.event("lost-contact-pending");}
+    }
+    void localUnlock()throws Exception {
+        JSONObject mode=snapshot();
+        if(mode.optInt("version")!=2||!mode.optBoolean("enabled")||mode.optBoolean("locked"))return;
+        admin(new JSONObject().put("action","set").put("version",2).put("enabled",false).put("auto_wipe_enabled",false).put("task_id","local-"+java.util.UUID.randomUUID()).put("local_unlocked",true));
+    }
+    private synchronized JSONObject admin(JSONObject input)throws Exception {
+        File file=new File(context.getFilesDir(),"lost-admin-request.json"),response=new File(context.getFilesDir(),"lost-admin-response.json");
+        try{
+            try(FileOutputStream out=new FileOutputStream(file)){out.write(input.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
+            String cmd="CLASSPATH="+LostModePolicy.quote(apk)+" app_process /system/bin net.elfradio.elfremote.LostAdminMain "+LostModePolicy.quote(file.getAbsolutePath());
+            Process process=new ProcessBuilder("su","-c",cmd).redirectOutput(response).start();
+            if(!process.waitFor(20,TimeUnit.SECONDS)){process.destroy();throw new IOException("lost-operation-timeout");}
+            JSONObject result=new JSONObject(RescueFiles.read(response,16384));
+            if(process.exitValue()!=0||result.has("error"))throw new IOException(result.optString("error","lost-operation-failed"));
+            return result;
+        }finally{file.delete();response.delete();}
     }
     private JSONObject owner(JSONObject value) throws Exception {
         File response=new File(request.getParentFile(),"owner-info-response.json");

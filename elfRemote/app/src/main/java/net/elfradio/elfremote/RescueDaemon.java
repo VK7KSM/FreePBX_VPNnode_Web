@@ -31,6 +31,7 @@ public final class RescueDaemon {
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
+            LostProtection lost=null;long lostRetryAt=0;
             CorePush push=null;
             long pushRetryAt=0;int pushFailures=0;
             server.start(3000, true);
@@ -45,9 +46,12 @@ public final class RescueDaemon {
                             RuntimeLog.error("core_push_start_failed",failure);RuntimeLog.event("core_push_initialize_retry delay_ms="+delay);
                         }
                     }
+                    if(lost==null&&SystemClock.elapsedRealtime()>=lostRetryAt)try{lost=new LostProtection();}catch(Exception e){lostRetryAt=SystemClock.elapsedRealtime()+60000;RuntimeLog.event("lost-guard-start-pending");}
+                    if(lost!=null)lost.refresh();
                     Thread.sleep(2000);
                 }
             } finally {
+                if(lost!=null)lost.close();
                 if(push!=null)push.close();
                 adb.close();
                 killGroup(activeGroup);

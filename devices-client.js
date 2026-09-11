@@ -534,7 +534,7 @@ function fnPageHtml(){
   if(selFn==="contacts") return functionSection('联系人管理',pageContacts(dis));
   if(selFn==="locate") return pageLocate(dis);
   if(selFn==="files") return pageFiles();
-  if(selFn==="lost") return functionSection('失主信息',pageLost(dis));
+  if(selFn==="lost") return pageLost(dis);
   if(selFn==="model") return functionSection('型号管理',pageModel());
   return pageAdb(dis);
 }
@@ -1507,35 +1507,28 @@ function pageAlarm(dis){
 }
 
 function pageLost(dis){
-  var u = uiOf();
-  var live = u && u.live ? u.live : "未开始";
-  var d=currentDev(), mode=d && d.lost_mode || {state:'disabled',message:''};
-  var blocked=dis || (d && d.managed_lost_tasks ? '' : ' disabled');
-  var h='<div class="ops-actions"><input id="lostMessage" class="inp" maxlength="300" placeholder="锁屏显示的失主文字" value="'+esc(mode.message||'')+'"'+blocked+'>';
-  h+='<button class="btn-green" onclick="setLostMode(true)"'+blocked+'>启用 / 更新</button><button class="btn-gray" onclick="setLostMode(false)"'+blocked+'>退出丢失模式</button></div>';
-  h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'等待恢复设置'})[mode.state]||'状态未知')+' · 退出后恢复原锁屏文字，日常位置历史继续保留。</p>';
-  if(d && d.task && d.task.type==='set_lost_mode') h+='<p class="muted">'+esc(d.task.label)+' · '+esc(d.task.detail)+'</p>';
-  h += '<details class="function-extra"><summary>其他功能 · 尚未接通</summary><div class="lost-bar">';
-  h += '<button class="btn-gray" onclick="lostRec()"'+dis+'>远程录音</button>';
-  h += '<button class="btn-gray" onclick="lostVideo(\'front\')"'+dis+'>前置录像</button>';
-  h += '<button class="btn-gray" onclick="lostVideo(\'back\')"'+dis+'>后置录像</button>';
-  h += '<button class="btn-gray" onclick="lostPhoto(\'front\')"'+dis+'>前置拍照</button>';
-  h += '<button class="btn-gray" onclick="lostPhoto(\'back\')"'+dis+'>后置拍照</button>';
-  h += '<button class="btn-gray" onclick="lostTalk()"'+dis+'>远程对讲</button>';
-  h += "</div>";
-  h += '<div class="fn-live">'+esc(live)+"</div>";
-  h += '<div class="ops-actions" style="margin-top:.7rem">';
-  h += '<input id="lockPw" class="inp" type="password" placeholder="解锁密码" style="max-width:180px"'+dis+'>';
-  h += '<button class="btn-green" onclick="lostLock()"'+dis+'>远程锁机</button>';
-  h += '<button class="btn-gray" onclick="lostUnlock()"'+dis+'>远程解锁</button>';
-  h += "</div>";
-  h += '<p class="ops-sec-title" style="margin-top:.85rem">录音 / 录像</p>';
-  h += lostRecTable(u);
-  h += '<p class="ops-sec-title" style="margin-top:.85rem">照片</p>';
-  h += lostPhotoTable(u);
-  return h+'</details>';
+  var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_v2?'':' disabled');
+  var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1">锁屏显示文字<input id="lostMessage" class="inp" maxlength="300" value="'+esc(m.message||'')+'"'+off+'></label>';
+  h+='<label>解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+off+'>退出</button></div>';
+  h+='<div class="ops-actions" style="margin-top:16px"><label><input id="lostAutoWipe" type="checkbox"'+(m.auto_wipe_enabled?' checked':'')+off+'> 自毁程序</label><span class="muted">失联或解除配对持续</span><input id="lostTimeout" class="inp" type="number" min="1" max="168" value="'+(m.timeout_hours||24)+'" style="width:70px"'+off+'><span class="muted">小时后清除；退出丢失模式同时关闭</span></div>';
+  h+='<p class="muted">'+esc(({enabled:'已启用',disabled:'未启用',pending:'设置尚未完成'})[m.state]||'未启用')+(m.deadline_at?' · '+esc(m.trigger==='unpaired'?'未配对':'失联')+'清除时间 '+esc(new Date(m.deadline_at).toLocaleString('zh-CN',{timeZone:'Australia/Sydney',hour12:false})): '')+'</p>';
+  if(d&&d.task&&['set_lost_mode','wipe_data'].includes(d.task.type))h+='<p class="muted">'+esc(d.task.label)+' · '+esc(lostTaskText(d.task.detail))+'</p>';
+  h+='<div style="border-top:1px solid #334155;margin-top:20px;padding-top:16px"><p style="color:#fca5a5">永久清除设备本地数据，保留操作系统；此操作无法撤销。</p><div class="ops-actions"><input id="lostWipePhrase" class="inp" autocomplete="off" placeholder="请输入：擦除数据" oninput="lostWipeInput()" style="width:210px"><button id="lostWipeNext" class="btn-red" onclick="lostWipe()" disabled>继续</button></div></div>';
+  return h;
 }
-
+function lostTaskText(detail){return ({'lost-enabled':'系统锁屏已启用','lost-disabled':'已退出并关闭自毁程序','lost-password-required':'请填写解锁密码','lost-current-password-required':'设备已有系统密码，请填写当前密码','lost-current-password-changed':'系统密码已改变，请先核对','lost-system-credential-unsupported':'该系统的锁屏接口尚未适配','lost-system-operation-failed':'系统操作失败，未确认完成'})[detail]||detail||'';}
+function lostWipeInput(){var d=currentDev(),b=$('lostWipeNext');if(b)b.disabled=!d||!d.managed_wipe_v1||$('lostWipePhrase').value!=='擦除数据';}
+async function lostWipe(){
+  var d=currentDev(),id=d&&d.id,phrase=$('lostWipePhrase')&&$('lostWipePhrase').value;if(!id||phrase!=='擦除数据'||!d.managed_wipe_v1)return;
+  if(!confirm('第一次确认：清除 '+d.name+' 的账号、应用和本地文件，保留操作系统。是否继续？'))return;
+  try{
+    var p=await fileApi('/api/elfremote/task',{device_id:id,action:'prepare_wipe',phrase:phrase});
+    if(!currentDev()||currentDev().id!==id)return;
+    if(!confirm('第二次确认：立即永久清除 '+d.name+' 的本地数据，无法撤销。确定执行？'))return;
+    if(!currentDev()||currentDev().id!==id)return;
+    await fileApi('/api/elfremote/task',{device_id:id,id:crypto.randomUUID(),type:'wipe_data',params:{phrase:phrase,confirmation_id:p.confirmation.id}});loadDevices();
+  }catch(e){alert(e.message||'清除请求未发送');}
+}
 function lostRecTable(u){
   var rows = u ? u.recs : [];
   var h = '<table><thead><tr><th>时间</th><th>类型</th><th>状态</th></tr></thead><tbody>';
@@ -1770,7 +1763,7 @@ function lostRec(){
   unavailableAction('远程录音');
 }
 function setLostMode(enabled){
-  return enqueueRepair('set_lost_mode',{enabled:enabled,message:enabled?$('lostMessage').value:''});
+  return enqueueRepair('set_lost_mode',{version:2,enabled:enabled,message:enabled?$('lostMessage').value:'',password:enabled?$('lockPw').value:'',auto_wipe_enabled:enabled&&$('lostAutoWipe').checked,timeout_hours:Number($('lostTimeout').value)||24});
 }
 function lostVideo(cam){
   unavailableAction('远程录像');

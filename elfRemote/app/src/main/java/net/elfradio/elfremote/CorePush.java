@@ -108,7 +108,7 @@ final class CorePush implements Closeable {
         if(closed)return;
         wake.hold("sync",45000);
         try{JSONObject identity=state.snapshot(),reply=post(Protocol.pushSyncPath(),identityBody(identity));JSONObject notice=reply.optJSONObject("status_request");
-            if(notice!=null)state.notice(CorePushState.key(identity),notice,System.currentTimeMillis());deliver();RuntimeLog.event("core_push_sync_ok");
+            if(notice!=null)state.notice(CorePushState.key(identity),notice,System.currentTimeMillis());deliver();LostProtection.contact(null,0);RuntimeLog.event("core_push_sync_ok");
         }catch(Exception error){RuntimeLog.error("core_push_sync_failed",error);if(!closed&&connected){long delay=60000;try{delay=Math.max(delay,httpRetry.remaining(Protocol.pushSyncPath(),SystemClock.elapsedRealtime()));}catch(Exception ignored){}RuntimeLog.event("core_push_sync_retry delay_ms="+delay);wake.schedule("sync",delay,this::sync);}}
         finally{wake.release("sync");}
     }
@@ -162,7 +162,7 @@ final class CorePush implements Closeable {
         public void stop(){running=false;wake.cancel("ping");wake.release("ping");}
         public void schedule(long delay){if(running)wake.schedule("ping",delay,this::fire);}
         private void fire(){if(!running)return;wake.hold("ping",30000);RuntimeLog.event("core_mqtt_ping_wake");
-            try{MqttToken token=comms.checkForActivity(new IMqttActionListener(){public void onSuccess(IMqttToken t){wake.release("ping");RuntimeLog.event("core_mqtt_ping_ok");}public void onFailure(IMqttToken t,Throwable error){wake.release("ping");}});if(token==null)wake.release("ping");}
+            try{MqttToken token=comms.checkForActivity(new IMqttActionListener(){public void onSuccess(IMqttToken t){wake.release("ping");LostProtection.contact(null,0);RuntimeLog.event("core_mqtt_ping_ok");}public void onFailure(IMqttToken t,Throwable error){wake.release("ping");}});if(token==null)wake.release("ping");}
             catch(Exception error){wake.release("ping");retry(error);}
         }
     }
