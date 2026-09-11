@@ -45,4 +45,33 @@ public class FileOperationsTest {
         assertThrows(Exception.class,()->FileOperations.normalize(new JSONObject().put("action","list").put("path","/a/../b")));
         File root=temp.newFolder(),created=new File(root,"$name ' quote");run("mkdir",created,null);assertTrue(created.isDirectory());
     }
+    @Test public void deleteRemovesNestedFilesButLeavesSiblingAndOldTrash()throws Exception {
+        File parent=temp.newFolder(),source=new File(parent,"要删除");source.mkdir();
+        File nested=new File(source,"内部");nested.mkdir();Files.write(new File(nested,"内容.txt").toPath(),new byte[]{1,2});
+        File sibling=new File(parent,"保留.txt"),oldTrash=new File(parent,".elfremote-trash-old");sibling.createNewFile();oldTrash.createNewFile();
+        run("delete",source,null);
+        assertFalse(source.exists());assertTrue(sibling.exists());assertTrue(oldTrash.exists());
+        assertThrows(Exception.class,()->run("delete",source,null));
+    }
+    @Test public void deletionCancellationBeforeStartKeepsAllFiles()throws Exception {
+        File dir=temp.newFolder(),child=new File(dir,"保留.txt");child.createNewFile();
+        File job=temp.newFolder();new File(job,"cancel").createNewFile();
+        assertThrows(Exception.class,()->FileOperations.run(job,new JSONObject().put("action","delete").put("path",dir.getAbsolutePath())));
+        assertTrue(child.exists());
+    }
+    @Test public void deleteSymlinkNeverDeletesTarget()throws Exception {
+        File parent=temp.newFolder(),target=temp.newFolder();File child=new File(target,"保留.txt");child.createNewFile();
+        File link=new File(parent,"link");
+        try{Files.createSymbolicLink(link.toPath(),target.toPath());}catch(Exception e){org.junit.Assume.assumeNoException(e);}
+        run("delete",parent,null);assertFalse(parent.exists());assertTrue(child.exists());
+    }
+    @Test public void copyOverwriteKeepsOriginalTargetBackupAndRejectsAncestor()throws Exception {
+        File parent=temp.newFolder(),source=new File(parent,"源.txt"),target=new File(parent,"目标.txt");
+        Files.write(source.toPath(),new byte[]{1});Files.write(target.toPath(),new byte[]{2});File job=temp.newFolder();
+        FileOperations.run(job,new JSONObject().put("action","copy").put("path",source.getAbsolutePath()).put("target",target.getAbsolutePath()).put("overwrite",true));
+        assertArrayEquals(new byte[]{1},Files.readAllBytes(target.toPath()));
+        assertArrayEquals(new byte[]{2},Files.readAllBytes(new File(parent,".elfremote-replaced-"+job.getName()+"-"+target.getName()).toPath()));
+        assertThrows(Exception.class,()->FileOperations.run(temp.newFolder(),new JSONObject().put("action","move").put("path",source.getAbsolutePath()).put("target",parent.getAbsolutePath()).put("overwrite",true)));
+        assertTrue(source.exists());
+    }
 }

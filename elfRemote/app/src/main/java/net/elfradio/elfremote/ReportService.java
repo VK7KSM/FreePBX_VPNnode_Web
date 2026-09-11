@@ -464,6 +464,7 @@ public final class ReportService extends Service {
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
         body.put("managed_file_operations", CoreInstaller.ready());
+        body.put("managed_file_delete", CoreInstaller.ready());
         body.put("managed_sip_account", CoreInstaller.ready());
         body.put("managed_system_settings", CoreInstaller.ready());
         body.put("managed_zello_account", CoreInstaller.ready());

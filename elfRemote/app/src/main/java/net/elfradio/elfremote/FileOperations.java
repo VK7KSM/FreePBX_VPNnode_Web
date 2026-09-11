@@ -10,11 +10,12 @@ import java.util.Comparator;
 final class FileOperations {
     static JSONObject normalize(JSONObject value) throws Exception {
         String action=value.getString("action"), path=value.getString("path");
-        if(!Arrays.asList("list","mkdir","copy","move","trash").contains(action))throw new IOException("不支持的文件操作");
+        if(!Arrays.asList("list","mkdir","copy","move","trash","delete").contains(action))throw new IOException("不支持的文件操作");
         validatePath(path);
         JSONObject result=new JSONObject().put("action",action).put("path",path);
         if("copy".equals(action)||"move".equals(action)) {
             String target=value.getString("target"); validatePath(target); result.put("target",target);
+            result.put("overwrite",value.optBoolean("overwrite",false));
         }
         int offset=value.optInt("offset",0);
         if(offset<0)throw new IOException("列表页码无效");
@@ -36,13 +37,21 @@ final class FileOperations {
             if("mkdir".equals(action)) {
                 if(source.exists()||isLink(source)||!source.mkdir())throw new IOException("新建目录失败或同名路径已存在");
                 out.put("path",source.getPath());
+            }else if("delete".equals(action)) {
+                if(!source.exists()&&!isLink(source))throw new IOException("源路径不存在");
+                delete(source,new File(job,"cancel"),started,0);
+                out.put("path",source.getPath());
             }else {
                 if(!source.exists()&&!isLink(source))throw new IOException("源路径不存在");
                 File target="trash".equals(action)?new File(parent,".elfremote-trash-"+job.getName()+"-"+source.getName()):new File(p.getString("target"));
-                if(target.exists()||isLink(target))throw new IOException("目标已存在，请使用其他名称");
+                boolean occupied=target.exists()||isLink(target);
+                if(occupied&&!p.optBoolean("overwrite"))throw new IOException("目标已存在，请使用其他名称");
                 if(target.getParentFile()==null||!target.getParentFile().isDirectory())throw new IOException("目标父目录不存在");
                 String src=source.getCanonicalPath(), dst=target.getCanonicalPath();
-                if(src.equals(dst)||dst.startsWith(src+File.separator))throw new IOException("目标不能位于源目录内部");
+                if(src.equals(dst)||dst.startsWith(src+File.separator)||src.startsWith(dst+File.separator))throw new IOException("源与目标不能相同或互相包含");
+                File backup=new File(target.getParentFile(),".elfremote-replaced-"+job.getName()+"-"+target.getName());
+                if(occupied&&(backup.exists()||isLink(backup)||!target.renameTo(backup)))throw new IOException("同名目标备份失败，未覆盖");
+                try {
                 if("copy".equals(action)) {
                     File stage=new File(target.getParentFile(),".elfremote-copy-"+job.getName());
                     if(stage.exists()||isLink(stage))throw new IOException("发现此前复制现场，未覆盖");
@@ -51,6 +60,10 @@ final class FileOperations {
                         if(target.exists()||isLink(target)||!stage.renameTo(target))throw new IOException("复制完成后提交目标失败");
                     } catch(Exception error) { removeStage(stage);throw error; }
                 } else if(!source.renameTo(target))throw new IOException("移动失败；跨存储请先复制，核对后再移除原件");
+                } catch(Exception error) {
+                    if(occupied&&!target.exists()&&!isLink(target)&&!backup.renameTo(target))throw new IOException("操作失败，原目标保留于："+backup.getPath(),error);
+                    throw error;
+                }
                 out.put("path",target.getPath());
                 if("trash".equals(action))out.put("restore_to",source.getPath());
             }
@@ -66,6 +79,11 @@ final class FileOperations {
             File f=files[next];boolean link=isLink(f);
             JSONObject item=new JSONObject().put("name",f.getName()).put("directory",f.isDirectory()).put("link",link)
                     .put("bytes",f.isFile()?f.length():0).put("modified_ms",f.lastModified());
+            // Android的实际权限；桌面测试或特殊文件不可读取时不伪造权限。
+            try {
+                android.system.StructStat stat=android.system.Os.lstat(f.getPath());
+                item.put("mode",stat.st_mode & 07777).put("uid",stat.st_uid).put("gid",stat.st_gid);
+            } catch(Exception unavailable) { }
             int size=item.toString().getBytes("UTF-8").length;
             if(entries.length()>0&&bytes+size>11000)break;
             bytes+=size;entries.put(item);
@@ -96,6 +114,17 @@ final class FileOperations {
     private static void check(File cancel,long start)throws IOException {
         if(cancel.exists())throw new IOException("文件操作已停止");
         if(System.nanoTime()-start>120000000000L)throw new IOException("复制超时，保留原文件");
+    }
+    private static void delete(File file,File cancel,long start,int depth)throws IOException {
+        check(cancel,start);
+        if(depth>64)throw new IOException("目录层级过深，删除未全部完成");
+        // 符号链接只删除链接本身，绝不递归到链接指向的目录。
+        if(!isLink(file)&&file.isDirectory()) {
+            File[] children=file.listFiles();
+            if(children==null)throw new IOException("目录不可读取，删除未全部完成");
+            for(File child:children)delete(child,cancel,start,depth+1);
+        }
+        if(!file.delete())throw new IOException("无法删除："+file.getName());
     }
     private static void removeStage(File file)throws IOException {
         if(!file.exists())return;

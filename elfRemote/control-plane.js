@@ -346,12 +346,12 @@ function repairHistoryExpired(task, nowMs) {
 
 export function fileOperationParams(value={}) {
   const {action,path,target}=value;
-  if(!['list','mkdir','copy','move','trash'].includes(action))throw new Error('不支持的文件操作');
+  if(!['list','mkdir','copy','move','trash','delete'].includes(action))throw new Error('不支持的文件操作');
   const valid=p=>typeof p==='string'&&p.startsWith('/')&&p.length<=1024&&!p.includes('\0')&&!p.split('/').some(x=>x==='.'||x==='..');
   if(!valid(path))throw new Error('设备路径无效');
   const result={action,path,offset:value.offset??0};
   if(!Number.isInteger(result.offset)||result.offset<0||result.offset>1000000)throw new Error('列表页码无效');
-  if(['copy','move'].includes(action)) {if(!valid(target))throw new Error('目标路径无效');result.target=target;}
+  if(['copy','move'].includes(action)) {if(!valid(target))throw new Error('目标路径无效');result.target=target;if(value.overwrite===true)result.overwrite=true;}
   return result;
 }
 

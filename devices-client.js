@@ -579,65 +579,253 @@ function openReturnFile(){
 var FILE_MANAGER={};
 function fileManagerState(){
   var d=currentDev();if(!d)return null;
-  return FILE_MANAGER[d.id]||(FILE_MANAGER[d.id]={device_id:d.id,path:'/sdcard/Download',entries:[],offset:0,next:-1,selected:-1,message:'',busy:false,loaded:false});
+  return FILE_MANAGER[d.id]||(FILE_MANAGER[d.id]={device_id:d.id,path:'/sdcard/Download',entries:[],offset:0,total:0,next:-1,selected:[],message:'',busy:false,loaded:false});
 }
 function fileManagerVisible(s){return selFn==='files'&&selDev===s.device_id&&$('fileManagerPanel');}
 function fileManagerChild(s,name){return s.path.replace(/\/$/,'')+'/'+name;}
-function loadFileManagerOnEntry(){var s=fileManagerState(),d=currentDev();if(s&&d.managed_file_operations&&!s.busy&&!s.loaded)fileManagerLoad(s.path,0);}
-function pageFiles(){
-  var s=fileManagerState();if(!s)return '<p class="muted">请先选择设备</p>';
-  return '<div id="fileManagerPanel" class="file-manager-page">'+fileManagerHtml(s)+'</div>';
+function fileManagerDevice(s){return DEV.find(function(d){return d.id===s.device_id;});}
+function fileManagerSelected(s){return s.entries.filter(function(e){return Array.isArray(s.selected)&&s.selected.includes(e.name);});}
+function fileManagerSize(n){n=Number(n)||0;var u=['B','KB','MB','GB'],i=0;while(n>=1000&&i<3){n/=1000;i++;}return (i?n.toFixed(1):n)+' '+u[i];}
+function fileManagerType(e){
+  if(e.link)return '符号链接';if(e.directory)return '文件夹';
+  var ext=e.name.split('.').pop().toLowerCase(),type={apk:'安卓应用',zip:'压缩文件',gz:'压缩文件',rar:'压缩文件','7z':'压缩文件',jpg:'图片',jpeg:'图片',png:'图片',webp:'图片',mp4:'视频',mkv:'视频',mp3:'音频',wav:'音频',ogg:'音频',txt:'文本文件',log:'日志文件',json:'JSON 文件',xml:'XML 文件',pdf:'PDF 文档'}[ext];
+  return type||(e.name.includes('.')?ext.toUpperCase()+' 文件':'文件');
 }
+function fileManagerPermissions(e){
+  if(!Number.isInteger(e.mode))return '—';
+  var text='',chars='rwx';for(var i=8;i>=0;i--)text+=(e.mode&(1<<i))?chars[(8-i)%3]:'-';
+  if(e.mode&2048)text=text.slice(0,2)+((e.mode&64)?'s':'S')+text.slice(3);
+  if(e.mode&1024)text=text.slice(0,5)+((e.mode&8)?'s':'S')+text.slice(6);
+  if(e.mode&512)text=text.slice(0,8)+((e.mode&1)?'t':'T');
+  return text+' ('+e.mode.toString(8)+')';
+}
+function fileManagerTime(ms){return ms>0?new Intl.DateTimeFormat('sv-SE',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(ms)):'—';}
+function loadFileManagerOnEntry(){var s=fileManagerState(),d=currentDev();if(s&&d.managed_file_operations&&!s.busy&&!s.loaded)fileManagerLoad(s.path,0);}
+function pageFiles(){var s=fileManagerState();return s?'<div id="fileManagerPanel" class="file-manager-page">'+fileManagerHtml(s)+'</div>':'<p class="muted">请先选择设备</p>';}
 function fileManagerRows(s){
-  return s.entries.map(function(e,i){return '<tr'+(s.selected===i?' class="selected"':'')+'><td class="file-select"><input type="radio" name="fileManagerSelection" aria-label="选择文件" onchange="fileManagerSelect('+i+')"'+(s.selected===i?' checked':'')+(s.busy?' disabled':'')+'></td><td class="file-name"><a class="log-download" href="#" onclick="fileManagerPick('+i+');return false">'+esc(e.name)+(e.directory?'/':'')+(e.link?' ↗':'')+'</a></td><td class="file-size">'+(e.directory?'—':esc((Number(e.bytes)/1000).toFixed(1)+' KB'))+'</td></tr>';}).join('');
+  return s.entries.map(function(e,i){var selected=Array.isArray(s.selected)&&s.selected.includes(e.name);
+    return '<tr'+(selected?' class="selected"':'')+'><td class="file-select"><input type="checkbox" aria-label="选择 '+esc(e.name)+'" onchange="fileManagerSelect('+i+',this.checked)"'+(selected?' checked':'')+(s.busy?' disabled':'')+'></td><td class="file-name"><a href="#" onclick="fileManagerPick('+i+');return false" title="'+esc(e.name)+'"><span class="file-entry-icon '+(e.directory?'folder':'document')+'" aria-hidden="true"></span><span>'+esc(e.name)+'</span></a></td><td class="file-size">'+(e.directory?'—':fileManagerSize(e.bytes))+'</td><td class="file-type">'+esc(fileManagerType(e))+'</td><td class="file-modified">'+fileManagerTime(e.modified_ms)+'</td><td class="file-permissions" title="'+(Number.isInteger(e.uid)?'UID '+e.uid+' / GID '+e.gid:'')+'">'+fileManagerPermissions(e)+'</td></tr>';
+  }).join('');
 }
 function fileManagerHtml(s){
-  var d=currentDev(),disabled=s.busy||!d||!d.managed_file_operations||d.enabled===false?' disabled':'',selected=s.entries[s.selected],selection=disabled||(!selected?' disabled':'');
-  var h='<div class="file-manager-toolbar"><button class="btn-green" onclick="fileManagerSend()"'+(maintenanceAvailable(d,'send_file')?'':' disabled')+'>发送文件</button><button class="btn-green" onclick="openReturnFile()"'+(d&&d.managed_file_return&&maintenanceAvailable(d,'get_file')?'':' disabled')+'>取回文件</button><span class="file-manager-count" role="status" id="fileManagerStatus">'+esc(s.message||(!d.managed_file_operations?'请更新客户端以使用目录操作':'选择文件后操作'))+'</span></div>';
-  h+='<div class="file-manager-path"><button class="btn-gray" onclick="fileManagerUp()"'+disabled+'>上一级</button><input id="fileManagerPath" class="inp" aria-label="设备目录" value="'+esc(s.pathDraft||s.path)+'" oninput="fileManagerState().pathDraft=this.value" onkeydown="if(event.key===\'Enter\')fileManagerLoad()"'+disabled+'><button class="btn-green" onclick="fileManagerLoad()"'+disabled+'>刷新</button></div>';
-  h+='<table class="file-manager-table"><thead><tr><th></th><th>名称</th><th class="file-size">大小</th></tr></thead><tbody>'+fileManagerRows(s)+(s.entries.length?'':'<tr><td colspan="3" class="muted file-empty">'+(s.busy?'正在读取目录':s.loaded?'此目录为空':'尚未读取目录')+'</td></tr>')+'</tbody></table>';
-  h+='<div class="file-manager-footer"><div class="file-manager-edit"><input class="inp" id="fileManagerTarget" aria-label="新名称或完整目标路径" placeholder="新名称或完整目标路径" value="'+esc(s.target||'')+'" oninput="fileManagerState().target=this.value"'+disabled+'><button class="btn-green" onclick="fileManagerAction(\'mkdir\')"'+disabled+'>新建目录</button><button class="btn-gray" onclick="fileManagerAction(\'copy\')"'+selection+'>复制</button><button class="btn-gray" onclick="fileManagerAction(\'move\')"'+selection+'>移动 / 改名</button><button class="btn-gray" onclick="fileManagerAction(\'trash\')"'+selection+'>移至回收站</button><button class="btn-gray" onclick="fileManagerTake()"'+(selection||(selected&&selected.directory?' disabled':''))+'>取回</button></div><div class="file-manager-pagination"><button class="btn-gray" onclick="fileManagerPage(-1)"'+(disabled||s.offset===0?' disabled':'')+'>上一页</button><button class="btn-gray" onclick="fileManagerPage(1)"'+(disabled||s.next<0?' disabled':'')+'>下一页</button></div></div>';
+  var d=fileManagerDevice(s),disabled=s.busy||!d||!d.managed_file_operations||d.enabled===false?' disabled':'',picked=fileManagerSelected(s),selection=disabled||(!picked.length?' disabled':'');
+  var h='<div class="file-manager-toolbar"><button class="btn-green" onclick="fileManagerSend()"'+(s.busy||!maintenanceAvailable(d,'send_file')?' disabled':'')+'>发送文件</button><button class="btn-green" onclick="fileManagerTake()"'+(selection||!d.managed_file_return?' disabled':'')+'>取回文件</button><span class="file-toolbar-divider"></span>';
+  [['mkdir','新建文件夹'],['copy','复制'],['move','移动'],['rename','改名'],['delete','删除']].forEach(function(a){var off=a[0]==='mkdir'?disabled:selection;if(a[0]==='rename'&&picked.length!==1)off=' disabled';if(a[0]==='delete'&&!d.managed_file_delete)off=' disabled';h+='<button class="'+(a[0]==='delete'?'file-delete':'file-tool')+'" onclick="fileManagerAction(\''+a[0]+'\')"'+off+'>'+a[1]+'</button>';});
+  h+='<span class="file-manager-count">共 '+s.total+' 项'+(picked.length?' · 已选 '+picked.length+' 项':'')+'</span></div>';
+  h+='<div class="file-manager-path"><button class="file-tool" onclick="fileManagerUp()"'+disabled+'>上一级</button><input id="fileManagerPath" class="inp" aria-label="设备目录" value="'+esc(s.pathDraft||s.path)+'" oninput="fileManagerState().pathDraft=this.value" onkeydown="if(event.key===\'Enter\')fileManagerLoad()"'+disabled+'><button class="file-tool" onclick="fileManagerLoad()"'+disabled+'>刷新</button></div>';
+  h+='<table class="file-manager-table"><thead><tr><th class="file-select"><input type="checkbox" aria-label="选择本页全部文件" onchange="fileManagerSelectAll(this.checked)"'+(s.entries.length&&picked.length===s.entries.length?' checked':'')+disabled+'></th><th>名称</th><th class="file-size">大小</th><th class="file-type">类型</th><th class="file-modified">修改时间</th><th class="file-permissions">权限</th></tr></thead><tbody>'+fileManagerRows(s)+(s.entries.length?'':'<tr><td colspan="6" class="file-empty">'+(s.busy?'正在读取目录':s.loaded?'此目录为空':'尚未读取目录')+'</td></tr>')+'</tbody></table>';
+  h+='<div class="file-manager-footer"><div class="file-operation-status'+(s.error?' error':s.done?' success':'')+'" role="status"><span id="fileManagerStatus">'+esc(s.message||'')+'</span>'+(s.progress!=null?'<progress max="100" value="'+s.progress+'" aria-label="文件传输进度"></progress>':'')+(s.busy&&s.cancellable?'<button class="file-tool" onclick="fileManagerCancel()">取消</button>':'')+'</div><div class="file-manager-pagination"><span>第 '+(Math.floor(s.offset/12)+1)+' 页 / 共 '+Math.max(1,Math.ceil(s.total/12))+' 页</span><button class="file-tool" onclick="fileManagerPage(-1)"'+(disabled||s.offset===0?' disabled':'')+'>上一页</button><button class="file-tool" onclick="fileManagerPage(1)"'+(disabled||s.next<0?' disabled':'')+'>下一页</button></div></div>';
   return h;
 }
 function renderFileManager(s){if(fileManagerVisible(s))$('fileManagerPanel').innerHTML=fileManagerHtml(s);}
-function fileManagerSend(){var s=fileManagerState(),d=currentDev();if(!d)return;var send=FILE_SEND[d.id]||(FILE_SEND[d.id]={device_id:d.id,message:''});if(!send.busy)send.directory=s.path;openSendFile();}
-function fileManagerSelect(i){var s=fileManagerState();if(!s||s.busy||!s.entries[i])return;s.target=$('fileManagerTarget').value;s.selected=i;renderFileManager(s);}
-function fileManagerPick(i){var s=fileManagerState();if(!s||s.busy||!s.entries[i])return;if(s.entries[i].directory)fileManagerLoad(fileManagerChild(s,s.entries[i].name),0);else fileManagerSelect(i);}
+function fileManagerStatus(s,message,progress){var next=progress==null?null:Math.min(99,Math.max(0,Math.floor(progress)));if(s.message===message&&s.progress===next)return;s.message=message;s.progress=next;renderFileManager(s);}
+function fileManagerSelect(i,on){var s=fileManagerState(),e=s&&s.entries[i];if(!e||s.busy)return;if(on&&!s.selected.includes(e.name))s.selected.push(e.name);if(!on)s.selected=s.selected.filter(function(n){return n!==e.name;});renderFileManager(s);}
+function fileManagerSelectAll(on){var s=fileManagerState();if(s&&!s.busy){s.selected=on?s.entries.map(function(e){return e.name;}):[];renderFileManager(s);}}
+function fileManagerPick(i){var s=fileManagerState(),e=s&&s.entries[i];if(!e||s.busy)return;if(e.directory&&!e.link)fileManagerLoad(fileManagerChild(s,e.name),0);else fileManagerSelect(i,!s.selected.includes(e.name));}
 function fileManagerUp(){var s=fileManagerState();if(s&&!s.busy)fileManagerLoad(s.path.replace(/\/$/,'').replace(/\/[^/]*$/,'')||'/',0);}
 function fileManagerPage(direction){var s=fileManagerState();if(s&&!s.busy)fileManagerLoad(s.path,direction>0?s.next:Math.max(0,s.offset-12));}
+function fileManagerCheck(s){if(s.cancelled)throw Error('已取消');}
+async function fileManagerWait(s,id,progress,timeout){
+  s.task_id=id;
+  if(s.cancelled)await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:id});
+  for(var started=Date.now();Date.now()-started<(timeout||86400000);){
+    fileManagerCheck(s);
+    try{
+      var reply=await readWatchedTask(s,s.device_id,id),t=reply&&reply.task;
+      if(t){
+        if(t.state==='success'){s.task_id='';return t;}
+        if(['failed','expired','rejected','cancelled'].includes(t.state)){s.task_id='';throw Object.assign(Error(t.detail||'文件操作未完成'),{stopPolling:true});}
+        if(progress)progress(t);
+      }
+    }catch(e){if(e.stopPolling)throw e;fileManagerStatus(s,'连接中断，正在重试');}
+    await new Promise(function(resolve){setTimeout(resolve,2500);});
+  }
+  throw Error('等待设备完成超时');
+}
 async function fileManagerTask(s,params){
+  fileManagerCheck(s);
   var x=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'file_manage',id:'files-'+crypto.randomUUID(),params:params});
-  var id=x.task.id;for(var start=Date.now();Date.now()-start<150000;){
-    var reply=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:s.device_id,task_id:id}));
-    if(reply.task&&['success','failed','expired','rejected'].includes(reply.task.state)){
-      if(reply.task.state!=='success')throw Error(reply.task.result&&reply.task.result.text||reply.task.detail||'文件操作未完成');
-      if(reply.task.result.truncated)throw Error('文件列表不完整，请重新读取');
-      return JSON.parse(reply.task.result.text);
-    }
-    await new Promise(function(resolve){setTimeout(resolve,1000);});
-  }throw Error('尚未收到设备结果，请稍后重新读取目录');
+  var t=await fileManagerWait(s,x.task.id,null,180000);
+  if(!t.result||t.result.truncated)throw Error('文件结果不完整');
+  return JSON.parse(t.result.text);
+}
+async function fileManagerRead(s,path,offset){
+  var r=await fileManagerTask(s,{action:'list',path:path,offset:offset||0});
+  return r;
+}
+async function fileManagerRefresh(s,path,offset){
+  var r=await fileManagerRead(s,path,offset);
+  if(offset>=r.total&&offset>0)return fileManagerRefresh(s,path,Math.max(0,Math.ceil(r.total/12)-1)*12);
+  s.path=r.path;s.pathDraft='';s.loaded=true;s.entries=r.entries;s.total=r.total;s.next=r.next;s.offset=offset;s.selected=[];
 }
 async function fileManagerLoad(path,offset){
   var s=fileManagerState();if(!s||s.busy)return;
   path=typeof path==='string'?path:$('fileManagerPath').value.trim();offset=Number.isInteger(offset)&&offset>=0?offset:0;
-  s.busy=true;s.message='正在读取目录';if(fileManagerVisible(s))renderFileManager(s);
-  try{var result=await fileManagerTask(s,{action:'list',path:path,offset:offset});s.path=result.path;s.pathDraft='';s.loaded=true;s.entries=result.entries;s.next=result.next;s.offset=offset;s.selected=-1;s.message='共 '+result.total+' 项';}
-  catch(e){s.message=e.message;}finally{s.busy=false;if(fileManagerVisible(s))renderFileManager(s);}
+  s.busy=true;s.cancelled=false;s.error=false;s.done=false;fileManagerStatus(s,'正在读取目录');
+  try{await fileManagerRefresh(s,path,offset);s.message='';}catch(e){s.message=e.message;s.error=true;}finally{s.busy=false;renderFileManager(s);}
 }
+function fileManagerBegin(s){s.busy=true;s.cancelled=false;s.error=false;s.done=false;s.cancellable=true;s.conflict=null;s.task_id='';}
+async function fileManagerEnd(s,message,error){
+  s.progress=null;s.cancellable=false;
+  if(!error){try{await fileManagerRefresh(s,s.path,s.offset);}catch(e){message+=' · 目录刷新失败';}}
+  s.busy=false;s.done=!error;s.error=!!error;s.message=error?error.message:message;renderFileManager(s);
+}
+async function fileManagerCancel(){var s=fileManagerState();if(!s||!s.busy)return;s.cancelled=true;if(s.abort)s.abort.abort();if(s.task_id)try{await fileApi('/api/elfremote/task',{device_id:s.device_id,action:'cancel',task_id:s.task_id});}catch(e){s.message='取消请求未送达：'+e.message;renderFileManager(s);}}
+function fileManagerDialog(title,body){
+  var wrap=document.createElement('div');wrap.className='file-send-wrap file-operation-dialog';wrap.style.display='flex';
+  wrap.innerHTML='<div class="file-send-dialog"><div class="traffic-header"><h3>'+esc(title)+'</h3><button class="btn-close" aria-label="关闭">&times;</button></div><div class="file-send-fields">'+body+'</div></div>';
+  document.body.appendChild(wrap);return wrap;
+}
+function fileManagerName(title,initial){return new Promise(function(resolve){
+  var w=fileManagerDialog(title,'<input class="inp" aria-label="名称" value="'+esc(initial||'')+'"><div class="ops-actions"><button class="btn-green">确定</button><button class="file-tool">取消</button></div>'),input=w.querySelector('input');
+  function finish(value){w.remove();resolve(value);}
+  w.querySelector('.btn-close').onclick=function(){finish(null);};w.querySelector('.file-tool').onclick=function(){finish(null);};w.onclick=function(e){if(e.target===w)finish(null);};
+  w.querySelector('.btn-green').onclick=function(){var name=input.value.trim();if(!name||name==='.'||name==='..'||/[\/\\\x00-\x1f]/.test(name)){input.setCustomValidity('请输入不含路径分隔符的名称');input.reportValidity();return;}finish(name);};
+  input.oninput=function(){input.setCustomValidity('');};input.onkeydown=function(e){if(e.key==='Enter')w.querySelector('.btn-green').click();};input.focus();input.select();
+});}
+function fileManagerConflict(s,name){if(s.conflict)return Promise.resolve(s.conflict);return new Promise(function(resolve){
+  var w=fileManagerDialog('同名文件','<div>'+esc(name)+' 已存在</div><label><input type="checkbox"> 对本批次应用</label><div class="file-conflict-actions"><button class="file-tool" data-choice="replace">覆盖</button><button class="file-tool" data-choice="skip">跳过</button><button class="btn-green" data-choice="rename">保留两份</button></div>');
+  function finish(choice){if(w.querySelector('input').checked)s.conflict=choice;w.remove();resolve(choice);}
+  w.querySelectorAll('[data-choice]').forEach(function(b){b.onclick=function(){finish(b.dataset.choice);};});w.querySelector('.btn-close').onclick=function(){finish('cancel');};w.onclick=function(e){if(e.target===w)finish('cancel');};
+});}
+function fileManagerAlternative(name,number){var at=name.lastIndexOf('.');return at>0?name.slice(0,at)+' ('+number+')'+name.slice(at):name+' ('+number+')';}
+async function fileManagerAll(s,path){var out=[],offset=0;for(;;){var r=await fileManagerRead(s,path,offset);out=out.concat(r.entries);if(r.next<0)return out;if(r.next<=offset)throw Error('目录分页未推进');offset=r.next;}}
+function fileManagerChooseRemote(s,title){return new Promise(function(resolve,reject){
+  var w=fileManagerDialog(title,'<div class="file-directory-path"><button class="file-tool">上一级</button><span></span></div><div class="file-directory-list"></div><div class="ops-actions"><button class="btn-green">选择此文件夹</button><button class="file-tool file-picker-cancel">取消</button></div>'),path=s.path,closed=false;
+  function finish(value){closed=true;w.remove();resolve(value);}
+  async function load(next){
+    w.querySelector('.btn-green').disabled=true;w.querySelector('.file-directory-path button').disabled=true;w.querySelector('.file-directory-list').textContent='正在读取目录';
+    try{var rows=await fileManagerAll(s,next);if(closed)return;path=next;w.querySelector('.file-directory-path span').textContent=path;var list=w.querySelector('.file-directory-list');list.innerHTML='';rows.filter(function(e){return e.directory&&!e.link;}).forEach(function(e){var b=document.createElement('button');b.className='file-directory-item';b.textContent=e.name;b.onclick=function(){load(fileManagerChild({path:path},e.name));};list.appendChild(b);});if(!list.children.length)list.textContent='没有子文件夹';w.querySelector('.btn-green').disabled=false;w.querySelector('.file-directory-path button').disabled=false;}catch(e){if(!closed){closed=true;w.remove();reject(e);}}
+  }
+  w.querySelector('.btn-green').onclick=function(){finish(path);};w.querySelector('.file-directory-path button').onclick=function(){load(path.replace(/\/$/,'').replace(/\/[^/]*$/,'')||'/');};w.querySelector('.file-picker-cancel').onclick=function(){finish(null);};w.querySelector('.btn-close').onclick=function(){finish(null);};w.onclick=function(e){if(e.target===w)finish(null);};load(path);
+});}
 async function fileManagerAction(action){
-  var s=fileManagerState();if(!s||s.busy)return;
-  s.target=$('fileManagerTarget').value.trim();var selected=s.entries[s.selected];
-  if(action!=='mkdir'&&!selected)return;
-  if(action!=='trash'&&!s.target){s.message='请填写新名称或完整目标路径';renderFileManager(s);return;}
-  var target=s.target.startsWith('/')?s.target:fileManagerChild(s,s.target),params={action:action,path:action==='mkdir'?target:fileManagerChild(s,selected.name)};
-  if(action==='copy'||action==='move')params.target=target;
-  s.busy=true;s.message='正在执行文件操作';renderFileManager(s);
-  var completed='';
-  try{var result=await fileManagerTask(s,params);completed=action==='trash'?'已保留到 '+result.path:'文件操作完成';s.message=completed;s.target='';}
-  catch(e){s.message=e.message;}finally{s.busy=false;if(fileManagerVisible(s))renderFileManager(s);}
-  if(completed&&fileManagerVisible(s)){await fileManagerLoad(s.path,0);s.message=completed;if(fileManagerVisible(s))renderFileManager(s);}
+  var s=fileManagerState();if(!s||s.busy)return;var picked=fileManagerSelected(s);if(action!=='mkdir'&&!picked.length)return;
+  if(action==='delete'&&!confirm('删除选中的 '+picked.length+' 项？文件夹及其中内容也会删除，无法恢复。'))return;
+  fileManagerBegin(s);
+  try{
+    var name,target,skipped=0;
+    if(action==='mkdir'||action==='rename'){name=await fileManagerName(action==='mkdir'?'新建文件夹':'改名',action==='rename'?picked[0].name:'');if(name===null){s.busy=false;s.cancellable=false;renderFileManager(s);return;}}
+    if(action==='copy'||action==='move'){target=await fileManagerChooseRemote(s,action==='copy'?'复制到':'移动到');if(target===null){s.busy=false;s.cancellable=false;renderFileManager(s);return;}}
+    if(action==='mkdir'){fileManagerStatus(s,'正在新建文件夹');await fileManagerTask(s,{action:'mkdir',path:fileManagerChild(s,name)});}
+    else if(action==='rename'){fileManagerStatus(s,'正在改名');await fileManagerTask(s,{action:'move',path:fileManagerChild(s,picked[0].name),target:fileManagerChild(s,name)});}
+    else{
+      var existing=target?await fileManagerAll(s,target):[];
+      for(var i=0;i<picked.length;i++){
+        fileManagerCheck(s);var e=picked[i],dst=target&&fileManagerChild({path:target},e.name),src=fileManagerChild(s,e.name),overwrite=false;
+        if(dst===src)throw Error('目标与源位置相同');
+        if(dst&&existing.some(function(v){return v.name===e.name;})){
+          var choice=await fileManagerConflict(s,e.name);if(choice==='cancel')throw Error('已取消');if(choice==='skip'){skipped++;continue;}
+          if(choice==='replace')overwrite=true;
+          else{var n=1;do{name=fileManagerAlternative(e.name,n++);}while(existing.some(function(v){return v.name===name;}));dst=fileManagerChild({path:target},name);}
+        }
+        fileManagerStatus(s,({copy:'正在复制',move:'正在移动',delete:'正在删除'})[action]+' · '+(i+1)+'/'+picked.length);
+        await fileManagerTask(s,Object.assign({action:action,path:src},dst?{target:dst,overwrite:overwrite}:{}));if(dst)existing.push({name:dst.split('/').pop()});
+      }
+    }
+    await fileManagerEnd(s,({mkdir:'文件夹已新建',rename:'已改名',copy:'复制完成',move:'移动完成',delete:'已删除'})[action]+(skipped?' · 已跳过 '+skipped+' 项':''));
+  }catch(e){await fileManagerEnd(s,'',e);}
 }
-function fileManagerTake(){var s=fileManagerState(),e=s&&s.entries[s.selected];if(!e||e.directory||s.busy)return;var r=FILE_RETURN[s.device_id]||(FILE_RETURN[s.device_id]={device_id:s.device_id,message:''});if(r.busy)return;r.path=fileManagerChild(s,e.name);r.task_id='';openReturnFile();}
+function fileManagerSend(){
+  var s=fileManagerState();if(!s||s.busy)return;
+  var directory=s.path,input=document.createElement('input');input.type='file';input.multiple=true;
+  input.onchange=function(){if(input.files.length)fileManagerSendBatch(s,Array.from(input.files),directory);};input.click();
+}
+async function fileManagerHash(){return (await import('/file-hash.js')).sha256.create();}
+async function fileManagerUpload(s,file,path,overwrite,onProgress){
+  var resumeKey='elf-file-upload:'+s.device_id+':'+file.name+':'+file.size+':'+file.lastModified,m,id=localStorage.getItem(resumeKey);
+  if(file.size>4*1024*1024*1024)throw Error('单个文件最大支持 4 GB');
+  if(id){try{m=(await fileApi('/api/elfremote/files/'+id)).file;}catch(e){if(/过期/.test(e.message))localStorage.removeItem(resumeKey);else throw e;}}
+  if(m&&m.state==='delivered')m=null;
+  if(!m){m=(await fileApi('/api/elfremote/files',{device_id:s.device_id,name:file.name,size:file.size})).file;localStorage.setItem(resumeKey,m.id);}
+  var hash=await fileManagerHash();
+  for(var i=0,offset=0;offset<file.size;i++,offset+=m.chunk_size){
+    fileManagerCheck(s);var bytes=new Uint8Array(await file.slice(offset,offset+m.chunk_size).arrayBuffer());hash.update(bytes);
+    var sha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),function(b){return b.toString(16).padStart(2,'0');}).join('');
+    if(m.parts[i]&&m.parts[i].sha256!==sha)throw Error('续传文件与原文件内容不同');
+    if(!m.parts[i]){
+      for(var attempt=0;;attempt++){
+        fileManagerCheck(s);s.abort=new AbortController();
+        try{var r=await fetch('/api/elfremote/files/'+m.id+'/parts/'+i+'?sha256='+sha,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:bytes,signal:s.abort.signal}),x=await r.json();if(!r.ok||!x.ok)throw Error(x.msg||'文件上传失败');break;}
+        catch(e){if(attempt>=2||s.cancelled)throw e;await new Promise(function(resolve){setTimeout(resolve,1000*(attempt+1));});}finally{s.abort=null;}
+      }
+    }
+    onProgress(Math.min(file.size,offset+bytes.length));
+  }
+  fileManagerCheck(s);var completeHash=Array.from(hash.digest(),function(b){return b.toString(16).padStart(2,'0');}).join('');
+  await fileApi('/api/elfremote/files/'+m.id+'/complete',{sha256:completeHash});
+  var task=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'send_file',id:'file-'+crypto.randomUUID(),params:{transfer_id:m.id,path:path,allow_cellular:true,overwrite:overwrite}});
+  await fileManagerWait(s,task.task.id,function(t){var p=String(t.detail||'').match(/(\d+)%/);if(p)onProgress(file.size+file.size*Math.min(100,Number(p[1]))/100);});
+  localStorage.removeItem(resumeKey);
+}
+async function fileManagerSendBatch(s,files,directory){
+  if(s.busy)return;fileManagerBegin(s);fileManagerStatus(s,'正在准备发送');
+  try{
+    var existing=await fileManagerAll(s,directory),total=files.reduce(function(n,f){return n+f.size*2;},0),done=0,skipped=0;
+    for(var i=0;i<files.length;i++){
+      fileManagerCheck(s);var file=files[i],name=file.name,overwrite=false;
+      if(existing.some(function(e){return e.name===name;})){
+        var choice=await fileManagerConflict(s,name);if(choice==='cancel')throw Error('已取消');if(choice==='skip'){skipped++;done+=file.size*2;continue;}
+        if(choice==='replace')overwrite=true;
+        else{var n=1;do{name=fileManagerAlternative(file.name,n++);}while(existing.some(function(e){return e.name===name;}));}
+      }
+      await fileManagerUpload(s,file,fileManagerChild({path:directory},name),overwrite,function(bytes){var p=Math.min(99,Math.floor((done+bytes)*100/Math.max(1,total)));fileManagerStatus(s,'正在发送 '+p+'% · '+(i+1)+'/'+files.length,p);});
+      done+=file.size*2;existing.push({name:name});
+    }
+    await fileManagerEnd(s,'发送完成'+(skipped?' · 已跳过 '+skipped+' 项':''));
+  }catch(e){await fileManagerEnd(s,'',s.cancelled?Error('已取消'):e);}
+}
+function fileManagerLocalName(name){if(!name||name==='.'||name==='..'||/[\\/\x00-\x1f]/.test(name))throw Error('文件名无法保存到本机：'+name);return name;}
+async function fileManagerCollect(s,path,entries,prefix,items,dirs,seen){
+  for(var e of entries){fileManagerCheck(s);var name=fileManagerLocalName(e.name),remote=fileManagerChild({path:path},name),parts=prefix.concat(name);
+    if(e.link)throw Error('取回暂不跟随符号链接：'+e.name);
+    if(e.directory){if(prefix.length>=64||seen.has(remote))throw Error('目录层级过深或存在循环');seen.add(remote);dirs.push(parts);await fileManagerCollect(s,remote,await fileManagerAll(s,remote),parts,items,dirs,seen);}
+    else{items.push({path:remote,parts:parts,bytes:e.bytes});}
+  }
+}
+async function fileManagerLocalDirectory(root,parts){var dir=root;for(var part of parts)dir=await dir.getDirectoryHandle(fileManagerLocalName(part),{create:true});return dir;}
+async function fileManagerDownload(s,item,root,progress){
+  var dir=await fileManagerLocalDirectory(root,item.parts.slice(0,-1)),name=item.parts.at(-1),handle,exists=false;
+  try{handle=await dir.getFileHandle(name);exists=true;}catch(e){if(e.name!=='NotFoundError')throw e;}
+  if(exists){var choice=await fileManagerConflict(s,name);if(choice==='cancel')throw Error('已取消');if(choice==='skip')return false;if(choice==='rename'){
+    for(var n=1;;n++){name=fileManagerAlternative(item.parts.at(-1),n);try{await dir.getFileHandle(name);}catch(e){if(e.name!=='NotFoundError')throw e;break;}}
+  }}
+  fileManagerCheck(s);
+    var task=await fileApi('/api/elfremote/task',{device_id:s.device_id,type:'get_file',id:'return-'+crypto.randomUUID(),params:{path:item.path,allow_cellular:true}});
+  await fileManagerWait(s,task.task.id,function(t){var p=String(t.detail||'').match(/(\d+)%/);if(p)progress(item.bytes*Math.min(100,Number(p[1]))/100);});
+  var query=new URLSearchParams({device_id:s.device_id,task_id:task.task.id}),meta=(await fileApi('/api/elfremote/file-return?'+query)).file;
+  var hash=await fileManagerHash();
+  handle=await dir.getFileHandle(name,{create:true});var writer=await handle.createWritable(),written=0,reader;
+  try{
+    s.abort=new AbortController();var response=await fetch('/api/elfremote/file-return?'+query+'&download=1',{signal:s.abort.signal});if(!response.ok)throw Error('下载失败 HTTP '+response.status);
+    reader=response.body.getReader();
+    for(;;){fileManagerCheck(s);var chunk=await reader.read();if(chunk.done)break;hash.update(chunk.value);await writer.write(chunk.value);written+=chunk.value.length;progress(item.bytes+item.bytes*written/Math.max(1,meta.size));}
+    var sum=Array.from(hash.digest(),function(b){return b.toString(16).padStart(2,'0');}).join('');
+    if(written!==meta.size||sum!==meta.sha256)throw Error('文件校验失败，未保存不完整内容');
+    await writer.close();return true;
+  }catch(e){await writer.abort().catch(function(){});throw e;}
+  finally{if(reader)await reader.cancel().catch(function(){});s.abort=null;}
+}
+async function fileManagerTake(){
+  var s=fileManagerState(),picked=s&&fileManagerSelected(s);if(!s||s.busy||!picked.length)return;
+  if(!window.showDirectoryPicker){fileManagerStatus(s,'请使用 Chrome 或 Edge 选择本机保存目录');return;}
+  // 必须直接响应点击请求本机目录，不能先请求服务器而丢失浏览器用户手势。
+  var root,directory=s.path;
+  try{var selection=window.showDirectoryPicker({id:'elfremote-files',mode:'readwrite'});s.busy=true;renderFileManager(s);root=await selection;}catch(e){s.busy=false;if(e.name!=='AbortError'){s.error=true;s.message=e.message;}renderFileManager(s);return;}
+  fileManagerBegin(s);fileManagerStatus(s,'正在准备取回');
+  try{
+    var items=[],dirs=[];await fileManagerCollect(s,directory,picked,[],items,dirs,new Set());
+    for(var parts of dirs)await fileManagerLocalDirectory(root,parts);
+    var total=items.reduce(function(n,e){return n+e.bytes*2;},0),done=0,skipped=0;
+    for(var i=0;i<items.length;i++){
+      fileManagerCheck(s);var item=items[i];
+      var saved=await fileManagerDownload(s,item,root,function(bytes){var p=Math.min(99,Math.floor((done+bytes)*100/Math.max(1,total)));fileManagerStatus(s,'正在取回 '+p+'% · '+(i+1)+'/'+items.length,p);});
+      done+=item.bytes*2;if(!saved)skipped++;
+    }
+    await fileManagerEnd(s,'取回完成'+(skipped?' · 已跳过 '+skipped+' 项':''));
+  }catch(e){await fileManagerEnd(s,'',s.cancelled?Error('已取消'):e);}
+}
+
 async function startReturnFile(){
   var s=FILE_RETURN[FILE_VIEW];if(!s||s.busy)return;s.path=$('returnFilePath').value.trim();s.cellular=$('returnFileCell').checked;
   if(!s.path.startsWith('/')||s.path.endsWith('/')){$('returnFileStatus').textContent='请填写完整文件路径';return;}

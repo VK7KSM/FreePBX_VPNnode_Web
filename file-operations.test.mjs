@@ -28,3 +28,14 @@ test('文件管理独立能力门、鉴权、回执与同号重试',async()=>{
   assert.equal(result.task.result.text,text);
   assert.equal((await (await call('/api/elfremote/task',task)).json()).duplicate,true);
 });
+
+test('真正删除仅下发给声明能力的客户端，不以旧trash冒充删除',async()=>{
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'test',enabled:true,managed_file_operations:true}]});
+  const cookie=await login(f),job={device_id:'test',id:'delete-a',type:'file_manage',params:{action:'delete',path:'/sdcard/fixture'}};
+  const call=()=>worker.fetch(request('/api/elfremote/task','POST',job,cookie),f.env);
+  assert.equal((await call()).status,409);
+  f.data.get('remote_devices')[0].managed_file_delete=true;
+  assert.equal((await call()).status,200);
+  assert.equal(f.data.get('remote_devices')[0].task.params.action,'delete');
+  assert.equal(fileOperationParams({action:'copy',path:'/source',target:'/target',overwrite:true}).overwrite,true);
+});
