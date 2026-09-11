@@ -5,10 +5,11 @@ import android.content.*;
 import org.json.*;
 import java.util.*;
 
-/** 最近收件在本机持久保存；更新后仍可查看，不依赖再次连接管理网页。 */
+/** 文件收发状态在本机持久保存，通知与主页使用相同提示。 */
 final class FileInbox {
     private static android.os.Handler notifications;
     private static Runnable pendingNotification;
+    private static Runnable expiryNotification;
     static JSONArray merge(JSONArray entries,JSONObject entry)throws Exception{
         ArrayList<JSONObject> rows=new ArrayList<>();boolean newer=false;
         for(int i=0;i<entries.length();i++){
@@ -27,17 +28,42 @@ final class FileInbox {
     static synchronized void save(Context c,JSONObject entry)throws Exception{
         if(!c.getSharedPreferences("file-inbox",0).edit().putString("entries",merge(read(c),entry).toString()).commit())throw new java.io.IOException("收件记录保存失败");
     }
-    static void progress(Context c,String id,String path,String state,String detail,long bytes)throws Exception{
-        JSONObject entry=new JSONObject().put("id",id).put("path",path).put("state",state).put("detail",detail)
-                .put("bytes",bytes).put("at",System.currentTimeMillis());
-        save(c,entry);
-        queueNotification(c.getApplicationContext(),entry);
+    static void progress(Context c,String id,String path,String direction,String state,String detail,long bytes,int percent,long expires){
+        try{
+            JSONObject entry=new JSONObject().put("id",id).put("path",path).put("direction",direction)
+                    .put("state",state).put("detail",detail).put("percent",percent).put("expires_at",expires)
+                    .put("bytes",bytes).put("at",System.currentTimeMillis());
+            save(c,entry);
+            queueNotification(c.getApplicationContext(),entry);
+        }catch(Exception error){RuntimeLog.error("file_status_pending",error);}
     }
     private static synchronized void queueNotification(Context c,JSONObject entry){
         if(notifications==null)notifications=new android.os.Handler(android.os.Looper.getMainLooper());
         if(pendingNotification!=null)notifications.removeCallbacks(pendingNotification);
         pendingNotification=()->showNotification(c,entry);
         notifications.postDelayed(pendingNotification,500);
+        if(expiryNotification!=null)notifications.removeCallbacks(expiryNotification);
+        // 每次到期后重算，保证双向并发时较早完成的提示也准时消失。
+        expiryNotification=()->{showNotification(c,entry);scheduleExpiry(c,entry);};
+        scheduleExpiry(c,entry);
+    }
+    private static synchronized void scheduleExpiry(Context c,JSONObject entry){
+        long now=System.currentTimeMillis(),next=Long.MAX_VALUE;
+        JSONArray rows=read(c);
+        for(int i=0;i<rows.length();i++){
+            JSONObject row=rows.optJSONObject(i);if(row==null||!row.has("direction"))continue;
+            long end=TaskReceipts.terminal(row.optString("state"))?row.optLong("at")+FileTransferStatus.RESULT_MS:row.optLong("expires_at");
+            if(end>now)next=Math.min(next,end);
+        }
+        if(next!=Long.MAX_VALUE)notifications.postDelayed(expiryNotification,next-now+50);
+    }
+    static synchronized String notificationText(Context c){
+        // 服务重建时内存计时器已丢失，仍须清除持久记录中尚未到期的完成提示。
+        if(notifications==null)notifications=new android.os.Handler(android.os.Looper.getMainLooper());
+        if(expiryNotification!=null)notifications.removeCallbacks(expiryNotification);
+        expiryNotification=()->showNotification(c,null);
+        scheduleExpiry(c,null);
+        return FileTransferStatus.text(read(c),System.currentTimeMillis());
     }
     private static void showNotification(Context c,JSONObject entry){
         try{

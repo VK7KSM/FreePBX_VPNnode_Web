@@ -17,6 +17,7 @@ final class FileTransfer {
     private volatile boolean busy,cancelled,stopped;
     private String current="";
     private JSONObject currentOffer;
+    private long localProgressAt,localDone;
     private volatile HttpURLConnection connection;
     FileTransfer(Context context,Reporter reporter,TaskReceipts receipts){this.context=context;this.reporter=reporter;this.receipts=receipts;}
     synchronized void receive(JSONObject offer,String device,String token)throws Exception {
@@ -27,12 +28,12 @@ final class FileTransfer {
         if(offer.has("local_device")&&!device.equals(offer.optString("local_device")))throw new IOException("文件任务属于旧设备实例");
         offer.put("local_device",device);RescueFiles.write(active,offer.toString());
         current=id;cancelled=offer.optBoolean("cancel_requested");busy=true;
-        currentOffer=offer;
+        currentOffer=offer;localProgressAt=0;localDone=0;
         new Thread(()->{
             File dir=new File(context.getFilesDir(),"file-transfer/"+id);
             try {
                 JSONObject receipt=receipts.read(id);
-                if(receipt!=null){if(!receipt.optBoolean("acknowledged"))progress(id,receipt.getString("state"),receipt.optString("detail"),receipt.optJSONObject("result"));active.delete();return;}
+                if(receipt!=null){if(!receipt.optBoolean("acknowledged"))reporter.send(id,receipt.getString("state"),receipt.optString("detail"),receipt.optJSONObject("result"));active.delete();return;}
                 if(!dir.isDirectory()&&!dir.mkdirs())throw new IOException("无法创建接收目录");
                 JSONObject p=offer.getJSONObject("params");
                 if(offer.optLong("expires_at")<=System.currentTimeMillis())throw new IOException("文件接收任务已过期");
@@ -61,6 +62,7 @@ final class FileTransfer {
                             if(part.getLong("bytes")!=bytes)throw new IOException("分块长度不匹配");
                             if(have<bytes)download(base+"&part="+i,token,network,p.optBoolean("allow_cellular"),out,begin,have,bytes,offer);
                             if(!segmentHash(out,begin,bytes).equals(part.getString("sha256"))){out.setLength(begin);throw new IOException("分块校验失败，稍后重新接收");}
+                            localDone=begin+bytes;
                             if(System.currentTimeMillis()-lastProgress>30000){progress(id,"running","设备接收 "+((begin+bytes)*100/Math.max(1,size))+"%",null);lastProgress=System.currentTimeMillis();}
                         }
                         out.getFD().sync();
@@ -82,7 +84,7 @@ final class FileTransfer {
                 if(!"committed".equals(core.optString("action")))throw new Permanent(core.optString("error","文件保存中断，未自动重试覆盖"));
                 JSONObject result=new JSONObject().put("action","committed").put("stage","file").put("bytes",core.getLong("bytes"))
                         .put("sha256",core.getString("sha256")).put("text",core.optString("output"));
-                progress(id,"success","文件已保存",result);active.delete();payload.delete();dir.delete();
+                progress(id,"success","接收完成",result);active.delete();payload.delete();dir.delete();
             }catch(Paused pause){
                 try{progress(id,"running","已暂停，联网后继续接收",null);}catch(Exception e){RuntimeLog.error("file_pause_report_pending",e);}
                 new WakeScheduler(context).schedule("file-transfer",15*60*1000L);
@@ -109,8 +111,16 @@ final class FileTransfer {
     }
     private void progress(String id,String state,String detail,JSONObject result)throws Exception{
         JSONObject p=currentOffer.getJSONObject("params");
-        FileInbox.progress(context,id,p.optString("path"),state,detail,p.optLong("size"));
+        FileInbox.progress(context,id,p.optString("path"),"receive",state,detail,p.optLong("size"),
+                FileTransferStatus.percent(localDone,p.optLong("size")),currentOffer.optLong("expires_at"));
         reporter.send(id,state,detail,result);
+    }
+    private void localProgress(long done){
+        localDone=done;long now=android.os.SystemClock.elapsedRealtime();
+        if(now-localProgressAt<1000)return;localProgressAt=now;
+        JSONObject p=currentOffer.optJSONObject("params");
+        FileInbox.progress(context,current,p.optString("path"),"receive","running","正在接收文件",p.optLong("size"),
+                FileTransferStatus.percent(done,p.optLong("size")),currentOffer.optLong("expires_at"));
     }
     private void check(JSONObject offer)throws Exception{if(stopped)throw new IOException("客户端正在退出");if(cancelled)throw new IOException("文件接收已停止");if(System.currentTimeMillis()>=offer.getLong("expires_at"))throw new IOException("文件接收任务已过期");}
     private HttpURLConnection open(String url,String token,Network n)throws Exception{
@@ -136,7 +146,7 @@ final class FileTransfer {
             try(InputStream in=c.getInputStream()){
                 byte[] buf=new byte[65536];int n;
                 while((n=in.read(buf))!=-1){check(offer);if(!network.equals(allowedNetwork(cellular)))throw new Paused();
-                    received+=n;if(received>bytes)throw new IOException("分块超过预期长度");out.write(buf,0,n);}
+                    received+=n;if(received>bytes)throw new IOException("分块超过预期长度");out.write(buf,0,n);localProgress(begin+received);}
             }
             if(received!=bytes)throw new IOException("分块下载中断");
         }finally{out.getFD().sync();c.disconnect();connection=null;}

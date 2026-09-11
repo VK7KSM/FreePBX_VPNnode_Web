@@ -1616,8 +1616,8 @@ public final class ReportService extends Service {
             if (nm != null) nm.createNotificationChannel(ch);
         }
         String text = notifyText();
-        JSONObject file=FileInbox.unread(this);
-        if(file!=null)text+=" · "+file.optString("detail")+" · "+new java.io.File(file.optString("path")).getName();
+        String file=FileInbox.notificationText(this);
+        if(!file.isEmpty())text+=" · "+file.replace('\n',' ');
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
@@ -1629,8 +1629,8 @@ public final class ReportService extends Service {
                 .setDefaults(0)
                 .setSound(null)
                 .setPriority(Notification.PRIORITY_MIN);
-        if(file!=null){
-            Intent intent=new Intent(this,MainActivity.class).putExtra("show_files",true).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if(!file.isEmpty()){
+            Intent intent=new Intent(this,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
             b.setContentIntent(android.app.PendingIntent.getActivity(this,4,intent,
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE));
             b.setStyle(new Notification.BigTextStyle().bigText(text));
