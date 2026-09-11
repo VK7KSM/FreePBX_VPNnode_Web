@@ -19,6 +19,7 @@ on:
       - "admin-session.js"
       - "location-history.js"
       - "device-identity.js"
+      - "release-channels.js"
       - "traffic.js"
       - "daily-traffic.js"
       - "push-control.js"
