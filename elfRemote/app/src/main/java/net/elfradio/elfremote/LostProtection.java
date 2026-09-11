@@ -91,7 +91,11 @@ final class LostProtection implements Closeable {
                 if(password.isEmpty())throw new IllegalArgumentException("lost-password-required");
                 if(system.secure()){
                     String check=existing.isEmpty()?password:existing;
-                    if(!system.verify(check))throw new IllegalArgumentException("lost-current-password-required");
+                    if(!system.verify(check)){
+                        String previous=s.optString("pending_old_credential");
+                        if(previous.isEmpty()||!system.verify(previous))throw new IllegalArgumentException("lost-current-password-required");
+                        existing=previous;
+                    }
                     if(existing.isEmpty())existing=check;
                 }
                 if(!s.has("original_owner")){
@@ -102,13 +106,15 @@ final class LostProtection implements Closeable {
                     if(system.secure())s.put("original_credential",existing);
                 }
                 // 先保存恢复材料；系统调用中断也不能丢掉已设置的密码。
-                s.put("credential",password).put("state","pending");RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
+                s.put("credential",password).put("pending_old_credential",existing).put("state","pending");RescueFiles.write(FILE,s.toString());android.system.Os.chmod(FILE.getPath(),0600);
                 system.decryptSetting("0");
                 system.password(password,existing);if(!system.secure()||!system.verify(password))throw new IllegalStateException("lost-system-password-failed");
+                s.remove("pending_old_credential");
                 system.owner(new JSONObject().put("enabled",true).put("message",input.getString("message")));system.lock();
                 if(!system.locked())throw new IllegalStateException("lost-system-lock-pending");
             }else{
                 String password=s.optString("credential");
+                if(!password.isEmpty()&&system.secure()&&!system.verify(password)&&!s.optString("pending_old_credential").isEmpty()&&system.verify(s.optString("pending_old_credential")))password=s.optString("pending_old_credential");
                 if(!password.isEmpty()&&system.secure()){
                     if(!system.verify(password)){
                         if(!req.optBoolean("local_unlocked")||system.locked())throw new IllegalStateException("lost-current-password-changed");
@@ -122,7 +128,7 @@ final class LostProtection implements Closeable {
                     system.disabled(s.optBoolean("original_lock_disabled"));
                     system.decryptSetting(s.has("original_decrypt_setting")?s.getString("original_decrypt_setting"):null);
                 }
-                for(String key:new String[]{"credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled"})s.remove(key);
+                for(String key:new String[]{"credential","pending_old_credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled"})s.remove(key);
             }
             boolean wasArmed=s.optBoolean("auto_wipe_enabled");
             LostTimer.arm(s,active&&input.optBoolean("auto_wipe_enabled"),input.optInt("timeout_hours",24),req.optBoolean("paired",true),System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
