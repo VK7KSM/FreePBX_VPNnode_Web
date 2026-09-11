@@ -22,6 +22,14 @@ final class LostProtection implements Closeable {
     private boolean closed;
     interface Edit {void apply(JSONObject s)throws Exception;}
     static String boot()throws Exception{return RescueFiles.read(new File("/proc/sys/kernel/random/boot_id"),128).trim();}
+    static void recoverAttempt(JSONObject s)throws Exception {
+        LostWipeAttempt.recover(s,SystemClock.elapsedRealtime(),boot(),(ownerBoot,pid,start)->{
+            if(!boot().equals(ownerBoot))return false;
+            File proc=new File("/proc/"+pid);if(!proc.exists())return false;
+            // 读取失败不等于进程已死，不能据此宣布可取消。
+            return start.equals(LostWipeAttempt.processStart(RescueFiles.read(new File(proc,"stat"),4096)));
+        });
+    }
     static JSONObject edit(Edit edit)throws Exception {
         synchronized(MUTEX){
             File parent=FILE.getParentFile();if(!parent.isDirectory()&&!parent.mkdir())throw new IOException("lost-state-directory-failed");
@@ -68,6 +76,7 @@ final class LostProtection implements Closeable {
             if(!id.matches("[A-Za-z0-9-]{1,64}")||expiry<=System.currentTimeMillis()||expiry>System.currentTimeMillis()+120000||!"擦除数据".equals(req.optString("phrase")))throw new IllegalArgumentException("lost-wipe-confirmation-expired");
             wipeMethod();
             return snapshot(context,edit(s->{
+                recoverAttempt(s);
                 if(id.equals(s.optString("last_wipe_task")))return;
                 LostRevision.require(s,req);
                 if("started".equals(s.optString("wipe_state")))throw new IllegalStateException("lost-wipe-already-started");
@@ -81,6 +90,7 @@ final class LostProtection implements Closeable {
         if(!task.matches("[A-Za-z0-9-]{1,64}"))throw new IllegalArgumentException("lost-invalid-task");
         SystemLock system=new SystemLock(context);
         JSONObject result=edit(s->{
+            recoverAttempt(s);
             if(task.equals(s.optString("last_config_task")))return;
             if("started".equals(s.optString("wipe_state")))throw new IllegalStateException("lost-wipe-already-started");
             boolean active=input.getBoolean("enabled");
@@ -154,6 +164,8 @@ final class LostProtection implements Closeable {
         if(closed)return;
         try{
             JSONObject s=edit(value->{
+                recoverAttempt(value);
+                LostWipeAttempt.retry(value,SystemClock.elapsedRealtime(),boot());
                 LostTimer.checkpoint(value,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot());
                 if(value.optBoolean("enabled")&&!value.has("restore_phase")&&!"pending".equals(value.optString("state")))LostDebugGuard.restrict(value,()->persist(value));
             });
@@ -172,13 +184,18 @@ final class LostProtection implements Closeable {
                 if(manual&&(current.optLong("manual_elapsed")>SystemClock.elapsedRealtime()||!boot().equals(current.optString("manual_boot"))))return;
                 if(manual&&current.optLong("manual_expiry")<=System.currentTimeMillis()){current.remove("manual_task");current.put("wipe_state","failed");return;}
                 if(!manual&&LostTimer.remaining(current,System.currentTimeMillis(),SystemClock.elapsedRealtime(),boot())!=0)return;
-                current.put("wipe_state","started").put("wipe_started_at",System.currentTimeMillis());start[0]=true;
+                LostWipeAttempt.started(current,!manual,boot(),android.os.Process.myPid(),LostWipeAttempt.processStart(RescueFiles.read(new File("/proc/self/stat"),4096)));
+                current.put("wipe_started_at",System.currentTimeMillis());start[0]=true;
             });
             if(!start[0])return;
             RuntimeLog.event("lost-wipe-started");
             try{wake.hold("lost-wipe",120000);wipeMethod().invoke(null,context,false,"elfRemote 数据清除",true);}
-            catch(Exception error){edit(current->{current.put("wipe_state","failed");});RuntimeLog.event("lost-wipe-failed");}
-            finally{wake.release("lost-wipe");}
+            catch(Exception error){RuntimeLog.event("lost-wipe-failed");}
+            finally{
+                // 正常清除应终止当前系统；若调用返回或抛错，不能永久卡在已开始。
+                edit(current->{LostWipeAttempt.failed(current,SystemClock.elapsedRealtime(),boot());});
+                wake.release("lost-wipe");
+            }
         }catch(Exception error){
             RuntimeLog.event("lost-guard-state-unavailable");
             long retry=Math.min(60000,1000L<<Math.min(6,failures++));nextCheck=SystemClock.elapsedRealtime()+retry;
