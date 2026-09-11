@@ -4,6 +4,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class MovementReportsTest {
+    @Test public void ordinaryOfflineHistoryCannotSuppressNewThreeKilometerMovement()throws Exception{
+        java.nio.file.Path dir=java.nio.file.Files.createTempDirectory("movement-backlog");try{
+            MovementReports r=new MovementReports(dir.resolve("state.json").toFile());StatusOutbox box=new StatusOutbox(dir.resolve("outbox").toFile(),16);
+            r.acknowledged(report("baseline",0,NOW-10000));
+            box.add(report("old-wifi",0,NOW-5000).put("network","wifi"));
+            JSONObject moved=report("moved",5000,NOW);
+            assertEquals("moved",r.prepare(box,moved,NOW));assertEquals("movement",moved.getJSONObject("report_event").getString("type"));
+            assertEquals(2,box.entries().length);
+        }finally{cleanup(dir);}
+    }
     private static final long NOW=1788900000000L;
     private static String at(long time){java.text.SimpleDateFormat f=new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",java.util.Locale.US);f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));return f.format(new java.util.Date(time));}
     private static JSONObject gps(double meters,long time)throws Exception{return new JSONObject().put("lat",Math.toDegrees(meters/6371000)).put("lng",0).put("acc_m",20).put("provider","gps").put("at",at(time));}

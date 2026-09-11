@@ -4,6 +4,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DailyLocationTest {
+    @org.junit.Test public void almostExpiredGpsCannotPostponeFullSamplingAgain() {
+        long now=2000000000000L;
+        assertTrue(DailyLocation.recent(now-899000000000L,now));
+        assertFalse(DailyLocation.reusableForFullSample(now-899000000000L,now));
+        assertTrue(DailyLocation.reusableForFullSample(now-30000000000L,now));
+        assertFalse(DailyLocation.reusableForFullSample(now+1,now));
+    }
     @Test public void repeatedShortMovementTimeoutsCannotPostponeFullReportSampling() {
         long full = 1000L;
         for (long now = 301000L; now <= 3601000L; now += 300000L)

@@ -35,13 +35,20 @@ public final class RadioLocation {
     }
 
     static JSONObject capture(Context context) {
+        JSONObject value=null;
         try {
-            JSONObject value=collect(context,false);
-            if(value.optJSONArray("wifiAccessPoints").length()>=2 || value.optJSONArray("cellTowers").length()>0)return value;
+            value=collect(context,false);
+            WifiManager wifi=(WifiManager)context.getSystemService(Context.WIFI_SERVICE);
+            if(!needsCoreRefresh(wifi!=null&&wifi.isWifiEnabled(),value.optJSONArray("wifiAccessPoints").length(),value.optJSONArray("cellTowers").length()))return value;
             // 复用已就绪的独立维护核心，不在上报过程中弹出新的su授权。
             JSONObject fromCore=CoreClient.request("/radio-snapshot",new JSONObject(),9000);
             return fromCore==null?value:fromCore;
-        } catch(Exception error){RuntimeLog.error("radio_location_unavailable",error);return null;}
+        } catch(Exception error){RuntimeLog.error("radio_location_unavailable",error);return value;}
+    }
+
+    static boolean needsCoreRefresh(boolean wifiEnabled,int accessPoints,int cells) {
+        // 可用小区不应阻止开启的Wi-Fi刷新扫描，否则无卡设备也会退回公里级基站位置。
+        return accessPoints<2 && (wifiEnabled || cells==0);
     }
 
     static JSONObject coreCapture() throws Exception {

@@ -27,6 +27,7 @@ final class StatusReporter {
         int sent = 0;
         File[] entries = outbox.entries();
         {
+            boolean promoted=false;
             for (int i = 0; i < entries.length; i++) {
                 JSONObject entry=outbox.read(entries[i]);
                 if ((priorityRequest!=null&&priorityRequest.equals(entry.optString("status_request_id")))
@@ -36,8 +37,14 @@ final class StatusReporter {
                     File urgent = entries[i];
                     System.arraycopy(entries, 0, entries, 1, i);
                     entries[0] = urgent;
+                    promoted=true;
                     break;
                 }
+            }
+            // 网络恢复时先送最新已采集状态，第二份仍补最早历史；不重新采样或改写原件。
+            if(!promoted&&priorityRequest==null&&priorityReport==null&&entries.length>1){
+                File latest=entries[entries.length-1];
+                System.arraycopy(entries,0,entries,1,entries.length-1);entries[0]=latest;
             }
         }
         for (File file : entries) {

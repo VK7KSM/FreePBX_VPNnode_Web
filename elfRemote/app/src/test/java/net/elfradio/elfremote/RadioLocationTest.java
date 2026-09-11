@@ -3,6 +3,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class RadioLocationTest {
+    @Test public void cellDoesNotSuppressEnabledWifiRefresh() {
+        assertTrue(RadioLocation.needsCoreRefresh(true,0,1));
+        assertTrue(RadioLocation.needsCoreRefresh(true,1,1));
+        assertFalse(RadioLocation.needsCoreRefresh(true,2,1));
+        assertFalse(RadioLocation.needsCoreRefresh(false,0,1));
+        assertTrue(RadioLocation.needsCoreRefresh(false,0,0));
+    }
     @Test public void rejectRandomMulticastPlaceholderAndReservedAccessPoints() {
         assertTrue(RadioLocation.usableMac("10:11:22:33:44:55"));
         for(String mac:new String[]{"02:00:00:00:00:00","ff:ff:ff:ff:ff:ff","00:00:00:00:00:00","00:00:5e:00:01:02","not-a-mac"})assertFalse(RadioLocation.usableMac(mac));

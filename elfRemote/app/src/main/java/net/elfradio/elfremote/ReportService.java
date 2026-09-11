@@ -39,6 +39,7 @@ public final class ReportService extends Service {
     private WakeScheduler wake;
     private String lastNotifyText = "";
     private int reportFailures;
+    private int statusDrainFailures;
     private PushConnection push;
     private TrafficMeter traffic;
     private DailyLocation dailyLocation;
@@ -99,9 +100,8 @@ public final class ReportService extends Service {
             if (BuildConfig.STATUS_ONLY && store.registered()) {
                 delay = "wifi".equals(networkType()) || "ethernet".equals(networkType())
                         || push == null || !push.connected() ? 900000L : 3600000L;
-                if (statusOutbox().entries().length > 0) delay = 60000L;
             }
-            if (BuildConfig.STATUS_ONLY && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
+            if (BuildConfig.STATUS_ONLY && !store.registered() && reportFailures > 0) delay = StatusReporter.retryDelay(60000L, reportFailures);
             RuntimeLog.event("next_report delay_ms=" + delay);
             if (worker != null) {
                 scheduleReport(delay);
@@ -214,6 +214,7 @@ public final class ReportService extends Service {
                 try {
                     RuntimeLog.event("wake_alarm key=" + key + " queue_ms=" + Math.max(0, android.os.SystemClock.elapsedRealtime()-intent.getLongExtra("received_elapsed", android.os.SystemClock.elapsedRealtime())));
                     if ("report".equals(key)) loop.run();
+                    else if ("status-drain".equals(key)) drainStatus();
                     else if ("file-transfer".equals(key)) resumeFileTransfer();
                     else if("report-photo".equals(key)&&reportPhotos!=null)reportPhotos.resume();
                     else if("movement".equals(key))checkMovement();
@@ -269,6 +270,8 @@ public final class ReportService extends Service {
         if (worker != null) worker.removeCallbacks(networkReport);
         WakeScheduler.release("network-change");
         if (wake != null) wake.cancel("report");
+        if (wake != null) wake.cancel("status-drain");
+        WakeScheduler.release("status-drain");
         WakeScheduler.release("report");
         WakeScheduler.release("notice");
         if (worker != null && push != null) worker.post(push::close);
@@ -536,8 +539,7 @@ public final class ReportService extends Service {
             flushStatus(outbox, requestId);
             if (worker != null) {
                 worker.removeCallbacks(loop);
-                long delay = outbox.entries().length > 0 ? 60000L
-                        : ("wifi".equals(networkType()) || "ethernet".equals(networkType()) || !push.connected() ? 900000L : 3600000L);
+                long delay = "wifi".equals(networkType()) || "ethernet".equals(networkType()) || !push.connected() ? 900000L : 3600000L;
                 scheduleReport(delay);
                 RuntimeLog.event("requested_report_next delay_ms=" + delay);
             }
@@ -546,10 +548,6 @@ public final class ReportService extends Service {
             RuntimeLog.error("push_report_pending", error);
             healAfterReportFailure();
             reportFailures = Math.min(10, reportFailures + 1);
-            if (worker != null) {
-                worker.removeCallbacks(loop);
-                scheduleReport(StatusReporter.retryDelay(60000L, reportFailures));
-            }
         }
     }
 
@@ -557,7 +555,7 @@ public final class ReportService extends Service {
         if (push != null) push.ensure();
         StatusOutbox outbox = statusOutbox();
         String urgent=queueBatteryReport(outbox);
-        if(urgent==null)outbox.add(statusBody(null));
+        if(urgent==null){JSONObject current=statusBody(null);outbox.add(current);urgent=current.getString("report_id");}
         RuntimeLog.event("status_queued network=" + networkType() + " count=" + outbox.entries().length + " log_failed=" + RuntimeLog.failed());
         flushStatus(outbox, null,urgent);
     }
@@ -580,9 +578,8 @@ public final class ReportService extends Service {
             WakeScheduler.hold(this,"battery-report",45000L);
             StatusOutbox outbox=statusOutbox();String urgent=queueBatteryReport(outbox);
             if(urgent!=null)flushStatus(outbox,null,urgent);
-            scheduleReport(outbox.entries().length>0?60000L:
-                    ("cellular".equals(networkType())&&push!=null&&push.connected()?3600000L:900000L));
-        }catch(Exception error){RuntimeLog.error("battery_report_pending",error);scheduleReport(60000L);}
+            scheduleReport("cellular".equals(networkType())&&push!=null&&push.connected()?3600000L:900000L);
+        }catch(Exception error){RuntimeLog.error("battery_report_pending",error);scheduleStatusDrain();}
         finally{WakeScheduler.release("battery-report");}
     }
 
@@ -598,9 +595,9 @@ public final class ReportService extends Service {
             try{
                 if(destroyed||!"cellular".equals(networkType()))return;
                 StatusOutbox outbox=statusOutbox();String id=movementReports.prepare(outbox,statusBody(null),System.currentTimeMillis());
-                if(id!=null){RuntimeLog.event("movement_report_queued");flushStatus(outbox,null,id);scheduleReport(outbox.entries().length>0?60000L:(push!=null&&push.connected()?3600000L:900000L));}
+                if(id!=null){RuntimeLog.event("movement_report_queued");flushStatus(outbox,null,id);scheduleReport(push!=null&&push.connected()?3600000L:900000L);}
                 else RuntimeLog.event("movement_report_not_due");
-            }catch(Exception error){RuntimeLog.error("movement_report_pending",error);scheduleReport(60000L);}
+            }catch(Exception error){RuntimeLog.error("movement_report_pending",error);scheduleStatusDrain();}
             finally{movementSampling=false;WakeScheduler.release("movement");scheduleMovement();}
         });
     }
@@ -609,6 +606,32 @@ public final class ReportService extends Service {
         flushStatus(outbox,priorityRequest,null);
     }
     private void flushStatus(StatusOutbox outbox,String priorityRequest,String priorityReport)throws Exception{
+        try {
+            sendStatusBatch(outbox,priorityRequest,priorityReport);
+            statusDrainFailures=0;
+        } catch(Exception error) {
+            statusDrainFailures=Math.min(10,statusDrainFailures+1);
+            throw error;
+        } finally { scheduleStatusDrain(); }
+    }
+
+    private void scheduleStatusDrain(){
+        if(destroyed||wake==null||!BuildConfig.STATUS_ONLY)return;
+        long delay=StatusDrainPolicy.delay("cellular".equals(networkType()),statusOutbox().entries().length,statusDrainFailures);
+        if(delay==0)wake.cancel("status-drain");else wake.schedule("status-drain",delay);
+    }
+
+    private void drainStatus(){
+        if(destroyed||!store.registered())return;
+        WakeScheduler.hold(this,"status-drain",30000L);
+        try{flushStatus(statusOutbox(),null);}
+        catch(Exception error){RuntimeLog.error("status_drain_pending",error);}
+        finally{WakeScheduler.release("status-drain");}
+    }
+
+    private void sendStatusBatch(StatusOutbox outbox,String priorityRequest,String priorityReport)throws Exception{
+        java.io.File[] queued=outbox.entries();
+        final String latestQueued=queued.length==0?"":outbox.read(queued[queued.length-1]).optString("report_id");
         int sent = new StatusReporter(outbox, json -> {
             String reply = HttpJson.post(Protocol.reportPath(), json);
             JSONObject response = new JSONObject(reply);
@@ -623,7 +646,11 @@ public final class ReportService extends Service {
                 healthReportConfirmed = true;
                 if(movementReports!=null)try{movementReports.acknowledged(new JSONObject(json));}
                 catch(Exception error){RuntimeLog.error("movement_baseline_save_failed",error);}
-                if(reportPhotos!=null)try{reportPhotos.acknowledged(new JSONObject(json));}
+                JSONObject acknowledged=new JSONObject(json);
+                boolean currentReport=(priorityReport!=null&&priorityReport.equals(acknowledged.optString("report_id")))
+                        ||(priorityRequest!=null&&priorityRequest.equals(acknowledged.optString("status_request_id")))
+                        ||(latestQueued.equals(acknowledged.optString("report_id"))&&PhotoPolicy.recent(System.currentTimeMillis(),PhotoPolicy.sampledAt(acknowledged)));
+                if(reportPhotos!=null&&(currentReport||PhotoPolicy.critical(acknowledged)))try{reportPhotos.acknowledged(acknowledged);}
                 catch(Exception error){RuntimeLog.error("report_photo_enqueue_failed",error);}
                 try {
                     if (healer == null) healer = new NetworkHealer(this, store);

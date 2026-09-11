@@ -43,6 +43,11 @@ final class DailyLocation {
         return sampleNanos > 0 && nowNanos >= sampleNanos && nowNanos - sampleNanos <= 900000000000L;
     }
 
+    static boolean reusableForFullSample(long sampleNanos,long nowNanos) {
+        // 完整采样到期不能用即将超过15分钟的旧fix再次推迟采样；刚完成的fix仍可复用。
+        return recent(sampleNanos,nowNanos) && nowNanos-sampleNanos<=60000000000L;
+    }
+
     static boolean shouldStart(long sampleAttempt, long permissionAttempt, boolean granted, long now) {
         return due(sampleAttempt, now) || (!granted && due(permissionAttempt, now));
     }
@@ -129,7 +134,7 @@ final class DailyLocation {
                 if (!enabled(provider)) continue;
                 Location saved = manager.getLastKnownLocation(provider);
                 if (saved != null && (!gps || LocationManager.GPS_PROVIDER.equals(provider))
-                        && freshSinceNanos == 0 && recent(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
+                        && freshSinceNanos == 0 && reusableForFullSample(saved.getElapsedRealtimeNanos(), SystemClock.elapsedRealtimeNanos())) {
                     finish("recent_cache"); return;
                 }
             }

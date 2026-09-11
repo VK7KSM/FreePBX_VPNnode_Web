@@ -9,7 +9,7 @@ public final class WakeReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         String key = intent.getStringExtra("wake_key");
         if (!"report".equals(key) && !"retry".equals(key) && !"ping".equals(key) && !"connect-timeout".equals(key)
-                && !"file-transfer".equals(key) && !"report-photo".equals(key) && !"movement".equals(key) && !"file-return".equals(key)) return;
+                && !"file-transfer".equals(key) && !"report-photo".equals(key) && !"movement".equals(key) && !"file-return".equals(key) && !"status-drain".equals(key)) return;
         long received = android.os.SystemClock.elapsedRealtime();
         long due = intent.getLongExtra("due_elapsed", received);
         RuntimeLog.event("wake_received key=" + key + " late_ms=" + Math.max(0, received-due));

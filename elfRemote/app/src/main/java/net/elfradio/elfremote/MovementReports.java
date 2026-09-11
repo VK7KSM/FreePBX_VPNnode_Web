@@ -26,11 +26,13 @@ final class MovementReports {
     String prepare(StatusOutbox outbox,JSONObject body,long now)throws Exception{
         if(!"cellular".equals(body.optString("network")))return null;
         JSONObject gps=body.optJSONObject("gps");if(!fresh(gps,now))return null;
+        JSONObject previous=body.optString("device_id").equals(baseline.optString("device_id"))?baseline.optJSONObject("gps"):null;
         for(File queued:outbox.entries()){
             JSONObject old=outbox.read(queued);
-            if(body.optString("device_id").equals(old.optString("device_id"))&&valid(old.optJSONObject("gps")))return old.getString("report_id");
+            JSONObject event=old.optJSONObject("report_event");
+            if(body.optString("device_id").equals(old.optString("device_id"))&&valid(old.optJSONObject("gps"))
+                    &&(!valid(previous)||(event!=null&&"movement".equals(event.optString("type")))))return old.getString("report_id");
         }
-        JSONObject previous=body.optString("device_id").equals(baseline.optString("device_id"))?baseline.optJSONObject("gps"):null;
         if(valid(previous)){
             double meters=distance(previous,gps);
             // 扣除两次精度半径，避免边界附近的定位漂移反复触发。

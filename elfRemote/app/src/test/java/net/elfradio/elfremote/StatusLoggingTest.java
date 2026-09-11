@@ -13,6 +13,37 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class StatusLoggingTest {
+    @Test public void recoverySendsLatestFailedSnapshotFirstAndRetainsItsOriginalTime()throws Exception{
+        StatusOutbox box=new StatusOutbox(temporary.newFolder(),10);
+        box.add(sample("old",1));box.add(sample("latest",2).put("reported_at","2026-09-11T01:00:00Z"));
+        try{new StatusReporter(box,raw->{throw new IOException("quota");}).flush("test",null,"latest");fail();}catch(IOException expected){}
+        assertEquals(2,box.entries().length);
+        List<JSONObject> sent=new ArrayList<>();
+        new StatusReporter(box,raw->{JSONObject body=new JSONObject(raw);sent.add(body);
+            return new JSONObject().put("ok",true).put("report_id",body.getString("report_id")).toString();}).flush("test");
+        assertEquals("latest",sent.get(0).getString("report_id"));
+        assertEquals("2026-09-11T01:00:00Z",sent.get(0).getString("reported_at"));
+        assertEquals("old",sent.get(1).getString("report_id"));
+    }
+    @Test public void freshNetworkAndGpsArriveBeforeOfflineHistoryWithoutManufacturingNewReports()throws Exception{
+        StatusOutbox box=new StatusOutbox(temporary.newFolder(),512);
+        for(int i=0;i<30;i++)box.add(sample("past-"+i,100+i).put("network","wifi"));
+        box.add(sample("current",999).put("network","cellular").put("reported_at","2026-09-11T00:00:00Z"));
+        List<JSONObject> sent=new ArrayList<>();
+        StatusReporter reporter=new StatusReporter(box,raw->{JSONObject body=new JSONObject(raw);sent.add(body);
+            return new JSONObject().put("ok",true).put("report_id",body.getString("report_id")).toString();});
+        reporter.flush("test",null,"current");
+        assertEquals("current",sent.get(0).getString("report_id"));
+        assertEquals("cellular",sent.get(0).getString("network"));
+        assertEquals(29,box.entries().length);
+        while(box.entries().length>0)reporter.flush("test");
+        assertEquals(31,sent.size());
+        assertEquals("2026-09-07T00:00:00Z",sent.get(30).getString("reported_at"));
+        assertEquals(0,StatusDrainPolicy.delay(true,0,0));
+        assertEquals(3600000,StatusDrainPolicy.delay(true,29,0));
+        assertEquals(60000,StatusDrainPolicy.delay(false,29,0));
+        assertEquals(900000,StatusDrainPolicy.delay(false,29,10));
+    }
     @Test public void lowBatteryReportIsRetriedAheadOfOrdinaryBacklog()throws Exception{
         StatusOutbox outbox=new StatusOutbox(temporary.newFolder(),10);
         outbox.add(sample("old-1",1));outbox.add(sample("old-2",2));
