@@ -309,15 +309,16 @@ function battHtml(pct, charging, present){
   var bolt = charging===true ? '<svg class="mbatt-bolt" viewBox="0 0 10 14" aria-hidden="true"><path d="M6 1 1 8h4l-1 5 5-7H5z"/></svg>' : '';
   return '<span class="mbatt" title="'+title+'"><span class="mbatt-b"><span class="mbatt-l" style="width:'+fill+'%;background:'+col+'"></span>'+bolt+'</span><span class="mbatt-n"></span></span>';
 }
+function reportTime(d){ return d && (d.last_reported_at || d.last_seen); }
 function pinHtml(d, selected){
   var on = d.online && d.enabled!==false;
   var col = deviceColor(d.id, on);
-  var seen = sydney(d.last_seen);
+  var seen = sydney(reportTime(d));
   return '<div class="dpin'+(selected?" pin-on":"")+'">'+
     '<div class="dpin-dot" style="background:'+col+';box-shadow:0 0 0 1px #0f172a,0 0 0 2px '+col+'"></div>'+
     '<div class="dpin-card">'+
       '<div class="dpin-name"><span>'+esc(d.name||"")+'</span> '+battHtml(d.battery,d.charging,d.battery_present)+'</div>'+
-      '<div class="dpin-time">'+esc(seen)+'</div>'+
+      '<div class="dpin-time" title="'+esc('数据时间：'+seen+'；服务器接收：'+sydney(d.last_seen))+'">'+esc(seen)+'</div>'+
     '</div></div>';
 }
 
@@ -411,7 +412,7 @@ function flyTo(id){
   }
 }
 
-function kv(k,v){ return '<div class="kv"><div class="k">'+k+'</div><div class="v">'+esc(v)+'</div></div>'; }
+function kv(k,v,title){ return '<div class="kv"><div class="k">'+k+'</div><div class="v"'+(title?' title="'+esc(title)+'"':'')+'>'+esc(v)+'</div></div>'; }
 
 function pickFn(id){
   selFn = id;
@@ -462,7 +463,7 @@ function renderOps(){
   h += kv("定位", src);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += kv("客户端版本", d ? managerLabel(d) : "—");
-  h += kv("最后上报", d ? sydney(d.last_seen) : "—");
+  h += kv("最后上报", d ? sydney(reportTime(d)) : "—", d ? '数据时间；服务器接收：'+sydney(d.last_seen) : '');
   h += kv("远程ADB", shell);
   h += "</div>";
   h += '<div class="fn-menu" onclick="onFnClick(event)">';

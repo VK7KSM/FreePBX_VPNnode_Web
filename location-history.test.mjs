@@ -212,3 +212,17 @@ test('Google独立计数实例并发请求也不能超过账号上限',async t=>
  const values=await Promise.all(['one','two','three'].map(deviceId=>f.env.ELF_DO.get('google-geolocation').fetch('https://internal/__geolocation',{method:'POST',body:JSON.stringify({deviceId,radio})}).then(r=>r.json())));
  assert.equal(calls,2);assert.equal(values.filter(x=>x.reason==='located').length,2);assert.equal(values[2].reason,'free_limit_reached');
 });
+
+test('补传显示原采样时间，在线联系仍使用接收时间，旧补报不倒退最新网络',async()=>{
+ const f=setup(),cookie=await login(f);
+ await report(f,'backfill-wifi','2026-09-07T01:00:00Z',null,{network:'wifi'});
+ const read=async()=> (await (await worker.fetch(request('/api/devices','GET',undefined,cookie),f.env)).json()).devices[0];
+ let device=await read();
+ assert.equal(device.last_reported_at,'2026-09-07T01:00:00.000Z');
+ assert.notEqual(device.last_seen,device.last_reported_at);
+ assert.equal(device.online,true);
+ await report(f,'latest-cell','2026-09-07T03:00:00Z',null,{network:'cellular'});
+ await report(f,'late-old','2026-09-07T02:00:00Z',null,{network:'wifi'});
+ device=await read();assert.equal(device.network,'cellular');assert.equal(device.last_reported_at,'2026-09-07T03:00:00.000Z');
+ assert.equal((await history(f,cookie)).records.length,3);
+});

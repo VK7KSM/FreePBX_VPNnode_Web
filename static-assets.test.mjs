@@ -3,7 +3,7 @@ import worker from './worker.js';import {buildAssets,STATIC_ROUTES} from './buil
 test('静态托管保持三页和脚本原内容，API和订阅仍交给Worker处理',async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'elf-assets-'));
  try{
-  const files=await buildAssets(dir);assert.equal(files.length,10);
+  const files=await buildAssets(dir);assert.equal(files.length,11);
   for(const [route,file] of Object.entries(STATIC_ROUTES)){
    const body=await fs.readFile(path.join(dir,file));assert.deepEqual(body,Buffer.from(await (await worker.fetch(new Request('https://example.test'+route),{})).arrayBuffer()));
    if(file.endsWith('.html'))for(const match of body.toString().matchAll(/(?:src|href)="(\/[^"#?]+\.(?:js|css|png))"/g))assert.ok(STATIC_ROUTES[match[1]],'本地资源必须静态托管 '+match[1]);

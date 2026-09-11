@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
 import worker from './worker.js';
-export const STATIC_ROUTES={'/':'index.html','/devices':'devices.html','/sip':'sip.html','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png'};
+export const STATIC_ROUTES={'/':'index.html','/devices':'devices.html','/sip':'sip.html','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
 export async function buildAssets(directory='.generated-assets'){
  await fs.mkdir(directory,{recursive:true});const files=[];
  for(const [route,file] of Object.entries(STATIC_ROUTES)){

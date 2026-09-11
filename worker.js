@@ -1099,6 +1099,7 @@ function publicDevice(d, modelName, model = {}) {
     enabled: d.enabled !== false,
     online: ["recent_contact", "awaiting_report", "checking_connection", "awaiting_full_report"].includes(contact.state),
     last_seen: d.last_seen || null,
+    last_reported_at: d.last_reported_at || null,
     contact_state: contact.state,
     report_due_at: contact.report_due_at,
     battery_present:batteryPresent,
