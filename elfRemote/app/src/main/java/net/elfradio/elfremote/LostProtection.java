@@ -95,9 +95,9 @@ final class LostProtection implements Closeable {
                     if(existing.isEmpty())existing=check;
                 }
                 if(!s.has("original_owner")){
-                    int decrypt=android.provider.Settings.Global.getInt(context.getContentResolver(),"require_password_to_decrypt",0);
-                    if(decrypt!=0)throw new IllegalStateException("lost-boot-password-required");
-                    s.put("original_decrypt_setting",android.provider.Settings.Global.getString(context.getContentResolver(),"require_password_to_decrypt"));
+                    String decrypt=system.decryptSetting();
+                    if(decrypt!=null&&!decrypt.equals("0"))throw new IllegalStateException("lost-boot-password-required");
+                    s.put("original_decrypt_setting",decrypt);
                     s.put("original_owner",system.owner()).put("original_secure",system.secure()).put("original_lock_disabled",system.disabled());
                     if(system.secure())s.put("original_credential",existing);
                 }

@@ -52,12 +52,19 @@ final class SystemLock {
         if(p.exitValue()!=0)throw new IllegalStateException("lost-dismiss-failed");
     }
     boolean locked(){return ((android.app.KeyguardManager)context.getSystemService(Context.KEYGUARD_SERVICE)).isKeyguardLocked();}
+    String decryptSetting()throws Exception {
+        Process p=new ProcessBuilder("/system/bin/settings","get","global","require_password_to_decrypt").redirectErrorStream(true).start();
+        if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();throw new IllegalStateException("lost-boot-setting-timeout");}
+        byte[] bytes=new byte[128];int count=p.getInputStream().read(bytes);String value=count<0?"":new String(bytes,0,count,java.nio.charset.StandardCharsets.UTF_8).trim();
+        if(p.exitValue()!=0||!java.util.Arrays.asList("null","0","1").contains(value))throw new IllegalStateException("lost-boot-setting-unavailable");
+        return "null".equals(value)?null:value;
+    }
     void decryptSetting(String value)throws Exception {
         String[] command=value==null?new String[]{"/system/bin/settings","delete","global","require_password_to_decrypt"}
                 :new String[]{"/system/bin/settings","put","global","require_password_to_decrypt",value};
         Process p=new ProcessBuilder(command).redirectErrorStream(true).start();
         if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();throw new IllegalStateException("lost-boot-setting-timeout");}
-        String actual=android.provider.Settings.Global.getString(context.getContentResolver(),"require_password_to_decrypt");
+        String actual=decryptSetting();
         if(p.exitValue()!=0||!java.util.Objects.equals(actual,value))throw new IllegalStateException("lost-boot-setting-failed");
     }
 }
