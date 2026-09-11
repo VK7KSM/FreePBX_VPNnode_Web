@@ -73,7 +73,7 @@ final class LostMode {
             try(FileOutputStream out=new FileOutputStream(file)){out.write(input.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
             String cmd="CLASSPATH="+LostModePolicy.quote(apk)+" app_process /system/bin net.elfradio.elfremote.LostAdminMain "+LostModePolicy.quote(file.getAbsolutePath());
             Process process=new ProcessBuilder("su","-c",cmd).redirectOutput(response).start();
-            if(!process.waitFor(20,TimeUnit.SECONDS)){process.destroy();throw new IOException("lost-operation-timeout");}
+            if(!process.waitFor(40,TimeUnit.SECONDS)){process.destroy();throw new IOException("lost-operation-timeout");}
             JSONObject result=new JSONObject(RescueFiles.read(response,16384));
             if(process.exitValue()!=0||result.has("error")){RuntimeLog.event("lost-admin-error "+result.optString("diagnostic"));throw new IOException(result.optString("error","lost-operation-failed"));}
             return result;

@@ -128,6 +128,7 @@ final class LostProtection implements Closeable {
                     system.disabled(s.optBoolean("original_lock_disabled"));
                     system.decryptSetting(s.has("original_decrypt_setting")?s.getString("original_decrypt_setting"):null);
                 }
+                if(!system.secure()&&system.locked())system.dismiss();
                 for(String key:new String[]{"credential","pending_old_credential","original_owner","original_secure","original_credential","original_decrypt_setting","original_lock_disabled"})s.remove(key);
             }
             boolean wasArmed=s.optBoolean("auto_wipe_enabled");

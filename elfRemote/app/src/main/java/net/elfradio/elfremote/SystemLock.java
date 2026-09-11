@@ -43,9 +43,16 @@ final class SystemLock {
         for(int n=0;n<20&&!locked();n++)Thread.sleep(100);
     }
     void dismiss()throws Exception {
+        // D22熄屏时仅调用wm不能退出锁屏；先唤醒并发送系统菜单键。
+        for(String key:new String[]{"224","82"}){
+            Process input=new ProcessBuilder("/system/bin/input","keyevent",key).redirectErrorStream(true).start();
+            if(!input.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){input.destroy();throw new IllegalStateException("lost-dismiss-timeout");}
+        }
         Process p=new ProcessBuilder("/system/bin/wm","dismiss-keyguard").redirectErrorStream(true).start();
         if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();throw new IllegalStateException("lost-dismiss-timeout");}
         if(p.exitValue()!=0)throw new IllegalStateException("lost-dismiss-failed");
+        for(int n=0;n<50&&locked();n++)Thread.sleep(100);
+        if(locked())throw new IllegalStateException("lost-dismiss-failed");
     }
     boolean locked(){return ((android.app.KeyguardManager)context.getSystemService(Context.KEYGUARD_SERVICE)).isKeyguardLocked();}
     private String credentialCommand(String action,String old,String value)throws Exception {
