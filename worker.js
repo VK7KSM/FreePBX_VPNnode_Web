@@ -41,7 +41,8 @@ import {
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
-import { adminRpc, authJson, handleAdminAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
+import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
+import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
 import { deviceModelKey, registrationModel, normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
@@ -81,6 +82,7 @@ function elfDoStub(env) {
 }
 
 async function getStore(env, key) {
+  if(panelEnabled(env)&&(panelGroup(key)||key.startsWith('geo_')))return panelRead(env,key);
   if (env.__storage) {
     const value = await env.__storage.get(key);
     if (value !== undefined && value !== null) return value;
@@ -125,7 +127,12 @@ async function getStore(env, key) {
 }
 
 async function setStore(env, key, value) {
+  if(panelEnabled(env)){
+    if(panelGroup(key))return panelWrite(env,{[key]:value});
+    if(key.startsWith('geo_'))return env.SUB_STORE_KV.put('panel/cache/'+key,JSON.stringify(value),{expirationTtl:7*86400});
+  }
   if (env.__storage) {
+    if(panelGroup(key)&&await env.__storage.get('panel_kv_authority'))throw Error('配置正在切换到KV，请稍后重试');
     await env.__storage.put(key, value);
     await env.__storage.put("legacy_done:" + key, true);
     return;
@@ -264,7 +271,25 @@ export class ElfStore {
       }));
     }
     if (url.pathname.startsWith("/__auth/")) {
-      return this.ctx.blockConcurrencyWhile(() => handleAdminAuth(this.ctx.storage, this.env, request));
+      return this.ctx.blockConcurrencyWhile(async () => handleAdminAuth(this.ctx.storage,
+        await this.ctx.storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env,request));
+    }
+    if(url.pathname==='/__panel_migrate'&&request.method==='POST'){
+      return this.ctx.blockConcurrencyWhile(async()=>{
+        const storage=this.ctx.storage,existing=await storage.get('panel_kv_authority');
+        if(existing)return json({ok:true,...existing});
+        if(!this.env.SUB_STORE_KV?.put)return json({ok:false,msg:'KV绑定不可用'},503);
+        const scoped={...this.env,__storage:storage,PANEL_KV_ENABLED:'0'},bundles={};
+        await loadSipBundle(scoped);
+        for(const [group,keys] of Object.entries(PANEL_GROUPS)){
+          bundles[group]={};for(const key of keys)bundles[group][key]=await getStore(scoped,key);
+        }
+        const backup={at:new Date().toISOString(),auth:await storage.get('admin_auth'),sessions:[...await storage.list({prefix:'auth/session/'})],bundles};
+        await storage.put('panel_kv_backup',backup);
+        for(const [group,bundle] of Object.entries(bundles))await this.env.SUB_STORE_KV.put('panel/'+group,JSON.stringify(bundle));
+        const auth=await migratePanelAuth(storage,this.env),result={prepared_at:backup.at,sessions:auth.sessions,groups:Object.keys(bundles)};
+        await storage.put('panel_kv_authority',result);return json({ok:true,...result});
+      });
     }
     if (url.pathname.startsWith("/__push/")) {
       const raw = await request.text();
@@ -283,7 +308,8 @@ export class ElfStore {
           return await this.ctx.storage.transaction(async storage => {
             if(!isMachineRoute(url.pathname,request.method)) {
               if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
-              const auth=await handleAdminAuth(storage,this.env,new Request('https://elf-store/__auth/session',{headers:request.headers}));
+              const authEnv=await storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
+              const auth=await handleAdminAuth(storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
               if(!auth.ok)throw auth;
             }
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
@@ -305,6 +331,7 @@ export class ElfStore {
       });
     }
     if (request.method === "PUT") {
+      if(panelGroup(key)&&await this.ctx.storage.get('panel_kv_authority'))return json({ok:false,msg:'配置正在切换到KV，请稍后重试'},503);
       const v = await request.json();
       await this.ctx.storage.put(key, v);
       return new Response("{\"ok\":true}", {
@@ -344,6 +371,7 @@ const app = {
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
+    env={...env,__panelReads:{}};
     if(pathname==='/terminal.js'||pathname==='/terminal.css')return new Response(pathname.endsWith('.js')?terminalScript:terminalCss,{headers:{'Content-Type':pathname.endsWith('.js')?'application/javascript; charset=utf-8':'text/css; charset=utf-8','Cache-Control':'public, max-age=3600'}});
     if(pathname==='/file-hash.js')return new Response(fileHashSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
@@ -363,6 +391,7 @@ const app = {
       const session = await adminRpc(env, request, "session");
       if (!session.ok) return session;
     }
+    if(pathname==='/api/admin/prepare-kv'&&method==='POST')return elfDoStub(env).fetch('https://elf-store/__panel_migrate',{method:'POST'});
     if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
       const stub=elfDoStub(env);
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
@@ -459,9 +488,10 @@ const app = {
           passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
           if (!passwordResult.ok) return passwordResult;
         }
-        if (Array.isArray(data.nodes)) await setStore(env, "nodes", data.nodes);
-        if (data.sub_token) await setStore(env, "sub_token", data.sub_token);
-        if (data.cf_ip !== undefined) await setStore(env, "cf_preferred_ip", data.cf_ip);
+        const patch={};if(Array.isArray(data.nodes))patch.nodes=data.nodes;
+        if(data.sub_token)patch.sub_token=data.sub_token;
+        if(data.cf_ip!==undefined)patch.cf_preferred_ip=data.cf_ip;
+        if(Object.keys(patch).length){if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);}
         return passwordResult || json({ ok: true });
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
@@ -578,11 +608,8 @@ const app = {
         const keep = Object.assign({}, gwSet, extSet);
         Object.keys(secrets).forEach(function (k) { if (!keep[k]) delete secrets[k]; });
         const prevRev = (await getStore(env, "sip_config_rev")) || 0;
-        await setStore(env, "sip_extensions", cleaned);
-        await setStore(env, "sip_groups", groups);
-        await setStore(env, "sip_gateways", gateways);
-        await setStore(env, "sip_secrets", secrets);
-        await setStore(env, "sip_config_rev", prevRev + 1);
+        const patch={sip_extensions:cleaned,sip_groups:groups,sip_gateways:gateways,sip_secrets:secrets,sip_config_rev:prevRev+1};
+        if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);
         return json({ ok: true, config_rev: prevRev + 1 });
       } catch(e) {
         return json({ ok: false, msg: e.message }, 400);
@@ -696,7 +723,9 @@ const app = {
 export default {
   ...app,
   async fetch(request,env,ctx){
-    if(new URL(request.url).pathname.startsWith('/api/') && Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
+    const path=new URL(request.url).pathname;
+    const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull'].includes(path);
+    if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
     try{return await app.fetch(request,env,ctx);}
     catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);return quotaUnavailable();}
   }
@@ -863,9 +892,8 @@ async function loadSipBundle(env) {
   groups = symmetrizeGroups(groups.map(publicGroup).filter(function (g) { return !!g.id; }));
   const extensions = raw.map(function (x) { return publicExtension(x, secrets); });
   if (persist) {
-    await setStore(env, "sip_extensions", extensions.map(stripSecretFlag));
-    await setStore(env, "sip_groups", groups);
-    await setStore(env, "sip_gateways", gateways.map(stripSecretFlag));
+    const patch={sip_extensions:extensions.map(stripSecretFlag),sip_groups:groups,sip_gateways:gateways.map(stripSecretFlag)};
+    if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);
   }
   return { extensions: extensions, groups: groups, gateways: gateways, secrets: secrets };
 }

@@ -1,3 +1,4 @@
+import {kvJson,panelEnabled} from './panel-kv.js';
 const COOKIE = "elf_admin";
 const ITERATIONS = 100000;
 const SESSION_MS = 14 * 86400000;
@@ -54,7 +55,7 @@ async function legacyValue(storage, env, key) {
   if (raw == null) return null;
   try { return JSON.parse(raw); } catch { return raw; }
 }
-async function credentials(storage, env) {
+export async function credentials(storage, env) {
   const existing = await storage.get("admin_auth");
   if (existing) return existing;
   // 仅迁移真实存储或显式配置，禁止重新启用代码中的默认密码。
@@ -86,6 +87,7 @@ async function validSession(storage, request, now) {
 // 由现有 Durable Object 串行调用，迁移、改密码与会话变更不会相互覆盖。
 export async function handleAdminAuth(storage, env, request, now = Date.now()) {
   const action = new URL(request.url).pathname;
+  if(panelEnabled(env))return handleKvAuth(env,request,action.slice('/__auth/'.length),undefined,now);
   try {
     if (action === "/__auth/login" && request.method === "POST") {
       const body = await jsonInput(request);
@@ -135,6 +137,7 @@ export async function handleAdminAuth(storage, env, request, now = Date.now()) {
 }
 
 export async function adminRpc(env, request, action, body) {
+  if(panelEnabled(env))return handleKvAuth(env,request,action,body);
   if (!env.ELF_DO) return authJson({ ok: false, msg: "登录存储不可用" }, 503);
   const headers = new Headers(request.headers);
   headers.delete("Content-Length");
@@ -142,4 +145,71 @@ export async function adminRpc(env, request, action, body) {
   return env.ELF_DO.get(env.ELF_DO.idFromName("main")).fetch(new Request("https://elf-store/__auth/" + action, {
     method, headers, ...(method === "POST" ? { body: body === undefined ? await request.text() : JSON.stringify(body) } : {})
   }));
+}
+
+function cookieToken(request){return (request.headers.get('Cookie')||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(COOKIE+'='))?.slice(COOKIE.length+1)||'';}
+async function mac(auth,payload){
+ const key=await crypto.subtle.importKey('raw',enc.encode(auth.session_key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+ return hex(await crypto.subtle.sign('HMAC',key,enc.encode(payload)));
+}
+const attempts=new WeakMap();
+// 只有错误登录才使用短期本地计数，不把每次失败写入KV的同一个键。
+export async function handleKvAuth(env,request,action,body,now=Date.now()){
+ const kv=env.SUB_STORE_KV;if(!kv)return authJson({ok:false,msg:'登录存储不可用'},503);
+ try{
+  const auth=await kvJson(env,'panel/auth');
+  if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
+  const token=cookieToken(request);
+  if(action==='login'){
+   const input=body===undefined?await jsonInput(request):body;
+   let peers=attempts.get(kv);if(!peers){peers=new Map();attempts.set(kv,peers);}
+   const peer=await digest(request.headers.get('CF-Connecting-IP')||'local'),recent=peers.get(peer);
+   if(recent&&recent.until>now&&recent.count>=8)return authJson({ok:false,msg:'登录失败次数过多，请稍后重试'},429,{'Retry-After':'60'});
+   const valid=typeof input.username==='string'&&typeof input.password==='string'&&input.password.length<=1024;
+   const hash=await passwordHash(valid?input.password:'',auth.salt);
+   if(!valid||input.username!==auth.username||!equal(hash,auth.hash)){
+    if(peers.size>=128)peers.delete(peers.keys().next().value);
+    peers.set(peer,{count:recent&&recent.until>now?recent.count+1:1,until:recent&&recent.until>now?recent.until:now+60000});
+    return authJson({ok:false,msg:'账号或密码错误'},401);
+   }
+   peers.delete(peer);
+   const payload=btoa(JSON.stringify({id:random(),revision:auth.revision,expires:now+SESSION_MS})).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+   const value='v2.'+payload+'.'+await mac(auth,payload);
+   return authJson({ok:true},200,{'Set-Cookie':cookie(value,SESSION_MS/1000)});
+  }
+  let entry=null;
+  if(token.startsWith('v2.')&&token.length<2048){
+   const parts=token.split('.');
+   if(parts.length===3&&equal(await mac(auth,parts[1]),parts[2])){
+    try{entry=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));}catch{}
+    if(entry&&await kvJson(env,'panel/revoked/'+await digest(token)))entry=null;
+   }
+  }else if(/^[a-f0-9]{64}$/.test(token))entry=await kvJson(env,'panel/legacy-session/'+await digest(token));
+  if(action==='logout'){
+   if(entry?.expires>now){
+    if(token.startsWith('v2.'))await kv.put('panel/revoked/'+await digest(token),'true',{expirationTtl:Math.max(60,Math.ceil((entry.expires-now)/1000))});
+    else await kv.delete('panel/legacy-session/'+await digest(token));
+   }
+   return authJson({ok:true},200,{'Set-Cookie':cookie('',0)});
+  }
+  if(!entry||entry.expires<=now||entry.revision!==auth.revision)return authJson({ok:false,msg:'请先登录'},401);
+  if(action==='session')return authJson({ok:true});
+  if(action==='password'){
+   const input=body===undefined?await jsonInput(request):body,password=input.password;
+   if(typeof password!=='string'||!password||password.length>1024)return authJson({ok:false,msg:'密码长度无效'},400);
+   const salt=random();await kv.put('panel/auth',JSON.stringify({...auth,salt,hash:await passwordHash(password,salt),revision:random(),session_key:random()}));
+   return authJson({ok:true,credentials_changed:true},200,{'Set-Cookie':cookie('',0)});
+  }
+  return authJson({ok:false,msg:'接口不存在'},404);
+ }catch{return authJson({ok:false,msg:'登录服务暂不可用，请稍后重试'},503,{'Retry-After':'30'});}
+}
+
+export async function migratePanelAuth(storage,env,now=Date.now()){
+ const auth=await credentials(storage,env);if(!auth)throw Error('当前登录资料不存在');
+ const snapshot={...auth,session_key:random()};await env.SUB_STORE_KV.put('panel/auth',JSON.stringify(snapshot));
+ let sessions=0;
+ for(const [key,value] of await storage.list({prefix:'auth/session/'}))if(value.expires>now&&value.revision===auth.revision){
+  await env.SUB_STORE_KV.put('panel/legacy-session/'+key.slice('auth/session/'.length),JSON.stringify(value),{expirationTtl:Math.max(60,Math.ceil((value.expires-now)/1000))});sessions++;
+ }
+ return {sessions,auth_revision:auth.revision};
 }

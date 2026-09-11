@@ -9,6 +9,7 @@ on:
       - "sip-client.js"
       - "sip-client-source.js"
       - "admin-auth.js"
+      - "panel-kv.js"
       - "adb-relay.js"
       - "media-relay.js"
       - "media-recordings.js"
