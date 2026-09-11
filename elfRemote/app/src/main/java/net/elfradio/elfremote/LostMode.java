@@ -19,7 +19,15 @@ final class LostMode {
         apk=context.getApplicationInfo().sourceDir;
     }
     synchronized JSONObject set(JSONObject input) throws Exception {
-        if(input.optInt("version")==2){JSONObject result=admin(new JSONObject(input.toString()).put("action","set"));LostNoticeReceiver.update(context);return result;}
+        if(input.optInt("version")==2){
+            JSONObject request=new JSONObject(input.toString()).put("action","set"),result;
+            try{result=admin(request);}catch(IOException failure){
+                // XX清除密码后，厂商锁屏可能仍保留旧状态。仅在已关闭策略的退出路径重试一次。
+                if(input.optBoolean("enabled")||!"lost-dismiss-failed".equals(failure.getMessage()))throw failure;
+                RuntimeLog.event("lost-exit-refresh-retry");result=admin(request);
+            }
+            LostNoticeReceiver.display(context,result.optLong("deadline_at"));return result;
+        }
         JSONObject params=LostModePolicy.params(input);
         if(params.getBoolean("enabled") && !state.contains("original")) {
             JSONObject before=owner(null);
@@ -69,7 +77,8 @@ final class LostMode {
         return true;
     }
     private synchronized JSONObject admin(JSONObject input)throws Exception {
-        File file=new File(context.getFilesDir(),"lost-admin-request.json"),response=new File(context.getFilesDir(),"lost-admin-response.json");
+        String operation="lost-admin-"+java.util.UUID.randomUUID();
+        File file=new File(context.getFilesDir(),operation+"-request.json"),response=new File(context.getFilesDir(),operation+"-response.json");
         try{
             try(FileOutputStream out=new FileOutputStream(file)){out.write(input.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
             String cmd="CLASSPATH="+LostModePolicy.quote(apk)+" app_process /system/bin net.elfradio.elfremote.LostAdminMain "+LostModePolicy.quote(file.getAbsolutePath());

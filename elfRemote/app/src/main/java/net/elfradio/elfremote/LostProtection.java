@@ -171,7 +171,7 @@ final class LostProtection implements Closeable {
     private void notification(long deadline){
         try{
             // Android 8的锁屏不会可靠显示root UID通知，交给应用UID显示；广播仅刷新只读状态。
-            java.lang.Process p=new ProcessBuilder("/system/bin/am","broadcast","--user","0","-n",BuildConfig.APPLICATION_ID+"/net.elfradio.elfremote.LostNoticeReceiver").redirectErrorStream(true).start();
+            java.lang.Process p=new ProcessBuilder("/system/bin/am","broadcast","--user","0","-n",BuildConfig.APPLICATION_ID+"/net.elfradio.elfremote.LostNoticeReceiver","--el","deadline_at",Long.toString(deadline)).redirectErrorStream(true).start();
             if(!p.waitFor(5,java.util.concurrent.TimeUnit.SECONDS)){p.destroy();RuntimeLog.event("lost-notice-dispatch-pending");}
         }catch(Exception error){RuntimeLog.error("lost-notice-dispatch-failed",error);}
     }
