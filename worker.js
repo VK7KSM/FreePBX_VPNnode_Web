@@ -7,6 +7,7 @@ import mediaClientSource from './media-client-source.js';
 
 import { LOGO_PNG_B64 } from "./logo.js";
 import { AdbRelay } from "./adb-relay.js";
+import {normalizeSipTargets,applySipRegistrations,publicSipAccounts,checkSipTarget,sipAllowed} from './sip-accounts.js';
 import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 import { googleLocation } from "./google-geolocation.js";
@@ -1147,6 +1148,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_zello_account: d.managed_zello_account === true,
     zello_account: d.account_configs?.zello ? {username:d.account_configs.zello.params.username,type:"regular",updated_at:d.account_configs.zello.updated_at}:null,
     managed_sip_account: d.managed_sip_account === true,
+    ...(Array.isArray(d.sip_targets)?{sip_targets:d.managed_sip_account===true?d.sip_targets:[],sip_accounts:d.managed_sip_account===true?publicSipAccounts(d,["recent_contact","awaiting_report","checking_connection","awaiting_full_report"].includes(contact.state)):[]}:{}),
     managed_system_settings: d.managed_system_settings === true,
     system_settings: d.system_settings || null,
     sip_account: d.account_configs?.linphone ? {server:d.account_configs.linphone.params.server,username:d.account_configs.linphone.params.username,auth_username:d.account_configs.linphone.params.auth_username,transport:d.account_configs.linphone.params.transport,port:d.account_configs.linphone.params.port,updated_at:d.account_configs.linphone.updated_at} : null,
@@ -1582,6 +1584,9 @@ async function handleDeviceReport(env, request) {
       list[i].managed_file_operations = data.managed_file_operations === true;
       list[i].managed_zello_account = data.managed_zello_account === true;
       list[i].managed_sip_account = data.managed_sip_account === true;
+      if(Object.hasOwn(data,'sip_targets'))list[i].sip_targets=normalizeSipTargets(data.sip_targets);
+      else delete list[i].sip_targets;
+      if(Object.hasOwn(data,'sip_registrations'))applySipRegistrations(list[i],data.sip_registrations,Date.now());
       list[i].managed_system_settings = data.managed_system_settings === true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
@@ -1653,7 +1658,8 @@ async function handleDeviceReport(env, request) {
         signature: found.update.signature
       };
     }
-    if (!data.status_only && shouldOfferRepair(found, now) && found.task) {
+    if (!data.status_only && shouldOfferRepair(found, now) && found.task
+        && (found.task.type!=='configure_sip'||(sipAllowed(found,found.task.params)&&sipAllowed(data,found.task.params)))) {
       body.task = repairOfferPayload(found.task);
     }
     return json(body);
@@ -1908,7 +1914,7 @@ function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
       || (report.managed_file_operations === true && device.task?.type === 'file_manage')
       || (report.managed_system_settings === true && device.task?.type === 'system_config')
-      || (report.managed_sip_account === true && device.task?.type === 'configure_sip')
+      || (report.managed_sip_account === true && device.task?.type === 'configure_sip' && sipAllowed(device,device.task.params) && sipAllowed(report,device.task.params))
       || (report.managed_zello_account === true && device.task?.type === 'configure_zello'))
       && device.task.managed_exec_v1 && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true};
@@ -1994,7 +2000,9 @@ async function handleElfEnqueueTask(env, request) {
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
-    if(data.type==="configure_sip" && !found.managed_sip_account)return json({ok:false,msg:"客户端尚未支持Linphone账号配置"},409);
+    if(data.type==="configure_sip"){
+      try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
+    }
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
     let params = data.params;
     if(data.type==='get_file'){

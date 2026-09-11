@@ -131,6 +131,7 @@ function loadDevices(){
     var arr=[snapshot,snapshot];
     if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
     var previousId=selDev;
+    var previousSip=uiOf()&&uiOf().sipSelection;
     var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
     if(arr[0].devices) DEV = arr[0].devices;
     UNPAIRED = arr[0].unpaired || [];
@@ -145,7 +146,7 @@ function loadDevices(){
     if(!editing){
       renderOps();
       if(previousId===selDev){
-        savedInputs.forEach(function(saved){var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
+        savedInputs.forEach(function(saved){if(saved.id==='sipAccountSlot'||(saved.id.indexOf('sipAccount')===0&&previousSip!==(uiOf()&&uiOf().sipSelection)))return;var el=$(saved.id);if(el){el.value=saved.value;if(typeof saved.checked==='boolean') el.checked=saved.checked;}});
       }
     }
     if(editing) renderRemoteConsole();
@@ -1126,7 +1127,8 @@ function systemPermission(i){var d=systemSnapshot(),p=d.permissions[i];runSystem
 var ACCOUNT_TAB='Linphone';
 function selectAccountTab(name){ACCOUNT_TAB=name;renderOps();}
 function pageAccountSettings(dis){
-  var h='<div class="account-tabs" role="group" aria-label="账号类型">'+['Linphone','Zello'].map(function(name){return '<button class="btn-gray'+(ACCOUNT_TAB===name?' active':'')+'" aria-pressed="'+(ACCOUNT_TAB===name)+'" onclick="selectAccountTab(\''+name+'\')">'+name+'</button>';}).join('')+'</div>';
+  var device=currentDev(),modern=device&&Array.isArray(device.sip_targets);
+  var h='<div class="account-tabs" role="group" aria-label="账号类型">'+['Linphone','Zello'].map(function(name){return '<button class="btn-gray'+(ACCOUNT_TAB===name?' active':'')+'" aria-pressed="'+(ACCOUNT_TAB===name)+'" onclick="selectAccountTab(\''+name+'\')">'+(name==='Linphone'&&modern?'SIP账号':name)+'</button>';}).join('')+'</div>';
   return h+(ACCOUNT_TAB==='Linphone'?pageSipAccount(dis):pageZelloAccount(dis));
 }
 function pageZelloAccount(dis){
@@ -1140,7 +1142,48 @@ async function configureZelloAccount(event){
   catch(e){if(selDev===d.id&&$('zelloAccountFeedback'))$('zelloAccountFeedback').textContent=e.message;}
   finally{params.password='';if(button.isConnected)button.disabled=false;}
 }
+function sipAccountRows(d){return d&&Array.isArray(d.sip_accounts)?d.sip_accounts:[];}
+function selectedSipAccount(){
+  var d=currentDev(),rows=sipAccountRows(d),u=uiOf();if(!u)return null;
+  var found=rows.find(function(a){return a.target+'|'+a.account_id===u.sipSelection;});
+  if(!found&&rows.length){found=rows[0];u.sipSelection=found.target+'|'+found.account_id;}
+  return found||null;
+}
+function selectSipAccount(index){var rows=sipAccountRows(currentDev()),a=rows[Number(index)];if(a){uiOf().sipSelection=a.target+'|'+a.account_id;renderOps();}}
+function sipConfigurationLabel(a){
+  var r=a.configuration_result;if(!r)return a.configuration?'配置已保存':'尚未配置';
+  return {pending:'等待设备配置',claimed:'设备已接收',running:'正在配置',success:'配置已写入',failed:'配置失败',rejected:'设备拒绝配置',expired:'配置任务超时'}[r.state]||'配置状态未知';
+}
+function sipRegistrationLabel(d,a){
+  if(d.online===false)return '设备离线，注册状态待确认';
+  var r=a.registration;if(!r)return '尚未收到注册状态';
+  if(!r.fresh)return '注册状态已过期，等待更新';
+  return {registered:'已注册',registering:'正在注册',unregistered:'未注册',failed:'注册失败',unknown:'注册状态未知'}[r.state]||'注册状态未知';
+}
+function pageMultiSipAccount(dis){
+  var d=currentDev(),rows=sipAccountRows(d),a=selectedSipAccount();
+  if(!a)return '<p class="muted">设备尚未开放可配置的SIP线路或账号</p>';
+  var target=d.sip_targets.find(function(t){return t.target===a.target;}),saved=a.configuration||{},blocked=dis||(!maintenanceAvailable(d,'configure_sip')?' disabled':'');
+  var h='<div class="ops-actions"><label for="sipAccountSlot">配置账号</label><select id="sipAccountSlot" class="inp" onchange="selectSipAccount(this.value)">'+rows.map(function(row,i){return '<option value="'+i+'"'+(row.target===a.target&&row.account_id===a.account_id?' selected':'')+'>'+esc(row.target_label+' · '+row.label)+'</option>';}).join('')+'</select></div>';
+  h+='<div class="function-table"><table><thead><tr><th>应用 / 线路</th><th>配置结果</th><th>注册状态</th></tr></thead><tbody>'+rows.map(function(row){var r=row.registration,c=row.configuration_result;return '<tr><td>'+esc(row.target_label+' · '+row.label)+'</td><td>'+esc(sipConfigurationLabel(row))+(c?.detail?'<br><span class="muted">'+esc(c.detail)+'</span>':'')+(c?.at?'<br><span class="muted">'+esc(sydney(c.at))+'</span>':'')+'</td><td>'+esc(sipRegistrationLabel(d,row))+(r?'<br><span class="muted">'+esc(sydney(r.sampled_at))+(r.reason?' · '+esc(r.reason):'')+'</span>':'')+'</td></tr>';}).join('')+'</tbody></table></div>';
+  h+='<form id="sipAccountForm" data-sip-selection="'+esc(a.target+'|'+a.account_id)+'" class="account-fields" onsubmit="configureMultiSipAccount(event)"><label>服务器<input id="sipAccountServer" class="inp" required autocomplete="off" value="'+esc(saved.server||'')+'"'+blocked+'></label><label>账号<input id="sipAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label>';
+  if(target.auth_username_supported)h+='<label>认证账号<input id="sipAccountAuth" class="inp" placeholder="留空时使用账号" autocomplete="off" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label>';
+  h+='<label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>认证域（可选）<input id="sipAccountRealm" class="inp" autocomplete="off" value="'+esc(saved.realm||'')+'"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存配置</button><span id="sipAccountFeedback" role="status">'+esc(sipConfigurationLabel(a)+(a.configuration_result?.detail?' · '+a.configuration_result.detail:''))+'</span></div></form>';
+  return h;
+}
+async function configureMultiSipAccount(event){
+  event.preventDefault();var d=currentDev(),a=selectedSipAccount();if(!a||!maintenanceAvailable(d,'configure_sip'))return;
+  if($('sipAccountForm').dataset.sipSelection!==a.target+'|'+a.account_id){renderOps();if($('sipAccountFeedback'))$('sipAccountFeedback').textContent='账号列表已变化，请检查所选账号后重新填写';return;}
+  var selection=a.target+'|'+a.account_id,params={target:a.target,account_id:a.account_id,server:$('sipAccountServer').value.trim(),username:$('sipAccountUser').value.trim(),password:$('sipAccountPassword').value,transport:$('sipAccountTransport').value,port:Number($('sipAccountPort').value)};
+  if($('sipAccountAuth')&&$('sipAccountAuth').value.trim())params.auth_username=$('sipAccountAuth').value.trim();
+  if($('sipAccountRealm').value.trim())params.realm=$('sipAccountRealm').value.trim();
+  var button=$('sipAccountForm').querySelector('button[type=submit]');button.disabled=true;
+  try{await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_sip',id:'sip-'+crypto.randomUUID(),params:params});if(selDev===d.id&&uiOf().sipSelection===selection&&$('sipAccountPassword')){$('sipAccountPassword').value='';$('sipAccountFeedback').textContent='已发送，等待设备配置';}loadDevices();}
+  catch(e){if(selDev===d.id&&uiOf().sipSelection===selection&&$('sipAccountFeedback'))$('sipAccountFeedback').textContent=e.message;}
+  finally{params.password='';if(button.isConnected)button.disabled=false;}
+}
 function pageSipAccount(dis){
+  var device=currentDev();if(device&&Array.isArray(device.sip_targets))return pageMultiSipAccount(dis);
   var d=currentDev(),saved=d&&d.sip_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_sip_account||!maintenanceAvailable(d,'configure_sip')?' disabled':'');
   var h='<form id="sipAccountForm" class="account-fields" onsubmit="configureSipAccount(event)"><label>服务器<input id="sipAccountServer" class="inp" required autocomplete="off" placeholder="sip.example.com" value="'+esc(saved.server||'')+'"'+blocked+'></label><label>账号<input id="sipAccountUser" class="inp" required autocomplete="off" value="'+esc(saved.username||'')+'"'+blocked+'></label><label>认证账号<input id="sipAccountAuth" class="inp" autocomplete="off" placeholder="留空时使用账号" value="'+esc(saved.auth_username||'')+'"'+blocked+'></label><label>密码<input id="sipAccountPassword" class="inp" required type="password" autocomplete="new-password"'+blocked+'></label><label>连接方式<select id="sipAccountTransport" class="inp" onchange="document.getElementById(\'sipAccountPort\').value=this.value===\'tls\'?5061:5060"'+blocked+'>'+['tls','tcp','udp'].map(function(k){return '<option value="'+k+'"'+((saved.transport||'tls')===k?' selected':'')+'>'+k.toUpperCase()+'</option>';}).join('')+'</select></label><label>端口<input id="sipAccountPort" class="inp" type="number" min="1" max="65535" required value="'+(saved.port||5061)+'"'+blocked+'></label><div class="ops-actions"><button type="submit" class="btn-green"'+blocked+'>保存并登录</button><span id="sipAccountFeedback" role="status">'+esc(t.type==='configure_sip'?(t.detail||t.label):saved.updated_at?'上次注册成功 · '+sydney(saved.updated_at):d&&!d.managed_sip_account?'请更新客户端后使用':'尚未配置账号')+'</span></div></form>';
   return h;

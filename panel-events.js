@@ -59,6 +59,7 @@ export function panelRefreshDelay(devices,enrolls=[],now=Date.now()) {
   const consider=value=>{const at=typeof value==='number'?value:Date.parse(value);if(at>now&&at<deadline)deadline=at;};
   for(const d of devices) {
     consider(nextContactChange(d,now));
+    for(const r of Object.values(d.sip_registrations||{}))consider(r.sampled_at+(d.network==='wifi'||d.network==='ethernet'?15:60)*60000+90000);
     if(d.task && ['pending','claimed','running'].includes(d.task.state))consider(d.task.expires_at);
     if(d.update && !['success','recovered','rejected','failed','expired'].includes(d.update.state))consider(d.update.expires_at);
   }

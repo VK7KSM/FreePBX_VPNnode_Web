@@ -1,4 +1,5 @@
 import {systemSettingsParams,applySystemSettingsResult} from "../system-settings.js";
+import {sipDestination,sipKey,sipAllowed,checkSipTarget,validateSipResult,sipConfigurationResult,redactSipText} from '../sip-accounts.js';
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
 
@@ -289,14 +290,27 @@ export async function queueSystemRestore(device,storage,now) {
 }
 
 export function sipAccountParams(value={}) {
+  const destination=sipDestination(value);
   const {server,username,password}=value,auth_username=value.auth_username??username,transport=String(value.transport??'tls').toLowerCase(),port=value.port??(transport==='tls'?5061:5060);
   if(typeof server!=='string'||!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(server)||typeof username!=='string'||!/^[A-Za-z0-9_.+-]{1,128}$/.test(username)
     ||typeof auth_username!=='string'||!/^[A-Za-z0-9_.+@-]{1,128}$/.test(auth_username)||typeof password!=='string'||!password||password.length>256||password!==password.trim()||/[\x00-\x1f\x7f]/.test(password)
     ||!['tls','tcp','udp'].includes(transport)||!Number.isInteger(port)||port<1||port>65535)throw Error('SIP账号参数无效');
-  return {server:server.toLowerCase(),username,auth_username,password,transport,port};
+  if(value.realm!==undefined&&(!destination||typeof value.realm!=='string'||!/^[A-Za-z0-9*_.@:-]{1,253}$/.test(value.realm)))throw Error('SIP realm无效或旧客户端不支持');
+  return {server:server.toLowerCase(),username,auth_username,password,transport,port,...(destination||{}),...(value.realm!==undefined?{realm:value.realm}:{})};
 }
 
 export async function queueSipRestore(device,storage,now) {
+  if(device.enabled===false||device.managed_sip_account!==true||repairInflight(device.task))return false;
+  if(Array.isArray(device.sip_targets)){
+    for(const [key,saved] of Object.entries(device.account_configs||{})){
+      if(!key.startsWith('sip:')||!sipAllowed(device,saved.params)||!restoreDue(saved,device,now))continue;
+      try{checkSipTarget(device,saved.params);}catch{continue;}
+      const result=await enqueueRepairTask(device,{type:'configure_sip',id:'sip-restore-'+crypto.randomUUID(),params:saved.params},now,storage);
+      if(!result.ok)return false;
+      device.task.managed_exec_v1=true;attemptedRestore(saved,device,now);return true;
+    }
+    return false;
+  }
   return queueAccountRestore(device,storage,now,'linphone','configure_sip','managed_sip_account');
 }
 
@@ -367,6 +381,7 @@ export async function findRepairTask(storage, device, id) {
 }
 
 export async function archiveRepair(storage, device, nowMs) {
+  if(device.task?.sip_destination)sipConfigurationResult(device,device.task,device.task.state,device.task.detail,nowMs);
   if (!storage || !device.task) return;
   const prefix = "repair-history/" + encodeURIComponent(device.id) + "/";
   const task = {...device.task, archived_at:nowMs};
@@ -380,6 +395,9 @@ export async function enqueueRepairTask(device, input, nowMs, storage) {
   if (!device) return { ok: false, reason: "missing-device" };
   const task = makeRepairTask(input || {}, nowMs);
   if (!task) return { ok: false, reason: "unknown-type" };
+  if(task.type==='configure_sip'){
+    const destination=sipDestination(task.params);if(destination){checkSipTarget(device,task.params);task.sip_destination=destination;}
+  }
   if (task.id.length > 96 || task.idempotency_key.length > 96) return {ok:false,reason:"invalid-id"};
   task.request_digest = await repairDigest(task);
   const cur = device.task;
@@ -397,6 +415,7 @@ export async function enqueueRepairTask(device, input, nowMs, storage) {
     task.params.previous_username=device.account_configs.zello.params.username;
   task.created_at = new Date(nowMs).toISOString();
   device.task = task;
+  if(task.sip_destination)sipConfigurationResult(device,task,task.state,'',nowMs);
   return { ok: true, duplicate: false, task };
 }
 
@@ -423,7 +442,13 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
   if(device.task.type==='configure_zello' && state==='success' && (!result||result.logged_in!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少Zello登录成功证据');
-  if(device.task.type==='configure_sip' && state==='success' && (!result||result.registered!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少SIP注册成功证据');
+  const modernSip=device.task.type==='configure_sip'&&validateSipResult(device,state,result);
+  if(device.task.type==='configure_sip' && !modernSip && state==='success' && (!result||result.registered!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少SIP注册成功证据');
+  if(device.task.type==='configure_sip'){
+    if(device.task.state===state&&['success','failed','rejected','expired'].includes(state))return device;
+    detail=redactSipText(device,detail||result?.reason||result?.text);
+    if(result)result={exit_code:result.exit_code,elapsed_ms:result.elapsed_ms,text:redactSipText(device,result.text),reason:redactSipText(device,result.reason),stage:redactSipText(device,result.stage),action:redactSipText(device,result.action)};
+  }
   if(['root_exec','file_manage'].includes(device.task.type) && state === 'success'
       && (!result || result.exit_code !== 0 || result.action !== 'completed')) throw new Error('缺少命令成功证据');
   if(device.task.type === 'send_file' && state === 'success' && (!result || result.action!=='committed'
@@ -435,8 +460,10 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if(device.task.type === "set_lost_mode" && state === "success" && (!lost || lost.state === "pending")) throw new Error("缺少丢失模式完成状态");
   if(device.task.type==='configure_zello' && state==='success' && device.task.params?.password)device.account_configs={...device.account_configs,zello:{params:zelloAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
   if(device.task.type==='configure_sip' && state==='success' && device.task.params?.password){
-    device.account_configs={...device.account_configs,linphone:{params:sipAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
+    const key=modernSip?sipKey(device.task.sip_destination):'linphone';
+    device.account_configs={...device.account_configs,[key]:{params:sipAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString(),...(modernSip?{config_task_id:taskId}:{})}};
   }
+  if(modernSip)sipConfigurationResult(device,device.task,state,detail,nowMs);
   if (device.task.state !== state) {
     device.task.updated_at = new Date(nowMs).toISOString();
     if (state === "claimed") device.task.claimed_at = device.task.updated_at;
@@ -540,10 +567,11 @@ export function publicRepair(task) {
   return {
     id: task.id || "",
     type: task.type || "",
-    type_label: repairTypeLabel(task.type || ""),
+    type_label: task.sip_destination?'配置SIP账号':repairTypeLabel(task.type || ""),
     state: task.state || "",
     label: repairStateLabel(task.state || ""),
     detail: task.detail || "",
+    ...(task.sip_destination?{sip_destination:task.sip_destination}:{}),
     ...(['send_file','get_file'].includes(task.type)&&task.params?{params:{path:task.params.path,allow_cellular:task.params.allow_cellular,...(task.type==='send_file'?{transfer_id:task.params.transfer_id,overwrite:task.params.overwrite}:{})}}:{}),
     expires_at: task.expires_at || 0,
     created_at: task.created_at || null,
