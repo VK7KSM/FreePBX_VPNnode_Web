@@ -10,6 +10,7 @@ on:
       - "sip-client-source.js"
       - "admin-auth.js"
       - "panel-kv.js"
+      - "build-static-assets.mjs"
       - "adb-relay.js"
       - "media-relay.js"
       - "media-recordings.js"
@@ -57,6 +58,7 @@ jobs:
       - run: npm run embed:check
       - run: npm ci
       - run: npm test
+      - run: npm run build:assets
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -1,5 +1,6 @@
 node_modules/
 .wrangler/
+.generated-assets/
 .dev.vars
 *.token
 .DS_Store

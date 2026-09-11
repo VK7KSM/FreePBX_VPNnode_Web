@@ -3,7 +3,8 @@
   "version": "2.5.0",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy": "npm run build:assets && wrangler deploy --config wrangler.jsonc",
+    "build:assets": "node build-static-assets.mjs",
     "embed:devices-client": "node embed-devices-client.mjs",
     "embed:check": "node embed-devices-client.mjs --check",
     "test": "node --test *.test.mjs elfRemote/*.test.mjs",
