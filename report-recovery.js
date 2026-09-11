@@ -1,9 +1,14 @@
-import { contactState } from './elfRemote/control-plane.js';
+import { contactState, CONTROL_PLANE_ONLINE_MS } from './elfRemote/control-plane.js';
 import { pushState, pendingStatus, statusNotification, brokerCall } from './push-control.js';
 
 export const PROBE_WAIT_MS = 90000;
 // 一分钟调度可能跨过等待边界，给两次尝试及调度抖动留出有限窗口。
 const CHECK_WINDOW_MS = 360000;
+export function nextContactChange(device,now=Date.now()) {
+  const current=recoveryContact(device,now),seen=Date.parse(device.last_seen),due=Date.parse(current.report_due_at);
+  const candidates=[seen,seen+CONTROL_PLANE_ONLINE_MS+1,due+(device.status_only===true?90001:1),due+90000+CHECK_WINDOW_MS];
+  return candidates.filter(at=>at>now&&Number.isFinite(at)&&recoveryContact(device,at).state!==current.state).sort((a,b)=>a-b)[0]||null;
+}
 export function recoveryContact(device, now = Date.now()) {
   const contact = contactState(device.last_seen, now, device.status_only === true, device.network);
   if (device.enabled === false || device.status_only !== true || contact.state !== 'report_overdue') return contact;

@@ -104,7 +104,7 @@ function doLogin(){
     else { $("lerr").style.display="block"; $("lerr").innerText=d.msg||"登录失败"; }
   }).catch(function(){ $("lerr").style.display="block"; $("lerr").innerText="登录失败"; });
 }
-function logout(){ return adminSession.logout(); }
+function logout(){ if(panelEvents)panelEvents.stop();return adminSession.logout(); }
 
 var SERVICE_ERRORS={};
 function serviceErrorText(){
@@ -151,7 +151,9 @@ function loadDevices(){
     if(editing) renderRemoteConsole();
 
     setServiceError('devices',null);
-    devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();return true;
+    devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();
+    deviceRefreshAt=lastPollAt+Math.min(300000,Math.max(1000,Number(snapshot.refresh_after_ms)||300000));
+    if(panelEvents)panelEvents.tick();return true;
   }).catch(function(error){
     devicePollFailures++;lastPollAt=Date.now();
     setServiceError('devices',error);
@@ -1577,21 +1579,30 @@ function delModel(id){
   });
 }
 
+var lastPollAt=0,devicePollFailures=0,devicePollRetryAt=0,deviceRefreshAt=0;
+function deviceRetryDelay(){return devicePollFailures?Math.min(300000,15000*Math.pow(2,Math.min(devicePollFailures-1,5))):0;}
+var panelEvents=typeof window!=='undefined'&&window.createPanelEvents?window.createPanelEvents({
+  active:function(){return adminSession.authenticated&&!document.hidden;},
+  allowed:function(){return Date.now()>=Math.max(devicePollRetryAt,lastPollAt+deviceRetryDelay());},
+  refresh:function(){return deviceLoad?deviceLoad.then(loadDevices):loadDevices();}
+}):null;
 checkAuth();
 setTimeout(function(){ if(typeof L!=="undefined") renderMap(); }, 200);
-var lastPollAt=0,devicePollFailures=0,devicePollRetryAt=0;
 function devicePollDelay(){
   if(devicePollRetryAt>Date.now())return Math.max(0,devicePollRetryAt-lastPollAt);
-  if(devicePollFailures)return Math.min(300000,15000*Math.pow(2,Math.min(devicePollFailures-1,5)));
+  if(devicePollFailures)return deviceRetryDelay();
+  if(panelEvents&&panelEvents.connected())return Math.max(0,deviceRefreshAt-lastPollAt);
   var active=DEV.some(function(d){return (updateBusy(d.update||{})&&(!d.update.expires_at||d.update.expires_at>Date.now())&&(!d.update.updated_at||Date.now()-Date.parse(d.update.updated_at)<120000)) || (d.task&&['pending','claimed','running'].includes(d.task.state)&&(!d.task.expires_at||d.task.expires_at>Date.now()));});
   return active?3000:30000;
 }
 setInterval(function(){
+  if(panelEvents)panelEvents.tick();
   if(adminSession.authenticated && !document.hidden && Date.now()-lastPollAt>=devicePollDelay()){
     lastPollAt=Date.now();loadDevices();
   }
 }, 2000);
 if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('visibilitychange',function(){
+  if(panelEvents)panelEvents.tick();
   if(!document.hidden&&adminSession.authenticated&&Date.now()-lastPollAt>=devicePollDelay())loadDevices();
 });
 

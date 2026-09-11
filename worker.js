@@ -55,6 +55,8 @@ import { fileMetadata, fileHttp, validateFileTask, cleanupFiles, cleanupDelivere
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 import {MediaRelay} from './media-relay.js';
+import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
+import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
 
@@ -181,9 +183,25 @@ export class ElfStore {
     this.env = env;
     this.adb = new AdbRelay();
     this.media = new MediaRelay(env);
+    this.events = new PanelEvents(ctx);
   }
+  webSocketMessage(socket,message) { this.events.message(socket,message); }
+  webSocketClose(socket,code) { this.events.close(socket,code); }
+  webSocketError(socket) { this.events.close(socket,1011); }
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname==='/api/devices/events') {
+      if(request.method!=='GET')return authJson({ok:false},405);
+      if(!trustedOrigin(request))return authJson({ok:false,msg:'请求来源不匹配'},403);
+      const auth=await this.ctx.blockConcurrencyWhile(async()=>{
+        const authEnv=await this.ctx.storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
+        return handleAdminAuth(this.ctx.storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
+      });
+      if(!auth.ok)return auth;
+      if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return authJson({ok:false,msg:'需要WebSocket连接'},426);
+      const pair=new WebSocketPair();this.events.accept(pair[1]);
+      return new Response(null,{status:101,webSocket:pair[0]});
+    }
     if(url.pathname==='/__geolocation' && request.method==='POST') {
       const raw=await request.text();
       if(raw.length>8192)return json({ok:false},400);
@@ -231,12 +249,12 @@ export class ElfStore {
     }
     if(url.pathname==='/__returns'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
-      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
     if(url.pathname==='/__release'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>16384)return json({ok:false},400);const data=JSON.parse(raw);
       try {
-        return await this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(async storage=>{
+        return await this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
           const response=await handleElfReleasePublish({...this.env,__storage:storage,__uploadedArtifactKey:data.apk_key},new Request(request.url,{method:'POST',body:raw}));
           if(!response.ok)throw response;
           return response;
@@ -245,11 +263,11 @@ export class ElfStore {
     }
     if(url.pathname==='/__media_records'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
-      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
-      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>{
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>{
         const scoped={...this.env,__storage:storage};
         return photoMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices(scoped),list=>saveDevices(scoped,list));
       }));
@@ -257,11 +275,11 @@ export class ElfStore {
     if (url.pathname === '/__files' && request.method === 'POST') {
       const raw=await request.text();
       if(raw.length>8192)return json({ok:false,msg:'文件元数据过大'},400);
-      return this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.transaction(storage=>fileMetadata(storage,
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>fileMetadata(storage,
         new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
     if (url.pathname === "/__recovery" && request.method === "POST") {
-      return this.ctx.blockConcurrencyWhile(() => this.ctx.storage.transaction(async storage => {
+      return this.ctx.blockConcurrencyWhile(() => this.events.transaction(async storage => {
         const scoped = { ...this.env, __storage: storage };
         const devices = await loadDevices(scoped),before=JSON.stringify(devices);
         const outgoing = await prepareRecovery(storage, devices);
@@ -295,7 +313,7 @@ export class ElfStore {
       const raw = await request.text();
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
-          return await this.ctx.storage.transaction(storage => pushState(storage,
+          return await this.events.transaction(storage => pushState(storage,
             new Request(request.url, { method: "POST", body: raw }),
             () => loadDevices({ ...this.env, __storage: storage })));
         } catch { return authJson({ ok: false, msg: "推送状态保存失败" }, 503); }
@@ -305,7 +323,7 @@ export class ElfStore {
       const raw = request.method === "GET" ? undefined : await request.text();
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
-          return await this.ctx.storage.transaction(async storage => {
+          return await this.events.transaction(async storage => {
             if(!isMachineRoute(url.pathname,request.method)) {
               if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
               const authEnv=await storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
@@ -334,6 +352,7 @@ export class ElfStore {
       if(panelGroup(key)&&await this.ctx.storage.get('panel_kv_authority'))return json({ok:false,msg:'配置正在切换到KV，请稍后重试'},503);
       const v = await request.json();
       await this.ctx.storage.put(key, v);
+      if(panelKey(key))this.events.changed();
       return new Response("{\"ok\":true}", {
         headers: { "Content-Type": "application/json; charset=utf-8" }
       });
@@ -344,7 +363,7 @@ export class ElfStore {
 
 // 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
 function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
+  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
 }
 
 const quotaCooldown=new WeakMap();
@@ -375,6 +394,7 @@ const app = {
     if(pathname==='/terminal.js'||pathname==='/terminal.css')return new Response(pathname.endsWith('.js')?terminalScript:terminalCss,{headers:{'Content-Type':pathname.endsWith('.js')?'application/javascript; charset=utf-8':'text/css; charset=utf-8','Cache-Control':'public, max-age=3600'}});
     if(pathname==='/file-hash.js')return new Response(fileHashSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
+    if(pathname==='/panel-events.js')return new Response(panelEventsSource,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-cache'}});
     if (pathname === "/admin-session.js") {
       return new Response(adminSessionSource, { headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" } });
     }
@@ -640,7 +660,7 @@ const app = {
           pairable: Date.parse(row.expires_at) > Date.now(),
           app_version: row.app_version, last_seen: row.last_seen || row.created_at,
           model_hint: row.model_hint, expires_at: row.expires_at }));
-      return json({ ok: true, devices, unpaired, models });
+      return json({ ok: true, devices, unpaired, models, refresh_after_ms:panelRefreshDelay(registered,unpaired) });
     }
     if (pathname === "/api/devices" && method === "POST") {
       return handleDeviceCreate(env, request);
@@ -2900,6 +2920,7 @@ function renderDevicesHtml() {
     '<div style="text-align:right;margin-top:.8rem"><button class="btn-gray" onclick="closeEdit()">关闭<\/button><\/div>',
     '<\/div><\/div>',
     '<script src="/admin-session.js"><\/script>',
+    '<script src="/panel-events.js"><\/script>',
     '<script src="/media-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'

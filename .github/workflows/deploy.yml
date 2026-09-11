@@ -10,6 +10,8 @@ on:
       - "sip-client-source.js"
       - "admin-auth.js"
       - "panel-kv.js"
+      - "panel-events.js"
+      - "panel-events-client.js"
       - "build-static-assets.mjs"
       - "adb-relay.js"
       - "media-relay.js"
