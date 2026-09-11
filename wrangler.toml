@@ -23,3 +23,6 @@ bindings = [{ name = "ELF_DO", class_name = "ElfStore" }]
 [[migrations]]
 tag = "v1"
 new_classes = ["ElfStore"]
+
+[vars]
+PANEL_KV_ENABLED = "1"
