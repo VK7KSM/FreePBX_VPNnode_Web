@@ -9,7 +9,7 @@ final class LostTimer {
         state.put(prefix+"_wall",wall).put(prefix+"_elapsed",elapsed).put(prefix+"_boot",boot).put(prefix+"_age",0);
     }
     static long age(JSONObject state,String prefix,long wall,long elapsed,String boot) {
-        if(!state.has(prefix+"_wall"))return 0;
+        if(!state.has(prefix+"_wall")||("armed".equals(prefix)&&!state.has("armed_elapsed")))return 0;
         long saved=Math.max(0,state.optLong(prefix+"_age"));
         // 重启后不相信可任意修改的墙上时间；保留已消耗时长，累计本次开机时间。
         long delta=boot.equals(state.optString(prefix+"_boot"))?Math.max(0,elapsed-state.optLong(prefix+"_elapsed")):Math.max(0,elapsed);
@@ -17,7 +17,7 @@ final class LostTimer {
     }
     static void checkpoint(JSONObject s,long wall,long elapsed,String boot)throws Exception {
         if(!s.optBoolean("auto_wipe_enabled"))return;
-        for(String prefix:new String[]{"contact","unpaired"})if(s.has(prefix+"_wall")){
+        for(String prefix:new String[]{"contact","unpaired","armed"})if(s.has(prefix+"_wall")){
             long used=age(s,prefix,wall,elapsed,boot);
             if(!boot.equals(s.optString(prefix+"_boot")))s.put("clock_rebased",true);
             s.put(prefix+"_age",used).put(prefix+"_elapsed",elapsed).put(prefix+"_boot",boot);
@@ -38,8 +38,9 @@ final class LostTimer {
         if(paired!=null){
             boolean previous=s.optBoolean("paired",true);s.put("paired",paired);
             if(!paired&&previous){
-                long since=unpairedAt>0?Math.max(s.optLong("armed_wall",wall),Math.min(wall,unpairedAt)):wall;
-                mark(s,"unpaired",since,elapsed,boot);s.put("unpaired_age",Math.min(168*HOUR,wall-since));
+                long known=age(s,"armed",wall,elapsed,boot);
+                long used=unpairedAt>0?Math.min(known,Math.max(0,wall-Math.min(wall,unpairedAt))):0;
+                mark(s,"unpaired",wall,elapsed,boot);s.put("unpaired_age",used);
             }
             if(paired)for(String key:new String[]{"unpaired_wall","unpaired_elapsed","unpaired_boot"})s.remove(key);
         }
@@ -47,7 +48,7 @@ final class LostTimer {
     static void arm(JSONObject s,boolean enabled,int hours,boolean paired,long wall,long elapsed,String boot)throws Exception {
         boolean newlyArmed=enabled&&!s.optBoolean("auto_wipe_enabled");
         s.put("auto_wipe_enabled",enabled).put("timeout_hours",hours).put("wipe_state","idle");
-        if(newlyArmed){s.put("armed_wall",wall);mark(s,"contact",wall,elapsed,boot);s.put("paired",paired);if(!paired)mark(s,"unpaired",wall,elapsed,boot);}
+        if(newlyArmed){mark(s,"armed",wall,elapsed,boot);mark(s,"contact",wall,elapsed,boot);s.put("paired",paired);if(!paired)mark(s,"unpaired",wall,elapsed,boot);}
         if(!enabled)s.remove("manual_task");
     }
     private LostTimer(){}

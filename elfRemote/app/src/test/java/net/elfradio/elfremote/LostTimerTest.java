@@ -36,6 +36,19 @@ public class LostTimerTest {
         JSONObject s=armed(true);assertEquals(DAY-5000,LostTimer.remaining(s,999999999999L,6000,"boot1"));
         assertEquals(DAY-5000,LostTimer.remaining(s,1,6000,"boot1"));
     }
+    @Test public void lateUnpairCannotConsumeTimeBeforeActualArmingDespiteWrongWallClock()throws Exception {
+        JSONObject s=armed(true);
+        LostTimer.contact(s,false,10000000,999999999999L,2000,"boot1");
+        assertEquals(DAY-1000,LostTimer.remaining(s,999999999999L,2000,"boot1"));
+    }
+    @Test public void unpairedAgeIsBoundedAcrossBootAndLegacyMissingCheckpoint()throws Exception {
+        JSONObject s=armed(true);LostTimer.checkpoint(s,1,6000,"boot1");
+        LostTimer.contact(s,false,1,999999999999L,2000,"boot2");
+        assertEquals(DAY-7000,LostTimer.remaining(s,1,2000,"boot2"));
+        JSONObject old=armed(true);old.remove("armed_elapsed");old.remove("armed_boot");
+        LostTimer.contact(old,false,1,999999999999L,9000000,"boot1");
+        assertEquals(DAY,LostTimer.remaining(old,1,9000000,"boot1"));
+    }
     @Test public void rebootKeepsDeadlineInsteadOfRearming()throws Exception {
         JSONObject s=armed(true);LostTimer.checkpoint(s,4600000,3601000,"boot1");
         assertEquals(DAY-3602000,LostTimer.remaining(s,999999999999L,2000,"boot2"));
