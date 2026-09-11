@@ -102,3 +102,15 @@ test('跨午夜后拍摄的报告照片仍归属原报告日期，拍摄时间�
  const page=await queryTrajectoryMedia(f.storage,query('fixture',start-86400000,start-1),start+10000);
  assert.equal(page.records.length,1);assert.equal(page.records[0].captured_at,start+2000);assert.equal(page.records[0].timeline_at,start-1000);
 });
+
+test('历史媒体查询失败仍显示已读取的报告，不能误称没有照片',async()=>{
+ const context=vm.createContext({URLSearchParams,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{getElementById:()=>null},fetch:async url=>url.includes('trajectory-media')?{ok:false,status:503,json:async()=>({ok:false,msg:'媒体读取失败'})}:{ok:true,json:async()=>({ok:true,records:[row(0)],next_cursor:null})}});
+ vm.runInContext(source,context);context.selDev='fixture';context.selFn='locate';context.DEV=[{id:'fixture'}];context.renderOps=()=>{};context.trajectoryDrawMap=()=>{};
+ const s=context.historyState();s.from=s.to='2026-09-11';await context.queryHistory();
+ assert.equal(s.loaded,true);assert.equal(s.rows.length,1);assert.equal(s.historical,true);assert.equal(s.mediaError,'服务器暂不可用');
+ assert.match(context.pageLocate(),/历史媒体：服务器暂不可用/);assert.match(context.trajectoryPreview(),/照片记录暂不可用/);assert.doesNotMatch(context.trajectoryPreview(),/此时没有照片/);
+});
+test('跨午夜录音入口限制在查询范围，保留录制原始时间且不产生范围外节点',()=>{
+ const media=[{type:'audio',id:'cross',captured_at:start-600000,ended_at:start+600000},{type:'audio',id:'before',captured_at:start-2000,ended_at:start-1},{type:'photo',id:'after',captured_at:start+2000000,ended_at:start+2000000}];
+ const events=T.events([],media,{from:start,to:start+1000000});assert.equal(events.length,1);assert.equal(events[0].at,start);assert.equal(events[0].media.captured_at,start-600000);assert.equal(T.related(events[0],media)[0].id,'cross');
+});
