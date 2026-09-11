@@ -75,7 +75,7 @@ final class LostMode {
             Process process=new ProcessBuilder("su","-c",cmd).redirectOutput(response).start();
             if(!process.waitFor(20,TimeUnit.SECONDS)){process.destroy();throw new IOException("lost-operation-timeout");}
             JSONObject result=new JSONObject(RescueFiles.read(response,16384));
-            if(process.exitValue()!=0||result.has("error"))throw new IOException(result.optString("error","lost-operation-failed"));
+            if(process.exitValue()!=0||result.has("error")){RuntimeLog.event("lost-admin-error "+result.optString("diagnostic"));throw new IOException(result.optString("error","lost-operation-failed"));}
             return result;
         }finally{file.delete();response.delete();}
     }

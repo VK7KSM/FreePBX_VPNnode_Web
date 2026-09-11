@@ -15,10 +15,13 @@ final class CoreWake implements Closeable {
     private final Map<String,PowerManager.WakeLock> locks=new HashMap<>();
     private final Map<String,TimerTask> timeouts=new HashMap<>();
     private final Timer timer=new Timer("elfremote-core-wake-timeout",true);
-    static Context systemContext()throws Exception {
+    private static Context sharedSystemContext;
+    static synchronized Context systemContext()throws Exception {
+        if(sharedSystemContext!=null)return sharedSystemContext;
         if(Looper.getMainLooper()==null)Looper.prepareMainLooper();
         Object activity=Class.forName("android.app.ActivityThread").getMethod("systemMain").invoke(null);
-        return (Context)activity.getClass().getMethod("getSystemContext").invoke(activity);
+        sharedSystemContext=(Context)activity.getClass().getMethod("getSystemContext").invoke(activity);
+        return sharedSystemContext;
     }
     CoreWake(Context context,Handler handler){this.context=context;this.handler=handler;alarms=(AlarmManager)context.getSystemService(Context.ALARM_SERVICE);}
     synchronized void schedule(String key,long delay,Runnable action){

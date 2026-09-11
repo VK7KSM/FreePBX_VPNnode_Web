@@ -11,6 +11,7 @@ final class SystemLock {
     private final Object lock;
     private final Class<?> cls;
     SystemLock(Context context)throws Exception {
+        if(android.os.Looper.myLooper()==null)android.os.Looper.prepare();
         this.context=context;cls=Class.forName("com.android.internal.widget.LockPatternUtils");lock=cls.getConstructor(Context.class).newInstance(context);
     }
     boolean disabled()throws Exception{return (Boolean)cls.getMethod("isLockScreenDisabled",int.class).invoke(lock,0);}

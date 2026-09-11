@@ -18,9 +18,12 @@ public final class LostAdminMain {
             try{System.out.println(operation.get());}catch(java.util.concurrent.ExecutionException failure){throw failure.getCause();}
             System.exit(0);
         }catch(Throwable error){
+            Throwable cause=error;while(cause.getCause()!=null&&cause.getCause()!=cause)cause=cause.getCause();
             String code=error.getMessage();
             if(code==null||!code.matches("lost-[a-z-]{1,80}"))code="lost-system-operation-failed";
-            System.out.println("{\"error\":\""+code+"\"}");System.exit(1);
+            String diagnostic=cause.getClass().getSimpleName();
+            for(StackTraceElement frame:cause.getStackTrace())if(frame.getClassName().startsWith("net.elfradio.elfremote.")){diagnostic+="@"+frame.getFileName()+":"+frame.getLineNumber();break;}
+            try{System.out.println(new JSONObject().put("error",code).put("diagnostic",diagnostic));}catch(Exception ignored){System.out.println("{\"error\":\"lost-system-operation-failed\"}");}System.exit(1);
         }
     }
 }
