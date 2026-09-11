@@ -106,9 +106,27 @@ function doLogin(){
 }
 function logout(){ return adminSession.logout(); }
 
+var SERVICE_ERRORS={};
+function serviceErrorText(){
+  var d=currentDev(),errors=[SERVICE_ERRORS.devices,d&&SERVICE_ERRORS['traffic:'+d.id]].filter(Boolean);
+  var quota=errors.find(function(e){return e.code==='storage_quota_exceeded';});
+  return quota?quota.message:Array.from(new Set(errors.map(function(e){return e.message;}))).join(' · ');
+}
+function setServiceError(source,error){
+  if(error)SERVICE_ERRORS[source]=error;else delete SERVICE_ERRORS[source];
+  var el=$('serviceError');if(!el){renderRemoteConsole();el=$('serviceError');}
+  if(el){el.textContent=serviceErrorText();el.hidden=!el.textContent;}
+}
+async function readServiceJson(r){
+  var data;try{data=await r.json();}catch(e){if(r.ok)throw Error('服务器返回的数据无效');data={};}
+  if(!r.ok||data.ok===false){
+    var e=Error(data.code==='storage_quota_exceeded'?'CF 额度已用尽，等待恢复':r.status>=500?'服务器暂不可用':data.msg||'请求失败（'+r.status+'）');
+    e.code=data.code;e.retryAfter=Math.min(900,Math.max(0,Number(r.headers&&r.headers.get('Retry-After'))||0))*1000;throw e;
+  }return data;
+}
 function loadDevices(){
   if(deviceLoad) return deviceLoad;
-  function read(url){return fetch(url).then(function(r){if(!r.ok){var retry=Number(r.headers&&r.headers.get('Retry-After'));if(retry>0)devicePollRetryAt=Date.now()+Math.min(retry,900)*1000;throw new Error('刷新失败（'+r.status+'）');}return r.json();});}
+  function read(url){return fetch(url).then(readServiceJson).catch(function(e){if(e.retryAfter)devicePollRetryAt=Date.now()+e.retryAfter;throw e;});}
   deviceLoad = read("/api/devices").then(function(snapshot){
     var arr=[snapshot,snapshot];
     if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
@@ -132,11 +150,11 @@ function loadDevices(){
     }
     if(editing) renderRemoteConsole();
 
-    if($("deviceLoadError")) $("deviceLoadError").textContent='';
+    setServiceError('devices',null);
     devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();return true;
   }).catch(function(error){
     devicePollFailures++;lastPollAt=Date.now();
-    if($("deviceLoadError")) $("deviceLoadError").textContent=error.message||'刷新失败，保留上次数据';
+    setServiceError('devices',error);
     return false;
   }).finally(function(){deviceLoad=null;});
   return deviceLoad;
@@ -898,7 +916,7 @@ function showHistoryRecord(index){
   map.panTo([loc.lat,loc.lng]);
 }
 
-var DAILY_CACHE={}, TRAFFIC_HISTORY={seq:0};
+var DAILY_CACHE={}, DAILY_LAST={}, DAILY_FAILURES={}, TRAFFIC_HISTORY={seq:0};
 var PHOTO_HISTORY={};
 var MEDIA_HISTORY={device:null,type:'photo'},MEDIA_RECORDS={};
 function photoHistory(d){
@@ -980,17 +998,23 @@ function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficByte
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
-  var h='<div class="remote-head"><h3>通信终端</h3><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
+  var errorText=serviceErrorText();
+  var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3><span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
   var media=typeof ElfMedia!=='undefined'?ElfMedia:null;
   h+=(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d))+'<div class="remote-controls">';
   h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
-  h+='</div>'+(media?media.feedback(d):'')+'<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error||(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
+  h+='</div>'+(media?media.feedback(d):'')+'<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   box.innerHTML=h;
   if(media)media.mount(d);
   if(d)loadReportPhotos(d);
-  if(d && !cached){
+  if(d && !document.hidden && (!cached||(cached.error&&Date.now()>=cached.retryAt))){
     DAILY_CACHE[key]={pending:true};
-    fetch('/api/devices/traffic?'+new URLSearchParams({device_id:d.id,from:day,to:day})).then(function(r){if(!r.ok) throw Error('流量读取失败');return r.json();}).then(function(x){if(!x.ok) throw Error(x.msg||'流量读取失败');DAILY_CACHE[key]={row:x.days[0]};}).catch(function(){DAILY_CACHE[key]={error:'流量读取失败'};setTimeout(function(){delete DAILY_CACHE[key];},15000);}).finally(function(){if(currentDev()&&currentDev().id===d.id) renderRemoteConsole();});
+    fetch('/api/devices/traffic?'+new URLSearchParams({device_id:d.id,from:day,to:day})).then(readServiceJson).then(function(x){
+      DAILY_CACHE[key]={row:x.days[0]};DAILY_LAST[d.id+'|'+day]=x.days[0];DAILY_FAILURES[d.id]=0;setServiceError('traffic:'+d.id,null);
+    }).catch(function(e){
+      var failures=DAILY_FAILURES[d.id]=(DAILY_FAILURES[d.id]||0)+1;
+      DAILY_CACHE[key]={error:true,retryAt:Date.now()+Math.max(e.retryAfter||0,Math.min(300000,15000*Math.pow(2,Math.min(5,failures-1))))};setServiceError('traffic:'+d.id,e);
+    }).finally(function(){if(currentDev()&&currentDev().id===d.id) renderRemoteConsole();});
   }
 }
 function openTrafficHistory(){

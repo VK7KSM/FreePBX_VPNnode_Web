@@ -33,6 +33,17 @@ test('任务与上报回执的只读查询复用一次DO鉴权，不接受失效
   assert.equal((await worker.fetch(request(path,'GET',undefined,'elf_admin=fake'),f.env)).status,401);
  }
 });
+
+test('额度故障在通信终端合并显示，全部相关请求恢复后隐藏',async()=>{
+ const label={textContent:'',hidden:true};const context=vm.createContext({Date,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{hidden:false,addEventListener(){},getElementById:id=>id==='serviceError'?label:null}});
+ vm.runInContext(fs.readFileSync('devices-client.js','utf8'),context);context.DEV=[{id:'xx'}];context.selDev='xx';
+ let error;try{await context.readServiceJson({ok:false,status:503,headers:{get:()=> '900'},json:async()=>({ok:false,code:'storage_quota_exceeded'})});}catch(e){error=e;}
+ assert.equal(error.retryAfter,900000);context.setServiceError('devices',error);context.setServiceError('traffic:xx',error);
+ assert.equal(label.textContent,'CF 额度已用尽，等待恢复');assert.equal(label.hidden,false);
+ context.setServiceError('devices',null);assert.equal(label.hidden,false);
+ context.setServiceError('traffic:xx',null);assert.equal(label.hidden,true);assert.equal(label.textContent,'');
+ const response=await worker.fetch(request('/devices'),{}),html=await response.text();assert.ok(!html.includes('id="deviceLoadError"'));assert.ok(html.includes('#serviceError{font-size:11px'));
+});
 test('空闲、后台、更新任务和失败退避使用不同轮询节奏',()=>{
  const timers=[],events={};const context=vm.createContext({Date,adminSession:{authenticated:true,check(){}},setTimeout(){},setInterval(fn){timers.push(fn)},document:{hidden:false,addEventListener(name,fn){events[name]=fn;}}});
  vm.runInContext(fs.readFileSync('devices-client.js','utf8'),context);let calls=0;context.loadDevices=()=>calls++;
