@@ -9,6 +9,22 @@ class Socket {
 }
 function fixture(){let time=1000;const relay=new AdbRelay({now:()=>time,schedule:()=>1,cancel:()=>{}});return {relay,advance:n=>time+=n};}
 function create(relay){return relay.create({id:'fixture-device',enabled:true,managed_adb_session:true});}
+
+test('旧ADB与shell_v2输出按字节透明中继，未知退出码不伪造为成功',()=>{
+  for(const exit of [undefined,null,0,7]){
+    const {relay}=fixture(),created=create(relay),offer=relay.offer('fixture-device','https://example.test'),browser=new Socket(),device=new Socket();
+    relay.attach(relay.get(created.session_id,'device',offer.token),'device',device);
+    relay.attach(relay.get(created.session_id,'browser'),'browser',browser);
+    device.emit({type:'ready'});
+    for(const chunk of [Buffer.from([0xe4,0xb8]),Buffer.from([0xad,0x0d,0x0a]),Buffer.from('shell@device:/ $ ')]){
+      const data=chunk.toString('base64');device.emit({type:'output',data});assert.equal(browser.sent.at(-1).data,data);
+    }
+    browser.emit({type:'input',data:'Aw=='});assert.equal(device.sent.at(-1).data,'Aw==');
+    browser.emit({type:'resize',rows:24,columns:80});assert.deepEqual(device.sent.at(-1),{type:'resize',rows:24,columns:80});
+    device.emit({type:'closed',message:'会话结束',exit});assert.equal(browser.sent.at(-1).exit,Number.isInteger(exit)?exit:null);
+    assert.equal(relay.sessions.size,0);
+  }
+});
 test('原生定时器不会以会话对象作为this调用',t=>{
   let scheduled=0,cancelled=0;
   t.mock.method(globalThis,'setTimeout',function(fn,ms){assert.ok(this===undefined||this===globalThis);assert.equal(ms,10000);scheduled++;return 17;});
