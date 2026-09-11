@@ -1,4 +1,4 @@
-import {faultRequire as need,faultTarget,faultCommand,faultReceipt,faultPending,faultTask,faultArchiveResult,faultArchiveQuery,faultNumber,faultCapacitySummary,FAULT_HEX} from './fault-contract.js';
+import {faultRequire as need,faultRecord,faultTarget,faultCommand,faultReceipt,faultPending,faultTask,faultArchiveResult,faultArchiveQuery,faultNumber,faultCapacitySummary,faultRetryAt,FAULT_HEX} from './fault-contract.js';
 import {verifyFaultPackage,faultHash,faultJson} from './fault-package.js';
 const contexts=new Map();
 // 同源所有故障目录共用锁，也覆盖不同设备误选同一目录；不跨浏览器或宿主进程。
@@ -15,7 +15,7 @@ function page(){
   let html='<div class="ops-actions">'+action('choose','选择本机保全目录',h)+action('scan','读取故障记录',h||!s)+action('next','下一页',h||!p?.hasMore)+`<span role="status">${e(c.message|| (s?'已连接本机目录':'先选择电脑上保存故障原件的目录'))}</span></div>`;
   if(c.budget)html+=`<p class="muted">本轮 ${c.budget.requests}/48 个请求 · ${Math.ceil((performance.now()-c.budget.start)/1000)}/90 秒 · ${faultNumber(c.budget.bytes)}/8388608 字节</p>`;
   if(p?.capacity){const x=p.capacity;html+=`<p class="muted">最近一次扫描 · ${date(x.capturedAtMs)}（不是实时容量）</p>`+faultCapacitySummary(x).map(line=>`<p class="muted">${e(line)}</p>`).join('');}
-  if(p)html+='<div class="function-table"><table><thead><tr><th>事件</th><th>采集</th><th>导出</th><th>归档记录</th></tr></thead><tbody>'+p.events.map(r=>`<tr><td><button type="button" class="traffic-link" onclick="ElfFaults.select('${r.eventId}')">${e(r.category||'故障')} · ${e(r.eventId.slice(0,12))}</button></td><td>${e(r.phase==='INDEX_CORRUPT'?'索引损坏':phaseLabel[r.captureState]||r.captureState||r.phase||'未知')}</td><td>${e(phaseLabel[r.exportState]||r.exportState||'未知')}</td><td>${e(phaseLabel[r.archiveState]||r.archiveState||'未知')}</td></tr>`).join('')+'</tbody></table></div>';
+  if(p)html+='<div class="function-table"><table><thead><tr><th>事件</th><th>采集</th><th>导出</th><th>归档记录</th></tr></thead><tbody>'+p.events.map(r=>`<tr><td><button type="button" class="traffic-link" onclick="ElfFaults.select('${r.eventId}')"${h?' disabled':''}>${e(r.category||'故障')} · ${e(r.eventId.slice(0,12))}</button></td><td>${e(r.phase==='INDEX_CORRUPT'?'索引损坏':phaseLabel[r.captureState]||r.captureState||r.phase||'未知')}</td><td>${e(phaseLabel[r.exportState]||r.exportState||'未知')}</td><td>${e(phaseLabel[r.archiveState]||r.archiveState||'未知')}</td></tr>`).join('')+'</tbody></table></div>';
   const id=c.selected,ev=s?.events?.[id];if(id){html+=`<div class="system-setting-section"><h4>所选事件 · ${e(id.slice(0,16))}</h4><div class="ops-actions">${action('query','核查详情',h)}${action('transfer','取回并校验原件',h||!ev?.query||ev.phase==='DONE')}${action('archive','确认归档',h||!ev?.proof||!['ARCHIVE','CONFIRM'].includes(ev.phase))}<span>${e(labels[ev?.phase]||'尚未取回')}</span></div>`;
     if(ev?.receipt)html+=`<p>故障包：${faultNumber(ev.receipt.bytes)} 字节 · ${e(ev.receipt.sha256.slice(0,16))}</p>`;
     if(ev?.retainedAttempts?.length)html+='<p class="muted">异常原包已保留，重新下载使用新文件名：</p>'+ev.retainedAttempts.map(a=>`<p class="muted">${e(a.name)} · ${e(a.reason)}</p>`).join('');
@@ -27,11 +27,12 @@ function page(){
 }
 async function fileRead(c,name,max=1048576){const f=await (await c.directory.getFileHandle(name)).getFile();need(f.size<=max,'本机文件超过允许大小');return new Uint8Array(await f.arrayBuffer());}
 async function fileWrite(c,name,bytes){const h=await c.directory.getFileHandle(name,{create:true}),w=await h.createWritable();try{await w.write(bytes);await w.close();}catch(error){await w.abort().catch(()=>{});throw error;}}
-async function save(c){await fileWrite(c,'fault-web-state.json',JSON.stringify(c.state));}
+async function save(c){const bytes=new TextEncoder().encode(JSON.stringify(c.state));need(bytes.length<=1048576,'本机工作流记录超过1MB，原状态已保留；请保全目录并人工核查');await fileWrite(c,'fault-web-state.json',bytes);}
+function serviceBackoff(c,r){if(r.status===429||r.status>=500){c.retryAt=faultRetryAt(r.headers.get('Retry-After'));throw Error('服务暂不可用，请稍后继续原操作');}}
 async function request(c,route,body,missing=false){
   need(c.budget&&c.budget.requests<48&&performance.now()-c.budget.start<90000,'本轮预算已到，点击原操作可继续');c.budget.requests++;
   const r=await fetch(route,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(20000)});
-  if(r.status===429||r.status>=500){const seconds=Number(r.headers.get('Retry-After'));c.retryAt=Date.now()+Math.min(300000,Math.max(15000,Number.isFinite(seconds)?seconds*1000:15000));throw Error('服务暂不可用，请稍后继续原操作');}
+  serviceBackoff(c,r);
   const text=await r.text();need(new TextEncoder().encode(text).length<=262144,'服务返回超限');let value;try{value=JSON.parse(text);}catch{throw Error('服务器响应不完整');}
   if(missing&&r.status===404&&value.ok===false&&value.msg==='未找到该任务')return null;
   need(r.ok&&value.ok!==false,'请求失败：'+(value.msg||r.status));return value;
@@ -44,26 +45,26 @@ async function task(c,holder,key,type,params,beforeSend){
 }
 async function command(c,holder,key,args,beforeSend){return task(c,holder,key,'root_exec',faultCommand(c.state.activeApk,args),beforeSend);}
 async function checkTarget(c){const list=await request(c,'/api/devices'),d=list.devices?.find(d=>d.id===c.id);need(d,'设备未在当前列表中');const t=faultTarget(d);need(JSON.stringify(t)===JSON.stringify(c.state.target),'设备或版本已改变，请使用新的保全目录');return d;}
-async function run(fn){const c=context();if(!c||c.busy)return;if(c.retryAt&&Date.now()<c.retryAt){c.message='请等待服务退避结束后继续';render();return;}c.busy=true;c.message='正在处理…';c.budget={requests:0,bytes:0,start:performance.now()};render();
-  try{need(c.directory&&c.state,'请先选择本机保全目录');need(navigator.locks,'浏览器不支持本机工作流互斥');await navigator.locks.request(workflowLock,{ifAvailable:true},async lock=>{need(lock,'另一个页面正在处理故障保全，请稍后继续');const fresh=faultJson(await fileRead(c,'fault-web-state.json'));need(fresh.schemaVersion===1&&JSON.stringify(fresh.target)===JSON.stringify(c.state.target)&&fresh.tasks&&fresh.events,'本机工作流身份不符');c.state=fresh;await checkTarget(c);await fn(c);});}
+async function run(fn){const c=context();if(!c||c.busy)return;if(c.retryAt&&Date.now()<c.retryAt){c.message='请等待服务退避结束后继续';render();return;}const eventId=c.selected;c.busy=true;c.message='正在处理…';c.budget={requests:0,bytes:0,start:performance.now()};render();
+  try{need(c.directory&&c.state,'请先选择本机保全目录');need(navigator.locks,'浏览器不支持本机工作流互斥');await navigator.locks.request(workflowLock,{ifAvailable:true},async lock=>{need(lock,'另一个页面正在处理故障保全，请稍后继续');const fresh=faultJson(await fileRead(c,'fault-web-state.json'));need(faultRecord(fresh)&&fresh.schemaVersion===1&&JSON.stringify(fresh.target)===JSON.stringify(c.state.target)&&faultRecord(fresh.tasks)&&faultRecord(fresh.events),'本机工作流身份不符或状态损坏');c.state=fresh;await checkTarget(c);await fn(c,eventId);});}
   catch(error){c.message=error.message||'操作未完成，请继续原操作';}finally{c.busy=false;render();}
 }
 async function choose(){const c=context();if(!c||c.busy)return;c.busy=true;try{
   need(window.showDirectoryPicker,'请使用支持本机目录访问的桌面浏览器');need(navigator.locks,'浏览器不支持本机工作流互斥');const target=faultTarget(window.currentDev()),directory=await showDirectoryPicker({mode:'readwrite',id:'elfremote-faults'});
   await navigator.locks.request(workflowLock,{ifAvailable:true},async lock=>{need(lock,'另一个页面正在处理故障保全，请稍后重选原目录');c.directory=directory;
-  let state;try{state=faultJson(await fileRead(c,'fault-web-state.json'));}catch(error){if(error.name!=='NotFoundError')throw error;}
-  if(state){need(state.schemaVersion===1&&JSON.stringify(state.target)===JSON.stringify(target)&&state.events&&state.tasks,'该目录属于其他目标、版本或状态损坏');if(state.activeApk)faultCommand(state.activeApk,['pending','16']);c.state=state;}
+  let state,exists=true;try{state=faultJson(await fileRead(c,'fault-web-state.json'));}catch(error){if(error.name!=='NotFoundError')throw error;exists=false;}
+  if(exists){need(faultRecord(state)&&state.schemaVersion===1&&JSON.stringify(state.target)===JSON.stringify(target)&&faultRecord(state.events)&&faultRecord(state.tasks),'该目录属于其他目标、版本或状态损坏');if(state.activeApk)faultCommand(state.activeApk,['pending','16']);c.state=state;}
   else {c.state={schemaVersion:1,target,tasks:{},events:{},cursor:'',activeApk:null};await save(c);}
   c.message='已恢复本机工作流';});
   }catch(error){c.directory=null;c.state=null;c.message=error.name==='AbortError'?'已取消选择':error.message;}finally{c.busy=false;render();}
 }
 async function ensureApk(c){if(c.state.activeApk)return;const active=await task(c,c.state,'active','root_exec',{cwd:'/',timeout:15,command:'cat /data/local/d31-remote/runtime/active.json'});need(active.versionName===c.state.target.expectedVersion,'活动客户端版本与设备报告不符');faultCommand(active.path,['pending','16']);c.state.activeApk=active.path;await save(c);}
-async function scanPage(c,next){await ensureApk(c);if(!c.state.scan||c.state.scan.done){const cursor=next?c.state.page?.nextAfter||'':'';c.state.scan={cursor,tasks:{}};await save(c);}const scan=c.state.scan;
+async function scanPage(c,next){if(c.state.scan!==undefined)need(faultRecord(c.state.scan),'本机扫描记录损坏');await ensureApk(c);if(c.state.scan===undefined||c.state.scan.done){const cursor=next?c.state.page?.nextAfter||'':'';c.state.scan={cursor,tasks:{}};await save(c);}const scan=c.state.scan;
   const value=await command(c,scan,'pending',['pending','16',...(scan.cursor?[scan.cursor]:[])]);need(new TextEncoder().encode(scan.tasks.pending.task.result.text).length<=8000,'紧凑故障索引超过8000字节');c.state.page=faultPending(value);scan.done=true;await save(c);c.message=value.hasMore?'还有下一页；此处仅显示元数据':'本轮列表已读完；不代表所有故障已保全';}
-function selected(c){need(FAULT_HEX.test(c.selected),'请先选择事件');return c.state.events[c.selected]||=( {eventId:c.selected,phase:'EXPORT',tasks:{}} );}
-async function queryEvent(c){const ev=selected(c);if(!ev.detail||ev.detail.done){ev.detail={tasks:{}};await save(c);}const q=await command(c,ev.detail,'query',['query',ev.eventId]);need(q.eventId===ev.eventId,'故障详情身份不符');ev.query=q;ev.detail.done=true;await save(c);c.message='详情已读取；归档记录不能代替本机验包';}
+function selected(c,id=c.selected){need(FAULT_HEX.test(id),'请先选择事件');let ev=c.state.events[id];if(ev===undefined)ev=c.state.events[id]={eventId:id,phase:'EXPORT',tasks:{}};need(faultRecord(ev)&&ev.eventId===id,'本机事件记录损坏');return ev;}
+async function queryEvent(c,id){const ev=selected(c,id);if(ev.detail!==undefined)need(faultRecord(ev.detail),'本机详情记录损坏');if(ev.detail===undefined||ev.detail.done){ev.detail={tasks:{}};await save(c);}const q=await command(c,ev.detail,'query',['query',ev.eventId]);need(q.eventId===ev.eventId,'故障详情身份不符');ev.query=q;ev.detail.done=true;await save(c);c.message='详情已读取；归档记录不能代替本机验包';}
 async function localProof(c,ev){const bytes=await fileRead(c,ev.bundle,8388608);return verifyFaultPackage(bytes,ev.receipt,ev.eventId);}
-async function transfer(c){const ev=selected(c);if(ev.receipt)faultReceipt(ev.receipt,ev.eventId);need(ev.query&&['COMPLETE','PARTIAL'].includes(ev.query.state?.phase||ev.query.phase),'事件尚未进入可导出终态，请先核查详情');
+async function transfer(c,id){const ev=selected(c,id);if(ev.receipt)faultReceipt(ev.receipt,ev.eventId);need(ev.query&&['COMPLETE','PARTIAL'].includes(ev.query.state?.phase||ev.query.phase),'事件尚未进入可导出终态，请先核查详情');
   if(ev.phase==='EXPORT'){ev.receipt=faultReceipt(await command(c,ev,'export',['export',ev.eventId]),ev.eventId);ev.phase='GET_FILE';await fileWrite(c,'receipt-'+ev.eventId+'.json',JSON.stringify(ev.receipt));await save(c);}
   if(ev.phase==='GET_FILE'){const result=await task(c,ev,'getFile','get_file',{path:ev.receipt.path,allow_cellular:false});need(result.action==='uploaded'&&result.sha256===ev.receipt.sha256&&result.bytes===ev.receipt.bytes,'服务器接收回执不符');ev.phase='DOWNLOAD';await save(c);}
   if(ev.phase==='DOWNLOAD'){
@@ -76,7 +77,7 @@ async function transfer(c){const ev=selected(c);if(ev.receipt)faultReceipt(ev.re
       let name;for(let i=0;i<8;i++){const candidate='bundle-'+ev.eventId+'-'+crypto.randomUUID()+'.zip';try{await c.directory.getFileHandle(candidate);}catch(error){if(error.name!=='NotFoundError')throw error;name=candidate;break;}}need(name,'无法分配新的本机文件名');ev.bundle=name;await save(c);
       const taskId=ev.tasks.getFile.request.id,q=new URLSearchParams({device_id:c.id,task_id:taskId}),m=await request(c,'/api/elfremote/file-return?'+q),f=m.file;
       need(f?.state==='ready'&&f.device_id===c.id&&f.task_id===taskId&&f.sha256===r.sha256&&(f.size??f.bytes)===r.bytes&&(f.size===undefined||f.bytes===undefined||f.size===f.bytes),'暂存文件目标、大小或摘要不符');
-      need(c.budget.requests<48&&performance.now()-c.budget.start<90000,'本轮请求预算已到');c.budget.requests++;const res=await fetch('/api/elfremote/file-return?'+q+'&download=1',{credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(30000)});need(res.status===200,'故障包下载失败');const reader=res.body.getReader(),chunks=[];let length=0;
+      need(c.budget.requests<48&&performance.now()-c.budget.start<90000,'本轮请求预算已到');c.budget.requests++;const res=await fetch('/api/elfremote/file-return?'+q+'&download=1',{credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(30000)});serviceBackoff(c,res);need(res.status===200,'故障包下载失败');const reader=res.body.getReader(),chunks=[];let length=0;
       try{for(;;){const {value,done}=await reader.read();if(done)break;length+=value.length;c.budget.bytes+=value.length;need(length<=r.bytes&&c.budget.bytes<=8388608,'下载大小超过回执');chunks.push(value);}}finally{await reader.cancel();}
       need(length===r.bytes,'故障包下载中断');const bytes=new Uint8Array(length);let at=0;for(const b of chunks){bytes.set(b,at);at+=b.length;}need(await faultHash(bytes)===r.sha256,'下载故障包摘要不符');await fileWrite(c,ev.bundle,bytes);
     }ev.phase='VERIFY';await save(c);
@@ -84,8 +85,8 @@ async function transfer(c){const ev=selected(c);if(ev.receipt)faultReceipt(ev.re
   if(['VERIFY','ARCHIVE'].includes(ev.phase)){ev.proof=await localProof(c,ev);await fileWrite(c,'verified-'+ev.eventId+'.json',JSON.stringify(ev.proof));ev.phase='ARCHIVE';await save(c);}
   c.message='本机原件逐项校验完成，可以确认归档';
 }
-async function archive(c){const ev=selected(c);need(['ARCHIVE','CONFIRM'].includes(ev.phase),'请先取回并校验原件');const proof=await localProof(c,ev);
+async function archive(c,id){const ev=selected(c,id);need(['ARCHIVE','CONFIRM'].includes(ev.phase),'请先取回并校验原件');const proof=await localProof(c,ev);
   if(ev.phase==='ARCHIVE'){const ack=await command(c,ev,'archive',proof.archiveArgs,()=>localProof(c,ev));faultArchiveResult(ack,ev.receipt);ev.ack=ack;ev.phase='CONFIRM';await save(c);}
   const q=await command(c,ev,'confirm',['query',ev.eventId]);faultArchiveQuery(q,ev.receipt);ev.query=q;ev.phase='DONE';await save(c);c.message='归档已确认，设备原件未删除';
 }
-window.ElfFaults={page,choose,available:d=>d?.model_id==='mdl_d31'&&d.managed_exec_tasks===true&&d.managed_file_return===true,scan:()=>run(c=>scanPage(c,false)),next:()=>run(c=>scanPage(c,true)),select:id=>{if(FAULT_HEX.test(id)){context().selected=id;render();}},query:()=>run(queryEvent),transfer:()=>run(transfer),archive:()=>run(archive)};
+window.ElfFaults={page,choose,available:d=>d?.model_id==='mdl_d31'&&d.managed_exec_tasks===true&&d.managed_file_return===true,scan:()=>run(c=>scanPage(c,false)),next:()=>run(c=>scanPage(c,true)),select:id=>{const c=context();if(c&&!c.busy&&FAULT_HEX.test(id)){c.selected=id;render();}},query:()=>run(queryEvent),transfer:()=>run(transfer),archive:()=>run(archive)};

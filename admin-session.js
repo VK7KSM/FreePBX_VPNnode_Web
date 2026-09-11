@@ -7,6 +7,19 @@ export const adminSessionSource = String.raw`(function installAdminSession() {
     var seconds=Number(value);if(value&&Number.isFinite(seconds))return Math.max(0,seconds*1000);
     var date=Date.parse(value);return Number.isFinite(date)?Math.max(0,date-Date.now()):0;
   }
+  function cloudflareQuota(response){
+    if(response.status!==429||!/^text\/html(?:\s*;|$)/i.test(response.headers.get('Content-Type')||''))return response;
+    return response.clone().text().then(function(html){
+      var text=html.slice(0,131072).replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ');
+      if(!/\bcloudflare\b/i.test(text)||! /\berror\s*(?:code\s*)?:?\s*1027\b/i.test(text))return response;
+      var now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000,provided=retryDelay(response.headers.get('Retry-After'));
+      var retry=provided>0?now+provided:Math.min(reset,now+900000),headers=new Headers(response.headers);
+      headers.set('Content-Type','application/json; charset=utf-8');headers.set('Cache-Control','no-store');
+      if(!(provided>0))headers.set('Retry-After',String(Math.max(1,Math.ceil((retry-now)/1000))));
+      headers.delete('Content-Length');headers.delete('Content-Encoding');
+      return new Response(JSON.stringify({ok:false,code:'workers_quota_exceeded',msg:'CF Workers 日请求额度已用尽，等待恢复',retry_at:new Date(retry).toISOString(),reset_at:new Date(reset).toISOString()}),{status:429,headers:headers});
+    }).catch(function(){return response;});
+  }
   function expire() {
     state.authenticated = false;
     var form = document.getElementById("loginWrap");
@@ -15,11 +28,13 @@ export const adminSessionSource = String.raw`(function installAdminSession() {
   try { localStorage.removeItem("_pt"); } catch (_) {}
   window.fetch = function(input, options) {
     return nativeFetch(input, options).then(function(response) {
-      var url = new URL(typeof input === "string" ? input : input.url, location.href);
-      if (url.origin === location.origin && url.pathname.indexOf("/api/") === 0 && response.status === 401) {
+      var url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
+      var localApi=url.origin===location.origin&&url.pathname.indexOf('/api/')===0;
+      if (localApi && response.status === 401) {
         expire();
         if (url.pathname !== "/api/login" && url.pathname !== "/api/session") throw new Error("登录已失效");
       }
+      if(localApi)return cloudflareQuota(response);
       return response;
     });
   };

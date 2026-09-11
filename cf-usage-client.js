@@ -53,15 +53,15 @@ export const cfUsageClientSource = String.raw`(function(){
     if(!active()){box.open=false;plan(5000);return;}
     if(document.hidden||pending){plan(60000);return;}
     if(Date.now()<nextAt){plan(Math.min(60000,nextAt-Date.now()));return;}
-    pending=true;var retry=0;
+    pending=true;var retry=0,dailyQuota=false;
     try{
       var response=await fetch('/api/cf-usage',{credentials:'same-origin',cache:'default'});
-      if(!response.ok){var h=response.headers.get('Retry-After');retry=/^\d+$/.test(h||'')?Number(h)*1000:Math.max(0,Date.parse(h)-Date.now())||0;throw Error('统计暂不可用');}
+      if(!response.ok){var h=response.headers.get('Retry-After');retry=/^\d+$/.test(h||'')?Number(h)*1000:Math.max(0,Date.parse(h)-Date.now())||0;try{var failure=await response.json();dailyQuota=failure.code==='workers_quota_exceeded';}catch(_){}throw Error('统计暂不可用');}
       var data=await response.json();if(data.ok!==true||!Array.isArray(data.metrics))throw Error('统计响应无效');
       failures=0;nextAt=Date.now()+INTERVAL;render(data);
       try{sessionStorage.setItem(KEY,JSON.stringify({savedAt:Date.now(),data:data}));}catch(_){}
     }catch(_){
-      failures=Math.min(failures+1,4);nextAt=Date.now()+Math.max(retry,INTERVAL*Math.pow(2,failures-1));
+      failures=Math.min(failures+1,4);nextAt=Date.now()+Math.max(retry,dailyQuota?INTERVAL:INTERVAL*Math.pow(2,failures-1));
       if(current)render(Object.assign({},current,{stale:true,status:'unavailable'}));else note.textContent='统计暂不可用，稍后自动重试。';
     }finally{pending=false;plan(60000);}
   }

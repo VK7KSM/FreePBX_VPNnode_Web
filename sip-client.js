@@ -54,7 +54,7 @@ var sipLoading=null,sipPollFailures=0,sipPollAt=0,sipFullAt=0,sipRetryAt=0;
 function readSip(full){
   if(sipLoading)return sipLoading;
   sipLoading=fetch(full?'/api/sip':'/api/sip/live').then(function(r){
-    if(!r.ok){var seconds=Number(r.headers&&r.headers.get('Retry-After'));if(seconds>0)sipRetryAt=Date.now()+Math.min(seconds,900)*1000;throw Error('读取失败');}return r.json();
+    if(!r.ok){var retry=r.headers&&r.headers.get('Retry-After'),seconds=Number(retry);if(retry&&!Number.isFinite(seconds))seconds=(Date.parse(retry)-Date.now())/1000;if(seconds>0)sipRetryAt=Date.now()+Math.min(seconds,2147483)*1000;throw Error('读取失败');}return r.json();
   }).then(function(d){if(!d.ok)throw Error('读取失败');applySipStatus(d,full);sipPollFailures=0;sipRetryAt=0;if(full)sipFullAt=Date.now();})
     .catch(function(){sipPollFailures++;STALE=true;renderStatus();})
     .finally(function(){sipPollAt=Date.now();sipLoading=null;});

@@ -274,14 +274,17 @@ async function requestDeviceStatus(id){
   var started=performance.now();
   REQUEST_TIMING[id]={};
   try {
-    var result = await (await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})})).json();
+    var result = await readServiceJson(await fetch("/api/devices/request-status", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:id})}));
     if(!result.ok) throw new Error(result.msg || "请求失败");
     var requestId = result.request && result.request.request_id;
     STATUS[id]="等待设备领取"; renderList(); updateReportFeedback();
-    for(var attempt=0;attempt<150;attempt++){
+    var poll={};
+    while(!poll.resultPoll||poll.resultPoll.attempts<150){
       await new Promise(function(resolve){setTimeout(resolve,2000);});
-      var state = await (await fetch("/api/devices/status-request?device_id="+encodeURIComponent(id))).json();
-      if(!state.ok) throw new Error(state.msg || "查询失败");
+      var state;
+      try{state=await readResultJson(poll,'report/'+id+'/'+requestId,'/api/devices/status-request?device_id='+encodeURIComponent(id));}
+      catch(error){if(error.stopPolling)throw error;continue;}
+      if(!state)continue;
       if(state.request && state.request.request_id===requestId && state.request.received_at && REQUEST_TIMING[id].receivedMs==null){
         REQUEST_TIMING[id].receivedMs=Math.round(performance.now()-started);
         STATUS[id]="等待完整上报"; renderList(); updateReportFeedback();
@@ -290,7 +293,7 @@ async function requestDeviceStatus(id){
         REQUEST_TIMING[id].completedMs=Math.round(performance.now()-started);
         STATUS[id]=""; await loadDevices(); return true;
       }
-      if(state.request && state.request.state==="expired") break;
+      if(state.request && state.request.request_id===requestId && state.request.state==="expired") break;
     }
     STATUS[id]="拉取超时";
   } catch(error) { STATUS[id]="拉取失败"; }
@@ -1350,9 +1353,12 @@ async function runSystemSettings(params){
   var d=currentDev();if(!d||!d.managed_system_settings||d.enabled===false)return;var state=systemSettingsState();if(params.action==='set'&&!systemSettingAllowed(d,params.group,params.key,params.package)){state.message='设备尚不支持此设置';renderOps();return;}if(state.pending){if(params.action==='read')state.nextRead=params;return;}
   state.pending=true;state.message=params.action==='set'?'正在应用设置':'正在读取设备设置';renderOps();
   try{
-    var r=await fileApi('/api/elfremote/task',{device_id:d.id,type:'system_config',id:'settings-'+crypto.randomUUID(),params:params}),task;
-    for(var start=Date.now();Date.now()-start<150000;){
-      var x=await fileApi('/api/elfremote/tasks?'+new URLSearchParams({device_id:d.id,task_id:r.task.id}));task=x.task;
+    var r=await fileApi('/api/elfremote/task',{device_id:d.id,type:'system_config',id:'settings-'+crypto.randomUUID(),params:params}),task,poll={};
+    while(!poll.resultPoll||poll.resultPoll.attempts<125){
+      var x=null;
+      try{x=await readWatchedTask(poll,d.id,r.task.id);}
+      catch(e){if(e.stopPolling)throw e;state.message=e.message;}
+      if(x)task=x.task;
       if(task&&['success','failed','rejected','expired'].includes(task.state))break;
       await new Promise(function(resolve){setTimeout(resolve,1200);});
     }
@@ -1668,19 +1674,32 @@ function commandResult(u,t){
   u.shell.lines.push({k:'sys',t:(t.detail||t.label)+(result.exit_code!=null?' · 退出码 '+result.exit_code:'')+(result.elapsed_ms!=null?' · '+(result.elapsed_ms/1000).toFixed(1)+'s':'')});
   if(u.shell.lines.length>500)u.shell.lines=u.shell.lines.slice(-400);
 }
-// 查询退避仅影响结果显示，不取消任务，也不重发设备命令。
-async function readWatchedTask(owner,deviceId,id){
-  var key=deviceId+'/'+id,p=owner.resultPoll;
-  if(!p||p.key!==key)p=owner.resultPoll={key:key,failures:0,next:0};
-  if(document.hidden||p.next>Date.now()||p.busy)return null;
+// 查询退避仅影响结果显示，不取消任务，也不重发设备命令。暂停不消耗查询预算。
+function resultPollingActive(){
+  return !(typeof document!=='undefined'&&document.hidden)&&!(typeof adminSession!=='undefined'&&adminSession.authenticated===false);
+}
+async function readResultJson(owner,key,url){
+  var p=owner.resultPoll;
+  if(!p||p.key!==key)p=owner.resultPoll={key:key,failures:0,next:0,attempts:0};
+  if(!resultPollingActive()||p.next>Date.now()||p.busy)return null;
+  p.attempts=(p.attempts||0)+1;
   p.busy=true;
   try{
-    var r=await fetch('/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:id}));
-    if(!r.ok){var e=Error(r.status===404?'任务记录已不存在':'结果暂不可用，稍后自动重试');e.stopPolling=r.status===401||r.status===403||r.status===404;e.retryAfter=Math.min(900,Math.max(0,Number(r.headers.get('Retry-After'))||0))*1000;throw e;}
-    var x=await r.json();if(!x.ok||!x.task){var missing=Error('任务记录已不存在');missing.stopPolling=true;throw missing;}
+    var r=await fetch(url),x;
+    try{x=await readServiceJson(r);}
+    catch(e){e.stopPolling=r.status===403||r.status===404;if(r.status===404)e.message='任务记录已不存在';throw e;}
     p.failures=0;p.next=0;return x;
-  }catch(e){p.failures++;p.next=Date.now()+Math.max(e.retryAfter||0,Math.min(300000,15000*Math.pow(2,Math.min(5,p.failures-1))));throw e;}
+  }catch(e){
+    // 全局鉴权包装器收到401会先显示登录页并抛错；等待再次登录，不把原任务标成失败。
+    if(typeof adminSession!=='undefined'&&adminSession.authenticated===false){p.attempts=Math.max(0,p.attempts-1);return null;}
+    p.failures++;p.next=Date.now()+Math.max(e.retryAfter||0,Math.min(300000,15000*Math.pow(2,Math.min(5,p.failures-1))));throw e;
+  }
   finally{p.busy=false;}
+}
+async function readWatchedTask(owner,deviceId,id){
+  var x=await readResultJson(owner,deviceId+'/'+id,'/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:id}));
+  if(x&&!x.task){var missing=Error('任务记录已不存在');missing.stopPolling=true;throw missing;}
+  return x;
 }
 async function watchCommand(deviceId,id,u){
   if(u.shell.pending!==id)return;

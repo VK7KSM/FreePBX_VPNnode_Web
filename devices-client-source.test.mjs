@@ -317,6 +317,7 @@ test('系统分类快速切换只补读最后选择，停用设备不能下发�
   if(requests.length===1)await new Promise(r=>release=r);
   return {task:{state:'success',result:{text:JSON.stringify({group:requests.at(-1),sampled_at:1})}}};
  };
+ context.readWatchedTask=()=>context.fileApi('/api/elfremote/tasks');
  const first=context.runSystemSettings({group:'sound',action:'read'});await new Promise(resolve=>setImmediate(resolve));assert.equal(typeof release,'function',context.systemSettingsState().message);
  context.selectSystemTab('语言与时间');context.selectSystemTab('网络与连接');assert.deepEqual(requests,['sound']);release();await first;
  for(let i=0;i<15&&context.systemSettingsState().pending;i++)await Promise.resolve();assert.deepEqual(requests,['sound','network']);

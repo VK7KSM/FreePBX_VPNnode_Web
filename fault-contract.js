@@ -1,5 +1,6 @@
 export const FAULT_HEX = /^[a-f0-9]{64}$/;
 export function faultRequire(ok, reason) { if (!ok) throw Error(reason); }
+export function faultRecord(value) { return value!==null&&typeof value==='object'&&!Array.isArray(value); }
 export function faultTarget(device) {
   faultRequire(device && device.model_id === 'mdl_d31' && device.enabled !== false && device.managed_exec_tasks === true && device.managed_file_return === true, '该设备尚未提供故障取回能力');
   faultRequire(/^[A-Za-z0-9_-]{1,96}$/.test(device.id) && /^[0-9A-Za-z._-]{1,64}$/.test(String(device.app_version)), '设备身份或版本无效');
@@ -25,9 +26,12 @@ export function faultPending(value) {
 }
 // 与宿主队列一致：先持久化请求，恢复只查原号；权威不存在时才同号补交。
 export async function faultTask({state,key,type,params,save,request,now=Date.now,uuid=()=>crypto.randomUUID(),beforeSend=async()=>{}}) {
-  state.tasks ||= {};
+  faultRequire(faultRecord(state),'持久任务容器损坏');
+  if(state.tasks===undefined)state.tasks={};
+  faultRequire(faultRecord(state.tasks),'持久任务映射损坏');
   let op=state.tasks[key];
-  if(!op){op=state.tasks[key]={request:{device_id:state.target.deviceId,id:'d31-fault-'+uuid(),type,params,expires_at:now()+600000}};await save();}
+  if(op===undefined){op=state.tasks[key]={request:{device_id:state.target.deviceId,id:'d31-fault-'+uuid(),type,params,expires_at:now()+600000}};await save();}
+  faultRequire(faultRecord(op)&&faultRecord(op.request),'持久任务记录损坏');
   faultRequire(op.request.device_id===state.target.deviceId&&op.request.type===type&&JSON.stringify(op.request.params)===JSON.stringify(params)&&/^d31-fault-[a-f0-9-]{36}$/.test(op.request.id)&&Number.isSafeInteger(op.request.expires_at), '持久任务与当前目标不符');
   if(op.task)return faultTaskResult(op.task,type);
   const q=new URLSearchParams({device_id:state.target.deviceId,task_id:op.request.id});
@@ -55,6 +59,12 @@ export function faultArchiveQuery(q,r) {
   faultRequire(q?.eventId===r.eventId&&q.export?.archived===true&&q.export.state==='EXPORTED'&&q.export.receipt?.sha256===r.sha256&&q.export.receipt.bytes===r.bytes&&q.export.receipt.manifestSha256===r.manifestSha256,'独立查询尚未确认同一故障包归档');
 }
 export function faultNumber(n){return Number.isSafeInteger(n)&&n>=0?String(n):'未知';}
+export function faultRetryAt(value,now=Date.now()) {
+  const text=String(value??'').trim();
+  const seconds=/^\d+$/.test(text)?Number(text):NaN;
+  const deadline=Number.isFinite(seconds)?now+seconds*1000:Date.parse(text);
+  return Number.isFinite(deadline)?Math.max(now+15000,Math.min(8640000000000000,deadline)):now+15000;
+}
 export function faultCapacitySummary(x) {
   const n=faultNumber, continuous=x.admissionPolicy==='IN_FLIGHT_AND_RETAINED_BUDGETS';
   const limits={ACTIVE_EVENT_LIMIT:'未归档事件名额已满',COLLECTING_EVENT_LIMIT:'在途采集名额已满',RETAINED_EVENT_LIMIT:'保留事件已满',ACTIVE_RESERVATION_LIMIT:'采集空间预留不足',ARCHIVE_BYTE_LIMIT:'原件总字节上限',EXPORT_HEADROOM_LIMIT:'导出预留空间不足',FREE_SPACE_RESERVE:'剩余空闲空间不足'};

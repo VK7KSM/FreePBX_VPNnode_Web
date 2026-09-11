@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {faultTask,faultPending,faultReceipt,faultArchiveResult,faultArchiveQuery,faultNumber,faultCapacitySummary} from './fault-contract.js';
+import {faultTask,faultPending,faultReceipt,faultArchiveResult,faultArchiveQuery,faultNumber,faultCapacitySummary,faultRetryAt} from './fault-contract.js';
 import {faultHash,faultJson,verifyFaultPackage} from './fault-package.js';
 import vm from 'node:vm';import faultClientSource from './fault-client-source.js';
 const id='a'.repeat(64),sha='b'.repeat(64),enc=new TextEncoder();
@@ -24,14 +24,14 @@ test('包摘要正确仍拒绝原件摘要错误、重复、路径越界、漏�
 // 目录和请求均为离线替身；锁实现真实持有/竞争语义，不无条件授予。
 function mutex(){const held=new Set();return {async request(name,options,fn){if(held.has(name)){assert.equal(options.ifAvailable,true);return fn(null);}held.add(name);try{return await fn({name});}finally{held.delete(name);}}};}
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
-function workflowHarness({disk=new Map(),locks=mutex(),hooks={},fetcher,deviceId='synthetic'}={}){
+function workflowHarness({disk=new Map(),locks=mutex(),hooks={},fetcher,deviceId='synthetic',clock=Date}={}){
  const calls=[],device={id:deviceId,model_id:'mdl_d31',enabled:true,managed_exec_tasks:true,managed_file_return:true,app_version:'1.28-test'};
  const directory={async getFileHandle(name,options={}){await hooks.handle?.(name,options);if(!disk.has(name)&&!options.create){await hooks.missing?.(name);const error=Error('missing');error.name='NotFoundError';throw error;}
   return {async getFile(){await hooks.read?.(name);const bytes=disk.get(name)||new Uint8Array();return {size:bytes.length,async arrayBuffer(){return bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);}};},async createWritable(){let next;return {async write(bytes){next=typeof bytes==='string'?enc.encode(bytes):new Uint8Array(bytes);await hooks.write?.(name,next);},async close(){await hooks.close?.(name,next);disk.set(name,next);},async abort(){}};}};
  }};
  const window={currentDev:()=>device,renderOps(){},showDirectoryPicker:async()=>{await hooks.picker?.();return directory;}};
- const fetch=async(url,options={})=>{calls.push({url,options});if(url==='/api/devices')return Response.json({ok:true,devices:[device]});if(fetcher)return fetcher(url,options);throw Error('offline stop');};
- const context=vm.createContext({window,showDirectoryPicker:window.showDirectoryPicker,navigator:{locks},crypto,TextEncoder,TextDecoder,DataView,Uint8Array,URLSearchParams,Date,performance,AbortSignal,fetch,setTimeout});vm.runInContext(faultClientSource,context);
+ const fetch=async(url,options={})=>{calls.push({url,options});if(url==='/api/devices'){await hooks.devices?.();return Response.json({ok:true,devices:[device]});}if(fetcher)return fetcher(url,options);throw Error('offline stop');};
+ const context=vm.createContext({window,showDirectoryPicker:window.showDirectoryPicker,navigator:{locks},crypto,TextEncoder,TextDecoder,DataView,Uint8Array,URLSearchParams,Date:clock,performance,AbortSignal,fetch,setTimeout});vm.runInContext(faultClientSource,context);
  return {ui:window.ElfFaults,disk,calls,device};
 }
 function downloadState(f){return {schemaVersion:1,target:{deviceId:'synthetic',expectedVersion:'1.28-test'},tasks:{},activeApk:'/data/local/d31-remote/releases/'+sha+'/remote.apk',events:{[id]:{eventId:id,phase:'DOWNLOAD',tasks:{getFile:{request:{id:'existing-get-file'}}},query:{state:{phase:'PARTIAL'}},receipt:f.receipt,bundle:'existing.zip'}},cursor:''};}
@@ -77,6 +77,56 @@ test('持续采集容量区分在途、待归档与保留预算，旧合同及�
  const lines=faultCapacitySummary({admissionPolicy:'IN_FLIGHT_AND_RETAINED_BUDGETS',collectingEvents:2,maxCollectingEvents:32,awaitingArchiveEvents:38,activeEvents:40,retainedEvents:90,maxRetainedEvents:128,retainedBytes:123,maxArchiveBytes:999,continuationAction:'HOST_VERIFY_EXPORT_AND_ACK_OR_RETAINED_CAPACITY_REVIEW',uncollectedSourcesMayExpire:true,admissionBlockedBy:['COLLECTING_EVENT_LIMIT','EXPORT_HEADROOM_LIMIT']}).join('\n');
  assert.match(lines,/采集中 2 \/ 32/);assert.match(lines,/采完待归档 38/);assert.match(lines,/未归档合计 40/);assert.match(lines,/保留 90 \/ 128/);assert.match(lines,/未采集源可能过期：是/);assert.match(lines,/不释放保留数量或原件字节/);assert.match(lines,/导出预留空间不足/);
  const old=faultCapacitySummary({activeEvents:3,maxActiveEvents:32,admissionPolicy:'UNARCHIVED_EVENT_LIMIT',continuationAction:'NONE'}).join('\n');assert.match(old,/未归档 3 \/ 32/);assert.match(old,/未采集源可能过期：未知/);assert.match(faultCapacitySummary({collectingEvents:-1}).join('\n'),/采集中 未知/);
+});
+test('慢设备核查期间切换事件被拒绝，操作只向点击时的事件发送',async()=>{
+ const f=await fixture(),disk=new Map(),state=downloadState(f),other='c'.repeat(64),entered=deferred(),release=deferred();state.page={events:[{eventId:id},{eventId:other}],hasMore:false};writeState(disk,state);
+ let sent;const h=workflowHarness({disk,hooks:{devices:async()=>{entered.resolve();await release.promise;}},fetcher:async(url,options)=>{
+  if(url.startsWith('/api/elfremote/tasks?'))return Response.json({ok:false,msg:'未找到该任务'},{status:404});
+  sent=JSON.parse(options.body);return Response.json({ok:true,task:{id:sent.id,type:sent.type,state:'success',result:{exit_code:0,text:JSON.stringify({eventId:id,state:{phase:'PARTIAL'}})}}});
+ }});await h.ui.choose();h.ui.select(id);const work=h.ui.query();await entered.promise;h.ui.select(other);assert.match(h.ui.page(),new RegExp("select\\('"+other+"'\\)\" disabled"));assert.match(h.ui.page(),/所选事件 · aaaaaaaaaaaaaaaa/);release.resolve();await work;assert.ok(sent.params.command.endsWith(' query '+id));assert.equal(readState(disk).events[other],undefined);
+});
+test('已有空值或错误结构状态文件拒绝初始化，原字节不覆盖',async()=>{
+ for(const value of ['null','false','0','""','[]','{}']){const original=enc.encode(value),disk=new Map([['fault-web-state.json',original]]),h=workflowHarness({disk});await h.ui.choose();assert.match(h.ui.page(),/状态损坏/);assert.deepEqual(disk.get('fault-web-state.json'),original);assert.equal(h.calls.length,0);}
+});
+test('初始化或操作重读遇到数组及原始值任务/事件映射拒绝，原件和任务不变',async()=>{
+ const f=await fixture();for(const field of ['tasks','events'])for(const bad of [[],null,false,0,'bad'])for(const stage of ['choose','run']){
+  const disk=new Map(),state=downloadState(f);writeState(disk,state);const h=workflowHarness({disk});if(stage==='run')await h.ui.choose();state[field]=bad;writeState(disk,state);const original=disk.get('fault-web-state.json');
+  if(stage==='choose')await h.ui.choose();else await h.ui.scan();assert.match(h.ui.page(),/状态损坏/);assert.deepEqual(disk.get('fault-web-state.json'),original);assert.equal(h.calls.length,0);
+ }
+});
+test('任务入口拒绝顶层及嵌套坏类型tasks，只有缺失可初始化',async()=>{
+ for(const nesting of ['top','scan','event'])for(const bad of [[],null,false,0,'bad']){const holder={target:{deviceId:'synthetic'},tasks:bad},root=nesting==='top'?holder:{[nesting]:holder};let saves=0,requests=0;const original=JSON.stringify(root);
+  await assert.rejects(faultTask({state:holder,key:'query',type:'root_exec',params:{command:'safe'},save:async()=>{saves++;},request:async()=>{requests++;}}),/任务映射损坏/);assert.equal(JSON.stringify(root),original);assert.equal(saves,0);assert.equal(requests,0);
+ }
+ const missing={target:{deviceId:'synthetic'}};let saves=0;await assert.rejects(faultTask({state:missing,key:'query',type:'root_exec',params:{command:'safe'},save:async()=>{saves++;},request:async()=>{throw Error('network');}}),/network/);assert.equal(saves,1);assert.ok(missing.tasks.query.request.id);
+});
+test('已有事件、扫描或详情容器坏类型不覆写，不生成会丢失的新任务',async()=>{
+ const f=await fixture();for(const part of ['event','scan','detail'])for(const bad of [[],null,false,0,'bad']){const state=downloadState(f),disk=new Map();
+  if(part==='event')state.events[id]=bad;else if(part==='scan')state.scan=bad;else state.events[id].detail=bad;writeState(disk,state);const original=disk.get('fault-web-state.json'),h=workflowHarness({disk});await h.ui.choose();h.ui.select(id);if(part==='scan')await h.ui.scan();else await h.ui.query();assert.match(h.ui.page(),/记录损坏/);assert.deepEqual(disk.get('fault-web-state.json'),original);assert.equal(h.calls.length,1);assert.equal(h.calls[0].url,'/api/devices');
+ }
+});
+
+test('已存在的损坏任务条目不当缺失补交，事件编号不符不能操作另一事件',async()=>{
+ for(const bad of [[],null,false,0,'bad',{}]){const state={target:{deviceId:'synthetic'},tasks:{query:bad}},original=JSON.stringify(state);let saves=0,requests=0;
+  await assert.rejects(faultTask({state,key:'query',type:'root_exec',params:{command:'safe'},save:async()=>{saves++;},request:async()=>{requests++;}}),/任务记录损坏/);assert.equal(JSON.stringify(state),original);assert.equal(saves,0);assert.equal(requests,0);
+ }
+ const f=await fixture(),state=downloadState(f),disk=new Map();state.events[id].eventId='f'.repeat(64);writeState(disk,state);const original=disk.get('fault-web-state.json'),h=workflowHarness({disk});await h.ui.choose();h.ui.select(id);await h.ui.query();assert.match(h.ui.page(),/事件记录损坏/);assert.deepEqual(disk.get('fault-web-state.json'),original);assert.equal(h.calls.length,1);assert.equal(h.calls[0].url,'/api/devices');
+});
+test('状态写入超过读取上限前停止，保留可恢复原状态且不发新任务',async()=>{
+ const f=await fixture(),state=downloadState(f);state.events[id].detail={tasks:{}};state.reserve='';state.reserve='x'.repeat(1048576-30-enc.encode(JSON.stringify(state)).length);const disk=new Map();writeState(disk,state);const original=disk.get('fault-web-state.json'),h=workflowHarness({disk});await h.ui.choose();h.ui.select(id);await h.ui.query();assert.match(h.ui.page(),/记录超过1MB/);assert.deepEqual(disk.get('fault-web-state.json'),original);assert.equal(h.calls.length,1);
+ const restored=workflowHarness({disk});await restored.ui.choose();assert.match(restored.ui.page(),/已恢复本机工作流/);
+});
+test('故障元数据及二进制下载均遵守长秒数或HTTP日期退避，不在五分钟后提前请求',async()=>{
+ for(const stage of ['metadata','download'])for(const shape of ['seconds','date']){
+  const f=await fixture(),disk=new Map();writeState(disk,downloadState(f));let now=Date.parse('2026-09-12T12:00:00Z'),reset=Date.parse('2026-09-13T00:00:00Z'),blocked=true;class Clock extends Date{static now(){return now;}}
+  const ready=downloadFetch(f,disk),h=workflowHarness({disk,clock:Clock,fetcher:async(url,options)=>{if(blocked&&(stage==='metadata'||url.includes('download=1')))return Response.json({ok:false},{status:shape==='seconds'?429:503,headers:{'Retry-After':shape==='seconds'?'43200':new Date(reset).toUTCString()}});return ready(url,options);}});
+  await h.ui.choose();h.ui.select(id);await h.ui.transfer();assert.match(h.ui.page(),/服务暂不可用/);const calls=h.calls.length;now+=6*60000;await h.ui.transfer();assert.equal(h.calls.length,calls);assert.match(h.ui.page(),/等待服务退避/);
+  now=reset;blocked=false;await h.ui.transfer();assert.equal(readState(disk).events[id].phase,'ARCHIVE');assert.equal(h.calls.filter(c=>c.options.method==='POST').length,0);
+ }
+});
+test('无效、缺失或已过期Retry-After使用有界最小退避，未来日期不被五分钟截短',()=>{
+ const now=Date.parse('2026-09-12T00:00:00Z');for(const value of [null,'','invalid','0','-1','Fri, 11 Sep 2026 00:00:00 GMT'])assert.equal(faultRetryAt(value,now),now+15000);
+ assert.equal(faultRetryAt('3600',now),now+3600000);assert.equal(faultRetryAt('Sun, 13 Sep 2026 00:00:00 GMT',now),now+86400000);
 });
 test('重复JSON键和损坏ZIP均拒绝，空白解析正常',async()=>{assert.throws(()=>faultJson(enc.encode('{"a":1,"a":2}')),/重复/);assert.throws(()=>faultJson(enc.encode('{"a":{"x":0,"x":1}}')),/重复/);assert.deepEqual(faultJson(enc.encode(' {"a": [true, null, -2.5]} ')),{a:[true,null,-2.5]});const f=await fixture();f.bytes[35]^=1;f.receipt.sha256=await faultHash(f.bytes);await assert.rejects(verifyFaultPackage(f.bytes,f.receipt,id));});
 test('持久意图先写再查询，网络中断恢复仅使用原号，不创建第二个任务',async()=>{
