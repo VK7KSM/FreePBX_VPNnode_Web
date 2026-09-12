@@ -3,6 +3,7 @@ import mediaClientSource from './media-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
+import {isNetworkTask,holdNetworkTask,grantNetworkConfirmation,cancelNetworkTask,networkAcceptanceAllowed} from './network-confirmation.js';
 import {panelLifecycleSource} from './panel-lifecycle.js';
 import {cfUsageResponse} from './cf-usage.js';
 import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.js';
@@ -1201,6 +1202,9 @@ function publicDevice(d, modelName, model = {}) {
     managed_sip_account: d.managed_sip_account === true,
     ...(Array.isArray(d.sip_targets)?{sip_targets:d.managed_sip_account===true?d.sip_targets:[],sip_accounts:d.managed_sip_account===true?publicSipAccounts(d,["recent_contact","awaiting_report","checking_connection","awaiting_full_report"].includes(contact.state)):[]}:{}),
     managed_system_settings: d.managed_system_settings === true,
+    managed_contacts_page_v1:d.managed_contacts_page_v1===true,
+    managed_network_confirmation_v1:d.managed_network_confirmation_v1===true,
+    network_write:d.network_write===true,
     system_settings: d.system_settings || null,
     sip_account: d.account_configs?.linphone ? {server:d.account_configs.linphone.params.server,username:d.account_configs.linphone.params.username,auth_username:d.account_configs.linphone.params.auth_username,transport:d.account_configs.linphone.params.transport,port:d.account_configs.linphone.params.port,updated_at:d.account_configs.linphone.updated_at} : null,
     contacts: d.contacts || null,
@@ -1641,6 +1645,9 @@ async function handleDeviceReport(env, request) {
       else delete list[i].sip_targets;
       if(Object.hasOwn(data,'sip_registrations'))applySipRegistrations(list[i],data.sip_registrations,Date.now());
       list[i].managed_system_settings = data.managed_system_settings === true;
+      list[i].managed_contacts_page_v1=data.managed_contacts_page_v1===true;
+      list[i].managed_network_confirmation_v1=data.managed_network_confirmation_v1===true;
+      list[i].network_write=data.network_write===true;
       list[i].managed_log_tasks = data.managed_log_tasks === true;
       list[i].managed_heal_tasks = data.managed_heal_tasks === true;
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
@@ -1695,9 +1702,11 @@ async function handleDeviceReport(env, request) {
     const now = Date.now();
     if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
+      if(!holdNetworkTask(found.task)){
       found.task.state = "expired";
       found.task.detail = "expired";
-      if(CONFIG_TYPES.includes(found.task.type) || ["system_config","configure_sip","configure_zello","set_lost_mode"].includes(found.task.type)) found.task.params={};
+      if(!isNetworkTask(found.task)&&(CONFIG_TYPES.includes(found.task.type) || ["system_config","configure_sip","configure_zello","set_lost_mode"].includes(found.task.type))) found.task.params={};
+      }
     }
     await queueSipRestore(found,env.__storage,now);
     await queueZelloRestore(found,env.__storage,now);
@@ -1966,6 +1975,7 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if(device.enabled!==false&&report.managed_contacts_page_v1===true&&device.task?.type==='contacts_page'&&shouldOfferRepair(device,now))body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true,managed_contacts_page_v1:true};
   if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
   if (device.enabled !== false && ((report.managed_exec_tasks === true && device.task?.type === 'root_exec')
@@ -2037,6 +2047,7 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);
     if(data.action==='cancel') {
       if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(isNetworkTask(found.task)){const cancel_outcome=cancelNetworkTask(found.task);await saveDevices(env,list);return json({ok:true,cancel_outcome,task:publicRepair(found.task)});}
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
     }
@@ -2048,7 +2059,7 @@ async function handleElfEnqueueTask(env, request) {
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
-    if(found.status_only && !((data.type==="root_exec" && found.managed_exec_tasks===true)
+    if(found.status_only && !((data.type==='contacts_page'&&found.managed_contacts_page_v1===true)||(data.type==="root_exec" && found.managed_exec_tasks===true)
         || (data.type==="file_manage" && found.managed_file_operations===true)
         || (data.type==="system_config" && found.managed_system_settings===true)
         || (data.type==="configure_sip" && found.managed_sip_account===true)
@@ -2066,14 +2077,16 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
         || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
+    if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
     if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
-    if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package))return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
+    const allowNetworkAcceptance=isNetworkTask(data)&&networkAcceptanceAllowed(found,data.params,env.D31_NETWORK_ACCEPTANCE_JSON);
+    if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package)&&!allowNetworkAcceptance)return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
     if(data.type==='connect_wifi'&&!systemSettingAllowed(found,'wifi','connect'))return json({ok:false,msg:'设备网络修改尚未接通，未下发修改'},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
     if(data.type==="configure_sip"){
       try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
     }
-    if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)) found.task.state="expired";
+    if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)&&!holdNetworkTask(found.task)) found.task.state="expired";
     let params = data.params;
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
@@ -2098,8 +2111,9 @@ async function handleElfEnqueueTask(env, request) {
       id: data.id,
       idempotency_key: data.idempotency_key,
       expires_at: data.expires_at
-    }, Date.now(), env.__storage);
+    }, Date.now(), env.__storage,{allowNetworkAcceptance});
     if (!queued.ok) {
+      if(data.type==='contacts_page'&&['CONTACTS_SNAPSHOT_BUSY','CONTACTS_SNAPSHOT_GONE'].includes(queued.reason))return json({ok:false,code:queued.reason,not_enqueued:true,msg:queued.reason==='CONTACTS_SNAPSHOT_BUSY'?'已有联系人快照，请先关闭或等待到期':'联系人快照已失效，请重新读取'},409);
       const msg = queued.reason === "unknown-type" ? "未开通该任务类型"
         : queued.reason === "inflight" ? "已有任务进行中"
         : queued.reason === "expired" ? "任务已过期"
@@ -2147,13 +2161,24 @@ async function handleElfTaskProgress(env, request) {
       if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
       }
+      if(data.action==='network-confirmation'){
+        if(list[i].task?.id!==taskId)return json({ok:false,msg:'未找到待确认的原任务'},404);
+        try{const confirmation=grantNetworkConfirmation(list[i],list[i].task,data);await saveDevices(env,list);return json(confirmation);}catch(e){return json({ok:false,msg:e.message},409);}
+      }
       if(list[i].safety_task?.id===taskId){
         applyRepairProgress(list[i],taskId,state,data.detail,data.result);
         await saveDevices(env,list);return json({ok:true,task:publicRepair(list[i].safety_task)});
       }
       if (list[i].task?.id !== taskId) {
         const previous = await findRepairTask(env.__storage,list[i],taskId);
+        if(isNetworkTask(previous)||previous?.type==='contacts_page'){
+          try{applyRepairProgress({...list[i],task:structuredClone(previous)},taskId,state,data.detail,data.result);}catch(e){return json({ok:false,msg:e.message},409);}
+        }
         return previous ? json({ok:true,task:publicRepair(previous)}) : json({ok:false,msg:"未找到该任务"},404);
+      }
+      if(isNetworkTask(list[i].task)||list[i].task?.type==='contacts_page'){
+        try{applyRepairProgress(list[i],taskId,state,data.detail,data.result);}catch(e){return json({ok:false,msg:e.message},409);}
+        await saveDevices(env,list);return json({ok:true,task:publicRepair(list[i].task)});
       }
       if (data.result && typeof data.result === "object") {
         delete data.result.artifact;

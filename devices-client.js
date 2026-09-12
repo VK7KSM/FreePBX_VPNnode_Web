@@ -176,6 +176,7 @@ function loadDevices(){
     var previousSip=uiOf()&&uiOf().sipSelection;
     var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
     if(arr[0].devices) DEV = arr[0].devices;
+    if(CONTACT_PAGES_CONTROLLER)DEV.forEach(function(d){CONTACT_PAGES_CONTROLLER.observe(d);});
     UNPAIRED = arr[0].unpaired || [];
     DEV.forEach(function(d){var t=d.task;if(t&&t.type==='root_exec'&&['pending','claimed','running'].includes(t.state)){
       var u=uiOf(d);if(!u.shell.pending){u.shell.pending=t.id;watchCommand(d.id,t.id,u);}
@@ -1065,8 +1066,35 @@ function pageWifi(dis){
   return h;
 }
 
+var CONTACT_PAGES_CONTROLLER=null;
+function contactsUsePages(d){var model=d&&MODELS.find(function(m){return m.id===d.model_id;});return !!d&&(d.managed_contacts_page_v1===true||d.model_id==='mdl_d31'||d.update_channel==='d31'||String(model&&model.registration_key||'').toLowerCase()==='d31');}
+function contactsPageController(){
+  if(!CONTACT_PAGES_CONTROLLER&&typeof ContactsPages!=='undefined')CONTACT_PAGES_CONTROLLER=ContactsPages.createController({
+    request:function(path,body){return fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,credentials:'same-origin',signal:AbortSignal.timeout(20000)}).then(async function(r){var rejection;if(body&&!r.ok)try{rejection=await r.clone().json();}catch(_){}try{return await readServiceJson(r);}catch(error){error.submissionRejected=!!body&&ContactsPages.submissionRejected(r.status,rejection);throw error;}});},
+    changed:function(id){if(selDev===id&&selFn==='contacts')renderOps();}
+  });
+  return CONTACT_PAGES_CONTROLLER;
+}
+function pageContactsPaged(d){
+  var controller=contactsPageController();if(!controller)return '<p class="muted">通讯录分页模块尚未加载</p>';
+  var s=controller.state(d),available=controller.available(d),busy=s.busy||!!s.pending,live=!!s.snapshot&&!s.invalid;
+  function button(action,label,disabled){return '<button class="btn-gray" onclick="contactPageAction(\''+action+'\')"'+(disabled?' disabled':'')+'>'+label+'</button>';}
+  var h='<div class="ops-actions">'+button('open',s.snapshot?'重新读取':'读取联系人',!available||busy||live)+button('close','关闭快照',!available||busy||!s.snapshot);
+  if(s.pending)h+=button('resume','查询任务',s.busy);
+  h+='</div><p class="muted">LOCAL · 只读'+(s.snapshot?' · '+sydney(s.snapshot.sampled_at_ms)+' · '+s.snapshot.record_count+' 条':'')+'</p>';
+  h+='<p role="status"'+(s.error?' style="color:#f87171"':' class="muted"')+'>'+esc(!available?'该设备尚未支持 LOCAL 通讯录分页':s.error||s.message)+'</p>';
+  if(s.page&&s.error)h+='<p class="muted">以下为此前读取的页面</p>';
+  h+='<div class="function-table"><table><thead><tr><th>姓名</th><th>号码</th></tr></thead><tbody>';
+  if(s.page&&s.page.items.length)s.page.items.forEach(function(item){var name=typeof item.mName==='string'?item.mName:'未提供姓名',numbers=Array.isArray(item.mNumbers)?item.mNumbers.filter(function(n){return typeof n==='string';}).join(' / '):'';h+='<tr><td>'+esc(name)+'</td><td>'+esc(numbers||'未提供可显示号码')+'</td></tr>';});
+  else h+='<tr><td colspan="2" class="muted">'+(s.page&&s.page.record_count===0&&!s.error?'LOCAL 暂无联系人':s.error?'本次读取未完成':'尚未读取联系人内容')+'</td></tr>';
+  h+='</tbody></table></div><div class="ops-actions">'+button('previous','上一页',!available||busy||!live||s.pageIndex<=0)+button('next',s.page?'下一页':'读取第一页',!available||busy||!live||!!s.page&&!s.page.has_more);
+  if(s.page)h+='<span class="muted">第 '+(s.pageIndex+1)+' 页 · '+(s.page.record_count?s.page.offset+1:0)+'—'+s.page.next_offset+' / '+s.page.record_count+' 条</span>';
+  return h+'</div>';
+}
+async function contactPageAction(action){var d=currentDev(),controller=contactsPageController();if(!d||!controller||!contactsUsePages(d)||!['open','close','next','previous','resume'].includes(action))return;await controller[action](d);if(controller.state(d).pending)loadDevices();}
 function pageContacts(dis){
   var device=currentDev(), snapshot=device && device.contacts;
+  if(contactsUsePages(device))return pageContactsPaged(device);
   var list = snapshot ? snapshot.items : [];
   var h = '<div class="ops-actions">';
   h += '<input id="cName" class="inp" placeholder="姓名" style="max-width:160px"'+dis+'>';
@@ -1363,6 +1391,7 @@ async function runSystemSettings(params){
       await new Promise(function(resolve){setTimeout(resolve,1200);});
     }
     if(!task||task.state!=='success')throw Error(task&&task.result&&task.result.text||task&&task.detail||'尚未收到完成结果，请稍后重新读取');
+    if(task.network){state.message=task.detail||'网络设置已确认';return;}
     if(task.result.truncated)throw Error('设备结果不完整，请重新读取');
     var snapshot=JSON.parse(task.result.text),current=DEV.find(function(x){return x.id===d.id;});if(current)current.system_settings=Object.assign({},current.system_settings,{[params.group]:snapshot});
     state.message=params.action==='set'?'设置已生效':'已读取 · '+sydney(snapshot.sampled_at);
@@ -1770,17 +1799,20 @@ function wifiConnect(){
   return enqueueRepair('connect_wifi',{ssid:ssid,password:password});
 }
 function unavailableAction(name){alert(name+'尚未接通，未发送到设备');}
-function contactRefresh(){return enqueueRepair('contacts_read');}
+function contactRefresh(){if(contactsUsePages(currentDev()))return contactPageAction('open');return enqueueRepair('contacts_read');}
 function contactAdd(){
+  if(contactsUsePages(currentDev()))return;
   return enqueueRepair('contact_add',{name:$('cName').value,phone:$('cPhone').value});
 }
 function contactEdit(i){
+  if(contactsUsePages(currentDev()))return;
   var d=currentDev(),c=d && d.contacts && d.contacts.items[i];if(!c) return;
   var name=prompt('姓名',c.name);if(name==null) return;
   var phone=prompt('号码',c.phone);if(phone==null) return;
   return enqueueRepair('contact_update',{id:c.id,name:name,phone:phone});
 }
 function contactDel(i){
+  if(contactsUsePages(currentDev()))return;
   var d=currentDev(),c=d && d.contacts && d.contacts.items[i];if(c) return enqueueRepair('contact_delete',{id:c.id});
 }
 function configTaskStatus(d){

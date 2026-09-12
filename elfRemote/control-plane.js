@@ -1,4 +1,6 @@
 import {systemSettingsParams,applySystemSettingsResult,systemSettingAllowed} from "../system-settings.js";
+import {isNetworkTask,prepareNetworkTask,applyNetworkProgress,publicNetwork} from '../network-confirmation.js';
+import {normalizeContactsPageParams,normalizeContactsPageResult,validateContactsPageSnapshot} from '../contacts-pages.js';
 import {sipDestination,sipKey,sipAllowed,checkSipTarget,validateSipResult,sipConfigurationResult,redactSipText} from '../sip-accounts.js';
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
@@ -124,7 +126,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -137,6 +139,7 @@ export const REPAIR_STATE_LABELS = {
 };
 
 export const REPAIR_TYPE_LABELS = {
+  contacts_page: "读取通讯录页",
   system_config: "系统配置",
   configure_sip: "配置Linphone账号",
   configure_zello: "配置Zello账号",
@@ -223,7 +226,7 @@ export function makeRepairTask(input, nowMs) {
   return {
     id,
     type,
-    params: type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -339,6 +342,7 @@ async function repairDigest(task) {
 export const REPAIR_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
 function repairHistoryExpired(task, nowMs) {
+  if(task.network&&!(task.network.result?.cleanup_complete===true&&['CONFIRMED','UNCHANGED','ROLLED_BACK','ORIGINAL_OBSERVED','ABORTED','NOT_STARTED'].includes(task.network.result.status)))return false;
   // 缺失时间、未来时间及未结束的任务不能因数量或猜测而被清除。
   if (repairInflight(task)) return false;
   const completed = Date.parse(task.completed_at || "");
@@ -388,7 +392,7 @@ export async function archiveRepair(storage, device, nowMs) {
   if (!storage || !device.task) return;
   const prefix = "repair-history/" + encodeURIComponent(device.id) + "/";
   const task = {...device.task, archived_at:nowMs};
-  delete task.params;
+  if(!isNetworkTask(task)&&task.type!=='contacts_page')delete task.params;
   await storage.put(prefix + encodeURIComponent(task.id), task);
   for await (const page of repairHistoryPages(storage, device.id))
     for (const [key, old] of page) if (repairHistoryExpired(old, nowMs)) await storage.delete(key);
@@ -407,7 +411,7 @@ async function enqueueSafetyTask(device,input,now,storage){
   task.created_at=task.updated_at=new Date(now).toISOString();task.managed_lost_v1=true;device.safety_task=task;
   return {ok:true,task};
 }
-export async function enqueueRepairTask(device, input, nowMs, storage) {
+export async function enqueueRepairTask(device, input, nowMs, storage, options={}) {
   if (!device) return { ok: false, reason: "missing-device" };
   if(isLostSafety(input)&&device.managed_lost_safety_v1)return enqueueSafetyTask(device,input,nowMs,storage);
   const task = makeRepairTask(input || {}, nowMs);
@@ -427,6 +431,15 @@ export async function enqueueRepairTask(device, input, nowMs, storage) {
   }
   if (repairExpired(task, nowMs)) return { ok: false, reason: "expired" };
   if (repairInflight(cur)) return { ok: false, reason: "inflight" };
+  if(task.type==='contacts_page'){
+    if(device.managed_contacts_page_v1!==true)throw Error('客户端尚未支持通讯录分页');
+    const p=task.params,s=device.contacts_page_snapshot;
+    if(p.action==='open'){
+      if(s&&!s.closed&&nowMs<s.expires_at)return {ok:false,reason:'CONTACTS_SNAPSHOT_BUSY'};
+    }else if(!s||s.descriptor.snapshot_id!==p.snapshot_id||s.credential_sha!==device.token_sha256||s.closed||(p.action==='page'&&nowMs>=s.expires_at))return {ok:false,reason:'CONTACTS_SNAPSHOT_GONE'};
+    task.contacts_page_token_sha=device.token_sha256;
+  }
+  await prepareNetworkTask(device,task,options.allowNetworkAcceptance===true);
   await archiveRepair(storage, device, nowMs);
   if(task.type==='configure_zello'&&device.account_configs?.zello?.params?.username)
     task.params.previous_username=device.account_configs.zello.params.username;
@@ -460,6 +473,41 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     device.safety_task=view.task;if(view.lost_mode){device.lost_mode=view.lost_mode;device.lost_mode_observed_at=view.lost_mode_observed_at;}return device;
   }
   if (!device || !device.task || device.task.id !== taskId) return device;
+  if(device.task.type==='contacts_page'){
+    const task=device.task;
+    if(task.contacts_page_token_sha!==device.token_sha256)throw Error('联系人任务所属安装已改变');
+    if(!canAdvanceRepair(task.state,state))throw Error('联系人任务状态不匹配');
+    if(['success','failed','rejected'].includes(state)){
+      if(result?.truncated===true)throw Error('联系人结果不完整');
+      const value=normalizeContactsPageResult(result?.contacts_page,task.params);
+      if((state==='success')!==value.ok)throw Error('联系人任务与内容结果不一致');
+      if(['success','failed','rejected'].includes(task.state)){
+        if(JSON.stringify(canonical(task.result?.contacts_page))!==JSON.stringify(canonical(value)))throw Error('联系人重复回执不一致');
+        return device;
+      }
+      if(value.ok){
+        const p=task.params;
+        if(p.action==='open')device.contacts_page_snapshot={descriptor:value,expires_at:Date.parse(task.created_at)+120000,credential_sha:device.token_sha256,closed:false};
+        else {
+          const s=device.contacts_page_snapshot;if(!s||s.descriptor.snapshot_id!==p.snapshot_id||s.credential_sha!==device.token_sha256)throw Error('联系人快照不匹配');
+          if(p.action==='page'){
+            validateContactsPageSnapshot(s.descriptor,value);
+          }else s.closed=true;
+        }
+      }
+      task.result={contacts_page:value,truncated:false};task.completed_at=new Date(nowMs).toISOString();
+    }else if(result!=null)throw Error('联系人进度不能携带未完成内容');
+    task.state=state;task.updated_at=new Date(nowMs).toISOString();task.detail=state==='success'?'联系人操作已完成':state==='failed'||state==='rejected'?'联系人操作未完成':'';
+    return device;
+  }
+  if(isNetworkTask(device.task)){
+    const task=device.task;
+    const network=applyNetworkProgress(device,task,state,result,nowMs);
+    if(!canAdvanceRepair(task.state,state))throw Error('网络任务状态不可推进');
+    if(task.state!==state){task.updated_at=new Date(nowMs).toISOString();if(state==='claimed')task.claimed_at=task.updated_at;if(state==='running'&&!task.started_at)task.started_at=task.updated_at;if(['success','failed','rejected'].includes(state))task.completed_at=task.updated_at;}
+    task.state=state;if(network)task.result={network_transaction:network};
+    return device;
+  }
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
   if(device.task.type==='configure_zello' && state==='success' && (!result||result.logged_in!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少Zello登录成功证据');
@@ -650,6 +698,7 @@ export function publicRepair(task) {
     state: task.state || "",
     label: repairStateLabel(task.state || ""),
     detail: task.detail || "",
+    ...(task.network?{network:publicNetwork(task)}:{}),
     ...(task.sip_destination?{sip_destination:task.sip_destination}:{}),
     ...(['send_file','get_file'].includes(task.type)&&task.params?{params:{path:task.params.path,allow_cellular:task.params.allow_cellular,...(task.type==='send_file'?{transfer_id:task.params.transfer_id,overwrite:task.params.overwrite}:{})}}:{}),
     expires_at: task.expires_at || 0,
@@ -667,6 +716,8 @@ export function publicRepair(task) {
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""
+      ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
+      ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
     } : null
   };
 }
@@ -679,6 +730,7 @@ export function repairOfferPayload(task) {
     params: task.params || {},
     expires_at: task.expires_at,
     idempotency_key: task.idempotency_key,
+    ...(isNetworkTask(task)?{request_digest:task.request_digest}:{}),
     ...(task.cancel_requested ? {cancel_requested:true} : {})
   };
 }

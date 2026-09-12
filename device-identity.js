@@ -49,6 +49,8 @@ export async function restoreDeviceIdentity(storage,devices,identity,tokenSha,no
   if (device.update?.job_id) await storage.put('installation-update/'+device.id+'/'+device.update.job_id,device.update);
   const runtime=['task','update','last_seen','last_reported_at','last_report_clock_invalid','online','battery','battery_present','charging','network','ip','loc','traffic','ready','maintenance','report_probe','app_version','os_version','wifi_scan','contacts','alarm','lost_mode'];
   for (const k of Object.keys(device)) if (runtime.includes(k) || k.startsWith('managed_')) delete device[k];
+  delete device.network_write;
+  delete device.contacts_page_snapshot;
   Object.assign(device,{token_sha256:tokenSha,installation_id:crypto.randomUUID(),status_only:true});
   await storage.delete('push/request/'+encodeURIComponent(device.id));
   return device;

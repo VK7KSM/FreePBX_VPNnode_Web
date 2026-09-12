@@ -1,9 +1,11 @@
 // 系统配置复用既有设备任务与回执；不提供第二套管理入口。
-const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot'],wifi:['connect'],apps:['enabled','permission','notifications','background']};
+import {networkParams} from './network-confirmation.js';
+const keys={sound:['media','ring','alarm','call','brightness','brightness_auto','font_scale'],time:['locale','timezone','auto_time','auto_time_zone'],network:['mobile_data','bluetooth','hotspot'],wifi:['connect','enabled'],apps:['enabled','permission','notifications','background']};
 // 仅依赖已保存的读取回执；不把尚未透传的客户端 write_keys 当成协议。
 export function systemSettingAllowed(device,group,key,pkg){
   if(!device)return false;
   const d31=device.model_id==='mdl_d31'||device.update_channel==='d31'||device.hardware_identity?.variant==='d31'||String(device.model_name||'').toLowerCase()==='d31'||device.client_package==='net.elfradio.d31bootstrap';
+  if(group==='wifi'&&key==='enabled')return d31&&device.managed_system_settings===true&&device.managed_network_confirmation_v1===true&&device.network_write===true;
   // 当前D31已冻结的写入范围；后续网络事务必须另行冻结恢复与确认合同。
   if(d31&&!({sound:['media','ring','alarm','call','brightness','brightness_auto'],time:['auto_time','auto_time_zone','timezone'],apps:['enabled']}[group]||[]).includes(key))return false;
   const snapshot=device.system_settings&&device.system_settings[group];
@@ -30,6 +32,10 @@ export function systemSettingsParams(p={}){
     if(key==='connect'||v.enabled){if(typeof v.ssid!=='string'||!v.ssid||new TextEncoder().encode(v.ssid).length>32||v.ssid.includes('\0'))throw Error('网络名称无效');const password=v.password??'';
       if(typeof password!=='string'||(password!==''&&!/^[0-9a-fA-F]{64}$/.test(password)&&!/^[\x20-\x7e]{8,63}$/.test(password))||(key==='hotspot'&&!password))throw Error('网络密码格式无效');}
   }
+  if(group==='wifi'&&key==='enabled'){
+    if(pkg||offset!==0)throw Error('网络事务不支持应用或偏移参数');
+    out.network_transaction=networkParams(p.network_transaction);
+  }else if(p.network_transaction!==undefined)throw Error('该设置不支持网络事务');
   out.key=key;out.value=v;if(JSON.stringify(out).length>6000)throw Error('设置参数过大');return out;
 }
 

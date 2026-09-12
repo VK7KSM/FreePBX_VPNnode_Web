@@ -6,6 +6,8 @@ on:
     paths:
       - "worker.js"
       - "system-settings.js"
+      - "network-confirmation.js"
+      - "contacts-pages.js"
       - "sip-accounts.js"
       - "sip-client.js"
       - "sip-client-source.js"
