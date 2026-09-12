@@ -135,9 +135,10 @@ export async function collectCfUsage(env, options={}) {
     ]);
     const metrics=decodeCfUsage(...results.map(result=>result.status==='fulfilled'?result.value:null),now,env);
     const complete=metrics.every(metric=>metric.used!==null),any=metrics.some(metric=>metric.used!==null);
-    const failures=complete?0:Math.min((previous?.failures||0)+1,4);
+    // 个别指标失败时仍按十五分钟更新可用指标；只有全部失败才退避。
+    const failures=any?0:Math.min((previous?.failures||0)+1,4);
     const snapshot={version:1,scope:'account',status:complete?'ok':any?'partial':'unavailable',generatedAt:any?end:previous?.generatedAt||null,
-      attemptedAt:end,nextAttemptAt:new Date(complete?(Math.floor(now/CF_USAGE_INTERVAL)+1)*CF_USAGE_INTERVAL:now+CF_USAGE_INTERVAL*Math.pow(2,failures)).toISOString(),failures,
+      attemptedAt:end,nextAttemptAt:new Date(any?(Math.floor(now/CF_USAGE_INTERVAL)+1)*CF_USAGE_INTERVAL:now+CF_USAGE_INTERVAL*Math.pow(2,failures)).toISOString(),failures,
       metrics:metrics.map(metric=>{
         const old=previous?.metrics?.find(row=>row.id===metric.id);
         return metric.used===null&&old?.used!=null?{...old,stale:true}:metric;
@@ -152,5 +153,7 @@ export async function collectCfUsage(env, options={}) {
 export function scheduleCfUsage(event, env, ctx) {
   const now=Number(event.scheduledTime)||Date.now();
   if(Math.floor(now/60000)%15!==0)return;
-  ctx.waitUntil(collectCfUsage(env,{now}).catch(()=>{}));
+  const work=collectCfUsage(env,{now}).catch(()=>{console.error('cf_usage_collection_failed');});
+  ctx?.waitUntil(work);
+  return work;
 }

@@ -9,11 +9,11 @@ function browser({authenticated=true,hidden=false,response}={}) {
   const element=()=>({children:[],dataset:{},appendChild(child){this.children.push(child);},replaceChildren(){this.children=[];},contains(){return false;}});
   const fields=new Map(),box=element();box.querySelector=selector=>{if(!fields.has(selector))fields.set(selector,element());return fields.get(selector);};
   class Clock extends Date {constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
-  const context={Date:Clock,Response,document:{hidden,querySelector:()=>box,createElement:element,addEventListener:(name,fn)=>{events[name]=fn;}},
+  const context={Date:Clock,Response,AbortController,document:{hidden,querySelector:()=>box,createElement:element,addEventListener:(name,fn)=>{events[name]=fn;}},
     adminSession:{authenticated},addEventListener:(name,fn)=>{events[name]=fn;},
     sessionStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
     setTimeout:(fn,delay)=>{const id=++sequence;timers.set(id,{fn,at:now+delay});return id;},clearTimeout:id=>timers.delete(id),
-    fetch:async()=>{calls++;return response?response():Response.json({ok:true,status:'ok',generatedAt:new Clock().toISOString(),metrics:[]});}};
+    fetch:async(url,options)=>{calls++;return response?response(url,options):Response.json({ok:true,status:'ok',generatedAt:new Clock().toISOString(),metrics:[]});}};
   context.window=context;vm.runInNewContext(cfUsageClientSource,context);
   const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
   async function advance(ms){const end=now+ms;for(;;){const next=[...timers].filter(([,timer])=>timer.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;now=next[1].at;timers.delete(next[0]);await next[1].fn();await settle();}now=end;}
@@ -57,4 +57,14 @@ test('摘要和明细显示百分比，任一子指标超过70%警示，R2保留
 
 test('70%本身不触发暗红底色，未知额度不伪造百分比',async()=>{
   for(const used of [700,701]){const b=browser({response:()=>Response.json({ok:true,metrics:[{id:'workers_requests',service:'Workers',label:'请求',used,limit:1000},{id:'r2_storage',service:'R2',label:'存储',used:200,limit:null}]})});await b.advance(1000);assert.equal(b.box.dataset.warning,String(used>700));assert.equal(b.fields.get('[data-cf-summary]').children[3].children[0].textContent,'—');}
+});
+
+// 超时必须释放 pending；模拟请求只在 AbortSignal 中止时返回。
+test('统计请求挂起二十秒后中止，下一周期可以重新读取',async()=>{
+  let aborted=false;
+  const b=browser({response:(url,{signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>{aborted=true;reject(Error('timeout'));},{once:true}))});
+  const first=b.advance(1000);await b.settle();assert.equal(b.calls,1);
+  await b.advance(20000);await first;assert.equal(aborted,true);
+  b.context.fetch=async()=>Response.json({ok:true,metrics:[],generatedAt:new b.context.Date().toISOString()});
+  await b.advance(960000);assert.match(b.fields.get('[data-cf-time]').textContent,/更新/);
 });

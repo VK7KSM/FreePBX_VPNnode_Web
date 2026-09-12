@@ -6,7 +6,7 @@ import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
 import {isNetworkTask,holdNetworkTask,grantNetworkConfirmation,cancelNetworkTask,networkAcceptanceAllowed} from './network-confirmation.js';
 import {panelLifecycleSource} from './panel-lifecycle.js';
-import {cfUsageResponse} from './cf-usage.js';
+import {cfUsageResponse,scheduleCfUsage} from './cf-usage.js';
 import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.js';
 // =========================================================================
 // elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
@@ -418,16 +418,20 @@ function quotaUnavailable(){
 }
 
 const app = {
-  async scheduled(event, env) {
-    const stub=elfDoStub(env);
-    const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
-    const jobs=[runRecovery,cleanupFiles,...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
-    for(const work of jobs) {
-      try { await work(env,stub); } catch(error) {
-        console.error('scheduled_task_failed',work.name);
-        if(isQuotaError(error)){markQuotaUnavailable(env);break;}
+  async scheduled(event, env, ctx) {
+    // 用量采集独立于设备 DO；设备存储额度耗尽也不能阻止统计更新。
+    const usage=scheduleCfUsage(event,env,ctx);
+    try {
+      const stub=elfDoStub(env);
+      const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
+      const jobs=[runRecovery,cleanupFiles,...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
+      for(const work of jobs) {
+        try { await work(env,stub); } catch(error) {
+          console.error('scheduled_task_failed',work.name);
+          if(isQuotaError(error)){markQuotaUnavailable(env);break;}
+        }
       }
-    }
+    } finally { await usage; }
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);

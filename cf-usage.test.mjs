@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import worker from './worker.js';
 import {collectCfUsage,decodeCfUsage,readCfUsage,cfUsageResponse,scheduleCfUsage,CF_USAGE_KEY,CF_USAGE_INTERVAL} from './cf-usage.js';
 import {cfUsageClientSource,cfUsageMarkup,cfUsageStyle} from './cf-usage-client.js';
 const NOW=Date.parse('2026-09-12T01:30:00Z');
@@ -86,4 +87,28 @@ test('浏览器脚本语法成立，独立导航组件包含四服务及键盘�
   assert.match(cfUsageMarkup,/<details/);assert.match(cfUsageMarkup,/Cloudflare 服务用量/);
   for(const label of ['Workers','KV','DO','R2'])assert.ok(cfUsageMarkup.includes(label));
   assert.match(cfUsageStyle,/width:232px/);assert.doesNotMatch(cfUsageClientSource,/api\.cloudflare\.com|Bearer/);
+});
+
+test('部分统计失败仍按十五分钟采集，备用执行器读取共享快照后跳过重复采集',async()=>{
+  const {env,data,calls}=envWith();
+  const requests=[];
+  const result=await collectCfUsage(env,{now:NOW,fetch:async(url,options)=>{
+    if(JSON.parse(options.body).query.includes('storage:'))return new Response('',{status:503});
+    return fakeFetch(requests)(url,options);
+  }});
+  assert.equal(result.status,'partial');assert.equal(result.failures,0);
+  assert.equal(Date.parse(result.nextAttemptAt),NOW+CF_USAGE_INTERVAL);
+  const backup={...env,SUB_STORE_KV:{...env.SUB_STORE_KV}};
+  assert.deepEqual(await collectCfUsage(backup,{now:NOW+7*60000,fetch:()=>{throw Error('重复采集');}}),{skipped:'backoff'});
+  assert.equal(calls.put,1);assert.equal(data.get(CF_USAGE_KEY).status,'partial');
+});
+
+test('生产定时入口即使设备 DO 初始化失败仍完成用量采集',async()=>{
+  const {env,calls}=envWith(),requests=[],original=globalThis.fetch,waits=[];
+  env.ELF_DO={idFromName(){throw Error('设备存储不可用');}};
+  globalThis.fetch=fakeFetch(requests);
+  try {
+    await assert.rejects(worker.scheduled({scheduledTime:NOW},env,{waitUntil(p){waits.push(p);}}),/设备存储不可用/);
+    await Promise.all(waits);assert.equal(waits.length,1);assert.equal(requests.length,3);assert.equal(calls.put,1);
+  } finally {globalThis.fetch=original;}
 });

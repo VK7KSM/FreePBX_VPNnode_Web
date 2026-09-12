@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import {collectCfUsage} from '../cf-usage.js';
 
-// 复用CI中已有的CF凭据。凭据不进入Worker、静态网页或统计快照。
+// 外部备用采集复用 CI 凭据；Worker 主采集使用独立只读凭据。凭据不进入网页或统计快照。
 const token=process.env.CLOUDFLARE_API_TOKEN,account=process.env.CLOUDFLARE_ACCOUNT_ID;
 if(!token||!account)throw Error('缺少CF采集凭据配置');
 const config=JSON.parse(await fs.readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));
