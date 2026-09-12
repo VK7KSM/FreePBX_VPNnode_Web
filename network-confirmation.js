@@ -4,7 +4,8 @@ const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const plain=v=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const integer=v=>Number.isSafeInteger(v)&&v>=0;
 const terminal=new Set(['CONFIRMED','UNCHANGED','ROLLED_BACK','ORIGINAL_OBSERVED','ABORTED']);
-const statuses=new Set([...terminal,'AWAITING_CONFIRM','NEEDS_ATTENTION','UNKNOWN']);
+const intermediate=new Set(['PREPARED','APPLYING','ROLLING_BACK']);
+const statuses=new Set([...terminal,...intermediate,'AWAITING_CONFIRM','NEEDS_ATTENTION','UNKNOWN']);
 const fail=message=>{throw Error(message);};
 export function d31Device(d){return d?.model_id==='mdl_d31'||d?.update_channel==='d31'||d?.hardware_identity?.variant==='d31'||String(d?.model_name||'').toLowerCase()==='d31'||d?.client_package==='net.elfradio.d31bootstrap';}
 export function networkParams(p){
@@ -71,6 +72,7 @@ export function applyNetworkProgress(d,t,state,result,now){
  }
  if(!plain(v)||v.version!==1||!statuses.has(v.status)||!integer(v.observed_elapsed)||(v.current_enabled!==null&&typeof v.current_enabled!=='boolean')||typeof v.cleanup_complete!=='boolean'||typeof v.restored!=='boolean')fail('设备网络事务结果无效');
  const b=binding(t,v.binding);
+ if(intermediate.has(v.status)&&(state!=='running'||v.cleanup_complete))fail('网络中间阶段不能标记完成');
  const normalized={version:1,status:v.status,binding:b,observed_elapsed:v.observed_elapsed,current_enabled:v.current_enabled,cleanup_complete:v.cleanup_complete,restored:v.restored};
  if(v.status==='CONFIRMED'){
   const r=t.network.grants?.[v.confirmation_nonce]?.receipt;
@@ -90,7 +92,7 @@ export function applyNetworkProgress(d,t,state,result,now){
  }
  t.network.binding=b;t.network.result=normalized;
  t.network.observed_at=now;
- t.detail={CONFIRMED:v.cleanup_complete?'网络设置已确认':'网络已确认，等待清理完成',UNCHANGED:'原配置已符合，未修改',ROLLED_BACK:'已恢复原配置',ORIGINAL_OBSERVED:'原配置未改变',ABORTED:'网络设置已终止',AWAITING_CONFIRM:'等待设备确认网络设置',NEEDS_ATTENTION:'网络状态需要核查',UNKNOWN:'网络状态尚未确认'}[v.status];
+ t.detail={PREPARED:'网络设置准备中',APPLYING:'网络设置应用中',ROLLING_BACK:'正在恢复原网络配置',CONFIRMED:v.cleanup_complete?'网络设置已确认':'网络已确认，等待清理完成',UNCHANGED:'原配置已符合，未修改',ROLLED_BACK:'已恢复原配置',ORIGINAL_OBSERVED:'原配置未改变',ABORTED:'网络设置已终止',AWAITING_CONFIRM:'等待设备确认网络设置',NEEDS_ATTENTION:'网络状态需要核查',UNKNOWN:'网络状态尚未确认'}[v.status];
  return normalized;
 }
 export function publicNetwork(t){

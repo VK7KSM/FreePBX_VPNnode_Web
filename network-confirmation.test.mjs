@@ -17,6 +17,15 @@ async function setup(now=1000){
  const final={network_transaction:{version:1,status:'CONFIRMED',binding,observed_elapsed:102000,current_enabled:false,cleanup_complete:true,restored:false,confirmation_nonce:data.network_confirmation.nonce}};
  return {d,binding,data,final,now};
 }
+test('进程恢复的准备、应用、回滚阶段保持原绑定且只能继续处理中',async()=>{
+ for(const status of ['PREPARED','APPLYING','ROLLING_BACK']){
+  const {d,binding}=await setup();const result={network_transaction:{version:1,status,binding,observed_elapsed:101000,current_enabled:null,cleanup_complete:false,restored:false}};
+  applyRepairProgress(d,d.task.id,'running','',result,1100);assert.equal(d.task.state,'running');assert.equal(d.task.network.result.status,status);assert.match(d.task.detail,/准备中|应用中|恢复/);
+  assert.throws(()=>applyRepairProgress(d,d.task.id,'success','',result,1200));
+  assert.throws(()=>applyRepairProgress(d,d.task.id,'running','',{network_transaction:{...result.network_transaction,cleanup_complete:true}},1200));
+  assert.throws(()=>applyRepairProgress(d,d.task.id,'running','',{network_transaction:{...result.network_transaction,binding:{...binding,target:true}}},1200));
+ }
+});
 test('网络参数参与幂等摘要；D22原设置与未知能力不开放',async()=>{
  const {d}=await setup();assert.equal(systemSettingsParams(params).network_transaction.apk_sha256,apk);
  for(const bad of [null,{version:2,apk_sha256:apk,confirm_within_ms:60000},{version:1,apk_sha256:apk,confirm_within_ms:9999}])assert.throws(()=>systemSettingsParams({...params,network_transaction:bad}));
