@@ -20,13 +20,24 @@ test('普通配置的重复读取复用快照且不共享可变对象，写入�
  assert.equal(await panelRead({...f.env,__panelReads:{}},'sub_token'),'新令牌');
 });
 
-test('并发读取只调用一次KV，认证资料跨HTTP请求不保留成功缓存',async()=>{
+test('同请求并发读取只调用一次KV，认证资料跨HTTP请求不保留成功缓存',async()=>{
  const f=fixture({'panel/auth':{revision:'旧版本'}});
  let release;f.env.SUB_STORE_KV.get=key=>{f.reads.push(key);return new Promise(resolve=>{release=()=>resolve({revision:'旧版本'});});};
- const pending=Array.from({length:20},()=>kvJson(f.env,'panel/auth'));
+ const request=new Request('https://example.test/api/session');
+ const pending=Array.from({length:20},()=>kvJson(f.env,'panel/auth',{request}));
  await Promise.resolve();release();await Promise.all(pending);assert.equal(f.reads.length,1);
  f.env.SUB_STORE_KV.get=async key=>{f.reads.push(key);return {revision:'新版本'};};
  assert.equal((await kvJson(f.env,'panel/auth')).revision,'新版本');assert.equal(f.reads.length,2);
+});
+
+test('已取消请求的未完成KV读取不阻塞其他请求，写入后所有旧读取失效',async()=>{
+ const f=fixture();let release;
+ f.env.SUB_STORE_KV.get=async key=>{f.reads.push(key);if(f.reads.length===1)return new Promise(resolve=>{release=resolve;});return {revision:'新版本'};};
+ const first=kvJson(f.env,'panel/auth',{request:new Request('https://example.test/api/session')});await Promise.resolve();
+ const second=kvJson(f.env,'panel/auth',{request:new Request('https://example.test/api/session')});
+ let timer;try{assert.deepEqual(await Promise.race([second,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('后续请求被旧I/O阻塞')),200);})]),{revision:'新版本'});}finally{clearTimeout(timer);}
+ await putKvJson(f.env,'panel/auth',{revision:'新版本'});release({revision:'旧版本'});
+ assert.deepEqual(await first,{revision:'新版本'});assert.equal(f.reads.length,3);
 });
 
 test('同请求鉴权读取复用、注销或改密写入后同请求也不接受旧缓存',async()=>{

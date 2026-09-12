@@ -2,7 +2,7 @@
 window.ElfMedia=(function(){
   var active=null,lastMessage='',lastDevice='',cameraChoice={};
   function render(){if(typeof renderRemoteConsole==='function')renderRemoteConsole();}
-  async function json(url,body,method){var r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!(r.headers.get('Content-Type')||'').includes('json'))throw Error('通信服务暂时不可用');var x=await r.json();if(!r.ok||x.ok===false)throw Error(x.msg||'通信请求失败');return x;}
+  async function json(url,body,method){var r;try{r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});}catch(e){if(e.name==='TimeoutError')throw Error('通信请求超时，请重试');throw e;}if(!(r.headers.get('Content-Type')||'').includes('json'))throw Error('通信服务暂时不可用');var x=await r.json();if(!r.ok||x.ok===false)throw Error(x.msg||'通信请求失败');return x;}
   function send(s,p){if(s.ws&&s.ws.readyState===1)s.ws.send(JSON.stringify(p));}
   function rpc(s,action,body){return new Promise(function(resolve,reject){var id=++s.seq,timer=setTimeout(function(){delete s.pending[id];reject(Error('实时媒体协商超时'));},20000);s.pending[id]={resolve:resolve,reject:reject,timer:timer};send(s,{type:'rpc',id:id,action:action,body:body||{}});});}
   async function publish(s){
