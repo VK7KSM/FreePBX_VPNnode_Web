@@ -83,6 +83,9 @@ async function transfer(c,id){const ev=selected(c,id);if(ev.receipt)faultReceipt
     }ev.phase='VERIFY';await save(c);
   }
   if(['VERIFY','ARCHIVE'].includes(ev.phase)){ev.proof=await localProof(c,ev);await fileWrite(c,'verified-'+ev.eventId+'.json',JSON.stringify(ev.proof));ev.phase='ARCHIVE';await save(c);}
+  if(ev.phase==='ARCHIVE'&&typeof window.queueReturnCleanup==='function'){
+    window.queueReturnCleanup({device_id:c.id,task_id:ev.tasks.getFile.request.id,size:ev.receipt.bytes,sha256:ev.receipt.sha256});window.retryReturnCleanups();
+  }
   c.message='本机原件逐项校验完成，可以确认归档';
 }
 async function archive(c,id){const ev=selected(c,id);need(['ARCHIVE','CONFIRM'].includes(ev.phase),'请先取回并校验原件');const proof=await localProof(c,ev);

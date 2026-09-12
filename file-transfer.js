@@ -38,6 +38,10 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
     }
     if (!validId(data.id)) throw Error('文件编号无效');
     const m=await storage.get(key(data.id));
+    if(data.action==='discard'){
+      if((await loadDevices()).some(d=>d.task?.type==='send_file'&&d.task.params?.transfer_id===data.id&&['pending','claimed','running'].includes(d.task.state)))return json({ok:false,msg:'文件仍在传输，不能清理暂存'},409);
+      if(m){m.state='discarded';m.expires_at=now;await storage.put(key(data.id),m);}return json({ok:true});
+    }
     if(data.action==='cleanup_done') {
       if(m && m.expires_at<=now)await storage.delete(key(data.id));
       else if(m?.state==='delivered'){m.purged=true;m.parts={};await storage.put(key(data.id),m);}
@@ -81,8 +85,11 @@ export async function validateFileTask(storage, deviceId, params,completedRetry=
 export async function cleanupDeliveredFile(env,stub,id){
   if(!env.ELF_ARTIFACTS||!validId(id))return;
   const result=await rpc(stub,{action:'delivered',id});if(!result.ok)throw Error('文件清理状态未保存');
+  await cleanupFileParts(env,stub,id);
+}
+async function cleanupFileParts(env,stub,id){
   let cursor;do{const listed=await env.ELF_ARTIFACTS.list({prefix:`device-files/${id}/`,cursor,limit:1000});if(listed.objects.length)await env.ELF_ARTIFACTS.delete(listed.objects.map(o=>o.key));cursor=listed.truncated?listed.cursor:undefined;}while(cursor);
-  await rpc(stub,{action:'cleanup_done',id});
+  const done=await rpc(stub,{action:'cleanup_done',id});if(!done.ok)throw Error('文件清理回执未保存');
 }
 
 async function rpc(stub, data) {
@@ -112,6 +119,10 @@ export async function fileHttp(env, request, stub) {
     const match=/^\/api\/elfremote\/files\/([a-f0-9]{32})(?:\/(complete|parts\/(\d+)))?$/.exec(path);
     if(!match)return json({ok:false,msg:'文件接口不存在'},404);
     const id=match[1];
+    if(!match[2]&&method==='DELETE'){
+      const r=await rpc(stub,{action:'discard',id});if(!r.ok)return r;
+      try{await cleanupFileParts(env,stub,id);return json({ok:true,purged:true});}catch{return json({ok:true,cleanup_pending:true});}
+    }
     if(!match[2] && method==='GET')return rpc(stub,{action:'get',id});
     if(match[2]==='complete' && method==='POST')return rpc(stub,{...await request.json(),action:'complete',id});
     if(match[3]!==undefined && method==='PUT') {

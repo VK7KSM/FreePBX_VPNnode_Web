@@ -31,3 +31,24 @@ test('取消与错误目标拒绝继续取回，空文件可完整下载',async(
  const r=await worker.fetch(request(path+'&download=1','GET',undefined,c),f.env);assert.equal(r.status,200);assert.equal((await r.arrayBuffer()).byteLength,0);
  await worker.fetch(request('/api/elfremote/task','POST',{device_id:'lab',action:'cancel',task_id:'empty'},c),f.env);assert.equal((await post({action:'get'})).status,409);
 });
+
+test('只有管理员完整落盘回执才能清理；删除失败可定时重试且回执幂等',async()=>{
+ const f=setup(),c=await login(f),p='/api/elfremote/file-return/received?device_id=lab&task_id=saved',bytes=Buffer.from('合成文件'),hash=sha(bytes),object='device-files/return/lab/saved/0-'+hash;
+ f.data.set('file-return/lab/saved',{device_id:'lab',task_id:'saved',size:bytes.length,sha256:hash,state:'ready',expires_at:Date.now()+86400000,parts:{0:{bytes:bytes.length,sha256:hash}}});f.objects.set(object,bytes);
+ const send=(body,cookie=c)=>worker.fetch(request(p,'POST',body,cookie),f.env);
+ assert.equal((await send({size:bytes.length,sha256:hash},null)).status,401);
+ assert.equal((await send({size:bytes.length,sha256:'f'.repeat(64)})).status,409);assert.equal(f.objects.size,1);
+ const del=f.env.ELF_ARTIFACTS.delete;f.env.ELF_ARTIFACTS.delete=async()=>{throw Error('模拟R2暂不可用');};
+ const result=await (await send({size:bytes.length,sha256:hash})).json();assert.equal(result.cleanup_pending,true);assert.equal(f.data.get('file-return/lab/saved').state,'delivered');assert.equal(f.objects.size,1);
+ f.env.ELF_ARTIFACTS.delete=del;await cleanupReturns(f.env,f.env.ELF_DO.get('main'));assert.equal(f.objects.size,0);assert.equal(f.data.get('file-return/lab/saved').purged,true);
+ assert.equal((await send({size:bytes.length,sha256:hash})).status,200);
+ assert.equal((await worker.fetch(request('/api/elfremote/file-return?device_id=lab&task_id=saved','GET',undefined,c),f.env)).status,404);
+});
+test('管理员清理旧取回暂存不能越过仍在执行的任务',async()=>{
+ const f=setup(),c=await login(f),p='/api/elfremote/file-return?device_id=lab&task_id=staged',object='device-files/return/lab/staged/0-fixture';
+ f.data.set('file-return/lab/staged',{device_id:'lab',task_id:'staged',state:'ready',expires_at:Date.now()+86400000,parts:{}});f.objects.set(object,Buffer.from('fixture'));
+ f.data.get('remote_devices')[0].task={id:'staged',type:'get_file',state:'running'};
+ assert.equal((await worker.fetch(request(p,'DELETE',undefined,c),f.env)).status,409);assert.equal(f.objects.size,1);
+ f.data.get('remote_devices')[0].task.state='success';assert.equal((await worker.fetch(request(p,'DELETE'),f.env)).status,401);
+ assert.equal((await worker.fetch(request(p,'DELETE',undefined,c),f.env)).status,200);assert.equal(f.objects.size,0);assert.equal(f.data.get('file-return/lab/staged').state,'discarded');
+});

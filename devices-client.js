@@ -176,6 +176,7 @@ function loadDevices(){
     var previousSip=uiOf()&&uiOf().sipSelection;
     var savedInputs=Array.from($("devOps").querySelectorAll('input[id],textarea[id],select[id]')).filter(function(el){return el.type!=='file';}).map(function(el){return {id:el.id,value:el.value,checked:el.checked};});
     if(arr[0].devices) DEV = arr[0].devices;
+    retryReturnCleanups();
     if(CONTACT_PAGES_CONTROLLER)DEV.forEach(function(d){CONTACT_PAGES_CONTROLLER.observe(d);});
     UNPAIRED = arr[0].unpaired || [];
     DEV.forEach(function(d){var t=d.task;if(t&&t.type==='root_exec'&&['pending','claimed','running'].includes(t.state)){
@@ -616,6 +617,17 @@ function openSendFile(){
   show('fileSendWrap');if(state.task_id)pollSendFile(state);
 }
 var FILE_RETURN={};
+var RETURN_CLEANUP_BUSY=false,RETURN_CLEANUP_MEMORY=[];
+function returnCleanupQueue(){try{var data=JSON.parse(localStorage.getItem('elf-return-cleanup-v1')||'[]');if(Array.isArray(data))RETURN_CLEANUP_MEMORY=data.filter(function(x){return x&&typeof x.device_id==='string'&&typeof x.task_id==='string'&&Number.isSafeInteger(x.size)&&x.size>=0&&/^[a-f0-9]{64}$/.test(x.sha256||'')&&Number.isFinite(x.created_at)&&Number.isFinite(x.retry_at);});}catch(_){}return RETURN_CLEANUP_MEMORY;}
+function saveReturnCleanupQueue(data){RETURN_CLEANUP_MEMORY=data;try{localStorage.setItem('elf-return-cleanup-v1',JSON.stringify(data));}catch(_){}}
+function queueReturnCleanup(item){var list=returnCleanupQueue().filter(function(x){return x.device_id!==item.device_id||x.task_id!==item.task_id;});list.push(Object.assign({created_at:Date.now(),retry_at:0},item));saveReturnCleanupQueue(list);}
+async function retryReturnCleanups(){
+  if(RETURN_CLEANUP_BUSY)return;var now=Date.now(),list=returnCleanupQueue().filter(function(x){return x.created_at+7*86400000>now;});saveReturnCleanupQueue(list);
+  var due=list.filter(function(x){return x.retry_at<=now;}).slice(0,4);if(!due.length)return;RETURN_CLEANUP_BUSY=true;
+  try{for(var item of due){var remove=false,next=Date.now()+60000;try{var response=await fetch('/api/elfremote/file-return/received?'+new URLSearchParams({device_id:item.device_id,task_id:item.task_id}),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({size:item.size,sha256:item.sha256}),signal:AbortSignal.timeout(20000)});var r=await readServiceJson(response);remove=r.ok===true;}catch(e){next=Math.max(next,Number(e.retryAt)||0,Date.now()+(Number(e.retryAfter)||0));}
+    var current=returnCleanupQueue().filter(function(x){return !remove||x.device_id!==item.device_id||x.task_id!==item.task_id;});current.forEach(function(x){if(x.device_id===item.device_id&&x.task_id===item.task_id)x.retry_at=next;});saveReturnCleanupQueue(current);
+  }}finally{RETURN_CLEANUP_BUSY=false;}
+}
 function returnUrl(s){return '/api/elfremote/file-return?'+new URLSearchParams({device_id:s.device_id,task_id:s.task_id,download:'1'});}
 function openReturnFile(){
   var d=currentDev();if(!d||!d.managed_file_return)return;
@@ -852,7 +864,7 @@ async function fileManagerDownload(s,item,root,progress){
     for(;;){fileManagerCheck(s);var chunk=await reader.read();if(chunk.done)break;hash.update(chunk.value);await writer.write(chunk.value);written+=chunk.value.length;progress(item.bytes+item.bytes*written/Math.max(1,meta.size));}
     var sum=Array.from(hash.digest(),function(b){return b.toString(16).padStart(2,'0');}).join('');
     if(written!==meta.size||sum!==meta.sha256)throw Error('文件校验失败，未保存不完整内容');
-    await writer.close();return true;
+    await writer.close();queueReturnCleanup({device_id:s.device_id,task_id:task.task.id,size:meta.size,sha256:meta.sha256});await retryReturnCleanups();return true;
   }catch(e){await writer.abort().catch(function(){});throw e;}
   finally{if(reader)await reader.cancel().catch(function(){});s.abort=null;}
 }

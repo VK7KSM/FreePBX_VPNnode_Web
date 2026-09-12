@@ -12,6 +12,15 @@ test('文件传输保留64位长度并拒绝无效目标',()=>{
   assert.equal(fileParams({transfer_id:'a'.repeat(32),path:'/sdcard/文件'}).allow_cellular,true);
   for(const path of ['relative','/a/../b','/a/','/a\0b'])assert.throws(()=>fileParams({transfer_id:'a'.repeat(32),path}));
 });
+test('清理未使用发送暂存需管理员且不能删除在途分块',async()=>{
+ const f=fixture(),id='a'.repeat(32),key='device-files/'+id+'/0-fixture',objects=new Set([key]);
+ f.data.set('file-transfer/'+id,{id,state:'ready',expires_at:Date.now()+86400000,parts:{}});f.data.set('remote_devices',[{task:{type:'send_file',state:'running',params:{transfer_id:id}}}]);
+ f.env.ELF_ARTIFACTS={async list(){return {objects:[...objects].map(key=>({key})),truncated:false};},async delete(keys){keys.forEach(k=>objects.delete(k));}};
+ const cookie=await login(f),url='/api/elfremote/files/'+id;
+ assert.equal((await worker.fetch(request(url,'DELETE'),f.env)).status,401);
+ assert.equal((await worker.fetch(request(url,'DELETE',undefined,cookie),f.env)).status,409);assert.equal(objects.size,1);
+ f.data.get('remote_devices')[0].task.state='failed';assert.equal((await worker.fetch(request(url,'DELETE',undefined,cookie),f.env)).status,200);assert.equal(objects.size,0);assert.equal(f.data.has('file-transfer/'+id),false);
+});
 
 test('私有分块、重试、封存、任务绑定、Range和取消闭环',async()=>{
   const token='file-test-token',f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'test',status_only:true,enabled:true,managed_file_tasks:true,token_sha256:sha(token)}]});

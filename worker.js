@@ -1,4 +1,5 @@
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel } from './release-channels.js';
+import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
@@ -279,9 +280,15 @@ export class ElfStore {
         return new Response(null,{status:101,webSocket:pair[0]});
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
+    if(url.pathname==='/__release_cleanup'&&request.method==='POST'){
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>json({ok:true,...await cleanupRetiredReleases(storage,this.env.ELF_ARTIFACTS)})));
+    }
     if(url.pathname==='/__returns'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
-      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
+        if(JSON.parse(raw).action==='expired')try{await cleanupRetiredReleases(storage,this.env.ELF_ARTIFACTS);}catch{console.error('release_cleanup_pending');}
+        return returnMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}));
+      }));
     }
     if(url.pathname==='/__release'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>16384)return json({ok:false},400);const data=JSON.parse(raw);
@@ -465,7 +472,9 @@ const app = {
         if(!await verifyUpdateSig(raw,sig))throw Error('清单签名无效');
         const manifest=JSON.parse(raw);validateReleaseManifest(manifest);
         const key=await streamReleaseApk(env,manifest,request),stub=elfDoStub(env);if(!stub)throw Error('设备存储不可用');
-        return stub.fetch('https://elf-store/__release',{method:'POST',body:JSON.stringify({manifest_raw:raw,signature:sig,apk_key:key,publish_only:request.headers.get('X-Elf-Publish-Only')==='1'})});
+        const published=await stub.fetch('https://elf-store/__release',{method:'POST',body:JSON.stringify({manifest_raw:raw,signature:sig,apk_key:key,publish_only:request.headers.get('X-Elf-Publish-Only')==='1'})});
+        if(published.ok)try{await stub.fetch('https://elf-store/__release_cleanup',{method:'POST'});}catch{console.error('release_cleanup_pending');}
+        return published;
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(!env.__storage&&pathname==='/api/elfremote/media-recordings'){
@@ -474,8 +483,14 @@ const app = {
     if(!env.__storage&&pathname==='/api/elfremote/report-photo'){
       const stub=elfDoStub(env);return stub?photoHttp(env,request,stub):json({ok:false},503);
     }
-    if(!env.__storage&&pathname==='/api/elfremote/file-return'){
+    if(!env.__storage&&['/api/elfremote/file-return','/api/elfremote/file-return/received'].includes(pathname)){
       const stub=elfDoStub(env);return stub?returnHttp(env,request,stub):json({ok:false},503);
+    }
+    if(!env.__storage&&['/api/elfremote/releases/prune','/api/elfremote/releases'].includes(pathname)&&method==='POST'){
+      const stub=elfDoStub(env);if(!stub)return json({ok:false},503);
+      const response=await stub.fetch(request);if(!response.ok)return response;const result=await response.json();
+      if(result.applied||pathname==='/api/elfremote/releases'){try{const cleaned=await stub.fetch('https://elf-store/__release_cleanup',{method:'POST'});if(!cleaned.ok)throw Error('清理失败');Object.assign(result,await cleaned.json());}catch{result.cleanup_pending=true;}}
+      return json(result);
     }
     if (!env.__storage && isPushHttp(pathname)) {
       const stub = elfDoStub(env);
@@ -727,6 +742,14 @@ const app = {
     }
     if (pathname === "/api/devices/report" && method === "POST") {
       return handleDeviceReport(env, request);
+    }
+    if(pathname==='/api/elfremote/releases/prune'&&method==='POST'){
+      try{const data=await request.json(),read=k=>getStore(env,k),devices=await loadDevices(env);
+        if(data.action==='retry')return json({ok:true,applied:true});
+        if(!['plan','apply'].includes(data.action))return json({ok:false,msg:'清理操作无效'},400);
+        const plan=data.action==='apply'?await retireReleases(env.__storage,read,devices,data.digest):await releaseRetentionPlan(read,devices);
+        return json({ok:true,applied:data.action==='apply',...plan});
+      }catch(e){return json({ok:false,msg:e.message},409);}
     }
     if (pathname === "/api/elfremote/releases" && method === "POST") {
       return handleElfReleasePublish(env, request);
@@ -1829,6 +1852,7 @@ async function handleElfReleasePublish(env, request) {
     if (list.indexOf(vc) < 0) list.push(vc);
     await setStore(env, releaseListKey(channel), list);
     if (rel.job_id) await setStore(env, "elfremote_job_" + rel.job_id, {channel,versionCode:vc,apk_key:rel.apk_key,manifest_raw:raw});
+    if(await env.__storage?.get('elfremote_apk_retention_keep')===10){const read=k=>getStore(env,k),devices=await loadDevices(env),plan=await releaseRetentionPlan(read,devices);await retireReleases(env.__storage,read,devices,plan.digest);}
     return json({ ok: true, channel, package:rel.package, versionCode: vc, versionName: rel.versionName, sha256:rel.sha256, size:rel.size });
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
@@ -1848,7 +1872,7 @@ async function handleElfReleaseList(env,url) {
     }
     const ids=(await getStore(env,releaseListKey(channel))) || [],out=[];
     for(const id of ids) {
-      const rel=await getStore(env,releaseKey(channel,id));if(!rel)continue;
+      const rel=await getStore(env,releaseKey(channel,id));if(!rel||rel.retired_at)continue;
       const m=JSON.parse(rel.manifest_raw||'{}');
       if(deviceId && m.device_id && m.device_id!==deviceId)continue;
       out.push({channel,package:rel.package||RELEASE_CHANNELS[channel].package,model_id:RELEASE_CHANNELS[channel].model_id,
@@ -1875,7 +1899,7 @@ async function handleElfAssign(env, request) {
     const device=(await loadDevices(env)).find(d=>d.id===deviceId);
     if(!device)return json({ok:false,msg:"未找到该设备"},404);
     const rel = await releaseForDevice(env,device,data,vc);
-    if (!rel) return json({ ok: false, msg: "未发布该版本" }, 404);
+    if (!rel||rel.retired_at) return json({ ok: false, msg: "未发布该版本或已清理" }, 404);
     const d = await assignReleaseToDevice(env, deviceId, rel, data);
     if (!d) return json({ ok: false, msg: "未找到该设备" }, 404);
     return json({ ok: true, update: publicUpdate(d.update) });
@@ -2216,6 +2240,7 @@ async function handleElfApk(env, pathname) {
   if (!mapping) return json({ ok: false, msg: "未知任务" }, 404);
   const channel=typeof mapping==='number'?'d22':mapping.channel;
   const vc=typeof mapping==='number'?mapping:mapping.versionCode;
+  const registered=await getStore(env,releaseKey(channel,vc));if(registered?.retired_at)return json({ok:false,msg:'该旧版本已清理'},410);
   const rel = mapping.apk_key ? {apk_key:mapping.apk_key} : await getStore(env,releaseKey(channel,vc));
   if (!rel) return json({ ok: false, msg: "制品缺失" }, 404);
   if (rel.apk_key) {

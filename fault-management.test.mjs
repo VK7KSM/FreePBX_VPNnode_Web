@@ -29,7 +29,7 @@ function workflowHarness({disk=new Map(),locks=mutex(),hooks={},fetcher,deviceId
  const directory={async getFileHandle(name,options={}){await hooks.handle?.(name,options);if(!disk.has(name)&&!options.create){await hooks.missing?.(name);const error=Error('missing');error.name='NotFoundError';throw error;}
   return {async getFile(){await hooks.read?.(name);const bytes=disk.get(name)||new Uint8Array();return {size:bytes.length,async arrayBuffer(){return bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);}};},async createWritable(){let next;return {async write(bytes){next=typeof bytes==='string'?enc.encode(bytes):new Uint8Array(bytes);await hooks.write?.(name,next);},async close(){await hooks.close?.(name,next);disk.set(name,next);},async abort(){}};}};
  }};
- const window={currentDev:()=>device,renderOps(){},showDirectoryPicker:async()=>{await hooks.picker?.();return directory;}};
+ const window={currentDev:()=>device,renderOps(){},queueReturnCleanup:hooks.cleanup,retryReturnCleanups(){},showDirectoryPicker:async()=>{await hooks.picker?.();return directory;}};
  const fetch=async(url,options={})=>{calls.push({url,options});if(url==='/api/devices'){await hooks.devices?.();return Response.json({ok:true,devices:[device]});}if(fetcher)return fetcher(url,options);throw Error('offline stop');};
  const context=vm.createContext({window,showDirectoryPicker:window.showDirectoryPicker,navigator:{locks},crypto,TextEncoder,TextDecoder,DataView,Uint8Array,URLSearchParams,Date:clock,performance,AbortSignal,fetch,setTimeout});vm.runInContext(faultClientSource,context);
  return {ui:window.ElfFaults,disk,calls,device};
@@ -58,6 +58,11 @@ test('完整本机包先恢复并逐项验包，服务器404或503均不查询�
 });
 test('整包摘要匹配也仍核验内部条目，不能把完整下载冒充验包完成',async()=>{
  const f=await fixture((m,entries)=>entries[0][1]=Buffer.from('wrong source')),disk=new Map([['existing.zip',f.bytes]]);writeState(disk,downloadState(f));const h=workflowHarness({disk});await h.ui.choose();h.ui.select(id);await h.ui.transfer();assert.equal(readState(disk).events[id].phase,'VERIFY');assert.equal(readState(disk).events[id].proof,undefined);assert.equal(h.calls.length,1);
+});
+test('故障包只在本机逐项验包和状态落盘后登记云端删除回执',async()=>{
+ for(const corrupt of [false,true]){const f=await fixture(corrupt?(m,a)=>{a[0][1]=Buffer.from('错误原件');}:()=>{}),disk=new Map([['existing.zip',f.bytes]]);writeState(disk,downloadState(f));const receipts=[];
+  const h=workflowHarness({disk,hooks:{cleanup:r=>{assert.equal(readState(disk).events[id].phase,'ARCHIVE');receipts.push(r);}}});await h.ui.choose();h.ui.select(id);await h.ui.transfer();assert.equal(receipts.length,corrupt?0:1);if(!corrupt){assert.equal(receipts[0].sha256,f.receipt.sha256);assert.equal(receipts[0].size,f.bytes.length);assert.equal(receipts[0].task_id,'existing-get-file');}
+ }
 });
 test('异常本机原包保留，新尝试先落盘名称再下载，刷新后仍显示异常原件',async()=>{
  const f=await fixture(),old=enc.encode('damaged original'),disk=new Map([['existing.zip',old]]);writeState(disk,downloadState(f));const h=workflowHarness({disk,fetcher:downloadFetch(f,disk)});await h.ui.choose();h.ui.select(id);await h.ui.transfer();const ev=readState(disk).events[id];assert.equal(ev.phase,'ARCHIVE');assert.notEqual(ev.bundle,'existing.zip');assert.deepEqual(disk.get('existing.zip'),old);assert.equal(ev.retainedAttempts[0].name,'existing.zip');assert.deepEqual(disk.get(ev.bundle),new Uint8Array(f.bytes));

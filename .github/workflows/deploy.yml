@@ -36,6 +36,7 @@ on:
       - "trajectory-media.js"
       - "device-identity.js"
       - "release-channels.js"
+      - "release-retention.js"
       - "traffic.js"
       - "daily-traffic.js"
       - "push-control.js"

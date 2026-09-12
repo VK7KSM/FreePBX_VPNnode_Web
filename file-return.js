@@ -12,9 +12,21 @@ export function returnParams(p={}){
 export async function returnMetadata(storage,request,loadDevices,now=Date.now()){
   try{
     const p=await request.json();
-    if(p.action==='expired')return json({ok:true,files:[...(await storage.list({prefix:'file-return/'})).values()].filter(m=>m.expires_at<=now).slice(0,4)});
+    if(p.action==='expired')return json({ok:true,files:[...(await storage.list({prefix:'file-return/'})).values()].filter(m=>m.expires_at<=now||(['delivered','discarded'].includes(m.state)&&!m.purged)).slice(0,4)});
     if(!id(p.device_id)||!id(p.task_id))throw Error('文件任务编号无效');
     let m=await storage.get(key(p));
+    if(p.action==='discard'){
+      if((await loadDevices()).some(d=>d.id===p.device_id&&d.task?.id===p.task_id&&d.task.type==='get_file'&&['pending','claimed','running'].includes(d.task.state)))return json({ok:false,msg:'文件仍在取回，不能清理暂存'},409);
+      if(m){m.state='discarded';m.discarded_at=now;await storage.put(key(p),m);}return json({ok:true});
+    }
+    if(p.action==='received'){
+      if(!m)return json({ok:false,msg:'取回记录不存在'},404);
+      if(!['ready','delivered'].includes(m.state)||p.size!==m.size||p.sha256!==m.sha256)return json({ok:false,msg:'本机保存回执与文件不匹配'},409);
+      m.state='delivered';m.delivered_at??=now;await storage.put(key(p),m);return json({ok:true});
+    }
+    if(p.action==='cleanup_done'){
+      if(m&&['delivered','discarded'].includes(m.state)){m.purged=true;m.parts={};await storage.put(key(p),m);}return json({ok:true});
+    }
     if(p.action==='removed'){if(m?.expires_at<=now)await storage.delete(key(p));return json({ok:true});}
     if(p.action==='admin')return m?.state==='ready'&&m.expires_at>now?json({ok:true,file:m}):json({ok:false,msg:'文件尚未取回或已过期'},404);
     const d=(await loadDevices()).find(d=>d.id===p.device_id);
@@ -43,6 +55,15 @@ export async function returnHttp(env,request,stub){
   try{
     if(!env.ELF_ARTIFACTS)return json({ok:false,msg:'文件存储未配置'},503);
     const u=new URL(request.url),p={device_id:u.searchParams.get('device_id'),task_id:u.searchParams.get('task_id')};
+    if(request.method==='DELETE'&&u.pathname==='/api/elfremote/file-return'){
+      const r=await rpc(stub,{...p,action:'discard'});if(!r.ok)return r;
+      try{await cleanupReturnFile(env,stub,p);return json({ok:true,purged:true});}catch{return json({ok:true,cleanup_pending:true});}
+    }
+    if(u.pathname==='/api/elfremote/file-return/received'){
+      if(request.method!=='POST')return json({ok:false},405);
+      const data=await request.json(),accepted=await rpc(stub,{...p,action:'received',size:data.size,sha256:data.sha256});if(!accepted.ok)return accepted;
+      try{await cleanupReturnFile(env,stub,p);return json({ok:true,purged:true});}catch{return json({ok:true,cleanup_pending:true});}
+    }
     if(request.method==='POST'){const body=await request.json();if(!['init','get','complete'].includes(body.action))throw Error('文件操作无效');return rpc(stub,{...body,...p,token:(request.headers.get('Authorization')||'').replace(/^Bearer /,'')});}
     if(request.method==='PUT'){
       const auth={...p,token:(request.headers.get('Authorization')||'').replace(/^Bearer /,'')};
@@ -69,7 +90,12 @@ export async function returnHttp(env,request,stub){
     return new Response(body,{status:range?206:200,headers:{'Content-Type':'application/octet-stream','Cache-Control':'no-store','Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(m.name),'Content-Length':String(Math.max(0,end-start+1)),'Accept-Ranges':'bytes',...(range?{'Content-Range':`bytes ${start}-${end}/${m.size}`}:{})}});
   }catch(e){return json({ok:false,msg:e.message},400);}
 }
+export async function cleanupReturnFile(env,stub,p){
+  if(!id(p.device_id)||!id(p.task_id))throw Error('取回记录无效');
+  let cursor;do{const list=await env.ELF_ARTIFACTS.list({prefix:'device-files/return/'+p.device_id+'/'+p.task_id+'/',cursor});if(list.objects.length)await env.ELF_ARTIFACTS.delete(list.objects.map(o=>o.key));cursor=list.truncated?list.cursor:undefined;}while(cursor);
+  const done=await rpc(stub,{...p,action:'cleanup_done'});if(!done.ok)throw Error('清理回执未保存');
+}
 export async function cleanupReturns(env,stub){
   if(!env.ELF_ARTIFACTS||!stub)return;const r=await rpc(stub,{action:'expired'});if(!r.ok)return;
-  for(const m of (await r.json()).files){try{let cursor;do{const list=await env.ELF_ARTIFACTS.list({prefix:'device-files/return/'+m.device_id+'/'+m.task_id+'/',cursor});if(list.objects.length)await env.ELF_ARTIFACTS.delete(list.objects.map(o=>o.key));cursor=list.truncated?list.cursor:undefined;}while(cursor);const removed=await rpc(stub,{...m,action:'removed'});if(!removed.ok)throw Error('metadata');}catch{console.error('return_cleanup_pending');}}
+  for(const m of (await r.json()).files){try{await cleanupReturnFile(env,stub,m);const removed=await rpc(stub,{...m,action:'removed'});if(!removed.ok)throw Error('metadata');}catch{console.error('return_cleanup_pending');}}
 }
