@@ -524,6 +524,11 @@ public final class ReportService extends Service {
             JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushSyncPath(), receipt.toString()));
             if (!reply.optBoolean("ok")) throw new java.io.IOException("receipt rejected");
             RuntimeLog.event("push_receipt_saved version=" + version);
+            JSONObject immediateMedia=reply.optJSONObject("media_session");
+            if(immediateMedia!=null){
+                if(media==null)media=new MediaSession(this,store,reportPhotos);
+                media.receive(immediateMedia);
+            }
         } catch (Exception error) { RuntimeLog.error("push_receipt_failed", error); }
         if (dailyLocation != null) {
             dailyLocation.beforePeriodicReport(() -> {

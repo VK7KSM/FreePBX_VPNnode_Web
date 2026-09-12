@@ -224,6 +224,11 @@ export class ElfStore {
     }
     if(url.pathname.startsWith('/api/elfremote/media/')) {
       try {
+        if(url.pathname==='/api/elfremote/media/session'&&request.method==='DELETE'){
+          const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
+          const {session_id}=JSON.parse(raw);const session=this.media.sessions.get(session_id);
+          if(session)this.media.close(session,'通信已取消');return json({ok:true});
+        }
         if(url.pathname==='/api/elfremote/media/session'&&request.method==='GET') {
           const deviceId=url.searchParams.get('device_id');
           if(!deviceId||!/^[A-Za-z0-9_-]{1,96}$/.test(deviceId))return json({ok:false,msg:'设备编号无效'},400);
@@ -352,9 +357,16 @@ export class ElfStore {
       const raw = await request.text();
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
-          return await this.events.transaction(storage => pushState(storage,
+          const result=await this.events.transaction(storage => pushState(storage,
             new Request(request.url, { method: "POST", body: raw }),
             () => loadDevices({ ...this.env, __storage: storage })));
+          // 仅凭据认证成功的设备同步可领取邀请，不等待完整报告与定位。
+          if(result.ok&&url.pathname==='/__push/sync'){
+            const data=JSON.parse(raw),body=await result.json();
+            body.media_session=this.media.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host);
+            return json(body,result.status);
+          }
+          return result;
         } catch { return authJson({ ok: false, msg: "推送状态保存失败" }, 503); }
       });
     }

@@ -11,10 +11,11 @@ final class MediaAlarm {
     private final Handler handler;
     private final android.content.SharedPreferences state;
     private AudioTrack track;
+    private MediaFlash flash;
     private boolean active;
     private final Runnable sound=this::sound;
     private final Runnable pause=this::pause;
-    private synchronized void pause(){if(!active)return;if(track!=null)track.pause();handler.postDelayed(sound,10000);}
+    private synchronized void pause(){if(!active)return;if(track!=null)track.pause();if(flash!=null)flash.stop();handler.postDelayed(sound,10000);}
     MediaAlarm(Context c,Handler h){context=c.getApplicationContext();audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);handler=h;state=c.getSharedPreferences("media-alarm",0);restore();}
     synchronized void start() throws Exception {
         if(active)return;
@@ -32,10 +33,23 @@ final class MediaAlarm {
             if(track.getState()!=AudioTrack.STATE_NO_STATIC_DATA||track.write(samples,0,count)!=count)throw new java.io.IOException("警报音频初始化失败");
             if(track.setLoopPoints(0,count,-1)!=AudioTrack.SUCCESS)throw new java.io.IOException("警报循环初始化失败");
             for(AudioDeviceInfo device:audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS))if(device.getType()==AudioDeviceInfo.TYPE_BUILTIN_SPEAKER){track.setPreferredDevice(device);break;}
-            active=true;sound();
+            prepareFlash();active=true;sound();
         }catch(Exception e){close();throw e;}
     }
-    private synchronized void sound(){if(!active||track==null)return;WakeScheduler.hold(context,"media-alarm-cycle",60000L);track.play();handler.postDelayed(pause,30000);}
+    private void prepareFlash(){
+        try{
+            android.hardware.camera2.CameraManager manager=(android.hardware.camera2.CameraManager)context.getSystemService(Context.CAMERA_SERVICE);
+            for(String id:manager.getCameraIdList()){
+                android.hardware.camera2.CameraCharacteristics c=manager.getCameraCharacteristics(id);
+                if(Boolean.TRUE.equals(c.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE))
+                    &&Integer.valueOf(android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK).equals(c.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING))){
+                    flash=new MediaFlash(on->manager.setTorchMode(id,on),new MediaFlash.Scheduler(){public void post(Runnable r,long delay){handler.postDelayed(r,delay);}public void remove(Runnable r){handler.removeCallbacks(r);}});return;
+                }
+            }
+            RuntimeLog.event("alarm_flash_unavailable");
+        }catch(Exception error){RuntimeLog.error("alarm_flash_unavailable",error);}
+    }
+    private synchronized void sound(){if(!active||track==null)return;WakeScheduler.hold(context,"media-alarm-cycle",60000L);track.play();if(flash!=null)flash.start();handler.postDelayed(pause,30000);}
     private void restore(){if(audio!=null&&state.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_ALARM,state.getInt("volume",0),0);state.edit().clear().commit();}}
-    synchronized void close(){active=false;WakeScheduler.release("media-alarm-cycle");handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
+    synchronized void close(){active=false;WakeScheduler.release("media-alarm-cycle");handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(flash!=null){flash.stop();flash=null;}if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
 }

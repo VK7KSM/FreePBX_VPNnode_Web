@@ -36,15 +36,18 @@ final class MediaSession {
     private CameraVideoCapturer camera;
     private SurfaceTextureHelper texture;
     private MediaAlarm alarm;
-    private volatile boolean closed=true;
+    private volatile boolean closed=true,closing;
+    private long receivedAt;
     private volatile String id="",mode="",facing="front";
     private boolean subscribed,ready;
     private final Runnable timeout=()->stop("本次通信已到时");
     MediaSession(Context c,PairingStore s,ReportPhotos p){context=c.getApplicationContext();store=s;photos=p;audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);route=c.getSharedPreferences("media-route",0);restoreRoute();alarm=new MediaAlarm(context,main);}
     synchronized void receive(JSONObject offer){
         if(offer==null||System.currentTimeMillis()>offer.optLong("expires_at")||offer.optString("session_id").equals(id))return;
+        if(closing){main.postDelayed(()->receive(offer),100);return;}
         if(!closed)return;
-        id=offer.optString("session_id");mode=offer.optString("mode");facing=offer.optString("camera","front");closed=false;subscribed=false;ready=false;
+        sampleLogged.clear();receivedAt=SystemClock.elapsedRealtime();id=offer.optString("session_id");mode=offer.optString("mode");facing=offer.optString("camera","front");closed=false;subscribed=false;ready=false;
+        final String owner=id;
         executor.execute(()->{try{
             String url=offer.getString("url");java.net.URI uri=new java.net.URI(url);
             if(!"wss".equals(uri.getScheme())||!new java.net.URI(Protocol.BASE_URL).getHost().equals(uri.getHost())||!"/api/elfremote/media/device".equals(uri.getPath()))throw new Exception("通信地址无效");
@@ -56,7 +59,7 @@ final class MediaSession {
                     try{if(raw.length()>96000)throw new Exception("通信消息过大");JSONObject x=new JSONObject(raw);
                         if("rpc".equals(x.optString("type"))){CompletableFuture<JSONObject> f=waiting.remove(x.optInt("id"));if(f!=null){if(x.has("error"))f.completeExceptionally(new Exception(x.optString("error")));else f.complete(x.getJSONObject("result"));}}
                         else if("closed".equals(x.optString("type")))stop(x.optString("message"));
-                        else executor.execute(()->{try{message(x);}catch(Exception|LinkageError e){fail(new Exception(e));}});
+                        else executor.execute(()->{if(closed||!owner.equals(id))return;try{message(x);}catch(Exception|LinkageError e){fail(new Exception(e));}});
                     }catch(Exception e){fail(e);}
                 }
                 public void onClose(int code,String reason,boolean remote){if(socket==this)stop("通信已断开");}
@@ -70,7 +73,7 @@ final class MediaSession {
         switch(x.optString("type")){
             case "hello":
                 if("photo".equals(mode)){
-                    photos.manual(id,store.deviceId(),facing,(result,error)->{if(error!=null){fail(error);return;}send(result);});
+                    final String photoOwner=id;photos.manual(id,store.deviceId(),facing,(result,error)->{if(closed||!photoOwner.equals(id))return;if(error!=null){fail(error);return;}send(result);});
                     send(new JSONObject().put("type","status").put("message","正在拍照").put("cameras",android.hardware.Camera.getNumberOfCameras()));markReady();
                 }else if("alarm".equals(mode)){
                     if(alarm==null)alarm=new MediaAlarm(context,main);alarm.start();markReady();
@@ -90,12 +93,18 @@ final class MediaSession {
         boolean capture=Arrays.asList("call","microphone","video").contains(mode);
         if(capture&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限初始化尚未完成");
         if(Arrays.asList("ptt","call").contains(mode)){
-            if(!route.edit().putBoolean("saved",true).putInt("mode",audio.getMode()).putBoolean("speaker",audio.isSpeakerphoneOn()).putInt("volume",audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)).commit())throw new Exception("原音频设置保存失败");
-            audio.setMode(AudioManager.MODE_IN_COMMUNICATION);audio.setSpeakerphoneOn(true);audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),0);
+            if(!route.edit().putBoolean("saved",true).putInt("mode",audio.getMode()).putBoolean("speaker",audio.isSpeakerphoneOn()).putInt("volume",audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)).putInt("music",audio.getStreamVolume(AudioManager.STREAM_MUSIC)).commit())throw new Exception("原音频设置保存失败");
+            audio.setMode("ptt".equals(mode)?AudioManager.MODE_NORMAL:AudioManager.MODE_IN_COMMUNICATION);audio.setSpeakerphoneOn(true);
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC,audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),0);
         }
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());
         final String owner=id;
         egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context)
+            .setAudioSource("call".equals(mode)?android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION:android.media.MediaRecorder.AudioSource.MIC)
+            .setAudioAttributes(new android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setUseLowLatency(true)
+            .setSamplesReadyCallback(samples->audioSamples(owner,"capture",samples.getData()))
+            .setPlaybackSamplesReadyCallback(samples->audioSamples(owner,"playback",samples.getData()))
             .setAudioRecordErrorCallback(new JavaAudioDeviceModule.AudioRecordErrorCallback(){
                 public void onWebRtcAudioRecordInitError(String e){audioFailure(owner,"麦克风初始化失败",e);}
                 public void onWebRtcAudioRecordStartError(JavaAudioDeviceModule.AudioRecordStartErrorCode c,String e){audioFailure(owner,"麦克风启动失败",e);}
@@ -105,12 +114,13 @@ final class MediaSession {
                 public void onWebRtcAudioTrackStartError(JavaAudioDeviceModule.AudioTrackStartErrorCode c,String e){audioFailure(owner,"扬声器启动失败",e);}
                 public void onWebRtcAudioTrackError(String e){audioFailure(owner,"扬声器播放失败",e);}
             }).createAudioDeviceModule();
+        for(android.media.AudioDeviceInfo input:audio.getDevices(AudioManager.GET_DEVICES_INPUTS))if(input.getType()==android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC){adm.setPreferredInputDevice(input);break;}
         factory=PeerConnectionFactory.builder().setAudioDeviceModule(adm).setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(),true,true)).setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
         PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));
         config.sdpSemantics=PeerConnection.SdpSemantics.UNIFIED_PLAN;
         pc=factory.createPeerConnection(config,new PeerConnection.Observer(){
             public void onSignalingChange(PeerConnection.SignalingState s){}
-            public void onIceConnectionChange(PeerConnection.IceConnectionState s){if(s==PeerConnection.IceConnectionState.FAILED)stop("媒体网络连接失败");if(s==PeerConnection.IceConnectionState.CONNECTED||s==PeerConnection.IceConnectionState.COMPLETED)markReady();}
+            public void onIceConnectionChange(PeerConnection.IceConnectionState s){if(closed||!owner.equals(id))return;RuntimeLog.event("media_ice state="+s+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt));if(s==PeerConnection.IceConnectionState.FAILED)stop("媒体网络连接失败");if(s==PeerConnection.IceConnectionState.CONNECTED||s==PeerConnection.IceConnectionState.COMPLETED)markReady();}
             public void onIceConnectionReceivingChange(boolean v){}
             public void onIceGatheringChange(PeerConnection.IceGatheringState s){}
             public void onIceCandidate(IceCandidate c){}
@@ -119,13 +129,15 @@ final class MediaSession {
             public void onRemoveStream(MediaStream s){}
             public void onDataChannel(DataChannel c){}
             public void onRenegotiationNeeded(){}
-            public void onAddTrack(RtpReceiver r,MediaStream[] streams){if(r.track()!=null)r.track().setEnabled(true);}
+            public void onAddTrack(RtpReceiver r,MediaStream[] streams){if(!closed&&owner.equals(id)&&r.track()!=null)r.track().setEnabled(true);}
         });
         if(pc==null)throw new Exception("实时媒体初始化失败");
-        if(capture){audioSource=factory.createAudioSource(new MediaConstraints());audioTrack=factory.createAudioTrack("audio",audioSource);pc.addTransceiver(audioTrack,new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY));}
+        if(capture){MediaConstraints constraints=new MediaConstraints();
+            if(!"call".equals(mode))for(String key:new String[]{"googEchoCancellation","googNoiseSuppression","googHighpassFilter"})constraints.mandatory.add(new MediaConstraints.KeyValuePair(key,"false"));
+            audioSource=factory.createAudioSource(constraints);audioTrack=factory.createAudioTrack("audio",audioSource);pc.addTransceiver(audioTrack,new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY));}
         if("video".equals(mode))startCamera();
         rpc("new",new JSONObject());
-        if(capture){SessionDescription offer=create(true);set(offer,true);awaitIce();JSONArray tracks=new JSONArray();
+        if(capture){SessionDescription offer=create(true);set(offer,true);JSONArray tracks=new JSONArray();
             for(RtpTransceiver t:pc.getTransceivers()){MediaStreamTrack track=t.getSender().track();if(track!=null)tracks.put(new JSONObject().put("mid",t.getMid()).put("trackName",track.kind()));}
             JSONObject result=rpc("publish",new JSONObject().put("sessionDescription",description(pc.getLocalDescription())).put("tracks",tracks));
             set(parse(result.getJSONObject("sessionDescription")),false);rpc("published",new JSONObject());
@@ -150,13 +162,12 @@ final class MediaSession {
     private void negotiate(JSONObject result)throws Exception{
         if(!result.has("sessionDescription"))return;
         SessionDescription remote=parse(result.getJSONObject("sessionDescription"));set(remote,false);
-        if(remote.type==SessionDescription.Type.OFFER){set(create(false),true);awaitIce();rpc("answer",new JSONObject().put("sessionDescription",description(pc.getLocalDescription())));}
+        if(remote.type==SessionDescription.Type.OFFER){set(create(false),true);rpc("answer",new JSONObject().put("sessionDescription",description(pc.getLocalDescription())));}
     }
     private JSONObject rpc(String action,JSONObject body)throws Exception{
         if(closed)throw new Exception("通信已结束");int n=sequence.incrementAndGet();CompletableFuture<JSONObject> f=new CompletableFuture<>();waiting.put(n,f);
         send(new JSONObject().put("type","rpc").put("id",n).put("action",action).put("body",body));try{return f.get(20,TimeUnit.SECONDS);}finally{waiting.remove(n);}
     }
-    private void awaitIce()throws Exception{long end=SystemClock.elapsedRealtime()+7000;while(!closed&&pc.iceGatheringState()!=PeerConnection.IceGatheringState.COMPLETE&&SystemClock.elapsedRealtime()<end)Thread.sleep(50);}
     private SessionDescription create(boolean offer)throws Exception{
         CompletableFuture<SessionDescription> f=new CompletableFuture<>();SdpObserver o=new SdpAdapter(){public void onCreateSuccess(SessionDescription d){f.complete(d);}public void onCreateFailure(String e){f.completeExceptionally(new Exception(e));}};
         if(offer)pc.createOffer(o,new MediaConstraints());else pc.createAnswer(o,new MediaConstraints());return f.get(10,TimeUnit.SECONDS);
@@ -170,18 +181,26 @@ final class MediaSession {
     private void send(JSONObject x){WebSocketClient ws=socket;if(!closed&&ws!=null&&ws.isOpen())ws.send(x.toString());}
     private void sendStatus(){try{send(new JSONObject().put("type","status").put("camera",facing).put("cameras",android.hardware.Camera.getNumberOfCameras()));}catch(Exception e){fail(e);}}
     private void sendMessage(String text){try{send(new JSONObject().put("type","status").put("message",text));}catch(Exception ignored){}}
-    private synchronized void markReady(){if(closed||ready)return;ready=true;main.removeCallbacks(timeout);if(!"alarm".equals(mode))main.postDelayed(timeout,"ptt".equals(mode)?60000:"photo".equals(mode)?60000:1800000);try{send(new JSONObject().put("type","ready"));}catch(Exception e){fail(e);}}
+    private synchronized void markReady(){if(closed||ready)return;ready=true;RuntimeLog.event("media_ready mode="+mode+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt));main.removeCallbacks(timeout);if(!"alarm".equals(mode))main.postDelayed(timeout,"ptt".equals(mode)?60000:"photo".equals(mode)?60000:1800000);try{send(new JSONObject().put("type","ready"));}catch(Exception e){fail(e);}}
+    private final Map<String,Long> sampleLogged=new ConcurrentHashMap<>();
+    private void audioSamples(String owner,String kind,byte[] bytes){
+        if(closed||!owner.equals(id)||bytes==null||bytes.length<2)return;
+        long now=SystemClock.elapsedRealtime();Long previous=sampleLogged.get(owner+kind);
+        if(previous!=null&&now-previous<5000)return;sampleLogged.put(owner+kind,now);
+        long energy=0;int peak=0;for(int i=0;i+1<bytes.length;i+=2){int v=(short)((bytes[i]&255)|(bytes[i+1]<<8));peak=Math.max(peak,Math.abs(v));energy+=(long)v*v;}
+        RuntimeLog.event("media_audio "+kind+" rms="+(int)Math.sqrt((double)energy/(bytes.length/2))+" peak="+peak);
+    }
     private void audioFailure(String owner,String operation,String detail){if(!closed&&owner.equals(id))fail(new Exception(operation+"："+detail));}
     private void fail(Exception e){RuntimeLog.error("media_failed",e);sendMessage("通信失败："+e.getMessage());stop("通信失败");}
-    private void restoreRoute(){if(route.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,route.getInt("volume",0),0);audio.setSpeakerphoneOn(route.getBoolean("speaker",false));audio.setMode(route.getInt("mode",AudioManager.MODE_NORMAL));route.edit().clear().commit();}}
+    private void restoreRoute(){if(route.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,route.getInt("volume",0),0);if(route.contains("music"))audio.setStreamVolume(AudioManager.STREAM_MUSIC,route.getInt("music",0),0);audio.setSpeakerphoneOn(route.getBoolean("speaker",false));audio.setMode(route.getInt("mode",AudioManager.MODE_NORMAL));route.edit().clear().commit();}}
     synchronized void stop(String reason){
-        if(closed)return;closed=true;main.removeCallbacks(timeout);for(CompletableFuture<JSONObject> f:waiting.values())f.completeExceptionally(new Exception(reason));waiting.clear();
+        if(closed)return;closed=true;closing=true;main.removeCallbacks(timeout);for(CompletableFuture<JSONObject> f:waiting.values())f.completeExceptionally(new Exception(reason));waiting.clear();
         WebSocketClient ws=socket;socket=null;if(ws!=null)try{ws.close();}catch(Exception ignored){}
         executor.execute(()->{
             try{if(alarm!=null){alarm.close();alarm=null;}if(camera!=null){try{camera.stopCapture();}catch(Exception ignored){}camera.dispose();camera=null;}if(pc!=null){pc.close();pc.dispose();pc=null;}
                 if(videoTrack!=null){videoTrack.dispose();videoTrack=null;}if(videoSource!=null){videoSource.dispose();videoSource=null;}if(texture!=null){texture.dispose();texture=null;}
                 if(audioTrack!=null){audioTrack.dispose();audioTrack=null;}if(audioSource!=null){audioSource.dispose();audioSource=null;}if(factory!=null){factory.dispose();factory=null;}if(adm!=null){adm.release();adm=null;}if(egl!=null){egl.release();egl=null;}
-            }catch(Exception e){RuntimeLog.error("media_cleanup_failed",e);}finally{restoreRoute();WakeScheduler.release("media-session");RuntimeLog.event("media_stopped");}
+            }catch(Exception e){RuntimeLog.error("media_cleanup_failed",e);}finally{restoreRoute();WakeScheduler.release("media-session");RuntimeLog.event("media_stopped");closing=false;}
         });
     }
     private static class SdpAdapter implements SdpObserver {public void onCreateSuccess(SessionDescription d){}public void onSetSuccess(){}public void onCreateFailure(String e){}public void onSetFailure(String e){}}

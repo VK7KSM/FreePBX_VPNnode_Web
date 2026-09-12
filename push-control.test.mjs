@@ -27,6 +27,19 @@ function setup() {
 const deviceBody = { device_id: "fixture-device", token };
 const call = (f, path, body, cookie) => worker.fetch(request(path, "POST", body, cookie), f.env);
 
+test('媒体邀请在认证同步时立即领取，不依赖定位和报告，跨设备及伪造凭据不可领取',async()=>{
+  const f=setup(),cookie=await login(f);f.data.get('remote_devices')[0].managed_media=true;
+  const r=await call(f,'/api/elfremote/media/session',{device_id:deviceBody.device_id,mode:'photo'},cookie);
+  assert.equal(r.status,200);const created=await r.json();
+  const sync=await (await call(f,'/api/devices/push-sync',deviceBody)).json();
+  assert.equal(sync.media_session.session_id,created.session_id);assert.ok(sync.media_session.token);
+  assert.equal(f.data.get('remote_devices')[0].last_reported_at,undefined);
+  assert.equal((await call(f,'/api/devices/push-sync',{...deviceBody,token:'wrong'})).status,401);
+  const denied=await worker.fetch(request('/api/elfremote/media/session','DELETE',{session_id:created.session_id}),f.env);assert.equal(denied.status,401);
+  assert.equal((await worker.fetch(request('/api/elfremote/media/session','DELETE',{session_id:created.session_id},cookie),f.env)).status,200);
+  assert.equal((await (await call(f,'/api/devices/push-sync',deviceBody)).json()).media_session,null);
+});
+
 test("通知领取回执认证并匹配编号版本，幂等且不冒充完整报告", async () => {
   const f=setup(), cookie=await login(f);
   const prepared=await (await call(f,'/api/devices/request-status',deviceBody,cookie)).json();
