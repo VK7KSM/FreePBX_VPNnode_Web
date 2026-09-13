@@ -268,7 +268,7 @@ public final class ReportService extends Service {
         if(reportPhotos!=null)reportPhotos.close();
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
-        if (media != null) media.stop("客户端服务停止");
+        if (media != null) media.shutdown();
         if (connectivity != null && networkCallback != null) {
             try { connectivity.unregisterNetworkCallback(networkCallback); }
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }

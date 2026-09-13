@@ -31,6 +31,10 @@ final class MediaSession {
     private final android.content.SharedPreferences route;
     private WebSocketClient socket;
     private volatile CompletableFuture<JSONObject> remoteSessionPreparing;
+    private static final class CoreBinding { volatile String owner=""; }
+    private CoreBinding coreBinding;
+    private boolean corePrepared;
+    private volatile boolean destroyed;
     private PeerConnectionFactory factory;
     private PeerConnection pc;
     private EglBase egl;
@@ -65,9 +69,9 @@ final class MediaSession {
     private final AudioManager.OnAudioFocusChangeListener focusChange=change->{if(change==AudioManager.AUDIOFOCUS_LOSS)stop("音频已由其他应用接管");};
     private boolean focused;
     private final Runnable timeout=()->stop("本次通信已到时");
-    MediaSession(Context c,PairingStore s,ReportPhotos p){context=c.getApplicationContext();store=s;photos=p;audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);route=c.getSharedPreferences("media-route",0);restoreRoute();alarm=new MediaAlarm(context,main);executor.execute(()->{try{initializeNative(context);RuntimeLog.event("media_native_prepared");}catch(Exception|LinkageError e){RuntimeLog.error("media_native_prepare_failed",new Exception(e));}});}
+    MediaSession(Context c,PairingStore s,ReportPhotos p){context=c.getApplicationContext();store=s;photos=p;audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);route=c.getSharedPreferences("media-route",0);restoreRoute();alarm=new MediaAlarm(context,main);executor.execute(this::warmCore);}
     synchronized void receive(JSONObject offer){
-        if(offer==null||System.currentTimeMillis()>offer.optLong("expires_at")||offer.optString("session_id").equals(id))return;
+        if(destroyed||offer==null||System.currentTimeMillis()>offer.optLong("expires_at")||offer.optString("session_id").equals(id))return;
         if(closing){main.postDelayed(()->receive(offer),100);return;}
         if(!closed)return;
         sampleMeters.clear();remoteSessionPreparing=null;receivedAt=SystemClock.elapsedRealtime();id=offer.optString("session_id");mode=offer.optString("mode");facing=offer.optString("camera","front");closed=false;subscribed=false;ready=false;
@@ -123,23 +127,24 @@ final class MediaSession {
                 break;
         }
     }
-    private void prepareLocalRtc()throws Exception{
-        if(pc!=null||closed)return;
-        phaseTime("local_start");
-        boolean capture=prepared||Arrays.asList("call","microphone","video").contains(mode);
-        if(capture&&!prepared&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限初始化尚未完成");
-        if(prepared||Arrays.asList("ptt","call").contains(mode))activateAudioRoute();phaseTime("route");
+    // 只预载引擎和编解码能力；没有PeerConnection、音频采样、相机或网络候选。
+    private void warmCore(){
+        if(destroyed||!closed||factory!=null)return;
+        try{createLocalCore(true);RuntimeLog.event("media_core_prepared");}
+        catch(Exception|LinkageError e){releaseCore();RuntimeLog.error("media_core_prepare_failed",new Exception(e));}
+    }
+    private void createLocalCore(boolean forPrepare)throws Exception{
         initializeNative(context);
-        final String owner=id;
+        final CoreBinding binding=new CoreBinding();coreBinding=binding;corePrepared=forPrepare;
         egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-            .setAudioAttributes(new android.media.AudioAttributes.Builder().setUsage(prepared?android.media.AudioAttributes.USAGE_MEDIA:"call".equals(mode)?android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION:android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioAttributes(new android.media.AudioAttributes.Builder().setUsage(forPrepare?android.media.AudioAttributes.USAGE_MEDIA:"call".equals(mode)?android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION:android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setUseLowLatency(true)
             .setEnableVolumeLogger(false)
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
-            .setSamplesReadyCallback(samples->audioSamples(owner,"capture",samples.getData()))
-            .setPlaybackSamplesReadyCallback(samples->audioSamples(owner,"playback",samples.getData()))
+            .setSamplesReadyCallback(samples->audioSamples(binding.owner,"capture",samples.getData()))
+            .setPlaybackSamplesReadyCallback(samples->audioSamples(binding.owner,"playback",samples.getData()))
             .setAudioBufferCallback((buffer,format,channels,rate,bytesRead,at)->{
                 if(prepared){
                     if(bytesRead==0){
@@ -148,29 +153,50 @@ final class MediaSession {
                         captureStarted=false;return System.nanoTime();
                     }
                     syntheticAudioDue=0;
-                    if(owns(owner,operation)&&Arrays.asList("call","microphone","video").contains(mode)){captureStarted=true;checkReady();}
+                    if(owns(binding.owner,operation)&&Arrays.asList("call","microphone","video").contains(mode)){captureStarted=true;checkReady();}
                 }
                 return prepared?System.nanoTime():at;
             })
             .setAudioRecordStateCallback(new JavaAudioDeviceModule.AudioRecordStateCallback(){
-                public void onWebRtcAudioRecordStart(){if(!prepared&&!closed&&owner.equals(id)){captureStarted=true;checkReady();}}
+                public void onWebRtcAudioRecordStart(){if(!prepared&&!closed&&binding.owner.equals(id)){captureStarted=true;checkReady();}}
                 public void onWebRtcAudioRecordStop(){captureStarted=false;}
             }).setAudioTrackStateCallback(new JavaAudioDeviceModule.AudioTrackStateCallback(){
-                public void onWebRtcAudioTrackStart(){if(!closed&&owner.equals(id)){playbackStarted=true;checkReady();}}
+                public void onWebRtcAudioTrackStart(){if(!closed&&binding.owner.equals(id)){playbackStarted=true;checkReady();}}
                 public void onWebRtcAudioTrackStop(){playbackStarted=false;}
             })
             .setAudioRecordErrorCallback(new JavaAudioDeviceModule.AudioRecordErrorCallback(){
-                public void onWebRtcAudioRecordInitError(String e){audioFailure(owner,"麦克风初始化失败",e);}
-                public void onWebRtcAudioRecordStartError(JavaAudioDeviceModule.AudioRecordStartErrorCode c,String e){audioFailure(owner,"麦克风启动失败",e);}
-                public void onWebRtcAudioRecordError(String e){audioFailure(owner,"麦克风采集失败",e);}
+                public void onWebRtcAudioRecordInitError(String e){audioFailure(binding.owner,"麦克风初始化失败",e);}
+                public void onWebRtcAudioRecordStartError(JavaAudioDeviceModule.AudioRecordStartErrorCode c,String e){audioFailure(binding.owner,"麦克风启动失败",e);}
+                public void onWebRtcAudioRecordError(String e){audioFailure(binding.owner,"麦克风采集失败",e);}
             }).setAudioTrackErrorCallback(new JavaAudioDeviceModule.AudioTrackErrorCallback(){
-                public void onWebRtcAudioTrackInitError(String e){audioFailure(owner,"扬声器初始化失败",e);}
-                public void onWebRtcAudioTrackStartError(JavaAudioDeviceModule.AudioTrackStartErrorCode c,String e){audioFailure(owner,"扬声器启动失败",e);}
-                public void onWebRtcAudioTrackError(String e){audioFailure(owner,"扬声器播放失败",e);}
+                public void onWebRtcAudioTrackInitError(String e){audioFailure(binding.owner,"扬声器初始化失败",e);}
+                public void onWebRtcAudioTrackStartError(JavaAudioDeviceModule.AudioTrackStartErrorCode c,String e){audioFailure(binding.owner,"扬声器启动失败",e);}
+                public void onWebRtcAudioTrackError(String e){audioFailure(binding.owner,"扬声器播放失败",e);}
             }).createAudioDeviceModule();
-        phaseTime("adm");if(prepared){adm.setAudioRecordEnabled(false);adm.setSpeakerMute(true);}
+        if(forPrepare){adm.setAudioRecordEnabled(false);adm.setSpeakerMute(true);}
         for(android.media.AudioDeviceInfo input:audio.getDevices(AudioManager.GET_DEVICES_INPUTS))if(input.getType()==android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC){adm.setPreferredInputDevice(input);break;}
         factory=PeerConnectionFactory.builder().setAudioDeviceModule(adm).setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(),true,true)).setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
+    }
+    private void releaseCore(){
+        if(factory!=null){cleanup("factory",factory::dispose);factory=null;}
+        if(adm!=null){cleanup("adm",adm::release);adm=null;}
+        if(egl!=null){cleanup("egl",egl::release);egl=null;}
+        coreBinding=null;
+    }
+    private synchronized void scheduleWarmCore(){if(!destroyed)executor.execute(this::warmCore);}
+    synchronized void shutdown(){
+        if(destroyed)return;destroyed=true;stop("客户端服务停止");
+        executor.execute(this::releaseCore);executor.shutdown();
+    }
+    private void prepareLocalRtc()throws Exception{
+        if(pc!=null||closed)return;
+        phaseTime("local_start");
+        boolean capture=prepared||Arrays.asList("call","microphone","video").contains(mode);
+        if(capture&&!prepared&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限初始化尚未完成");
+        if(prepared||Arrays.asList("ptt","call").contains(mode))activateAudioRoute();phaseTime("route");
+        if(factory==null||corePrepared!=prepared){releaseCore();createLocalCore(prepared);}
+        coreBinding.owner=id;
+        final String owner=id;
         phaseTime("factory");PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));
         config.sdpSemantics=PeerConnection.SdpSemantics.UNIFIED_PLAN;config.iceCandidatePoolSize=1;
         pc=factory.createPeerConnection(config,new PeerConnection.Observer(){
@@ -372,8 +398,8 @@ final class MediaSession {
                 if(camera!=null){try{camera.stopCapture();}catch(Exception e){RuntimeLog.error("media_cleanup_camera_stop",e);}cleanup("camera",camera::dispose);camera=null;}
                 if(pc!=null){cleanup("pc_close",pc::close);cleanup("pc",pc::dispose);pc=null;}
                 if(videoTrack!=null){cleanup("video_track",videoTrack::dispose);videoTrack=null;}if(videoSource!=null){cleanup("video_source",videoSource::dispose);videoSource=null;}if(texture!=null){cleanup("texture",texture::dispose);texture=null;}
-                if(audioTrack!=null){cleanup("audio_track",audioTrack::dispose);audioTrack=null;}if(audioSource!=null){cleanup("audio_source",audioSource::dispose);audioSource=null;}if(factory!=null){cleanup("factory",factory::dispose);factory=null;}if(adm!=null){cleanup("adm",adm::release);adm=null;}if(egl!=null){cleanup("egl",egl::release);egl=null;}
-            }finally{try{cleanup("route",this::restoreRoute);if(focused){cleanup("focus",()->audio.abandonAudioFocus(focusChange));focused=false;}WakeScheduler.release("media-session");RuntimeLog.event("media_stopped");}finally{closing=false;}}
+                if(audioTrack!=null){cleanup("audio_track",audioTrack::dispose);audioTrack=null;}if(audioSource!=null){cleanup("audio_source",audioSource::dispose);audioSource=null;}releaseCore();
+            }finally{try{cleanup("route",this::restoreRoute);if(focused){cleanup("focus",()->audio.abandonAudioFocus(focusChange));focused=false;}WakeScheduler.release("media-session");RuntimeLog.event("media_stopped");}finally{closing=false;scheduleWarmCore();}}
         });
     }
     private static class SdpAdapter implements SdpObserver {public void onCreateSuccess(SessionDescription d){}public void onSetSuccess(){}public void onCreateFailure(String e){}public void onSetFailure(String e){}}
