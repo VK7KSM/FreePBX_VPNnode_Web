@@ -7,11 +7,12 @@ export function mediaModes(device) {
   if (!Array.isArray(modes) || modes.length > MEDIA_MODES.length || modes.some(mode => typeof mode !== 'string' || !MEDIA_MODES.includes(mode)) || new Set(modes).size !== modes.length) return [];
   return MEDIA_MODES.filter(mode => modes.includes(mode));
 }
-export function mediaAllowed(device, mode) { return mediaModes(device).includes(mode); }
+export function mediaAllowed(device, mode) { return mode==='prepare' ? device?.enabled!==false&&device?.managed_media_prepare_v1===true&&mediaModes(device).length>0 : mediaModes(device).includes(mode); }
 export function mediaCapabilityFields(report) {
-  return Object.hasOwn(report || {}, 'managed_media_modes') ? {managed_media_modes: mediaModes({...report, enabled: true})} : {};
+  return {...(Object.hasOwn(report || {}, 'managed_media_modes') ? {managed_media_modes: mediaModes({...report, enabled: true})} : {}),...(report?.managed_media_prepare_v1===true?{managed_media_prepare_v1:true}:{})};
 }
 export function applyMediaCapabilities(device, report) {
+  device.managed_media_prepare_v1=report.managed_media_prepare_v1===true;
   if (Object.hasOwn(report, 'managed_media_modes')) device.managed_media_modes = mediaCapabilityFields(report).managed_media_modes;
   else delete device.managed_media_modes;
 }

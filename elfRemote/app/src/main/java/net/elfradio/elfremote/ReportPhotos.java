@@ -24,8 +24,19 @@ final class ReportPhotos {
         @Override public void onCameraAvailable(String id){available.put(id,true);}
         @Override public void onCameraUnavailable(String id){available.put(id,false);}
     };
-    interface ManualResult { void complete(JSONObject result,Exception error); }
+    interface ManualResult { void complete(JSONObject result,Exception error); default void captured(byte[] bytes,long capturedAt){} }
     private final Map<String,ManualResult> callbacks=new java.util.concurrent.ConcurrentHashMap<>();
+    private final Set<String> cancelledManual=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile String activeJob="";
+    java.util.concurrent.CompletableFuture<Void> cancelManual(String id){
+        callbacks.remove(id);cancelledManual.add(id);
+        java.util.concurrent.CompletableFuture<Void> done=new java.util.concurrent.CompletableFuture<>();
+        handler.post(()->{try{
+            if(id.equals(activeJob)&&camera!=null){releaseCamera();File file=jobFile(id);if(file.isFile())discard(new JSONObject(RescueFiles.read(file,4096)));finished();}
+            if(!jobFile(id).isFile())cancelledManual.remove(id);
+            done.complete(null);
+        }catch(Exception e){done.completeExceptionally(e);}});return done;
+    }
     void manual(String id,String deviceId,String facing,ManualResult callback)throws Exception {
         if(!id.matches("[a-zA-Z0-9-]{1,96}")||!java.util.Arrays.asList("front","back").contains(facing))throw new IOException("拍照请求无效");
         if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("照片队列不可用");
@@ -92,7 +103,9 @@ final class ReportPhotos {
             }
             if(jobs.isEmpty()){if(next<Long.MAX_VALUE)wake.schedule("report-photo",next);return;}
             jobs.sort((a,b)->a.optBoolean("critical")!=b.optBoolean("critical")?(a.optBoolean("critical")?-1:1):Long.compare(a.optLong("created_at"),b.optLong("created_at")));
-            JSONObject job=jobs.get(0);busy=true;
+            jobs.sort((a,b)->Boolean.compare(!a.optBoolean("manual"),!b.optBoolean("manual")));
+            JSONObject job=jobs.get(0);busy=true;activeJob=job.getString("report_id");
+            if(job.optBoolean("manual")&&cancelledManual.contains(activeJob)){discard(job);finished();return;}
             if(allowedNetwork(job)==null){failed(job,new Paused());return;}
             WakeScheduler.hold(context,"report-photo",60000L);
             if(imageFile(job.getString("report_id")).isFile())upload(job);
@@ -117,33 +130,38 @@ final class ReportPhotos {
             for(int i=0;i<Camera.getNumberOfCameras();i++){Camera.getCameraInfo(i,info);if(info.facing==("back".equals(job.optString("camera"))?Camera.CameraInfo.CAMERA_FACING_BACK:Camera.CameraInfo.CAMERA_FACING_FRONT)){id=i;break;}}
             if(id<0&&job.optBoolean("manual")&&Camera.getNumberOfCameras()>0){id=0;Camera.getCameraInfo(id,info);}
             if(id<0)throw new Permanent("没有可用摄像头");
-            if(Boolean.FALSE.equals(available.get(String.valueOf(id))))throw new IOException("前置摄像头正在使用");
+            if(!job.optBoolean("manual")&&Boolean.FALSE.equals(available.get(String.valueOf(id))))throw new IOException("前置摄像头正在使用");
             camera=Camera.open(id);
             Camera.Parameters p=camera.getParameters();
             List<Camera.Size> sizes=p.getSupportedPictureSizes();sizes.sort((a,b)->Integer.compare(a.width*a.height,b.width*b.height));
             Camera.Size chosen=sizes.get(0);for(Camera.Size size:sizes)if(size.width*size.height<=640*480)chosen=size;
             p.setPictureSize(chosen.width,chosen.height);p.setJpegQuality(70);p.setRotation(info.orientation);
-            camera.setParameters(p);texture=new SurfaceTexture(0);camera.setPreviewTexture(texture);camera.startPreview();
+            camera.setParameters(p);texture=new SurfaceTexture(0);camera.setPreviewTexture(texture);
             cameraTimeout=()->{if(generation!=captureGeneration)return;releaseCamera();failed(job,new IOException("拍照超时"));};handler.postDelayed(cameraTimeout,8000L);
-            handler.postDelayed(()->{
+            Runnable take=()->{
                 if(stopped||camera==null||generation!=captureGeneration)return;
+                if(job.optBoolean("manual")&&cancelledManual.contains(job.optString("report_id"))){releaseCamera();try{discard(job);finished();}catch(Exception error){failed(job,error);}return;}
                 try{camera.takePicture(null,null,(bytes,ignored)->{
                     if(generation!=captureGeneration)return;
                     releaseCamera();
                     try{
                         if(stopped)return;
                         if(bytes==null||bytes.length<4||bytes.length>PhotoPolicy.MAX_BYTES)throw new Permanent("照片大小无效");
+                        long captured=System.currentTimeMillis();
+                        ManualResult callback=callbacks.get(job.getString("report_id"));if(callback!=null)callback.captured(bytes,captured);
                         File file=imageFile(job.getString("report_id"));
                         File temporary=new File(file.getPath()+".tmp");
                         try(FileOutputStream out=new FileOutputStream(temporary)){out.write(bytes);out.getFD().sync();}
                         if(!temporary.renameTo(file))throw new IOException("照片缓存提交失败");
-                        long captured=System.currentTimeMillis();
                         if(!job.optBoolean("manual")&&!context.getSharedPreferences("report-photo-cadence",0).edit().putLong("captured",captured).commit())throw new IOException("拍摄时间保存失败");
                         job.put("captured_at",captured);RescueFiles.write(jobFile(job.getString("report_id")),job.toString());
                         RuntimeLog.event("report_photo_captured bytes="+bytes.length);upload(job);
                     }catch(Exception error){failed(job,error);}
                 });}catch(Exception error){releaseCamera();failed(job,error);}
-            },600L);
+            };
+            if(job.optBoolean("manual"))camera.setOneShotPreviewCallback((data,c)->handler.post(take));
+            camera.startPreview();
+            if(!job.optBoolean("manual"))handler.postDelayed(take,600L);
         }catch(Exception error){releaseCamera();failed(job,error);}
     }
     private void upload(JSONObject job){
@@ -186,9 +204,9 @@ final class ReportPhotos {
         finished();
     }
     private void discard(JSONObject job)throws Exception{
-        String id=job.getString("report_id");remember(id);jobFile(id).delete();imageFile(id).delete();new File(imageFile(id).getPath()+".tmp").delete();
+        String id=job.getString("report_id");remember(id);callbacks.remove(id);cancelledManual.remove(id);jobFile(id).delete();imageFile(id).delete();new File(imageFile(id).getPath()+".tmp").delete();
     }
-    private void finished(){busy=false;WakeScheduler.release("report-photo");if(!stopped)handler.post(this::process);}
+    private void finished(){busy=false;activeJob="";WakeScheduler.release("report-photo");if(!stopped)handler.post(this::process);}
     private void releaseCamera(){
         captureGeneration++;
         if(cameraTimeout!=null)handler.removeCallbacks(cameraTimeout);cameraTimeout=null;

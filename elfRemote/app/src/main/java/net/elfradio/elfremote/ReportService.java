@@ -467,6 +467,7 @@ public final class ReportService extends Service {
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_adb_session", CoreInstaller.ready());
         body.put("managed_media", true);
+        body.put("managed_media_prepare_v1", true);
         body.put("media_cameras", android.hardware.Camera.getNumberOfCameras());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
