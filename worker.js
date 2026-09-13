@@ -32,7 +32,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
-import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel } from './release-channels.js';
+import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
@@ -1320,12 +1320,21 @@ async function loadDevicesHydrated(env,models,list) {
   for (let i = 0; i < models.length; i++) byId[models[i].id] = models[i];
   list=list || await loadDevices(env);
   const out = [];
+  const channelReleases=new Map();
   for (let i = 0; i < list.length; i++) {
     const d = list[i];
     const m = byId[d.model_id];
     const visible = publicDevice(d, m ? m.name : "",m || {});
     if (visible.paired || visible.online) out.push(visible);
   }
+  // 每次统一刷新中，同通道只读取一份发布列表，不为每台设备发起版本查询。
+  await Promise.all([...new Set(out.map(d=>d.update_channel).filter(Boolean))].map(async channel=>{
+    try {
+      const ids=await getStore(env,releaseListKey(channel)) || [];
+      channelReleases.set(channel,await Promise.all(ids.map(id=>getStore(env,releaseKey(channel,id)))));
+    } catch {channelReleases.set(channel,[]);}
+  }));
+  for(const d of out)d.update_available=deviceUpdateAvailable(d,channelReleases.get(d.update_channel)||[]);
   return out;
 }
 
@@ -2979,7 +2988,7 @@ function renderDevicesHtml() {
     '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
     '.muted{color:#94a3b8;font-size:.85rem}',
     '.dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex-shrink:0;box-shadow:0 0 0 3px rgba(255,255,255,.08)}',
-    '.dot-on{background:#22c55e}.dot-off{background:#64748b}',
+    '.dot-on{background:#22c55e}.dot-off{background:#64748b}.dot-update{background:#fbbf24}',
     '.layout{display:grid;grid-template-columns:220px minmax(0,1fr);grid-template-rows:auto auto;gap:1rem}.layout>*{min-width:0}',
     '@media(max-width:800px){.layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 320px auto}header{overflow-x:auto}.fn-menu{flex-wrap:wrap!important}.fn-btn{flex:1 1 120px!important}.modal-card{max-width:calc(100vw - 24px)}.dev-name{min-width:0}.tag{flex-shrink:0}}',
     '#devList{overflow:auto;padding:.4rem}',

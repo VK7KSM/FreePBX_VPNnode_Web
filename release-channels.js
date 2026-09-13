@@ -35,3 +35,24 @@ export function deviceReleaseChannel(device,models) {
   if(identity && model && identity!==model.registration_key)throw Error('设备身份与所选型号不一致');
   return releaseChannel(channel);
 }
+
+// 只比较设备所属通道、仍可安装且适用于该设备的正式发布记录。
+export function deviceUpdateAvailable(device,releases,now=Date.now()) {
+  const applicable=releases.filter(rel=>{
+    if(!rel || rel.retired_at || !Number.isSafeInteger(rel.versionCode) || rel.versionCode<=0)return false;
+    try {const m=JSON.parse(rel.manifest_raw||'{}');return !m.device_id || m.device_id===device.id;}catch{return false;}
+  });
+  const latest=applicable.filter(rel=>!(Number(rel.expires_at)>0 && Number(rel.expires_at)<=now))
+    .sort((a,b)=>b.versionCode-a.versionCode)[0];
+  if(!latest || !device.app_version)return false;
+  const exact=applicable.find(rel=>rel.versionName===device.app_version);
+  if(exact)return exact.versionCode<latest.versionCode;
+  const current=String(device.app_version).match(/^\d+(?:\.\d+)+/);
+  const target=String(latest.versionName||'').match(/^\d+(?:\.\d+)+/);
+  if(!current || !target)return false;
+  const a=current[0].split('.').map(Number),b=target[0].split('.').map(Number);
+  for(let i=0;i<Math.max(a.length,b.length);i++) {
+    const diff=(a[i]||0)-(b[i]||0);if(diff)return diff<0;
+  }
+  return false;
+}

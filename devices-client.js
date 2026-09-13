@@ -239,7 +239,9 @@ function renderList(){
     var cls = "dev-row" + (d.id===selDev ? " sel" : "");
     reconcileReportStatus(d);
     h += '<div class="'+cls+'" onclick="selectDev(\''+d.id+'\')">';
-    h += '<span class="dot '+(on?"dot-on":"dot-off")+'"></span>';
+    var light=on?(d.update_available===true?'dot-update':'dot-on'):'dot-off';
+    var lightLabel=d.enabled===false?'已停用':!on?'离线':d.update_available===true?'在线，客户端需要更新':'在线';
+    h += '<span class="dot '+light+'" role="img" aria-label="'+lightLabel+'" title="'+lightLabel+'"></span>';
     h += '<span class="dev-identity"><span class="dev-name'+(d.paired===false?' unpaired-name':'')+'"'+(d.paired===false?' title="未配对"':'')+'>'+esc(d.name)+'</span>';
     h += '</span>';
     var status = deviceListStatus(d), clickable=status==="等待上报信息";
