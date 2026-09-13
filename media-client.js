@@ -5,19 +5,25 @@ window.ElfMedia=(function(){
   async function json(url,body,method){var r;try{r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});}catch(e){if(e.name==='TimeoutError')throw Error('通信请求超时，请重试');throw e;}if(!(r.headers.get('Content-Type')||'').includes('json'))throw Error('通信服务暂时不可用');var x=await r.json();if(!r.ok||x.ok===false)throw Error(x.msg||'通信请求失败');return x;}
   function send(s,p){if(s.ws&&s.ws.readyState===1)s.ws.send(JSON.stringify(p));}
   function rpc(s,action,body){return new Promise(function(resolve,reject){var id=++s.seq,timer=setTimeout(function(){delete s.pending[id];reject(Error('实时媒体协商超时'));},20000);s.pending[id]={resolve:resolve,reject:reject,timer:timer};send(s,{type:'rpc',id:id,action:action,body:body||{}});});}
+  function updateReady(s){
+    if(active!==s||!s.deviceReady)return;
+    if(s.mode!=='photo'&&s.mode!=='alarm'&&s.pc?.connectionState!=='connected')return;
+    if(s.mode==='call'&&(!s.published||!s.subscribed||!s.remote?.getAudioTracks().some(function(t){return t.readyState==='live';})))return;
+    s.started=s.started||Date.now();s.message='';render();
+  }
   async function publish(s){
     s.pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
-    s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);maybeRecord(s);};
-    s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败');if(s.pc.connectionState==='connected'){if(s.deviceReady){s.message='';s.started=s.started||Date.now();}render();maybeRecord(s);}};
+    s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);updateReady(s);maybeRecord(s);};
+    s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败');if(s.pc.connectionState==='connected'){updateReady(s);render();maybeRecord(s);}};
     if(s.local)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
     await rpc(s,'new');
-    if(s.local){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track;}).map(function(t){return {mid:t.mid,trackName:t.sender.track.kind};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);await rpc(s,'published');}
+    if(s.local){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track;}).map(function(t){return {mid:t.mid,trackName:t.sender.track.kind};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);await rpc(s,'published');s.published=true;updateReady(s);}
   }
   async function message(s,p){
     if(active!==s)return;
     if(p.type==='hello'&&s.mode!=='photo'&&s.mode!=='alarm')await publish(s);
-    else if(p.type==='tracks'&&!s.subscribed){s.subscribed=true;var result=await rpc(s,'subscribe');if(result.sessionDescription){await s.pc.setRemoteDescription(result.sessionDescription);if(result.sessionDescription.type==='offer'){await s.pc.setLocalDescription(await s.pc.createAnswer());await rpc(s,'answer',{sessionDescription:s.pc.localDescription.toJSON()});}}}
-    else if(p.type==='ready'){s.deviceReady=true;if(s.mode==='photo'||s.mode==='alarm'||s.pc?.connectionState==='connected'){s.started=Date.now();s.message='';}render();}
+    else if(p.type==='tracks'&&!s.subscribing){s.subscribing=true;var result=await rpc(s,'subscribe');if(result.sessionDescription){await s.pc.setRemoteDescription(result.sessionDescription);if(result.sessionDescription.type==='offer'){await s.pc.setLocalDescription(await s.pc.createAnswer());await rpc(s,'answer',{sessionDescription:s.pc.localDescription.toJSON()});}}s.subscribed=true;updateReady(s);}
+    else if(p.type==='ready'){s.deviceReady=true;updateReady(s);render();}
     else if(p.type==='status'){if(p.cameras)s.cameras=p.cameras;if(p.camera){s.camera=p.camera;cameraChoice[s.device.id]=p.camera;}if(p.message)s.message=p.message;render();}
     else if(p.type==='result'&&s.mode==='photo'){
       var state=photoHistory(s.device);if(state.pending)await state.promise;state.loaded=0;state.retry=0;
