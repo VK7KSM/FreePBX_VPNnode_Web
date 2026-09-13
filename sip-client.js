@@ -461,7 +461,7 @@ function renderBanEditor(){
   var box=$("eBanBox"); if(!box)return;
   box.style.display=editingExt?"block":"none"; if(!editingExt)return;
   var b=sipBanInfo(editingExt), select=$("eBanAction");
-  $("eBanInfo").textContent=!b.available?"暂无法读取封禁状态":!b.ip?"暂无出口 IP":"立即生效 · 同出口分机："+b.affected.join("、");
+  $("eBanInfo").textContent=!b.available?"暂无法读取封禁状态":!b.ip?"暂无出口 IP":"IP："+b.ip+" · 同出口分机："+b.affected.join("、")+" · 立即生效";
   if(!sipBanBusy)select.value=!b.available||!b.ip?"unknown":b.banned?"ban":"unban";
   select.disabled=sipBanBusy||!b.available||!b.ip;
 }
