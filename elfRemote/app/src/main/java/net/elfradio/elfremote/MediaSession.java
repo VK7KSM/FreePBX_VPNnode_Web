@@ -246,7 +246,7 @@ final class MediaSession {
             String expected=id+"-"+operation;if(!expected.equals(x.optString("report_id")))throw new Exception("照片操作编号不匹配");
             final String owner=id;final long op=operation;
             photos.manual(expected,store.deviceId(),facing,new ReportPhotos.ManualResult(){
-                public void captured(byte[] bytes,long capturedAt){if(!owns(owner,op))return;try{if(bytes.length<=66000)send(new JSONObject().put("type","photo_preview").put("operation",op).put("jpeg",android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)).put("captured_at",capturedAt));}catch(Exception e){fail(e);}}
+                public void captured(byte[] bytes,long capturedAt){if(!owns(owner,op))return;try{byte[] preview=MediaPhotoPreview.create(bytes);if(preview!=null&&owns(owner,op)){send(new JSONObject().put("type","photo_preview").put("operation",op).put("jpeg",android.util.Base64.encodeToString(preview,android.util.Base64.NO_WRAP)).put("captured_at",capturedAt));RuntimeLog.event("media_photo_preview bytes="+preview.length+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt));}}catch(Exception e){RuntimeLog.error("media_photo_preview_failed",e);}}
                 public void complete(JSONObject result,Exception error){if(!owns(owner,op))return;if(error!=null){fail(error);return;}try{send(result.put("operation",op));}catch(Exception e){fail(e);}}
             });markReady();
         }else if("alarm".equals(mode)){if(alarm==null)alarm=new MediaAlarm(context,main);alarm.start();markReady();}

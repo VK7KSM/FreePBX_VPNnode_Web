@@ -34,6 +34,16 @@ test('SFU创建无轨道会话必须省略正文，空JSON会触发服务器SDP�
  relay.fetcher=async(url,init)=>{assert.ok(url.endsWith('/sessions/new'));assert.equal(init.body,undefined);assert.equal(init.headers['Content-Type'],undefined);seen=true;return Response.json({sessionId:'rtc'});};
  await relay.message(s,'browser',JSON.stringify({type:'rpc',id:1,action:'new'}));assert.ok(seen);assert.equal(s.rtc.browser,'rtc');
 });
+
+test('协商失败保留有限错误码，拒绝复制服务端原文和会话身份',async()=>{
+ const {relay,s,messages}=fixture();
+ relay.fetcher=async()=>Response.json({errorCode:'SESSION_STATE_INVALID',errorDescription:'private description',sessionId:'private-id',tracks:[{errorCode:'TRACK_NOT_FOUND'},{errorCode:'unsafe secret / value'}]},{status:409});
+ await relay.message(s,'browser',JSON.stringify({type:'rpc',id:1,action:'new'}));
+ const result=messages.browser.at(-1);assert.equal(result.error,'实时媒体协商失败');
+ assert.deepEqual(result.diagnostic,{status:409,code:'SESSION_STATE_INVALID',tracks:['TRACK_NOT_FOUND','unknown']});
+ assert.doesNotMatch(JSON.stringify(result),/private|unsafe secret/);
+ assert.equal(s.rtc.browser,undefined);
+});
 test('浏览器断网未发关闭帧时结束警报，容忍后台标签页一分钟节流',async()=>{
  let at=1000,timer;const relay=new MediaRelay({},{now:()=>at,schedule:f=>(timer=f,0),cancel(){}});
  const {session_id}=relay.create({id:'xx',managed_media:true},'alarm'),s=relay.sessions.get(session_id);

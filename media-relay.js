@@ -73,7 +73,13 @@ export class MediaRelay {
   async sfu(path,body,method='POST'){
     const config=JSON.parse(this.env.ELF_REALTIME);
     const r=await this.fetcher('https://rtc.live.cloudflare.com/v1/apps/'+encodeURIComponent(config.appId)+path,{method,headers:{Authorization:'Bearer '+config.secret,...(body===undefined?{}:{'Content-Type':'application/json'})},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
-    const x=await r.json();if(!r.ok||x.errorCode||x.tracks?.some(t=>t.errorCode))throw Error('实时媒体协商失败');return x;
+    const x=await r.json();if(!r.ok||x.errorCode||x.tracks?.some(t=>t.errorCode)){
+      const code=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,96}$/.test(value)?value:'unknown';
+      const error=Error('实时媒体协商失败');
+      // 仅返回有限诊断码，不透出服务端原文、会话身份、SDP或凭据。
+      error.diagnostic={status:r.status,code:x.errorCode?code(x.errorCode):null,tracks:(Array.isArray(x.tracks)?x.tracks:[]).filter(t=>t.errorCode).slice(0,2).map(t=>code(t.errorCode))};
+      throw error;
+    }return x;
   }
   async message(s,role,raw){
     if(s.closed)return;
@@ -150,7 +156,7 @@ export class MediaRelay {
           else throw Error('媒体协商操作无效');
         }
         if(!s.closed)this.send(s,role,{type:'rpc',id:p.id,result});
-      }catch(error){this.send(s,role,{type:'rpc',id:p.id,error:error.message});}
+      }catch(error){this.send(s,role,{type:'rpc',id:p.id,error:error.message,...(error.diagnostic?{diagnostic:error.diagnostic}:{})});}
     }catch(error){this.close(s,error.message);}
     finally{if(!s.closed)this.arm(s);}
   }
