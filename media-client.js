@@ -12,18 +12,19 @@ window.ElfMedia=(function(){
   }
   function micPath(s,stream){
     var c=s.transportAudioContext||s.audioContext;
-    if(!c?.createBiquadFilter)return {track:stream.getAudioTracks()[0],close:function(){}};
+    if(!c?.createBiquadFilter){var track=stream.getAudioTracks()[0];track.enabled=!s.prepared||s.mode!=='prepare';return {track:track,setActive:function(value){track.enabled=value;},close:function(){}};}
+    var transmit=c.createGain();transmit.gain.value=!s.prepared||s.mode!=='prepare'?1:0;
     var input=c.createMediaStreamSource(stream),hp=c.createBiquadFilter(),analyser=c.createAnalyser(),gate=c.createGain(),limit=c.createDynamicsCompressor(),dest=c.createMediaStreamDestination(),notches=[];
-    hp.type='highpass';hp.frequency.value=120;input.connect(hp);hp.connect(analyser);analyser.fftSize=2048;analyser.smoothingTimeConstant=0;
+    hp.type='highpass';hp.frequency.value=120;input.connect(transmit);transmit.connect(hp);hp.connect(analyser);analyser.fftSize=2048;analyser.smoothingTimeConstant=0;
     var last=hp;for(var i=0;i<4;i++){var f=c.createBiquadFilter();f.type='notch';f.frequency.value=16000;f.Q.value=16;last.connect(f);last=f;notches.push(f);}last.connect(gate);gate.connect(limit);limit.threshold.value=-9;limit.knee.value=6;limit.ratio.value=8;limit.attack.value=.003;limit.release.value=.15;limit.connect(dest);
     var db=new Float32Array(analyser.frequencyBinCount),candidate=0,hits=0,next=0;
     var timer=setInterval(function(){
-      if(active!==s||!['ptt','call'].includes(s.mode)||!s.local?.getAudioTracks()[0]?.enabled){hits=0;return;}
+      if(active!==s||!['ptt','call'].includes(s.mode)||transmit.gain.value===0){hits=0;return;}
       analyser.getFloatFrequencyData(db);var frequency=feedbackPeak(db,c.sampleRate,analyser.fftSize);
       hits=frequency&&Math.abs(frequency-candidate)<80?hits+1:0;candidate=frequency;
       if(hits>=3){var f=notches.find(function(f){return Math.abs(f.frequency.value-frequency)<80;})||notches[next++%notches.length];f.frequency.setTargetAtTime(frequency,c.currentTime,.01);gate.gain.cancelScheduledValues(c.currentTime);gate.gain.setTargetAtTime(.2,c.currentTime,.005);gate.gain.setTargetAtTime(1,c.currentTime+.2,.1);hits=0;}
     },50);
-    return {track:dest.stream.getAudioTracks()[0],close:function(){clearInterval(timer);input.disconnect();hp.disconnect();analyser.disconnect();notches.forEach(function(f){f.disconnect();});gate.disconnect();limit.disconnect();dest.stream.getTracks().forEach(function(t){t.stop();});}};
+    return {track:dest.stream.getAudioTracks()[0],setActive:function(value){transmit.gain.value=value?1:0;},close:function(){clearInterval(timer);input.disconnect();transmit.disconnect();hp.disconnect();analyser.disconnect();notches.forEach(function(f){f.disconnect();});gate.disconnect();limit.disconnect();dest.stream.getTracks().forEach(function(t){t.stop();});}};
   }
   async function listInputs(s){if(!navigator.mediaDevices?.enumerateDevices)return;try{s.inputs=(await navigator.mediaDevices.enumerateDevices()).filter(function(d){return d.kind==='audioinput';});if(active===s)mount(s.device);}catch{}}
   async function changeInput(s,id){
@@ -105,7 +106,7 @@ window.ElfMedia=(function(){
     var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false,prepared:mode==='prepare',operation:0};active=s;lastMessage='';render();
     try{
       if(mode==='prepare'){
-        selectedInput='';s.inputPreparing=acquireLocalAudio().then(function(stream){if(active!==s){stream.getTracks().forEach(function(t){t.stop();});return;}stream.getAudioTracks().forEach(function(t){t.enabled=false;});s.local=stream;listInputs(s);}).catch(function(){s.inputUnavailable=true;});
+        selectedInput='';s.inputPreparing=acquireLocalAudio().then(function(stream){if(active!==s){stream.getTracks().forEach(function(t){t.stop();});return;}s.local=stream;listInputs(s);}).catch(function(){s.inputUnavailable=true;});
         s.transportAudioContext=new AudioContext({latencyHint:'interactive'});await s.transportAudioContext.resume();
         if(active!==s)return;
         var silentDestination=s.transportAudioContext.createMediaStreamDestination();s.silentSource=s.transportAudioContext.createConstantSource();s.silentSource.offset.value=0;s.silentSource.connect(silentDestination);s.silentSource.start();s.silentTrack=silentDestination.stream.getAudioTracks()[0];
@@ -140,7 +141,7 @@ window.ElfMedia=(function(){
       if(cancelled())return;
       if(mode==='ptt'||mode==='call'){
         var local=s.local;if(!local||local.getAudioTracks()[0]?.readyState!=='live'){local=await acquireLocalAudio();if(cancelled()){local.getTracks().forEach(function(t){t.stop();});return;}s.local=local;if(s.micPath)s.micPath.close();s.micPath=micPath(s,local);await s.uplink.replaceTrack(s.micPath.track);listInputs(s);}
-        local.getAudioTracks().forEach(function(t){t.enabled=true;});
+        s.micPath.setActive(true);
       }
       if(cancelled())return;
       s.operation=operation;s.activationSent=true;mount(s.device);send(s,{type:'activate',operation:operation,mode:mode,camera:s.camera});
@@ -151,7 +152,7 @@ window.ElfMedia=(function(){
     if(s.mode==='stopping'||s.mode==='prepare')return;
     s.activation=null;s.mode='stopping';s.message='正在结束…';s.recordEnded=Date.now();
     if(s.activationSent)send(s,{type:'deactivate',operation:s.operation});else s.idleAcknowledged=true;
-    if(s.local)s.local.getAudioTracks().forEach(function(t){t.enabled=false;});
+    if(s.micPath)s.micPath.setActive(false);
     if(s.recordCreating)await s.recordCreating;
     if(s.recorder&&s.recorder.state!=='inactive'){s.recorder.stop();await s.recordStopped;}
     if(s.animation)cancelAnimationFrame(s.animation);s.animation=null;
