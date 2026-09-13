@@ -169,7 +169,7 @@ window.ElfMedia=(function(){
     s.recorder.onerror=function(){if(active===s)stop('录制失败');};s.recordStarted=Date.now();s.recorder.start(5000);
   }
   function elapsed(ms){var seconds=Math.max(0,Math.floor(ms/1000));return Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0');}
-  function updateTime(s){if(!s.node)return;var time=s.node.querySelector('time');if(time)time.textContent=s.mode==='video'?sydney(Date.now()):s.started?elapsed(Date.now()-s.started):'';}
+  function updateTime(s){if(!s.node)return;var time=s.node.querySelector('time');if(time)time.textContent=s.mode==='photo'&&s.previewPhoto?sydney(s.previewPhoto.captured_at):s.mode==='video'?sydney(Date.now()):s.started?elapsed(Date.now()-s.started):'';}
   function mount(d){
     var s=active;if(!s||s.mode==='prepare'||s.mode==='stopping'||!d||s.device.id!==d.id)return;var placeholder=document.querySelector('#remoteConsole .media-live');if(!placeholder)return;
     if(s.node&&s.node!==placeholder)placeholder.replaceWith(s.node);else if(!s.node){s.node=placeholder;
