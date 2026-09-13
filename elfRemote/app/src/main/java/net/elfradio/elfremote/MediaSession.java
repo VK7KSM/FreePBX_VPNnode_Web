@@ -15,6 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** 仅在管理员开启的通信期间采集、传输和播放；关闭、断网及超时均释放资源。 */
 final class MediaSession {
+    private static boolean nativeInitialized;
+    private static synchronized void initializeNative(Context context){
+        if(nativeInitialized)return;
+        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());nativeInitialized=true;
+    }
     private final Context context;
     private final ReportPhotos photos;
     private final PairingStore store;
@@ -25,6 +30,7 @@ final class MediaSession {
     private final AudioManager audio;
     private final android.content.SharedPreferences route;
     private WebSocketClient socket;
+    private volatile CompletableFuture<JSONObject> remoteSessionPreparing;
     private PeerConnectionFactory factory;
     private PeerConnection pc;
     private EglBase egl;
@@ -42,14 +48,14 @@ final class MediaSession {
     private volatile boolean subscribed,published,iceConnected,ready,prepared,transportReady;
     private volatile long operation;
     private volatile String phase="closed";
-    private volatile boolean captureStarted,playbackStarted,videoStarted;
+    private volatile boolean captureStarted,playbackStarted,videoStarted,audioArmed,playbackSignalLogged;
     private long syntheticAudioDue;
     private final Runnable placeholderVideo=new Runnable(){public void run(){
         if(closed||!prepared||videoSource==null)return;
         if(!"video".equals(mode)){
             JavaI420Buffer buffer=JavaI420Buffer.allocate(160,120);
             fill(buffer.getDataY(),(byte)16);fill(buffer.getDataU(),(byte)128);fill(buffer.getDataV(),(byte)128);
-            VideoFrame frame=new VideoFrame(buffer,0,SystemClock.elapsedRealtimeNanos());
+            VideoFrame frame=new VideoFrame(buffer,0,System.nanoTime());
             try{videoSource.getCapturerObserver().onFrameCaptured(frame);}finally{frame.release();}
         }
         main.postDelayed(this,1000L);
@@ -59,12 +65,12 @@ final class MediaSession {
     private final AudioManager.OnAudioFocusChangeListener focusChange=change->{if(change==AudioManager.AUDIOFOCUS_LOSS)stop("音频已由其他应用接管");};
     private boolean focused;
     private final Runnable timeout=()->stop("本次通信已到时");
-    MediaSession(Context c,PairingStore s,ReportPhotos p){context=c.getApplicationContext();store=s;photos=p;audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);route=c.getSharedPreferences("media-route",0);restoreRoute();alarm=new MediaAlarm(context,main);}
+    MediaSession(Context c,PairingStore s,ReportPhotos p){context=c.getApplicationContext();store=s;photos=p;audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);route=c.getSharedPreferences("media-route",0);restoreRoute();alarm=new MediaAlarm(context,main);executor.execute(()->{try{initializeNative(context);RuntimeLog.event("media_native_prepared");}catch(Exception|LinkageError e){RuntimeLog.error("media_native_prepare_failed",new Exception(e));}});}
     synchronized void receive(JSONObject offer){
         if(offer==null||System.currentTimeMillis()>offer.optLong("expires_at")||offer.optString("session_id").equals(id))return;
         if(closing){main.postDelayed(()->receive(offer),100);return;}
         if(!closed)return;
-        sampleMeters.clear();receivedAt=SystemClock.elapsedRealtime();id=offer.optString("session_id");mode=offer.optString("mode");facing=offer.optString("camera","front");closed=false;subscribed=false;ready=false;
+        sampleMeters.clear();remoteSessionPreparing=null;receivedAt=SystemClock.elapsedRealtime();id=offer.optString("session_id");mode=offer.optString("mode");facing=offer.optString("camera","front");closed=false;subscribed=false;ready=false;
         prepared="prepare".equals(mode);phase=prepared?"preparing":"active";operation=0;published=false;iceConnected=false;transportReady=false;captureStarted=false;playbackStarted=false;videoStarted=false;
         final String owner=id;
         executor.execute(()->{try{
@@ -79,13 +85,18 @@ final class MediaSession {
                     try{if(raw.length()>96000)throw new Exception("通信消息过大");JSONObject x=new JSONObject(raw);
                         if("rpc".equals(x.optString("type"))){CompletableFuture<JSONObject> f=waiting.remove(x.optInt("id"));if(f!=null){if(x.has("error"))f.completeExceptionally(new Exception(x.optString("error")));else f.complete(x.getJSONObject("result"));}}
                         else if("closed".equals(x.optString("type")))stop(x.optString("message"));
-                        else executor.execute(()->{if(closed||!owner.equals(id))return;try{message(x);}catch(Exception|LinkageError e){fail(new Exception(e));}});
+                        else {
+                            // 先发起服务器会话，本地初始化仍在独占执行队列中并行推进。
+                            if(prepared&&"hello".equals(x.optString("type"))&&remoteSessionPreparing==null)remoteSessionPreparing=beginRpc("new",new JSONObject());
+                            executor.execute(()->{if(closed||!owner.equals(id))return;try{message(x);}catch(Exception|LinkageError e){fail(new Exception(e));}});
+                        }
                     }catch(Exception e){fail(e);}
                 }
                 public void onClose(int code,String reason,boolean remote){if(socket==this)stop("通信已断开");}
                 public void onError(Exception e){if(socket==this)fail(e);}
             };
-            socket.setConnectionLostTimeout(20);socket.connect();main.postDelayed(timeout,45000);
+            socket.setTcpNoDelay(true);socket.setConnectionLostTimeout(20);socket.connect();main.postDelayed(timeout,45000);
+            if(prepared)prepareLocalRtc();
         }catch(Exception e){fail(e);}});
     }
     private void message(JSONObject x)throws Exception {
@@ -112,14 +123,16 @@ final class MediaSession {
                 break;
         }
     }
-    private void initializeRtc()throws Exception{
+    private void prepareLocalRtc()throws Exception{
+        if(pc!=null||closed)return;
+        phaseTime("local_start");
         boolean capture=prepared||Arrays.asList("call","microphone","video").contains(mode);
         if(capture&&!prepared&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限初始化尚未完成");
-        if(Arrays.asList("ptt","call").contains(mode))activateAudioRoute();
-        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());
+        if(prepared||Arrays.asList("ptt","call").contains(mode))activateAudioRoute();phaseTime("route");
+        initializeNative(context);
         final String owner=id;
         egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context)
-            .setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setAudioAttributes(new android.media.AudioAttributes.Builder().setUsage(prepared?android.media.AudioAttributes.USAGE_MEDIA:"call".equals(mode)?android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION:android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setUseLowLatency(true)
             .setEnableVolumeLogger(false)
@@ -130,14 +143,14 @@ final class MediaSession {
             .setAudioBufferCallback((buffer,format,channels,rate,bytesRead,at)->{
                 if(prepared){
                     if(bytesRead==0){
-                        long now=SystemClock.elapsedRealtimeNanos();syntheticAudioDue=Math.max(syntheticAudioDue+10000000L,now);
+                        long now=System.nanoTime();syntheticAudioDue=Math.max(syntheticAudioDue+10000000L,now);
                         java.util.concurrent.locks.LockSupport.parkNanos(Math.max(0,syntheticAudioDue-now));
-                        captureStarted=false;return SystemClock.elapsedRealtimeNanos();
+                        captureStarted=false;return System.nanoTime();
                     }
                     syntheticAudioDue=0;
                     if(owns(owner,operation)&&Arrays.asList("call","microphone","video").contains(mode)){captureStarted=true;checkReady();}
                 }
-                return at;
+                return prepared?System.nanoTime():at;
             })
             .setAudioRecordStateCallback(new JavaAudioDeviceModule.AudioRecordStateCallback(){
                 public void onWebRtcAudioRecordStart(){if(!prepared&&!closed&&owner.equals(id)){captureStarted=true;checkReady();}}
@@ -155,11 +168,11 @@ final class MediaSession {
                 public void onWebRtcAudioTrackStartError(JavaAudioDeviceModule.AudioTrackStartErrorCode c,String e){audioFailure(owner,"扬声器启动失败",e);}
                 public void onWebRtcAudioTrackError(String e){audioFailure(owner,"扬声器播放失败",e);}
             }).createAudioDeviceModule();
-        if(prepared)adm.setAudioRecordEnabled(false);
+        phaseTime("adm");if(prepared){adm.setAudioRecordEnabled(false);adm.setSpeakerMute(true);}
         for(android.media.AudioDeviceInfo input:audio.getDevices(AudioManager.GET_DEVICES_INPUTS))if(input.getType()==android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC){adm.setPreferredInputDevice(input);break;}
         factory=PeerConnectionFactory.builder().setAudioDeviceModule(adm).setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(),true,true)).setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
-        PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));
-        config.sdpSemantics=PeerConnection.SdpSemantics.UNIFIED_PLAN;
+        phaseTime("factory");PeerConnection.RTCConfiguration config=new PeerConnection.RTCConfiguration(Collections.singletonList(PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()));
+        config.sdpSemantics=PeerConnection.SdpSemantics.UNIFIED_PLAN;config.iceCandidatePoolSize=1;
         pc=factory.createPeerConnection(config,new PeerConnection.Observer(){
             public void onSignalingChange(PeerConnection.SignalingState s){}
             public void onIceConnectionChange(PeerConnection.IceConnectionState s){if(closed||!owner.equals(id))return;RuntimeLog.event("media_ice state="+s+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt));if(s==PeerConnection.IceConnectionState.FAILED)stop("媒体网络连接失败");iceConnected=s==PeerConnection.IceConnectionState.CONNECTED||s==PeerConnection.IceConnectionState.COMPLETED;if(iceConnected)checkReady();}
@@ -171,19 +184,30 @@ final class MediaSession {
             public void onRemoveStream(MediaStream s){}
             public void onDataChannel(DataChannel c){}
             public void onRenegotiationNeeded(){}
-            public void onAddTrack(RtpReceiver r,MediaStream[] streams){if(!closed&&owner.equals(id)&&r.track()!=null)r.track().setEnabled(!prepared);}
+            public void onAddTrack(RtpReceiver r,MediaStream[] streams){if(!closed&&owner.equals(id)&&r.track()!=null)r.track().setEnabled(true);}
         });
         if(pc==null)throw new Exception("实时媒体初始化失败");
-        pc.setAudioRecording(capture);pc.setAudioPlayout(!prepared&&Arrays.asList("ptt","call").contains(mode));
+        pc.setAudioRecording(capture);pc.setAudioPlayout(prepared||Arrays.asList("ptt","call").contains(mode));
         if(capture){MediaConstraints constraints=new MediaConstraints();
             for(String key:new String[]{"googEchoCancellation","googNoiseSuppression","googHighpassFilter"})constraints.mandatory.add(new MediaConstraints.KeyValuePair(key,prepared||"call".equals(mode)?"true":"false"));
+            constraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl","false"));
             audioSource=factory.createAudioSource(constraints);audioTrack=factory.createAudioTrack("audio",audioSource);audioTrack.setEnabled(true);pc.addTransceiver(audioTrack,new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY));}
         if(prepared)createVideoTrack();else if("video".equals(mode))startCamera();
-        rpc("new",new JSONObject());
+        phaseTime("tracks");
+    }
+    private void initializeRtc()throws Exception{
+        CompletableFuture<JSONObject> remoteSession=remoteSessionPreparing;
+        if(remoteSession==null)remoteSession=beginRpc("new",new JSONObject());
+        phaseTime("initialize");prepareLocalRtc();
+        boolean capture=prepared||Arrays.asList("call","microphone","video").contains(mode);
+        remoteSession.get(20,TimeUnit.SECONDS);phaseTime("session");
         if(capture){SessionDescription offer=create(true);set(offer,true);JSONArray tracks=new JSONArray();
             for(RtpTransceiver t:pc.getTransceivers()){MediaStreamTrack track=t.getSender().track();if(track!=null)tracks.put(new JSONObject().put("mid",t.getMid()).put("trackName",track.kind()));}
             JSONObject result=rpc("publish",new JSONObject().put("sessionDescription",description(pc.getLocalDescription())).put("tracks",tracks));
-            set(parse(result.getJSONObject("sessionDescription")),false);rpc("published",new JSONObject());published=true;
+            set(parse(result.getJSONObject("sessionDescription")),false);phaseTime("published_sdp");
+            long iceDeadline=SystemClock.elapsedRealtime()+15000L;while(!closed&&!iceConnected&&SystemClock.elapsedRealtime()<iceDeadline)Thread.sleep(10L);
+            if(closed||!iceConnected)throw new Exception("媒体网络连接超时");
+            rpc("published",new JSONObject());published=true;
         }
         if(!prepared)sendStatus();checkReady();
     }
@@ -192,13 +216,14 @@ final class MediaSession {
             if(!route.edit().clear().putBoolean("saved",true).putInt("mode",audio.getMode()).putBoolean("speaker",audio.isSpeakerphoneOn()).putInt("music",audio.getStreamVolume(AudioManager.STREAM_MUSIC)).putBoolean("music_muted",audio.isStreamMute(AudioManager.STREAM_MUSIC)).commit())throw new Exception("原音频设置保存失败");
             focused=audio.requestAudioFocus(focusChange,AudioManager.STREAM_MUSIC,AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
             if(!focused)throw new Exception("扬声器正被其他应用占用");
-            audio.setMode("ptt".equals(mode)?AudioManager.MODE_NORMAL:AudioManager.MODE_IN_COMMUNICATION);audio.setSpeakerphoneOn(true);
+            int targetMode="ptt".equals(mode)?AudioManager.MODE_NORMAL:AudioManager.MODE_IN_COMMUNICATION;
+            if(audio.getMode()!=targetMode)audio.setMode(targetMode);if(!audio.isSpeakerphoneOn())audio.setSpeakerphoneOn(true);
             // 先切到扬声器，再保存该路由的通话音量；不能把听筒音量恢复到扬声器。
-            if(!route.edit().putInt("volume",audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)).putBoolean("voice_muted",audio.isStreamMute(AudioManager.STREAM_VOICE_CALL)).commit())throw new Exception("扬声器音量保存失败");
-            audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),0);
-            audio.setStreamVolume(AudioManager.STREAM_MUSIC,audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),0);
-            audio.adjustStreamVolume(AudioManager.STREAM_VOICE_CALL,AudioManager.ADJUST_UNMUTE,0);
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,AudioManager.ADJUST_UNMUTE,0);
+            if((prepared||"call".equals(mode))&&!route.edit().putInt("volume",audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)).putBoolean("voice_muted",audio.isStreamMute(AudioManager.STREAM_VOICE_CALL)).commit())throw new Exception("扬声器音量保存失败");
+            if((prepared||"call".equals(mode))&&audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)!=audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL))audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL,audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),0);
+            if(audio.getStreamVolume(AudioManager.STREAM_MUSIC)!=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC))audio.setStreamVolume(AudioManager.STREAM_MUSIC,audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),0);
+            if((prepared||"call".equals(mode))&&audio.isStreamMute(AudioManager.STREAM_VOICE_CALL))audio.adjustStreamVolume(AudioManager.STREAM_VOICE_CALL,AudioManager.ADJUST_UNMUTE,0);
+            if(audio.isStreamMute(AudioManager.STREAM_MUSIC))audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,AudioManager.ADJUST_UNMUTE,0);
     }
     private void startCamera()throws Exception{
         if(context.checkSelfPermission(android.Manifest.permission.CAMERA)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("相机权限初始化尚未完成");
@@ -231,16 +256,16 @@ final class MediaSession {
         long next=x.optLong("operation",-1);String requested=x.optString("mode");
         if(!transportReady||!"idle".equals(phase)||next!=operation+1||!Arrays.asList("ptt","call","microphone","video","photo","alarm").contains(requested))throw new Exception("操作状态无效");
         if(!Arrays.asList("front","back").contains(x.optString("camera")))throw new Exception("摄像头方向无效");
-        operation=next;mode=requested;facing=x.getString("camera");phase="active";ready=false;receivedAt=SystemClock.elapsedRealtime();
-        captureStarted=false;playbackStarted=false;videoStarted=false;sampleMeters.clear();
+        operation=next;mode=requested;facing=x.getString("camera");phase="active";ready=false;audioArmed=false;receivedAt=SystemClock.elapsedRealtime();
+        captureStarted=false;playbackStarted=false;videoStarted=false;playbackSignalLogged=false;sampleMeters.clear();
         main.removeCallbacks(timeout);main.postDelayed(timeout,17000L);
         RuntimeLog.event("media_activate mode="+mode+" operation="+operation);
         boolean capture=Arrays.asList("call","microphone","video").contains(mode),playback=Arrays.asList("ptt","call").contains(mode);
         if(capture&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限尚未就绪");
-        if(playback)activateAudioRoute();
-        adm.setMicrophoneMute(false);adm.setSpeakerMute(false);
-        adm.setAudioRecordEnabled(capture);for(RtpReceiver receiver:pc.getReceivers())if(receiver.track()!=null)receiver.track().setEnabled(playback);
-        pc.setAudioPlayout(playback);
+        if(playback&&!prepared)activateAudioRoute();
+        adm.setMicrophoneMute(false);adm.setSpeakerMute(!playback);
+        adm.setAudioRecordEnabled(capture);
+        audioArmed=true;
         if("video".equals(mode))startCamera();
         if("photo".equals(mode)){
             String expected=id+"-"+operation;if(!expected.equals(x.optString("report_id")))throw new Exception("照片操作编号不匹配");
@@ -257,18 +282,17 @@ final class MediaSession {
         if(op!=operation)return;
         if("idle".equals(phase)){send(new JSONObject().put("type","idle").put("operation",operation));return;}
         if(!"active".equals(phase))return;
-        phase="stopping";ready=false;main.removeCallbacks(timeout);
-        adm.setAudioRecordEnabled(false);pc.setAudioPlayout(false);
+        phase="stopping";ready=false;audioArmed=false;main.removeCallbacks(timeout);
+        adm.setAudioRecordEnabled(false);adm.setSpeakerMute(true);
         long audioDeadline=SystemClock.elapsedRealtime()+2000L;
-        while((captureStarted||playbackStarted)&&SystemClock.elapsedRealtime()<audioDeadline)Thread.sleep(10L);
-        if(captureStarted||playbackStarted)throw new Exception("音频硬件停止未确认");
-        for(RtpReceiver receiver:pc.getReceivers())if(receiver.track()!=null)receiver.track().setEnabled(false);
+        while(captureStarted&&SystemClock.elapsedRealtime()<audioDeadline)Thread.sleep(10L);
+        if(captureStarted)throw new Exception("音频硬件停止未确认");
+        // 显式连接期间输出线程保持运行但写入静音，断开才释放；不再反复重启底层AudioTrack。
         if(camera!=null){camera.stopCapture();camera.dispose();camera=null;videoSource.getCapturerObserver().onCapturerStarted(true);}
         if(texture!=null){texture.dispose();texture=null;}
         if(alarm!=null){alarm.close();alarm=null;}
         if("photo".equals(mode))photos.cancelManual(id+"-"+operation).get(8,TimeUnit.SECONDS);
-        restoreRoute();if(route.getBoolean("saved",false))throw new Exception("音频设置恢复未完成");
-        if(focused){audio.abandonAudioFocus(focusChange);focused=false;}
+        // 原路由和音量在完整断开时统一恢复；单项停止保持静音待命。
         captureStarted=false;playbackStarted=false;videoStarted=false;mode="prepare";phase="idle";
         RuntimeLog.event("media_idle operation="+operation);send(new JSONObject().put("type","idle").put("operation",operation));
     }
@@ -276,12 +300,12 @@ final class MediaSession {
         if(closed)return;
         if(prepared&&!transportReady){
             if(!published||!subscribed||!iceConnected)return;
-            if(captureStarted||playbackStarted){fail(new Exception("待命阶段意外开启音频硬件"));return;}
+            if(captureStarted){fail(new Exception("待命阶段意外开启麦克风"));return;}
             transportReady=true;phase="idle";main.removeCallbacks(timeout);
             RuntimeLog.event("media_transport_ready after_ms="+(SystemClock.elapsedRealtime()-receivedAt));
             try{send(new JSONObject().put("type","transport_ready"));}catch(Exception e){fail(e);}return;
         }
-        if(prepared&&!"active".equals(phase)||!iceConnected)return;
+        if(prepared&&(!"active".equals(phase)||!audioArmed)||!iceConnected)return;
         if("ptt".equals(mode)&&(!subscribed||!playbackStarted))return;
         if("call".equals(mode)&&(!published||!subscribed||!playbackStarted||!captureStarted))return;
         if(Arrays.asList("microphone","video").contains(mode)&&(!published||!captureStarted))return;
@@ -292,6 +316,11 @@ final class MediaSession {
         if(!result.has("sessionDescription"))return;
         SessionDescription remote=parse(result.getJSONObject("sessionDescription"));set(remote,false);
         if(remote.type==SessionDescription.Type.OFFER){set(create(false),true);rpc("answer",new JSONObject().put("sessionDescription",description(pc.getLocalDescription())));}
+    }
+    private void phaseTime(String stage){RuntimeLog.event("media_initialize stage="+stage+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt));}
+    private CompletableFuture<JSONObject> beginRpc(String action,JSONObject body)throws Exception{
+        if(closed)throw new Exception("通信已结束");int n=sequence.incrementAndGet();CompletableFuture<JSONObject> f=new CompletableFuture<>();waiting.put(n,f);
+        send(new JSONObject().put("type","rpc").put("id",n).put("action",action).put("body",body));return f;
     }
     private JSONObject rpc(String action,JSONObject body)throws Exception{
         if(closed)throw new Exception("通信已结束");int n=sequence.incrementAndGet();CompletableFuture<JSONObject> f=new CompletableFuture<>();waiting.put(n,f);
@@ -316,6 +345,8 @@ final class MediaSession {
     private void audioSamples(String owner,String kind,byte[] bytes){
         if(closed||!owner.equals(id)||bytes==null||bytes.length<2)return;
         if(prepared&&!"active".equals(phase))return;
+        if("playback".equals(kind)&&Arrays.asList("ptt","call").contains(mode)){playbackStarted=true;checkReady();}
+        if("playback".equals(kind)&&!playbackSignalLogged){int peak=0;for(int i=0;i+1<bytes.length;i+=2)peak=Math.max(peak,Math.abs((short)((bytes[i]&255)|(bytes[i+1]<<8))));if(peak>20){playbackSignalLogged=true;RuntimeLog.event("media_playback_signal operation="+operation+" after_ms="+(SystemClock.elapsedRealtime()-receivedAt)+" peak="+peak);}}
         String sample=sampleMeters.computeIfAbsent(kind,k->new MediaAudioMeter()).add(bytes,SystemClock.elapsedRealtime());
         if(sample!=null)RuntimeLog.event("media_audio "+kind+" "+sample);
     }
