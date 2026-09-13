@@ -66,8 +66,9 @@ export class MediaRelay {
     ws.addEventListener('error',()=>this.close(s,'通信连接中断'));
     this.send(s,role,{type:'waiting'});
     const other=role==='browser'?'device':'browser';
+    if(s.prepared)this.send(s,role,{type:'hello',mode:s.mode,camera:s.camera});
     if(s.published[other])this.send(s,role,{type:'tracks',...s.published[other]});
-    if(s.roles.browser&&s.roles.device){this.send(s,'browser',{type:'hello',mode:s.mode,camera:s.camera});this.send(s,'device',{type:'hello',mode:s.mode,camera:s.camera});}
+    if(!s.prepared&&s.roles.browser&&s.roles.device){this.send(s,'browser',{type:'hello',mode:s.mode,camera:s.camera});this.send(s,'device',{type:'hello',mode:s.mode,camera:s.camera});}
   }
   send(s,role,message){try{s.roles[role]?.send(JSON.stringify(message));}catch{this.close(s,'通信连接中断');}}
   async sfu(path,body,method='POST'){

@@ -65,3 +65,11 @@ test('照片即时预览只接受当前拍照操作，不能串到其它操作�
  const n=f.messages.browser.length;await f.send('device',{type:'photo_preview',operation:0,jpeg:'/9j/2Q==',captured_at:1234});assert.equal(f.messages.browser.length,n);
  await f.send('device',{type:'photo_preview',operation:1,jpeg:'x'.repeat(88001),captured_at:1234});assert.equal(f.s.closed,true);
 });
+
+test('预备连接每端独立初始化，已有音轨排在hello之后且不重复hello',()=>{
+ const relay=new MediaRelay({ELF_REALTIME:'{}'},{schedule:()=>0,cancel(){}});
+ const id=relay.create({id:'test',managed_media:true,managed_media_prepare_v1:true},'prepare').session_id,s=relay.sessions.get(id);
+ const ws=()=>({messages:[],accept(){},addEventListener(){},send(raw){this.messages.push(JSON.parse(raw));},close(){}});
+ const browser=ws(),device=ws();relay.attach(s,'browser',browser);assert.deepEqual(browser.messages.map(m=>m.type),['waiting','hello']);
+ s.published.browser={tracks:[]};relay.attach(s,'device',device);assert.deepEqual(device.messages.map(m=>m.type),['waiting','hello','tracks']);assert.equal(browser.messages.filter(m=>m.type==='hello').length,1);
+});

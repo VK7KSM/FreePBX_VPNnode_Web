@@ -1,20 +1,41 @@
 /* 浏览器通信控制；设备列表刷新时保留同一个媒体元素与PeerConnection。 */
 window.ElfMedia=(function(){
-  var active=null,lastMessage='',lastDevice='',cameraChoice={};
-  function inputChoice(){try{return localStorage.getItem('elf-media-input')||'';}catch{return '';}}
-  function audioConstraints(){var id=inputChoice();return {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(id?{deviceId:{exact:id}}:{})},video:false};}
-  async function acquireLocalAudio(){try{return await navigator.mediaDevices.getUserMedia(audioConstraints());}catch(e){if(!inputChoice()||!['NotFoundError','OverconstrainedError'].includes(e.name))throw e;try{localStorage.removeItem('elf-media-input');}catch{}return navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});}}
+  var active=null,lastMessage='',lastDevice='',cameraChoice={},selectedInput='';
+  function inputChoice(){return selectedInput;}
+  function audioConstraints(){var id=inputChoice();return {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false,...(id?{deviceId:{exact:id}}:{})},video:false};}
+  async function acquireLocalAudio(){try{return await navigator.mediaDevices.getUserMedia(audioConstraints());}catch(e){if(!inputChoice()||!['NotFoundError','OverconstrainedError'].includes(e.name))throw e;selectedInput='';return navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false},video:false});}}
+  function feedbackPeak(db,rate,size){
+    var total=0,peak=0,index=0;
+    for(var n=Math.ceil(450*size/rate);n<Math.min(db.length,Math.floor(6000*size/rate));n++){var power=Math.pow(10,db[n]/10);total+=power;if(power>peak){peak=power;index=n;}}
+    var narrow=0;for(var n=Math.max(0,index-2);n<=Math.min(db.length-1,index+2);n++)narrow+=Math.pow(10,db[n]/10);
+    return peak>Math.pow(10,-24/10)&&narrow>total*.72?index*rate/size:0;
+  }
+  function micPath(s,stream){
+    var c=s.transportAudioContext||s.audioContext;
+    if(!c?.createBiquadFilter)return {track:stream.getAudioTracks()[0],close:function(){}};
+    var input=c.createMediaStreamSource(stream),hp=c.createBiquadFilter(),analyser=c.createAnalyser(),gate=c.createGain(),limit=c.createDynamicsCompressor(),dest=c.createMediaStreamDestination(),notches=[];
+    hp.type='highpass';hp.frequency.value=120;input.connect(hp);hp.connect(analyser);analyser.fftSize=2048;analyser.smoothingTimeConstant=0;
+    var last=hp;for(var i=0;i<4;i++){var f=c.createBiquadFilter();f.type='notch';f.frequency.value=16000;f.Q.value=16;last.connect(f);last=f;notches.push(f);}last.connect(gate);gate.connect(limit);limit.threshold.value=-9;limit.knee.value=6;limit.ratio.value=8;limit.attack.value=.003;limit.release.value=.15;limit.connect(dest);
+    var db=new Float32Array(analyser.frequencyBinCount),candidate=0,hits=0,next=0;
+    var timer=setInterval(function(){
+      if(active!==s||!['ptt','call'].includes(s.mode)||!s.local?.getAudioTracks()[0]?.enabled){hits=0;return;}
+      analyser.getFloatFrequencyData(db);var frequency=feedbackPeak(db,c.sampleRate,analyser.fftSize);
+      hits=frequency&&Math.abs(frequency-candidate)<80?hits+1:0;candidate=frequency;
+      if(hits>=3){var f=notches.find(function(f){return Math.abs(f.frequency.value-frequency)<80;})||notches[next++%notches.length];f.frequency.setTargetAtTime(frequency,c.currentTime,.01);gate.gain.cancelScheduledValues(c.currentTime);gate.gain.setTargetAtTime(.2,c.currentTime,.005);gate.gain.setTargetAtTime(1,c.currentTime+.2,.1);hits=0;}
+    },50);
+    return {track:dest.stream.getAudioTracks()[0],close:function(){clearInterval(timer);input.disconnect();hp.disconnect();analyser.disconnect();notches.forEach(function(f){f.disconnect();});gate.disconnect();limit.disconnect();dest.stream.getTracks().forEach(function(t){t.stop();});}};
+  }
   async function listInputs(s){if(!navigator.mediaDevices?.enumerateDevices)return;try{s.inputs=(await navigator.mediaDevices.enumerateDevices()).filter(function(d){return d.kind==='audioinput';});if(active===s)mount(s.device);}catch{}}
   async function changeInput(s,id){
     var activation=s.activation,generation=(s.inputGeneration||0)+1;s.inputGeneration=generation;
     try{
-      var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(id?{deviceId:{exact:id}}:{})},video:false});
+      var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false,...(id?{deviceId:{exact:id}}:{})},video:false});
       if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){stream.getTracks().forEach(function(t){t.stop();});return;}
       var sender=s.uplink||s.pc.getSenders().find(function(t){return t.track?.kind==='audio';});
       if(!sender){stream.getTracks().forEach(function(t){t.stop();});throw Error('本机音频通道未就绪');}
-      await sender.replaceTrack(stream.getAudioTracks()[0]);
-      if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){stream.getTracks().forEach(function(t){t.stop();});return;}
-      var old=s.local;s.local=stream;if(old)old.getTracks().forEach(function(t){t.stop();});try{localStorage.setItem('elf-media-input',id);}catch{}mount(s.device);
+      var path=micPath(s,stream);try{await sender.replaceTrack(path.track);}catch(e){path.close();stream.getTracks().forEach(function(t){t.stop();});throw e;}
+      if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){if(active===s&&sender.track===path.track)await sender.replaceTrack(s.micPath?.track||s.silentTrack).catch(function(){});path.close();stream.getTracks().forEach(function(t){t.stop();});return;}
+      var old=s.local,oldPath=s.micPath;s.micPath=path;if(oldPath)oldPath.close();s.local=stream;if(old)old.getTracks().forEach(function(t){t.stop();});selectedInput=id;mount(s.device);
     }catch(e){if(active===s){s.message='麦克风切换失败：'+e.message;render();}}
   }
   function render(){if(typeof renderRemoteConsole==='function')renderRemoteConsole();}
@@ -33,14 +54,24 @@ window.ElfMedia=(function(){
     if(s.mode==='call'&&(!s.published||!s.subscribed||!s.remote?.getAudioTracks().some(function(t){return t.readyState==='live';})))return;
     s.started=s.started||Date.now();s.message='';render();
   }
+  async function waitConnected(s){
+    if(s.pc.connectionState==='connected')return;
+    await new Promise(function(resolve,reject){
+      var timer=setTimeout(function(){done(Error('媒体网络连接超时'));},15000);
+      function done(error){clearTimeout(timer);s.pc.removeEventListener('connectionstatechange',changed);error?reject(error):resolve();}
+      function changed(){if(s.pc.connectionState==='connected')done();else if(['failed','closed'].includes(s.pc.connectionState))done(Error('媒体网络连接失败'));}
+      s.pc.addEventListener('connectionstatechange',changed);changed();
+    });
+  }
   async function publish(s){
+    var newSession=rpc(s,'new');newSession.catch(function(){});
     s.pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
     s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);updateReady(s);maybeRecord(s);};
     s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败',true);if(s.pc.connectionState==='connected'){updateReady(s);render();maybeRecord(s);}};
-    if(s.local)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
-    if(s.prepared)s.uplink=s.pc.addTransceiver(s.silentTrack,{direction:'sendonly'}).sender;
-    await rpc(s,'new');
-    if(s.local||s.prepared){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track||s.prepared&&t.sender===s.uplink;}).map(function(t){return {mid:t.mid,trackName:t.sender.track?.kind||'audio'};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);await rpc(s,'published');s.published=true;updateReady(s);}
+    if(s.local&&!s.prepared)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
+    if(s.prepared){await s.inputPreparing;if(active!==s)return;if(s.local)s.micPath=micPath(s,s.local);s.uplink=s.pc.addTransceiver(s.micPath?.track||s.silentTrack,{direction:'sendonly'}).sender;}
+    await newSession;
+    if(s.local||s.prepared){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track||s.prepared&&t.sender===s.uplink;}).map(function(t){return {mid:t.mid,trackName:t.sender.track?.kind||'audio'};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);if(s.prepared)await waitConnected(s);await rpc(s,'published');s.published=true;updateReady(s);}
   }
   async function message(s,p){
     if(active!==s)return;
@@ -74,6 +105,7 @@ window.ElfMedia=(function(){
     var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false,prepared:mode==='prepare',operation:0};active=s;lastMessage='';render();
     try{
       if(mode==='prepare'){
+        selectedInput='';s.inputPreparing=acquireLocalAudio().then(function(stream){if(active!==s){stream.getTracks().forEach(function(t){t.stop();});return;}stream.getAudioTracks().forEach(function(t){t.enabled=false;});s.local=stream;listInputs(s);}).catch(function(){s.inputUnavailable=true;});
         s.transportAudioContext=new AudioContext({latencyHint:'interactive'});await s.transportAudioContext.resume();
         if(active!==s)return;
         var silentDestination=s.transportAudioContext.createMediaStreamDestination();s.silentSource=s.transportAudioContext.createConstantSource();s.silentSource.offset.value=0;s.silentSource.connect(silentDestination);s.silentSource.start();s.silentTrack=silentDestination.stream.getAudioTracks()[0];
@@ -107,9 +139,8 @@ window.ElfMedia=(function(){
       if(mode!=='photo'&&mode!=='alarm'){s.audioContext=new AudioContext({latencyHint:'interactive'});await s.audioContext.resume();}
       if(cancelled())return;
       if(mode==='ptt'||mode==='call'){
-        var local=await acquireLocalAudio();
-        if(cancelled()){local.getTracks().forEach(function(t){t.stop();});return;}
-        s.local=local;await s.uplink.replaceTrack(local.getAudioTracks()[0]);listInputs(s);
+        var local=s.local;if(!local||local.getAudioTracks()[0]?.readyState!=='live'){local=await acquireLocalAudio();if(cancelled()){local.getTracks().forEach(function(t){t.stop();});return;}s.local=local;if(s.micPath)s.micPath.close();s.micPath=micPath(s,local);await s.uplink.replaceTrack(s.micPath.track);listInputs(s);}
+        local.getAudioTracks().forEach(function(t){t.enabled=true;});
       }
       if(cancelled())return;
       s.operation=operation;s.activationSent=true;mount(s.device);send(s,{type:'activate',operation:operation,mode:mode,camera:s.camera});
@@ -120,7 +151,7 @@ window.ElfMedia=(function(){
     if(s.mode==='stopping'||s.mode==='prepare')return;
     s.activation=null;s.mode='stopping';s.message='正在结束…';s.recordEnded=Date.now();
     if(s.activationSent)send(s,{type:'deactivate',operation:s.operation});else s.idleAcknowledged=true;
-    if(s.local){s.local.getTracks().forEach(function(t){t.stop();});s.local=null;}await s.uplink.replaceTrack(s.silentTrack);
+    if(s.local)s.local.getAudioTracks().forEach(function(t){t.enabled=false;});
     if(s.recordCreating)await s.recordCreating;
     if(s.recorder&&s.recorder.state!=='inactive'){s.recorder.stop();await s.recordStopped;}
     if(s.animation)cancelAnimationFrame(s.animation);s.animation=null;
@@ -140,7 +171,7 @@ window.ElfMedia=(function(){
       // 先等最后一个分段入队，再关闭远端音轨。
       await s.recordStopped;
     }
-    if(s.local)s.local.getTracks().forEach(function(t){t.stop();});if(s.pc)s.pc.close();if(s.remote)s.remote.getTracks().forEach(function(t){t.stop();});
+    if(s.micPath)s.micPath.close();if(s.local)s.local.getTracks().forEach(function(t){t.stop();});if(s.pc)s.pc.close();if(s.remote)s.remote.getTracks().forEach(function(t){t.stop();});
     if(s.silentSource)s.silentSource.stop();if(s.silentTrack)s.silentTrack.stop();if(s.transportAudioContext)await s.transportAudioContext.close();
     if(s.animation)cancelAnimationFrame(s.animation);if(s.audioContext)s.audioContext.close();
     if(s.node){var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}s.node.remove();}
@@ -182,19 +213,19 @@ window.ElfMedia=(function(){
     if((s.mode==='ptt'||s.mode==='call')&&s.inputs?.length){
       var selector=s.node.querySelector('.media-input-select');
       if(!selector){var label=document.createElement('label');label.className='media-input';label.textContent='本机麦克风 ';selector=document.createElement('select');selector.className='media-input-select';selector.setAttribute('aria-label','本机麦克风');label.appendChild(selector);s.node.appendChild(label);selector.onchange=function(){changeInput(s,selector.value);};}
-      var selected=s.local?.getAudioTracks()[0]?.getSettings?.().deviceId||inputChoice();
-      var choices=s.inputs.map(function(d){return '<option value="'+esc(d.deviceId)+'"'+(d.deviceId===selected?' selected':'')+'>'+esc(d.label||'麦克风')+'</option>';}).join('');
+      var selected=inputChoice();
+      var choices='<option value=""'+(!selected?' selected':'')+'>系统默认麦克风</option>'+s.inputs.filter(function(d){return d.deviceId!=='default';}).map(function(d){return '<option value="'+esc(d.deviceId)+'"'+(d.deviceId===selected?' selected':'')+'>'+esc(d.label||'麦克风')+'</option>';}).join('');
       if(selector.innerHTML!==choices)selector.innerHTML=choices;
     }
     if(s.mode==='photo'&&s.previewPhoto&&!s.node.querySelector('img')){s.node.innerHTML='<img alt="本次拍照" src="data:image/jpeg;base64,'+esc(s.previewPhoto.jpeg)+'"><time>'+esc(sydney(s.previewPhoto.captured_at))+'</time>';return;}
     var element=s.node.querySelector('video,audio');
-    if(element&&s.remote&&element.srcObject!==s.remote){element.srcObject=s.remote;element.muted=!!s.audioContext;element.play().catch(function(){var button=s.node.querySelector('.media-play');if(button)button.hidden=false;});}
-    var tracks=s.mode==='ptt'?s.local?.getAudioTracks():s.remote?.getAudioTracks();
+    if(element&&s.remote&&element.srcObject!==s.remote){element.srcObject=s.remote;element.muted=s.mode==='ptt';element.play().catch(function(){var button=s.node.querySelector('.media-play');if(button)button.hidden=false;});}
+    var tracks=s.mode==='ptt'?(s.micPath?[s.micPath.track]:s.local?.getAudioTracks()):s.remote?.getAudioTracks();
     if(s.audioContext&&tracks?.length&&s.audioInputTrack!==tracks[0]){
       if(s.audioInput)s.audioInput.disconnect();if(s.outputGain)s.outputGain.disconnect();if(s.animation)cancelAnimationFrame(s.animation);
       s.audioInputTrack=tracks[0];s.audioInput=s.audioContext.createMediaStreamSource(new MediaStream([tracks[0]]));
       var analyser=s.audioContext.createAnalyser();s.analyser=analyser;analyser.fftSize=512;s.audioInput.connect(analyser);
-      if(s.mode!=='ptt'){s.outputGain=s.audioContext.createGain();s.outputGain.gain.value=Number(s.node.querySelector('input')?.value||1);s.audioInput.connect(s.outputGain);s.outputGain.connect(s.audioContext.destination);}
+      // 远端播放由原生媒体元素完成，供浏览器AEC取得播放参考；分析器只画波形，不重复播放。
       var canvas=s.node.querySelector('canvas');
       if(canvas){var samples=new Uint8Array(analyser.frequencyBinCount);canvas.width=640;canvas.height=180;var ctx=canvas.getContext('2d');
         function draw(){if(active!==s)return;analyser.getByteTimeDomainData(samples);ctx.clearRect(0,0,640,180);ctx.strokeStyle='#60a5fa';ctx.lineWidth=2;ctx.beginPath();samples.forEach(function(v,i){var x=i/samples.length*640,y=v/128*90;if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();s.animation=requestAnimationFrame(draw);}draw();
