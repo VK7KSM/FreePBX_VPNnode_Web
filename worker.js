@@ -33,6 +33,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 `;
 
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
+import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
@@ -1732,6 +1733,9 @@ async function handleDeviceReport(env, request) {
     const previousTime = Date.parse(matched.last_reported_at);
     const fresh = matched.last_report_clock_invalid === true || !Number.isFinite(previousTime) || previousTime > Date.now()
       || history.record.timeline_at >= matched.last_reported_at;
+    const versionClockConflict = matched.hardware_identity?.variant === 'd31' && data.app_version != null
+      && !!matched.app_version && String(data.app_version).slice(0, 80) !== matched.app_version
+      && history.record.timeline_at === matched.last_reported_at;
     let found = null;
     for (let i = 0; i < list.length; i++) {
       if (list[i].id !== deviceId) continue;
@@ -1788,7 +1792,7 @@ async function handleDeviceReport(env, request) {
           'android.permission.ACCESS_COARSE_LOCATION','android.permission.ACCESS_FINE_LOCATION','android.permission.CAMERA',
           'android.permission.READ_CONTACTS','android.permission.WRITE_CONTACTS'].includes(p)).slice(0,5)};
       list[i].traffic = history.record.traffic;
-      if (data.app_version != null) list[i].app_version = String(data.app_version).slice(0, 80);
+      if (data.app_version != null && !versionClockConflict) list[i].app_version = String(data.app_version).slice(0, 80);
       if (typeof data.device_name === "string" && data.device_name.trim()) list[i].device_name = data.device_name.trim().slice(0, 80);
       if (data.os_version != null) list[i].os_version = String(data.os_version).slice(0, 80);
       if (data.network != null) list[i].network = String(data.network).slice(0, 32);
@@ -1822,6 +1826,16 @@ async function handleDeviceReport(env, request) {
     await queueZelloRestore(found,env.__storage,now);
     await queueSystemRestore(found,env.__storage,now);
     await saveDevices(env, list);
+    if (fresh && !versionClockConflict && found.hardware_identity?.variant === 'd31' && env.D31_AUTO_FOLLOW_DEVICE_IDS) {
+      try {
+        const assigned = await followD31Recommendation({storage: env.__storage, read: key => getStore(env, key),
+          device: found, models: await loadDeviceModels(env), allowedIds: env.D31_AUTO_FOLLOW_DEVICE_IDS,
+          assign: (id, rel, input) => assignReleaseToDevice(env, id, rel, input)}, now);
+        if (assigned) found = assigned;
+      } catch {
+        return json({ok: false, msg: '自动跟随暂不可用，请稍后重试'}, 503);
+      }
+    }
     const body = { ok: true, paired: found.paired !== false, server_time:Date.now(), unpaired_at_ms: found.unpaired_at_ms || 0, report_id: history.record.report_id };
     if(found.enabled!==false&&mediaModes(found).length>0)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
@@ -1967,7 +1981,8 @@ async function handleElfReleaseList(env,url) {
         expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
     }
     out.sort((a,b)=>b.versionCode-a.versionCode);
-    return json({ok:true,channel,releases:out,store:env.ELF_DO?'do':'kv'});
+    return json({ok:true,channel,releases:out,store:env.ELF_DO?'do':'kv',
+      ...(channel === 'd31' ? {auto_follow: publicD31Recommendation(await env.__storage?.get(D31_RECOMMENDATION_KEY))} : {})});
   } catch(e){return json({ok:false,msg:e.message},400);}
 }
 
@@ -1980,6 +1995,11 @@ async function releaseForDevice(env,device,input,version) {
 async function handleElfAssign(env, request) {
   try {
     const data = await request.json();
+    if (['recommend_d31', 'pause_d31_auto_follow'].includes(data.action)) {
+      const recommendation = await setD31Recommendation({storage: env.__storage, read: key => getStore(env, key),
+        devices: await loadDevices(env), models: await loadDeviceModels(env), allowedIds: env.D31_AUTO_FOLLOW_DEVICE_IDS}, data);
+      return json({ok: true, auto_follow: recommendation});
+    }
     const deviceId = String(data.device_id || "").trim();
     const vc = Number(data.versionCode || 0);
     if (!deviceId || vc <= 0) return json({ ok: false, msg: "缺少设备或版本" }, 400);
@@ -2030,6 +2050,7 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
         && Number(list[i].update.expires_at) > Date.now() && !requestId) return list[i];
     if (list[i].update?.job_id && !["success","recovered","rejected"].includes(list[i].update.state)
         && (!list[i].update.expires_at || Number(list[i].update.expires_at) > Date.now())) throw new Error("已有更新进行中");
+    await rememberD31Update(env.__storage, list[i]);
     list[i].update = {
       channel,package:manifest.package,
       job_id: modern ? "update-" + crypto.randomUUID() : rel.job_id,
@@ -2047,6 +2068,7 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
       detail: ""
     };
     if (list[i].status_only) list[i].update.managed_update_v1 = true;
+    await rememberD31Update(env.__storage, list[i]);
     found = list[i];
     break;
   }
@@ -2074,6 +2096,8 @@ async function handleElfUpdateProgress(env, request) {
         return json({ ok: false, msg: "设备凭证无效" }, 401);
       }
       applyUpdateProgress(list[i], jobId, state, data.detail);
+      try { await rememberD31Update(env.__storage, list[i]); }
+      catch { return json({ok: false, msg: '更新记录暂不可用，请稍后重试'}, 503); }
       found = list[i];
       break;
     }
