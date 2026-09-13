@@ -48,6 +48,7 @@ function applySipStatus(d, full){
   }
   renderStatus();
   renderAll();
+  renderBanEditor();
   if(full) renderSync();
 }
 var sipLoading=null,sipPollFailures=0,sipPollAt=0,sipFullAt=0,sipRetryAt=0;
@@ -261,6 +262,7 @@ function extRowHtml(x, live){
   var talking = !!talkingSet()[String(x.ext)];
   var dot = online ? "<span class=\"dot dot-on\" title=\"在线\"></span>" : "<span class=\"dot dot-off\" title=\"离线\"></span>";
   var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
+  if (sipBanInfo(x.ext).banned) tr = '<span style="color:#f87171;font-weight:600">封禁</span>';
   var ipCell = (online && L && L.ip) ? twoLine(L.ip, GEO[L.ip] || "查询中") : twoLine("-", "\u00a0");
   var rtt = (online && L) ? fmtRtt(L) : "-";
   var last=(ST && ST.last_seen)||{};
@@ -434,6 +436,7 @@ function fillExtForm(x){
 }
 function openExt(gid){
   editingExt=""; $("extTitle").innerText="添加分机"; $("eExt").readOnly=false;
+  renderBanEditor();
   var pre = (gid && gid!=="__none") ? gid : "";
   fillExtForm({outbound:true,sms:false,ringtimer:60,group_id:pre});
   $("ePw").placeholder="新分机必须填写密码"; show("extWrap");
@@ -444,6 +447,37 @@ function editSelExt(){
   if(!x){ alert("未找到该分机"); return; }
   editingExt=selExt; $("extTitle").innerText="编辑分机 "+x.ext; $("eExt").readOnly=true;
   fillExtForm(x); $("ePw").placeholder=x.has_password?"已有密码，留空则不修改":"请设置密码"; show("extWrap");
+  $("eBanResult").textContent=""; renderBanEditor();
+}
+var sipBanBusy = false;
+function sipBanInfo(ext){
+  var s=ST&&ST.bans, record=s&&s.endpoints&&s.endpoints[String(ext)];
+  var fresh=!!(s&&s.available&&!STALE&&Date.now()/1000-s.checked_at<45);
+  var ip=record&&record.ip||"";
+  return {available:fresh,ip:ip,banned:!!(fresh&&ip&&(s.banned_ips||[]).indexOf(ip)>=0),
+    affected:ip?E.filter(function(x){var r=s.endpoints[String(x.ext)];return r&&r.ip===ip;}).map(function(x){return x.ext;}):[]};
+}
+function renderBanEditor(){
+  var box=$("eBanBox"); if(!box)return;
+  box.style.display=editingExt?"block":"none"; if(!editingExt)return;
+  var b=sipBanInfo(editingExt), button=$("eBanAction");
+  $("eBanInfo").textContent=!b.available?"封禁状态暂不可用":!b.ip?"尚未记录此分机的出口 IP":"出口 IP："+b.ip+"；同出口分机："+b.affected.join("、")+"。操作影响此 IP 上的所有分机。";
+  button.textContent=sipBanBusy?"处理中…":b.banned?"解封":"封禁";
+  button.className=b.banned?"btn-green":"btn-red";
+  button.disabled=sipBanBusy||!b.available||!b.ip;
+}
+async function changeSipBan(){
+  if(sipBanBusy)return;
+  var b=sipBanInfo(editingExt),ext=editingExt;
+  if(!b.available||!b.ip)return;
+  sipBanBusy=true;renderBanEditor();$("eBanResult").textContent="";
+  try{
+    var r=await fetch('/api/sip/ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ext:ext,ip:b.ip,action:b.banned?'unban':'ban'})});
+    var d=await r.json();if(!r.ok||!d.ok)throw Error(d.msg||"操作失败");
+    if(editingExt===ext)$("eBanResult").textContent=d.banned?"已封禁此出口 IP":"已解封；密码仍错误时会再次触发封禁。";
+    await loadSipLive();
+  }catch(e){if(editingExt===ext)$("eBanResult").textContent=e.message;}
+  finally{sipBanBusy=false;renderBanEditor();}
 }
 function saveExt(){
   var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), group_id:$("eGroup").value, outbound:$("eOut").value==="1", sms:$("eSms").value==="1", cf:$("eCf").value.trim(), cf_busy:$("eCfb").value.trim(), cf_noreply:$("eCfu").value.trim(), ringtimer:parseInt($("eRing").value,10)||60 };

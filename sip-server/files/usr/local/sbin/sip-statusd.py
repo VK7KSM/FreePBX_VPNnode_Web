@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from sip_bans import BanManager
 
 TOKEN_PATH = "/etc/sip-heartbeat.token"
 DB_PATH = "/var/lib/sip-panel/status.sqlite"
@@ -442,6 +443,7 @@ def collect_asterisk():
     prev_cs = kv_get("contacts") or []
     if cs is None:
         cs = prev_cs
+    BANS.refresh(cs)
     calls, chans = call_stats()
     last_seen = kv_get("last_seen") or {}
     if not isinstance(last_seen, dict):
@@ -506,6 +508,7 @@ def status_payload():
         host = kv_get("host") or {}
         host["contacts"] = kv_get("contacts") or []
         host["last_seen"] = kv_get("last_seen") or {}
+        host["bans"] = kv_get("ban_status") or {}
         host["cdr"] = kv_get("cdr") or []
         host["history"] = history()
         host["applied_rev"] = kv_get("applied_rev", 0)
@@ -611,6 +614,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        if self.path != "/api/sip/ban":
+            self._send(404, {"ok": False, "msg": "not found"})
+            return
+        if not TOKEN or self.headers.get("X-Heartbeat-Token") != TOKEN:
+            self._send(401, {"ok": False, "msg": "unauthorized"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 2048:
+                raise ValueError("请求长度无效")
+            data = json.loads(self.rfile.read(length))
+            result = BANS.action(str(data.get("ext", "")), data.get("action"), data.get("ip"))
+            self._send(200, result)
+        except (ValueError, TypeError):
+            self._send(400, {"ok": False, "msg": "操作无效或出口 IP 已变化，请刷新后重试"})
+        except Exception:
+            self._send(503, {"ok": False, "msg": "服务器封禁操作失败，请刷新核对"})
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in ("/health", "/", "/healthz"):
@@ -626,6 +648,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, st)
             return
         self._send(404, {"ok": False, "msg": "not found"})
+
+
+BANS = BanManager(kv_get, kv_set, CON.commit, LOCK)
 
 
 def main():

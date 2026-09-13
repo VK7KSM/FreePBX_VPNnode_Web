@@ -658,6 +658,26 @@ const app = {
       });
     }
 
+    if (pathname === "/api/sip/ban" && method === "POST") {
+      try {
+        const data = await request.json();
+        if (!/^[0-9]{3,6}$/.test(String(data.ext || "")) || !["ban", "unban"].includes(data.action) || typeof data.ip !== "string") {
+          return json({ok:false,msg:"无效封禁操作"},400);
+        }
+        const bundle = await loadSipBundle(env);
+        if (!bundle.extensions.some(x => String(x.ext) === String(data.ext))) return json({ok:false,msg:"分机不存在"},404);
+        const response = await fetch("https://api.elfradio.net/api/sip/ban", {
+          method:"POST", headers:{"Content-Type":"application/json","X-Heartbeat-Token":await heartbeatToken(env)},
+          body:JSON.stringify({ext:String(data.ext),action:data.action,ip:data.ip}),
+          signal:AbortSignal.timeout(15000)
+        });
+        const result = await response.json();
+        return json(result,response.status);
+      } catch {
+        return json({ok:false,msg:"无法确认服务器操作结果，请刷新封禁状态后重试"},502);
+      }
+    }
+
     if (pathname === "/api/sip/live" && method === "GET") {
       const osaka = await fetchOsakaStatus(env);
       const status = osaka.status;
@@ -2893,6 +2913,7 @@ function renderSipHtml() {
     '<div><label style="font-size:.8rem;color:#cbd5e1">遇忙转移<\/label><input id="eCfb" class="inp" placeholder="空=不转移"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">无应答转移<\/label><input id="eCfu" class="inp" placeholder="空=不转移"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">振铃超时（秒）<\/label><input id="eRing" type="number" class="inp" value="60"><\/div>',
+    '<div id="eBanBox" style="display:none"><label style="font-size:.8rem;color:#cbd5e1">封禁 / 解封<\/label><div id="eBanInfo" style="font-size:.8rem;overflow-wrap:anywhere;margin:.5rem 0"><\/div><button type="button" id="eBanAction" class="btn-gray" onclick="changeSipBan()">解封<\/button><div id="eBanResult" style="font-size:.8rem;margin-top:.5rem" role="status"><\/div><\/div>',
     '<\/div>',
     '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到大阪 SIP 机，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
