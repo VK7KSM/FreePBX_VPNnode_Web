@@ -977,7 +977,8 @@ function loadReleases(){
 }
 function selectedRelease(){
   var u=uiOf(),selected=u && u.releaseVersion;
-  return RELEASES.find(function(r){return String(r.versionCode)===String(selected);}) || RELEASES[0];
+  var d=currentDev(),d31=d && (d.update_channel==='d31'||d.model_id==='mdl_d31');
+  return RELEASES.find(function(r){return String(r.versionCode)===String(selected);}) || (d31 && RELEASES.find(function(r){return !r.expired;})) || RELEASES[0];
 }
 function compareReleaseVersion(current,latest){
   var exact=RELEASES.find(function(r){return r.versionName===current;});
@@ -1021,12 +1022,13 @@ function installationResult(u){
 }
 function pageUpdate(dis){
   var d = currentDev();
+  var d31=d && (d.update_channel==='d31'||d.model_id==='mdl_d31');
   var u = d && d.update ? d.update : {};
   var ver = d && d.app_version ? d.app_version : (d ? managerLabel(d) : "未接入");
   var h = '<div class="update-facts">';
   h += kv("设备当前版本", ver);
-  var latest=d && RELEASE_DEVICE===d.id ? RELEASES[0] : null,comparison=latest?compareReleaseVersion(d && d.app_version,latest):null;
-  var check=RELEASE_STATE==='error'?'无法读取已发布版本，请重试。':RELEASE_STATE!=='ready'?'正在检查是否有新版本…':!latest?'暂无已发布版本。':comparison===null?'无法识别设备当前版本，请先拉取设备信息。':comparison>=0?'当前版本即最新版本':'新的软件版本 '+latest.versionName;
+  var latest=d && RELEASE_DEVICE===d.id ? (d31?RELEASES.find(function(r){return !r.expired;}):RELEASES[0]) : null,comparison=latest?compareReleaseVersion(d && d.app_version,latest):null;
+  var check=RELEASE_STATE==='error'?'无法读取已发布版本，请重试。':RELEASE_STATE!=='ready'?'正在检查是否有新版本…':!latest?(d31?'此设备暂无可用更新':'暂无已发布版本。'):comparison===null?'无法识别设备当前版本，请先拉取设备信息。':comparison>=0?(d31?'此设备暂无可用更新':'当前版本即最新版本'):'新的软件版本 '+latest.versionName;
   h += '<div class="kv"><div class="k">更新安装状态</div><div class="v">'+esc(check);
   var busy=updateBusy(u),updateDisabled=dis || (!d || !d.can_update || busy || RELEASE_DEVICE!==d.id?' disabled':'');
   if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+(latest.expired?' disabled':updateDisabled)+'>更新</button>';
@@ -1041,7 +1043,7 @@ function pageUpdate(dis){
   var ready=d && RELEASE_DEVICE===d.id && RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=updateDisabled || (!ready || selected.expired?' disabled':'');
   h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value;renderOps()"'+(ready?'':' disabled')+'>';
   if(!ready)h+='<option value="">'+(RELEASE_STATE==='error'?'版本读取失败':RELEASE_STATE==='ready'?'暂无已发布版本':'正在读取版本…')+'</option>';
-  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(i===0?'（最新发布）':'')+(r.expired?' · 发布已过期':'')+'</option>';});
+  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(d31?(latest && r.versionCode===latest.versionCode?'（此设备最新可用）':''):(i===0?'（最新发布）':''))+(r.expired?' · 发布已过期':'')+'</option>';});
   h+='</select><button class="btn-green" onclick="assignUpdate()"'+blocked+'>下发该版本</button>';
   if(RELEASE_STATE==='error')h+='<button class="btn-gray" onclick="loadReleases()">重试</button>';
   h += "</div>";

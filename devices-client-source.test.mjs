@@ -284,6 +284,32 @@ test('更新检查区分新旧和未知版本，快捷更新总是指定最新�
  assert.match(context.updateProgress({state:'rejected',detail:'hash-mismatch'}),/安装包校验不通过/);
 });
 
+test('D31更新标签仅说明当前设备的可用发布，不宣称全局最新',()=>{
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
+ vm.runInContext(source,context);
+ context.DEV=[{id:'fixture',can_update:true,update_channel:'d31',app_version:'1.34.10-candidate'}];
+ context.selDev='fixture';context.RELEASE_DEVICE='fixture';context.RELEASE_STATE='ready';
+ context.RELEASES=[{versionCode:178,versionName:'1.34.10-candidate'}];
+ assert.match(context.pageUpdate(''),/此设备暂无可用更新/);
+ assert.match(context.pageUpdate(''),/此设备最新可用/);
+ assert.doesNotMatch(context.pageUpdate(''),/当前版本即最新版本/);
+ context.RELEASES.unshift({versionCode:180,versionName:'1.34.11-candidate'});
+ assert.match(context.pageUpdate(''),/新的软件版本 1\.34\.11-candidate/);
+ assert.match(context.pageUpdate(''),/assignUpdate\(180\)/);
+ context.RELEASES[0].expired=true;
+ context.RELEASES.splice(1,0,{versionCode:179,versionName:'1.34.10.1-candidate'});
+ assert.match(context.pageUpdate(''),/assignUpdate\(179\)/);
+ assert.equal(context.selectedRelease().versionCode,179);
+ assert.match(context.pageUpdate(''),/179（此设备最新可用）/);
+ assert.doesNotMatch(context.pageUpdate(''),/180（此设备最新可用）/);
+ context.uiOf().releaseVersion=180;
+ assert.equal(context.selectedRelease().versionCode,180);
+ assert.match(context.pageUpdate(''),/assignUpdate\(\)" disabled/);
+ context.RELEASES.forEach(r=>r.expired=true);
+ assert.match(context.pageUpdate(''),/此设备暂无可用更新/);
+ assert.doesNotMatch(context.pageUpdate(''),/此设备最新可用|onclick="assignUpdate\(179\)"/);
+});
+
 test('安装进展与结果分列，过期进展不猜测下载中断，结果包含悉尼时间',()=>{
  const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){}});
  vm.runInContext(source,context);context.DEV=[{id:'fixture',update:{state:'success',completed_at:'2026-09-08T00:00:00Z'}}];context.selDev='fixture';
