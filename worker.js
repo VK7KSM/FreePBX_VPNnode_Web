@@ -1,3 +1,36 @@
+// 设备页共用视觉基准；仅约束排版，不改变状态、能力或操作流程。
+const devicesUiStyle = `
+body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#334155;--device-ui-control:#334155;--device-ui-green:#059669;--device-ui-red:#782f3a}
+.devices-heading h3,.remote-head h3,.ops-head h3{font-size:15px;font-weight:600;line-height:20px;color:var(--device-ui-text)}
+.devices-heading{min-height:46px}.devices-heading h3{white-space:nowrap}
+.dev-name,.remote-device,.ops-head-left>.muted{font-size:12px;line-height:18px;font-weight:400}
+.ops-grid>.kv .k{font-size:11px;line-height:18px;color:var(--device-ui-muted)}
+.ops-grid>.kv .v{font-size:12px;font-weight:400;line-height:18px;color:var(--device-ui-text)}
+.ops-head-left{align-items:center}.report-feedback{font-size:12px;line-height:18px}
+.fn-menu .fn-btn{height:36px;min-height:36px;padding:5px 10px;font-size:12px;font-weight:500;line-height:18px;border-radius:7px;gap:7px}
+.fn-menu .fn-ico{width:18px;height:18px}
+#devOps .fn-page{font-size:12px;line-height:1.8;color:var(--device-ui-text);padding:16px 18px}
+#devOps .fn-page :is(.function-content,.system-content,.file-manager-page,.trajectory-panel){font-size:12px;line-height:1.8;color:var(--device-ui-text)}
+#devOps .fn-page :is(h4,.system-setting-section h4){font-family:inherit;font-size:12px;font-weight:400;line-height:20px;color:#aebcce}
+#devOps .fn-page .muted{font-size:12px;line-height:1.8;color:var(--device-ui-muted)}
+#devOps .fn-page button:where(:not(.btn-close,.traffic-link,.trajectory-point)){box-sizing:border-box;font-family:inherit;font-size:12px;font-weight:400;line-height:18px;height:30px;min-height:30px;padding:5px 10px;border-radius:6px;white-space:nowrap}
+#devOps .fn-page button:disabled{opacity:.45;cursor:default}
+#devOps .fn-page .btn-green{background:var(--device-ui-green);color:#fff}
+#devOps .fn-page .btn-green:disabled{background:var(--device-ui-control);color:var(--device-ui-text)}
+#devOps .fn-page .btn-gray:not(.active){background:var(--device-ui-control);color:var(--device-ui-text)}
+#devOps .fn-page .system-tabs .btn-gray{height:34px;min-height:34px;padding:8px 10px}
+#devOps .fn-page .system-tabs .btn-gray:not(.active){background:transparent;color:#aebcce}
+#devOps .fn-page :is(.file-tool,.trajectory-presets button:not(.active),.trajectory-playbar button:not(.traffic-link)){background:var(--device-ui-control);color:var(--device-ui-text);border-color:var(--device-ui-border)}
+#devOps .fn-page .file-delete{background:var(--device-ui-red);color:#fff;border-color:var(--device-ui-red)}
+#devOps .fn-page :is(input.inp,select.inp){box-sizing:border-box;font-family:inherit;font-size:12px;line-height:18px;height:34px;padding:6px 10px;border-radius:6px;background:#0f172a;color:var(--device-ui-text);border:1px solid var(--device-ui-border)}
+#devOps .fn-page textarea.inp{font-family:inherit;font-size:12px;line-height:1.8;padding:8px 10px;border-radius:6px}
+#devOps .fn-page .adb-row input.adb-cmd{height:30px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;padding:4px 6px;border:0;border-radius:0;background:transparent}
+#devOps .fn-page .traffic-link{font-family:inherit;font-size:12px;line-height:18px}
+#devOps .fn-page :is(th,td){font-size:12px;font-weight:400;line-height:1.8}
+#devOps .fn-page th{color:var(--device-ui-muted)}
+#devOps .fn-page .ops-actions{gap:8px}
+`;
+
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel } from './release-channels.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -3029,6 +3062,7 @@ function renderDevicesHtml() {
     'table{width:100%;border-collapse:collapse}',
     'th{text-align:left;padding:.5rem;font-size:.8rem;color:#94a3b8}',
     'td{padding:.5rem;font-size:.85rem;border-top:1px solid #1e293b}',
+    devicesUiStyle,
     '<\/style><\/head><body>',
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
