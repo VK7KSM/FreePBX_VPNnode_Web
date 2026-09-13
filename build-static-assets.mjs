@@ -9,6 +9,11 @@ export async function buildAssets(directory='.generated-assets'){
   if(!response.ok)throw Error('静态页面生成失败 '+route);
   const body=Buffer.from(await response.arrayBuffer());await fs.writeFile(path.join(directory,file),body);files.push({file,bytes:body.length});
  }
+ const aecGlue=await fs.readFile('vendor/webrtcaec3/webrtcaec3-0.3.0-elf1.js');
+ const aecProcessor=await fs.readFile('ptt-aec-worklet.js');
+ const pttLicense=Buffer.concat([await fs.readFile('vendor/webrtcaec3/LICENSE'),Buffer.from('\n'),await fs.readFile('vendor/webrtcaec3/PATENTS')]);
+ const pttAssets=[['ptt-aec-worklet.js',Buffer.concat([await fs.readFile('vendor/webrtcaec3/LICENSE'),Buffer.from('\nvar WebRtcAec3Wasm;\n'),aecGlue,Buffer.from('\n'),aecProcessor])],['ptt-aec3.wasm',await fs.readFile('vendor/webrtcaec3/webrtcaec3-0.3.0-elf1.wasm')],['ptt-aec3-license.txt',pttLicense]];
+ for(const [file,body] of pttAssets){await fs.writeFile(path.join(directory,file),body);files.push({file,bytes:body.length});}
  const hash=createHash('sha256');for(const item of files)hash.update(await fs.readFile(path.join(directory,item.file)));
  const version=hash.digest('hex').slice(0,20);
  for(const item of files.filter(item=>item.file.endsWith('.html'))){const target=path.join(directory,item.file);await fs.writeFile(target,(await fs.readFile(target,'utf8')).replaceAll('__ELF_PANEL_VERSION__',version));}

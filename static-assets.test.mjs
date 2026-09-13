@@ -4,7 +4,11 @@ import faultClientSource from './fault-client-source.js';
 test('静态托管保持三页和脚本原内容，API和订阅仍交给Worker处理',async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'elf-assets-'));
  try{
-  const files=await buildAssets(dir);assert.equal(files.length,Object.keys(STATIC_ROUTES).length);
+  const files=await buildAssets(dir);assert.equal(files.length,Object.keys(STATIC_ROUTES).length+3);
+  assert.deepEqual(await fs.readFile(path.join(dir,'ptt-aec3.wasm')),await fs.readFile('vendor/webrtcaec3/webrtcaec3-0.3.0-elf1.wasm'));
+  assert.ok(WebAssembly.validate(await fs.readFile(path.join(dir,'ptt-aec3.wasm'))));
+  assert.match(await fs.readFile(path.join(dir,'ptt-aec-worklet.js'),'utf8'),/registerProcessor\('elf-ptt-aec3'/);
+  assert.deepEqual(await fs.readFile(path.join(dir,'ptt-aec3-license.txt')),Buffer.concat([await fs.readFile('vendor/webrtcaec3/LICENSE'),Buffer.from('\n'),await fs.readFile('vendor/webrtcaec3/PATENTS')]));
   const {version}=JSON.parse(await fs.readFile(path.join(dir,'panel-version.json'),'utf8'));assert.match(version,/^[a-f0-9]{20}$/);
   assert.equal(await fs.readFile(path.join(dir,'fault-client.js'),'utf8'),faultClientSource);
   for(const [route,file] of Object.entries(STATIC_ROUTES)){

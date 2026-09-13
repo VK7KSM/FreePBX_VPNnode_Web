@@ -4,13 +4,31 @@ window.ElfMedia=(function(){
   function inputChoice(){return selectedInput;}
   function audioConstraints(){var id=inputChoice();return {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false,...(id?{deviceId:{exact:id}}:{})},video:false};}
   async function acquireLocalAudio(){try{return await navigator.mediaDevices.getUserMedia(audioConstraints());}catch(e){if(!inputChoice()||!['NotFoundError','OverconstrainedError'].includes(e.name))throw e;selectedInput='';return navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false},video:false});}}
-  function micPath(s,stream){
-    // 消回声由浏览器WebRTC处理原始麦克风；这里只控制发送，不改写频谱或动态增益。
+  var pttModulePromise=null,pttContexts=new WeakMap();
+  async function pttProcessor(c){
+    if(!c.audioWorklet)throw Error('浏览器不支持PTT音频处理，请使用最新版Chrome或Edge');
+    if(!pttModulePromise)pttModulePromise=fetch('/ptt-aec3.wasm',{signal:AbortSignal.timeout(8000)}).then(function(r){if(!r.ok)throw Error('PTT音频处理加载失败');return r.arrayBuffer();}).then(function(bytes){return WebAssembly.compile(bytes);}).catch(function(){pttModulePromise=null;throw Error('PTT音频处理加载失败，请重新连接');});
+    if(!pttContexts.has(c))pttContexts.set(c,c.audioWorklet.addModule('/ptt-aec-worklet.js').catch(function(e){pttContexts.delete(c);throw e;}));
+    var module=(await Promise.all([pttModulePromise,pttContexts.get(c)]))[0];
+    var node=new AudioWorkletNode(c,'elf-ptt-aec3',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1],channelCount:1,channelCountMode:'explicit',processorOptions:{module:module}});
+    try{await new Promise(function(resolve,reject){var timer=setTimeout(function(){reject(Error('PTT音频处理初始化超时'));},8000);node.port.onmessage=function(e){if(e.data.type==='ready'){clearTimeout(timer);resolve();}else if(e.data.type==='error'){clearTimeout(timer);reject(Error('PTT音频处理初始化失败'));}};node.onprocessorerror=function(){clearTimeout(timer);reject(Error('PTT音频处理初始化失败'));};});return node;}
+    catch(e){node.port.postMessage({type:'close'});node.disconnect();node.port.close();throw e;}
+  }
+  async function micPath(s,stream){
+    // 电话保留浏览器原生AEC；PTT单独使用发送参考驱动的上游AEC3。
     var c=s.transportAudioContext||s.audioContext;
     if(!c?.createGain){var track=stream.getAudioTracks()[0];track.enabled=!s.prepared||s.mode!=='prepare';return {track:track,setActive:function(value){track.enabled=value;},close:function(){}};}
-    var input=c.createMediaStreamSource(stream),transmit=c.createGain(),dest=c.createMediaStreamDestination();
-    transmit.gain.value=!s.prepared||s.mode!=='prepare'?1:0;input.connect(transmit);transmit.connect(dest);
-    return {track:dest.stream.getAudioTracks()[0],setActive:function(value){transmit.gain.value=value?1:0;},close:function(){input.disconnect();transmit.disconnect();dest.stream.getTracks().forEach(function(t){t.stop();});}};
+    var input=c.createMediaStreamSource(stream),transmit=c.createGain(),pttGain=c.createGain(),dest=c.createMediaStreamDestination(),node,error;
+    transmit.gain.value=0;pttGain.gain.value=0;input.connect(transmit);transmit.connect(dest);
+    if(s.prepared||s.mode==='ptt')try{node=await pttProcessor(c);input.connect(node);node.connect(pttGain);pttGain.connect(dest);}catch(e){error=e;}
+    var path={track:dest.stream.getAudioTracks()[0],setActive:function(value){
+      var ptt=value&&s.mode==='ptt';if(ptt&&error)throw error;
+      node?.port.postMessage({type:'mode',mode:ptt?'ptt':'idle'});
+      transmit.gain.value=value&&!ptt?1:0;pttGain.gain.value=ptt?1:0;
+    },close:function(){transmit.gain.value=0;pttGain.gain.value=0;input.disconnect();transmit.disconnect();pttGain.disconnect();if(node){node.port.postMessage({type:'close'});node.disconnect();node.port.close();}dest.stream.getTracks().forEach(function(t){t.stop();});}};
+    if(node){var failed=function(){error=Error('PTT音频处理异常，请重新连接');if(active===s&&s.mode==='ptt'){pttGain.gain.value=0;stop(error.message,true);}};node.port.onmessage=function(e){if(e.data.type==='error')failed();};node.onprocessorerror=failed;}
+    if(active!==s||s.closed){path.close();return path;}
+    try{path.setActive(!s.prepared||['ptt','call'].includes(s.mode));return path;}catch(e){path.close();throw e;}
   }
   async function listInputs(s){if(!navigator.mediaDevices?.enumerateDevices)return;try{s.inputs=(await navigator.mediaDevices.enumerateDevices()).filter(function(d){return d.kind==='audioinput';});if(active===s)mount(s.device);}catch{}}
   async function changeInput(s,id){
@@ -20,7 +38,7 @@ window.ElfMedia=(function(){
       if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){stream.getTracks().forEach(function(t){t.stop();});return;}
       var sender=s.uplink||s.pc.getSenders().find(function(t){return t.track?.kind==='audio';});
       if(!sender){stream.getTracks().forEach(function(t){t.stop();});throw Error('本机音频通道未就绪');}
-      var path=micPath(s,stream);try{await sender.replaceTrack(path.track);}catch(e){path.close();stream.getTracks().forEach(function(t){t.stop();});throw e;}
+      var path;try{path=await micPath(s,stream);if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){path.close();stream.getTracks().forEach(function(t){t.stop();});return;}await sender.replaceTrack(path.track);}catch(e){path?.close();stream.getTracks().forEach(function(t){t.stop();});throw e;}
       if(active!==s||s.mode==='stopping'||s.mode==='prepare'||s.activation!==activation||s.inputGeneration!==generation){if(active===s&&sender.track===path.track)await sender.replaceTrack(s.micPath?.track||s.silentTrack).catch(function(){});path.close();stream.getTracks().forEach(function(t){t.stop();});return;}
       var old=s.local,oldPath=s.micPath;s.micPath=path;if(oldPath)oldPath.close();s.local=stream;if(old)old.getTracks().forEach(function(t){t.stop();});selectedInput=id;mount(s.device);
     }catch(e){if(active===s){s.message='麦克风切换失败：'+e.message;render();}}
@@ -55,8 +73,8 @@ window.ElfMedia=(function(){
     s.pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
     s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);updateReady(s);maybeRecord(s);};
     s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败',true);if(s.pc.connectionState==='connected'){updateReady(s);render();maybeRecord(s);}};
-    if(s.local&&!s.prepared)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
-    if(s.prepared){await s.inputPreparing;if(active!==s)return;if(s.local)s.micPath=micPath(s,s.local);s.uplink=s.pc.addTransceiver(s.micPath?.track||s.silentTrack,{direction:'sendonly'}).sender;}
+    if(s.local&&!s.prepared){s.micPath=await micPath(s,s.local);if(active!==s)return;s.uplink=s.pc.addTransceiver(s.micPath.track,{direction:'sendonly',streams:[s.local]}).sender;}
+    if(s.prepared){await s.inputPreparing;if(active!==s)return;if(s.local)s.micPath=await micPath(s,s.local);if(active!==s)return;s.uplink=s.pc.addTransceiver(s.micPath?.track||s.silentTrack,{direction:'sendonly'}).sender;}
     await newSession;
     if(s.local||s.prepared){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track||s.prepared&&t.sender===s.uplink;}).map(function(t){return {mid:t.mid,trackName:t.sender.track?.kind||'audio'};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);if(s.prepared)await waitConnected(s);await rpc(s,'published');s.published=true;updateReady(s);}
   }
@@ -93,11 +111,11 @@ window.ElfMedia=(function(){
     try{
       if(mode==='prepare'){
         selectedInput='';s.inputPreparing=acquireLocalAudio().then(function(stream){if(active!==s){stream.getTracks().forEach(function(t){t.stop();});return;}s.local=stream;listInputs(s);}).catch(function(){s.inputUnavailable=true;});
-        s.transportAudioContext=new AudioContext({latencyHint:'interactive'});await s.transportAudioContext.resume();
+        s.transportAudioContext=new AudioContext({latencyHint:'interactive',sampleRate:48000});await s.transportAudioContext.resume();
         if(active!==s)return;
         var silentDestination=s.transportAudioContext.createMediaStreamDestination();s.silentSource=s.transportAudioContext.createConstantSource();s.silentSource.offset.value=0;s.silentSource.connect(silentDestination);s.silentSource.start();s.silentTrack=silentDestination.stream.getAudioTracks()[0];
       }
-      if(mode!=='photo'&&mode!=='alarm'&&mode!=='prepare'){s.audioContext=new AudioContext({latencyHint:'interactive'});await s.audioContext.resume();}
+      if(mode!=='photo'&&mode!=='alarm'&&mode!=='prepare'){s.audioContext=new AudioContext({latencyHint:'interactive',sampleRate:48000});await s.audioContext.resume();}
       if(mode==='ptt'||mode==='call'){
         if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('浏览器不支持麦克风');
         s.local=await acquireLocalAudio();
@@ -126,7 +144,7 @@ window.ElfMedia=(function(){
       if(mode!=='photo'&&mode!=='alarm'){s.audioContext=new AudioContext({latencyHint:'interactive'});await s.audioContext.resume();}
       if(cancelled())return;
       if(mode==='ptt'||mode==='call'){
-        var local=s.local;if(!local||local.getAudioTracks()[0]?.readyState!=='live'){local=await acquireLocalAudio();if(cancelled()){local.getTracks().forEach(function(t){t.stop();});return;}s.local=local;if(s.micPath)s.micPath.close();s.micPath=micPath(s,local);await s.uplink.replaceTrack(s.micPath.track);listInputs(s);}
+        var local=s.local;if(!local||local.getAudioTracks()[0]?.readyState!=='live'){local=await acquireLocalAudio();if(cancelled()){local.getTracks().forEach(function(t){t.stop();});return;}s.local=local;if(s.micPath)s.micPath.close();s.micPath=await micPath(s,local);if(cancelled()){s.micPath.close();return;}await s.uplink.replaceTrack(s.micPath.track);listInputs(s);}
         s.micPath.setActive(true);
       }
       if(cancelled())return;

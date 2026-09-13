@@ -1,2 +1,3 @@
 # 第三方许可保持上游原始字节，包括换行与行尾空格。
 elfRemote/app/src/main/assets/licenses/webrtc-144.7559.15.txt -text -whitespace
+vendor/webrtcaec3/* -text -whitespace
