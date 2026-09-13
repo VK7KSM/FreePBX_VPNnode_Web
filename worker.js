@@ -2913,7 +2913,7 @@ function renderSipHtml() {
     '<div><label style="font-size:.8rem;color:#cbd5e1">遇忙转移<\/label><input id="eCfb" class="inp" placeholder="空=不转移"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">无应答转移<\/label><input id="eCfu" class="inp" placeholder="空=不转移"><\/div>',
     '<div><label style="font-size:.8rem;color:#cbd5e1">振铃超时（秒）<\/label><input id="eRing" type="number" class="inp" value="60"><\/div>',
-    '<div id="eBanBox" style="display:none"><label style="font-size:.8rem;color:#cbd5e1">封禁 / 解封<\/label><div id="eBanInfo" style="font-size:.8rem;overflow-wrap:anywhere;margin:.5rem 0"><\/div><button type="button" id="eBanAction" class="btn-gray" onclick="changeSipBan()">解封<\/button><div id="eBanResult" style="font-size:.8rem;margin-top:.5rem" role="status"><\/div><\/div>',
+    '<div id="eBanBox" style="display:none"><select id="eBanAction" class="inp" aria-label="IP封禁状态" onchange="changeSipBan()"><option value="unban">正常<\/option><option value="ban">封禁<\/option><option value="unknown" hidden>状态未知<\/option><\/select><div id="eBanInfo" style="font-size:.75rem;color:#94a3b8;overflow-wrap:anywhere;margin-top:.35rem"><\/div><div id="eBanResult" style="font-size:.75rem;color:#94a3b8;margin-top:.35rem" role="status"><\/div><\/div>',
     '<\/div>',
     '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到大阪 SIP 机，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',

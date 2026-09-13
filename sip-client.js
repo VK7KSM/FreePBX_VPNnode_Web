@@ -460,21 +460,23 @@ function sipBanInfo(ext){
 function renderBanEditor(){
   var box=$("eBanBox"); if(!box)return;
   box.style.display=editingExt?"block":"none"; if(!editingExt)return;
-  var b=sipBanInfo(editingExt), button=$("eBanAction");
-  $("eBanInfo").textContent=!b.available?"封禁状态暂不可用":!b.ip?"尚未记录此分机的出口 IP":"出口 IP："+b.ip+"；同出口分机："+b.affected.join("、")+"。操作影响此 IP 上的所有分机。";
-  button.textContent=sipBanBusy?"处理中…":b.banned?"解封":"封禁";
-  button.className=b.banned?"btn-green":"btn-red";
-  button.disabled=sipBanBusy||!b.available||!b.ip;
+  var b=sipBanInfo(editingExt), select=$("eBanAction");
+  $("eBanInfo").textContent=!b.available?"暂无法读取封禁状态":!b.ip?"暂无出口 IP":"立即生效 · 同出口分机："+b.affected.join("、");
+  if(!sipBanBusy)select.value=!b.available||!b.ip?"unknown":b.banned?"ban":"unban";
+  select.disabled=sipBanBusy||!b.available||!b.ip;
 }
 async function changeSipBan(){
   if(sipBanBusy)return;
   var b=sipBanInfo(editingExt),ext=editingExt;
   if(!b.available||!b.ip)return;
-  sipBanBusy=true;renderBanEditor();$("eBanResult").textContent="";
+  var action=$("eBanAction").value;
+  if(action!=="ban"&&action!=="unban")return;
+  if((action==="ban")===b.banned)return;
+  sipBanBusy=true;renderBanEditor();$("eBanResult").textContent="处理中…";
   try{
-    var r=await fetch('/api/sip/ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ext:ext,ip:b.ip,action:b.banned?'unban':'ban'})});
+    var r=await fetch('/api/sip/ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ext:ext,ip:b.ip,action:action})});
     var d=await r.json();if(!r.ok||!d.ok)throw Error(d.msg||"操作失败");
-    if(editingExt===ext)$("eBanResult").textContent=d.banned?"已封禁此出口 IP":"已解封；密码仍错误时会再次触发封禁。";
+    if(editingExt===ext)$("eBanResult").textContent=d.banned?"已封禁":"已解封";
     await loadSipLive();
   }catch(e){if(editingExt===ext)$("eBanResult").textContent=e.message;}
   finally{sipBanBusy=false;renderBanEditor();}
