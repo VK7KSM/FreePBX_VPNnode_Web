@@ -38,7 +38,7 @@ window.ElfMedia=(function(){
     s.remote=new MediaStream();s.pc.ontrack=function(e){if(!s.remote.getTracks().some(function(t){return t.id===e.track.id;}))s.remote.addTrack(e.track);mount(s.device);updateReady(s);maybeRecord(s);};
     s.pc.onconnectionstatechange=function(){if(active!==s)return;if(s.pc.connectionState==='failed')stop('媒体连接失败',true);if(s.pc.connectionState==='connected'){updateReady(s);render();maybeRecord(s);}};
     if(s.local)s.local.getTracks().forEach(function(t){s.pc.addTransceiver(t,{direction:'sendonly',streams:[s.local]});});
-    if(s.prepared)s.uplink=s.pc.addTransceiver('audio',{direction:'sendonly'}).sender;
+    if(s.prepared)s.uplink=s.pc.addTransceiver(s.silentTrack,{direction:'sendonly'}).sender;
     await rpc(s,'new');
     if(s.local||s.prepared){await s.pc.setLocalDescription(await s.pc.createOffer());var tracks=s.pc.getTransceivers().filter(function(t){return t.sender.track||s.prepared&&t.sender===s.uplink;}).map(function(t){return {mid:t.mid,trackName:t.sender.track?.kind||'audio'};});var result=await rpc(s,'publish',{sessionDescription:s.pc.localDescription.toJSON(),tracks:tracks});await s.pc.setRemoteDescription(result.sessionDescription);await rpc(s,'published');s.published=true;updateReady(s);}
   }
@@ -73,6 +73,11 @@ window.ElfMedia=(function(){
     if(typeof trajectoryReturnLive==='function')trajectoryReturnLive();
     var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false,prepared:mode==='prepare',operation:0};active=s;lastMessage='';render();
     try{
+      if(mode==='prepare'){
+        s.transportAudioContext=new AudioContext({latencyHint:'interactive'});await s.transportAudioContext.resume();
+        if(active!==s)return;
+        var silentDestination=s.transportAudioContext.createMediaStreamDestination();s.silentSource=s.transportAudioContext.createConstantSource();s.silentSource.offset.value=0;s.silentSource.connect(silentDestination);s.silentSource.start();s.silentTrack=silentDestination.stream.getAudioTracks()[0];
+      }
       if(mode!=='photo'&&mode!=='alarm'&&mode!=='prepare'){s.audioContext=new AudioContext({latencyHint:'interactive'});await s.audioContext.resume();}
       if(mode==='ptt'||mode==='call'){
         if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('浏览器不支持麦克风');
@@ -115,7 +120,7 @@ window.ElfMedia=(function(){
     if(s.mode==='stopping'||s.mode==='prepare')return;
     s.activation=null;s.mode='stopping';s.message='正在结束…';s.recordEnded=Date.now();
     if(s.activationSent)send(s,{type:'deactivate',operation:s.operation});else s.idleAcknowledged=true;
-    if(s.local){s.local.getTracks().forEach(function(t){t.stop();});s.local=null;}await s.uplink.replaceTrack(null);
+    if(s.local){s.local.getTracks().forEach(function(t){t.stop();});s.local=null;}await s.uplink.replaceTrack(s.silentTrack);
     if(s.recordCreating)await s.recordCreating;
     if(s.recorder&&s.recorder.state!=='inactive'){s.recorder.stop();await s.recordStopped;}
     if(s.animation)cancelAnimationFrame(s.animation);s.animation=null;
@@ -136,6 +141,7 @@ window.ElfMedia=(function(){
       await s.recordStopped;
     }
     if(s.local)s.local.getTracks().forEach(function(t){t.stop();});if(s.pc)s.pc.close();if(s.remote)s.remote.getTracks().forEach(function(t){t.stop();});
+    if(s.silentSource)s.silentSource.stop();if(s.silentTrack)s.silentTrack.stop();if(s.transportAudioContext)await s.transportAudioContext.close();
     if(s.animation)cancelAnimationFrame(s.animation);if(s.audioContext)s.audioContext.close();
     if(s.node){var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}s.node.remove();}
     render();

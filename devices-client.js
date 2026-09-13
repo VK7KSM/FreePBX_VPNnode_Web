@@ -1282,9 +1282,9 @@ function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficByte
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
-  var errorText=serviceErrorText();
+  var errorText=serviceErrorText(),media=typeof ElfMedia!=='undefined'?ElfMedia:null;
   var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3><span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span>'+(media?.connectionControl(d)||'')+'<button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
-  var media=typeof ElfMedia!=='undefined'?ElfMedia:null,historical=trajectoryPreview(),event=trajectoryEvent(),photoNode=box.querySelector('.trajectory-photo'),photoKey=event&&!historyState().playItem?JSON.stringify([selDev,event.key,historical]):null,retainPhoto=photoNode&&photoKey&&photoNode.dataset.trajectoryKey===photoKey?photoNode:null;if(retainPhoto)historical='<div class="remote-preview trajectory-photo"></div>';
+  var historical=trajectoryPreview(),event=trajectoryEvent(),photoNode=box.querySelector('.trajectory-photo'),photoKey=event&&!historyState().playItem?JSON.stringify([selDev,event.key,historical]):null,retainPhoto=photoNode&&photoKey&&photoNode.dataset.trajectoryKey===photoKey?photoNode:null;if(retainPhoto)historical='<div class="remote-preview trajectory-photo"></div>';
   if(trajectoryEvent())h+='<div class="trajectory-preview-caption">历史 · '+esc(sydney(trajectoryEvent().at))+'<button type="button" class="traffic-link" onclick="trajectoryReturnLive()">返回实时</button></div>';
   h+=(historical&&!(media&&media.isActive())?historical:(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d)))+'<div class="remote-controls">';
   h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
