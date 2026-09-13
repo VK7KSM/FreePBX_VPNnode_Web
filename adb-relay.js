@@ -84,7 +84,8 @@ export class AdbRelay {
     if(!this.sessions.delete(session.id))return;
     this.cancel(session.timer);session.token='';
     for(const socket of [session.browser,session.device])if(socket) {
-      try{socket.send(JSON.stringify({type:'closed',message,exit:Number.isInteger(exit)?exit:null}));socket.close(1000,'ADB session closed');}catch{}
+      try{socket.send(JSON.stringify({type:'closed',message,exit:Number.isInteger(exit)?exit:null}));}catch{}
+      try{socket.close(1000,'ADB session closed');}catch{}
     }
     session.buffer=[];
   }

@@ -56,7 +56,7 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
     if (action === "read") return authJson({ ok: true, request: await pendingStatus(storage, id, now) });
     if (action === "prepare") {
       let current = await pendingStatus(storage, id, now);
-      const wakeKey=typeof data.wake_key==='string'&&/^media:[a-f0-9-]{36}$/.test(data.wake_key)?data.wake_key:'';
+      const wakeKey=typeof data.wake_key==='string'&&/^(?:media|adb):[a-f0-9-]{36}$/.test(data.wake_key)?data.wake_key:'';
       if (current?.state !== "pending" || (wakeKey&&current.wake_key!==wakeKey) || (safetyPending&&current.safety_task_id!==device.safety_task.id)) {
         current = { request_id: crypto.randomUUID(), version: (current?.version || 0) + 1,
           state: "pending", created_at: new Date(now).toISOString(), expires_at_ms: now + TTL,
@@ -140,7 +140,7 @@ export async function pushHttp(env, request, stub, {wakeKey} = {}) {
   }
   const action = { "/api/devices/push-config": "config", "/api/devices/push-sync": "sync",
     "/api/devices/request-status": "prepare", "/api/devices/status-request": "read" }[url.pathname];
-  // 媒体唤醒标识只由已创建会话的内部调用传入，不接受外部请求伪造。
+  // 媒体与ADB唤醒标识只由已创建会话的内部调用传入，不接受外部请求伪造。
   const prepared = await rpc(action, {...data,wake_key:action==='prepare'?wakeKey:undefined});
   if (!prepared.ok || read || action === "sync") return prepared;
   const result = await prepared.json();

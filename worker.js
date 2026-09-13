@@ -402,6 +402,9 @@ export class ElfStore {
           if(result.ok&&url.pathname==='/__push/sync'){
             const data=JSON.parse(raw),body=await result.json();
             body.media_session=this.media.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host);
+            const device=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
+            body.adb_session=device?.enabled!==false&&device?.managed_adb_session===true
+              ?this.adb.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
             return json(body,result.status);
           }
           return result;
@@ -577,7 +580,8 @@ const app = {
         try {
           const notified = await pushHttp(env, new Request(new URL("/api/devices/request-status", request.url), {
             method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
-          }), stub, {wakeKey:pathname==='/api/elfremote/media/session'&&result.session_id?'media:'+result.session_id:undefined});
+          }), stub, {wakeKey:result.session_id?(pathname==='/api/elfremote/media/session'?'media:'+result.session_id
+            :pathname==='/api/elfremote/adb/session'?'adb:'+result.session_id:undefined):undefined});
           const notice = await notified.json();
           result.notification = notice.request || null;
         } catch { result.notification = null; }
