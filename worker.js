@@ -9,6 +9,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 .ops-head-left{align-items:center}.report-feedback{font-size:12px;line-height:18px}
 .fn-menu .fn-btn{height:36px;min-height:36px;padding:5px 10px;font-size:12px;font-weight:500;line-height:18px;border-radius:7px;gap:7px}
 .fn-menu .fn-ico{width:18px;height:18px}
+.devices-heading .btn-add,.ops-head-actions .device-action,.remote-title .device-action,#devOps .fn-page .terminal-actions button,#devOps .fn-page .monitor-heading>button{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:30px;min-height:30px;width:auto;min-width:0;padding:0 10px;border:0;border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;line-height:18px;white-space:nowrap}
 #devOps .fn-page{font-size:12px;line-height:1.8;color:var(--device-ui-text);padding:16px 18px}
 #devOps .fn-page :is(.function-content,.system-content,.file-manager-page,.trajectory-panel){font-size:12px;line-height:1.8;color:var(--device-ui-text)}
 #devOps .fn-page :is(h4,.system-setting-section h4){font-family:inherit;font-size:12px;font-weight:400;line-height:20px;color:#aebcce}
