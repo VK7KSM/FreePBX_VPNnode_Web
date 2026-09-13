@@ -107,7 +107,7 @@ window.ElfMedia=(function(){
     }
     if(active){if(active.mode===mode)await stop();return;}
     if(typeof trajectoryReturnLive==='function')trajectoryReturnLive();
-    var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false,prepared:mode==='prepare',operation:0};active=s;lastMessage='';render();
+    var s={device:d,mode:mode,camera:requestedCamera||'front',seq:0,pending:{},chain:Promise.resolve(),message:'正在连接…',started:0,parts:0,upload:Promise.resolve(),closed:false,prepared:mode==='prepare',operation:0,connectionDeadline:performance.now()+20*60*1000};active=s;lastMessage='';render();
     try{
       if(mode==='prepare'){
         selectedInput='';s.inputPreparing=acquireLocalAudio().then(function(stream){if(active!==s){stream.getTracks().forEach(function(t){t.stop();});return;}s.local=stream;listInputs(s);}).catch(function(){s.inputUnavailable=true;});
@@ -132,7 +132,7 @@ window.ElfMedia=(function(){
         s.chain=s.chain.then(function(){return message(s,p);}).catch(function(e){if(active===s)stop(e.message,true);});
       };
       s.ws.onerror=function(){if(active===s)stop('通信连接失败',true);};s.ws.onclose=function(){if(active===s)stop('通信已结束',true);};
-      s.timer=setInterval(function(){if(active!==s)return;var elapsed=s.started?Date.now()-s.started:0;if(s.mode!=='alarm'&&elapsed>=(s.mode==='ptt'?60000:s.mode==='photo'?60000:1800000)){stop();return;}if(!s.lastPing||Date.now()-s.lastPing>=15000){send(s,{type:'ping'});s.lastPing=Date.now();}updateTime(s);},1000);
+      s.timer=setInterval(function(){if(active!==s)return;if(performance.now()>=s.connectionDeadline){stop('连接已满20分钟，已自动断开',true);return;}var elapsed=s.started?Date.now()-s.started:0;if(s.mode!=='alarm'&&elapsed>=(s.mode==='ptt'?60000:s.mode==='photo'?60000:1800000)){stop();return;}if(!s.lastPing||Date.now()-s.lastPing>=15000){send(s,{type:'ping'});s.lastPing=Date.now();}updateTime(s);},1000);
     }catch(e){if(active===s)await stop(e.name==='NotAllowedError'?'未获得浏览器麦克风权限':e.message,true);}
   }
   async function activatePrepared(s,mode,camera){

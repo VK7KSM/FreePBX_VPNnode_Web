@@ -5,16 +5,16 @@ import vm from 'node:vm';
 const source=fs.readFileSync(new URL('./media-client.js',import.meta.url),'utf8');
 const flush=()=>new Promise(r=>setImmediate(r));
 function fixture({audioGraph=false,aecFailure=false}={}){
- const device={id:'synthetic',managed_media_prepare_v1:true},peers=[],sockets=[],contexts=[],locals=[],requests=[],events={},timers=new Set(),gains=[],worklets=[];let captureCount=0,captureDeferred;
+ const device={id:'synthetic',managed_media_prepare_v1:true},peers=[],sockets=[],contexts=[],locals=[],requests=[],events={},timers=new Set(),gains=[],worklets=[];let captureCount=0,captureDeferred,at=0,interval;
  class Stream{constructor(tracks=[]){this.tracks=tracks;}getTracks(){return this.tracks;}getAudioTracks(){return this.tracks.filter(t=>t.kind==='audio');}getVideoTracks(){return this.tracks.filter(t=>t.kind==='video');}addTrack(t){this.tracks.push(t);}}
  const track=kind=>({id:kind+Math.random(),kind,readyState:'live',stop(){this.readyState='ended';}});
  class Context{constructor(){contexts.push(this);this.state='suspended';if(audioGraph){this.audioWorklet={addModule:async()=>{if(aecFailure)throw Error('test-load-failure');}};this.createGain=()=>{const n={gain:{value:1},connect(){},disconnect(){this.disconnected=true;}};gains.push(n);return n;};this.createMediaStreamSource=()=>({connect(){},disconnect(){}});}}async resume(){this.state='running';}async close(){this.state='closed';}createMediaStreamDestination(){return {stream:new Stream([track('audio')])};}createConstantSource(){return {offset:{value:1},connect(){},start(){},stop(){}};}}
  class Peer{constructor(){peers.push(this);this.connectionState='new';this.transceivers=[];this.listeners=new Set();}addEventListener(n,f){this.listeners.add(f);}removeEventListener(n,f){this.listeners.delete(f);}addTransceiver(t){const row={mid:String(this.transceivers.length),sender:{track:typeof t==='string'?null:t,async replaceTrack(track){this.track=track;}}};this.transceivers.push(row);return row;}getTransceivers(){return this.transceivers;}async createOffer(){return {type:'offer',sdp:'local'};}async createAnswer(){return {type:'answer',sdp:'answer'};}async setLocalDescription(d){this.localDescription={...d,toJSON:()=>({...d})};}async setRemoteDescription(d){this.remoteDescription=d;}close(){this.connectionState='closed';}connect(){this.connectionState='connected';this.onconnectionstatechange();this.listeners.forEach(f=>f());}remote(kind){this.ontrack({track:track(kind)});}}
  class Socket{constructor(){sockets.push(this);this.sent=[];this.readyState=1;}send(p){this.sent.push(JSON.parse(p));}close(){this.readyState=3;}emit(p){this.onmessage({data:JSON.stringify(p)});}reply(action,result={}){const p=this.sent.find(p=>p.action===action&&!p.replied);assert.ok(p,action);p.replied=true;this.emit({type:'rpc',id:p.id,result});}}
  class Worklet{constructor(){worklets.push(this);this.messages=[];this.port={postMessage:m=>this.messages.push(m),close:()=>this.closed=true};queueMicrotask(()=>this.port.onmessage?.({data:{type:'ready'}}));}connect(){}disconnect(){this.disconnected=true;}}
- const sandbox={AudioWorkletNode:Worklet,WebAssembly:{compile:async()=>({})},currentDev:()=>device,ElfMediaCapabilities:{allows:()=>true},renderRemoteConsole(){},document:{querySelector:()=>null,addEventListener:(n,f)=>events[n]=f},esc:s=>s,AudioContext:Context,RTCPeerConnection:Peer,WebSocket:Socket,MediaStream:Stream,navigator:{mediaDevices:{async getUserMedia(){captureCount++;const local=new Stream([track('audio')]);locals.push(local);if(captureDeferred)await captureDeferred;return local;}}},location:{origin:'https://example.test'},fetch:async(url,init)=>{if(url==='/ptt-aec3.wasm')return {ok:true,arrayBuffer:async()=>new ArrayBuffer(8)};requests.push({url,init});return {ok:true,headers:new Headers({'Content-Type':'application/json'}),json:async()=>({ok:true,session_id:'synthetic-session'})};},Headers,AbortSignal,URLSearchParams,Date,Promise,performance,setTimeout(fn,ms){const t=setTimeout(fn,ms);timers.add(t);return t;},clearTimeout,setInterval:()=>0,clearInterval(){},addEventListener:(n,f)=>events[n]=f};sandbox.window=sandbox;
+ const sandbox={AudioWorkletNode:Worklet,WebAssembly:{compile:async()=>({})},currentDev:()=>device,ElfMediaCapabilities:{allows:()=>true},renderRemoteConsole(){},document:{querySelector:()=>null,addEventListener:(n,f)=>events[n]=f},esc:s=>s,AudioContext:Context,RTCPeerConnection:Peer,WebSocket:Socket,MediaStream:Stream,navigator:{mediaDevices:{async getUserMedia(){captureCount++;const local=new Stream([track('audio')]);locals.push(local);if(captureDeferred)await captureDeferred;return local;}}},location:{origin:'https://example.test'},fetch:async(url,init)=>{if(url==='/ptt-aec3.wasm')return {ok:true,arrayBuffer:async()=>new ArrayBuffer(8)};requests.push({url,init});return {ok:true,headers:new Headers({'Content-Type':'application/json'}),json:async()=>({ok:true,session_id:'synthetic-session'})};},Headers,AbortSignal,URLSearchParams,Date,Promise,performance:{now:()=>at},setTimeout(fn,ms){const t=setTimeout(fn,ms);timers.add(t);return t;},clearTimeout,setInterval:f=>(interval=f,0),clearInterval(){},addEventListener:(n,f)=>events[n]=f};sandbox.window=sandbox;
  vm.runInNewContext(source,sandbox);const media=sandbox.ElfMedia;
- return {media,device,peers,sockets,contexts,locals,requests,events,gains,worklets,captureCount:()=>captureCount,deferCapture(){let resolve;captureDeferred=new Promise(r=>resolve=r);return resolve;},
+ return {now:v=>at=v,tick:()=>interval(),media,device,peers,sockets,contexts,locals,requests,events,gains,worklets,captureCount:()=>captureCount,deferCapture(){let resolve;captureDeferred=new Promise(r=>resolve=r);return resolve;},
  async connect(){await media.toggleConnection();const ws=sockets[0];ws.emit({type:'hello'});await flush();ws.reply('new');await flush();ws.reply('publish',{sessionDescription:{type:'answer',sdp:'published'}});await flush();peers[0].connect();await flush();ws.reply('published');await flush();ws.emit({type:'tracks'});await flush();ws.reply('subscribe',{sessionDescription:{type:'offer',sdp:'remote'}});await flush();peers[0].remote('audio');peers[0].remote('video');ws.reply('answer');await flush();peers[0].connect();ws.emit({type:'transport_ready'});await flush();return ws;},
  async dispose(){await media.stop('',true);timers.forEach(clearTimeout);}};
 }
@@ -64,5 +64,27 @@ test('PTT引擎加载失败不影响电话，PTT不能静默绕过处理直接�
   const ws=await f.connect();await f.media.start('call');assert.deepEqual(f.gains.map(n=>n.gain.value),[1,0]);
   await f.media.stop();ws.emit({type:'idle',operation:1});await flush();await f.media.start('ptt');
   assert.equal(f.peers[0].connectionState,'closed');assert.ok(f.gains.every(n=>n.gain.value===0));assert.equal(ws.sent.filter(p=>p.type==='activate'&&p.mode==='ptt').length,0);
+ }finally{await f.dispose();}
+});
+
+test('网页连接20分钟到时完整释放音轨和传输，单项启停不会续期',async()=>{
+ const f=fixture();try{
+  const ws=await f.connect();f.now(30000);await f.media.start('ptt');await f.media.stop();
+  ws.emit({type:'idle',operation:1});await flush();f.now(1199999);f.tick();
+  assert.equal(f.peers[0].connectionState,'connected');
+  await f.media.start('video');f.now(1200000);f.tick();await flush();
+  assert.equal(f.peers[0].connectionState,'closed');assert.equal(ws.readyState,3);
+  assert.ok(f.locals[0].getTracks().every(t=>t.readyState==='ended'));
+  assert.match(f.media.feedback(f.device),/20分钟/);assert.match(f.media.connectionControl(f.device),/>连接</);
+  f.now(1300000);await f.media.toggleConnection();assert.equal(f.sockets.length,2);f.tick();
+  assert.equal(f.sockets[1].readyState,1);
+ }finally{await f.dispose();}
+});
+
+test('网页后台计时未运行时仍按服务端到期通知断开',async()=>{
+ const f=fixture();try{
+  const ws=await f.connect();ws.emit({type:'closed',message:'连接已满20分钟，已自动断开'});await flush();
+  assert.equal(f.peers[0].connectionState,'closed');assert.equal(ws.readyState,3);
+  assert.match(f.media.connectionControl(f.device),/>连接</);
  }finally{await f.dispose();}
 });

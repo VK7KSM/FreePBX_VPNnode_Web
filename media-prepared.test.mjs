@@ -44,10 +44,30 @@ test('每次激活使用最新能力，撤掉PTT后仍能保持其它操作的�
  await f.activate('ptt');assert.equal(f.s.closed,true);
  const g=fixture();await g.ready();g.relay.updateCapabilities({...g.device,managed_media_prepare_v1:false});assert.equal(g.s.closed,true);
 });
-test('待命连接不受30分钟操作上限影响，后台一分钟心跳不误断',async()=>{
- const f=fixture();await f.ready();f.now(60001);f.tick();assert.equal(f.s.closed,false);
- await f.send('browser',{type:'ping'});f.now(3600001);await f.send('browser',{type:'ping'});f.tick();assert.equal(f.s.closed,false);
- assert.equal(f.delay(),90000);f.now(3690001);f.tick();assert.equal(f.s.closed,true);
+test('后台一分钟心跳不误断，20分钟时即使持续心跳也释放待命连接',async()=>{
+  const f=fixture();await f.ready();f.now(60001);f.tick();assert.equal(f.s.closed,false);
+ await f.send('browser',{type:'ping'});f.now(1200999);await f.send('browser',{type:'ping'});f.tick();assert.equal(f.s.closed,false);
+ assert.equal(f.delay(),1);f.now(1201000);f.tick();assert.equal(f.s.closed,true);
+ assert.match(f.messages.browser.at(-1).message,/20分钟/);assert.equal(f.messages.device.at(-1).type,'closed');
+ assert.equal(f.relay.sessions.size,0);assert.equal(f.s.token,'');
+});
+
+test('切换功能和重新待命不延长20分钟期限，活动录像到时完整关闭',async()=>{
+ const f=fixture();await f.ready();f.now(30000);await f.activate('ptt');await f.send('device',{type:'ready',operation:1});
+ await f.send('browser',{type:'deactivate',operation:1});await f.send('device',{type:'idle',operation:1});
+ f.now(1200000);await f.activate('video');await f.send('device',{type:'ready',operation:2});
+ assert.equal(f.s.phase,'active');assert.equal(f.delay(),1000);
+ f.now(1201000);f.tick();assert.equal(f.s.closed,true);assert.equal(f.relay.sessions.size,0);
+ const next=f.relay.create(f.device,'prepare');assert.notEqual(next.session_id,f.s.id);
+ assert.equal(f.relay.sessions.get(next.session_id).created,1201000);
+});
+
+test('计时回调延后时过期消息不能激活设备，过期占用可被新连接回收',async()=>{
+ const f=fixture();await f.ready();f.now(1201000);await f.activate('alarm');
+ assert.equal(f.s.closed,true);assert.ok(!f.messages.device.some(p=>p.type==='activate'));
+ const g=fixture();await g.ready();g.now(1201000);
+ assert.ok(g.relay.create(g.device,'prepare').session_id);assert.equal(g.s.closed,true);assert.equal(g.relay.sessions.size,1);
+ const h=fixture();await h.ready();h.now(1201000);assert.throws(()=>h.relay.get(h.s.id,'device',h.s.token),/结束/);
 });
 test('PTT满60秒只停本次操作，停止确认10秒超时才关闭整条连接',async()=>{
  const f=fixture();await f.ready();await f.activate();await f.send('device',{type:'ready',operation:1});

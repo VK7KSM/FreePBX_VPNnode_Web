@@ -1,6 +1,8 @@
 // WebSocket仅承载控制和协商；音视频经Cloudflare Realtime传输。
 import {MEDIA_MODES,mediaAllowed} from './media-capabilities.js';
 export {MEDIA_MODES};
+export const MEDIA_CONNECTION_LIMIT_MS=20*60*1000;
+const CONNECTION_EXPIRED_MESSAGE='连接已满20分钟，已自动断开';
 export function mediaDirections(mode,role){
   if(mode==='prepare')return {audio:true,video:role==='device'};
   return {audio:role==='browser'?['ptt','call'].includes(mode):['call','microphone','video'].includes(mode),video:role==='device'&&mode==='video'};
@@ -13,6 +15,7 @@ export class MediaRelay {
     if(!mediaAllowed(device,mode))throw Error('设备尚不支持此通信操作');
     if(!(MEDIA_MODES.includes(mode)||mode==='prepare')||!['front','back'].includes(camera))throw Error('通信操作无效');
     if(!['photo','alarm'].includes(mode)&&!this.env.ELF_REALTIME)throw Error('实时服务未配置');
+    for(const s of this.sessions.values())this.expire(s);
     if([...this.sessions.values()].some(s=>s.deviceId===device.id))throw Error('请先结束该设备当前通信');
     if(this.sessions.size>=16)throw Error('当前通信过多');
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
@@ -20,15 +23,20 @@ export class MediaRelay {
     this.sessions.set(id,s);try{this.arm(s);}catch(error){this.sessions.delete(id);throw error;}
     return {ok:true,session_id:id,mode};
   }
+  expire(s){
+    if(!s.closed&&this.now()-s.created>=MEDIA_CONNECTION_LIMIT_MS)this.close(s,CONNECTION_EXPIRED_MESSAGE);
+    return s.closed;
+  }
   arm(s){
+    if(this.expire(s))return;
     if(s.timer!==undefined)this.cancel(s.timer);
-    const deadlines=[s.lastBrowser+90000];
+    const deadlines=[s.created+MEDIA_CONNECTION_LIMIT_MS,s.lastBrowser+90000];
     if((s.prepared&&s.phase==='preparing')||(!s.prepared&&!s.started))deadlines.push(s.created+45000);
     if(s.prepared&&s.phase==='activating')deadlines.push(s.operationCreated+15000);
     if(s.prepared&&s.phase==='stopping')deadlines.push(s.stopCreated+10000);
     if(s.started&&s.mode!=='alarm')deadlines.push(s.started+(s.mode==='ptt'||s.mode==='photo'?60000:1800000));
     s.timer=this.schedule(()=>{
-    if(s.closed)return;
+    if(this.expire(s))return;
     const at=this.now();
     if(s.prepared&&s.phase==='preparing'&&at-s.created>=45000)this.close(s,'设备连接超时');
     else if(s.prepared&&s.phase==='activating'&&at-s.operationCreated>=15000)this.close(s,'设备启动超时');
@@ -49,13 +57,13 @@ export class MediaRelay {
   }
   offer(deviceId,origin){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.roles.device);
-    return s?{session_id:s.id,token:s.token,mode:s.mode,camera:s.camera,expires_at:s.created+45000,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/media/device?session_id='+s.id}:null;
+    return s&&!this.expire(s)?{session_id:s.id,token:s.token,mode:s.mode,camera:s.camera,expires_at:s.created+45000,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/media/device?session_id='+s.id}:null;
   }
   updateCapabilities(device){
     for(const s of this.sessions.values())if(s.deviceId===device.id){if(!mediaAllowed(device,s.prepared?'prepare':s.mode)||s.mode!=='prepare'&&!mediaAllowed(device,s.mode))this.close(s,'设备已不再支持本次通信');else s.modes=MEDIA_MODES.filter(m=>mediaAllowed(device,m));}
   }
   get(id,role,token){
-    const s=this.sessions.get(id);if(!s||s.closed)throw Error('通信已结束');
+    const s=this.sessions.get(id);if(!s||this.expire(s))throw Error('通信已结束');
     if(role==='device'&&(!token||token!==s.token))throw Error('设备连接验证失败');
     if(s.roles[role])throw Error('此通信已连接');return s;
   }
@@ -83,7 +91,7 @@ export class MediaRelay {
     }return x;
   }
   async message(s,role,raw){
-    if(s.closed)return;
+    if(this.expire(s))return;
     try{
       if(typeof raw!=='string'||raw.length>96000)throw Error('通信消息过大');
       const p=JSON.parse(raw),other=role==='browser'?'device':'browser';
