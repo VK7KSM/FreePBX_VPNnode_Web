@@ -71,5 +71,10 @@ test('预备连接每端独立初始化，已有音轨排在hello之后且不重
  const id=relay.create({id:'test',managed_media:true,managed_media_prepare_v1:true},'prepare').session_id,s=relay.sessions.get(id);
  const ws=()=>({messages:[],accept(){},addEventListener(){},send(raw){this.messages.push(JSON.parse(raw));},close(){}});
  const browser=ws(),device=ws();relay.attach(s,'browser',browser);assert.deepEqual(browser.messages.map(m=>m.type),['waiting','hello']);
- s.published.browser={tracks:[]};relay.attach(s,'device',device);assert.deepEqual(device.messages.map(m=>m.type),['waiting','hello','tracks']);assert.equal(browser.messages.filter(m=>m.type==='hello').length,1);
+ s.published.browser={tracks:[]};s.announced.browser=true;relay.attach(s,'device',device);assert.deepEqual(device.messages.map(m=>m.type),['waiting','hello','tracks']);assert.equal(browser.messages.filter(m=>m.type==='hello').length,1);
+});
+
+test('晚加入的预连接不能订阅尚未确认的发布轨道',async()=>{
+ const f=fixture();f.s.roles={};f.s.published.browser={tracks:[]};f.s.rtc.device='test';const sent=[];f.relay.attach(f.s,'device',{accept(){},addEventListener(){},send(raw){sent.push(JSON.parse(raw));},close(){}});
+ assert.deepEqual(sent.map(m=>m.type),['waiting','hello']);await f.send('device',{type:'rpc',id:1,action:'subscribe'});assert.match(sent.at(-1).error,/尚未就绪/);
 });

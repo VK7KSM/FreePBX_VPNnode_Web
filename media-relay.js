@@ -16,7 +16,7 @@ export class MediaRelay {
     if([...this.sessions.values()].some(s=>s.deviceId===device.id))throw Error('请先结束该设备当前通信');
     if(this.sessions.size>=16)throw Error('当前通信过多');
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
-    const s={id,token,deviceId:device.id,mode,camera,created,started:0,lastBrowser:created,roles:{},published:{},rtc:{},chains:{},closed:false,prepared:mode==='prepare',modes:MEDIA_MODES.filter(m=>mediaAllowed(device,m)),operation:0,phase:'preparing'};
+    const s={id,token,deviceId:device.id,mode,camera,created,started:0,lastBrowser:created,roles:{},published:{},announced:{},rtc:{},chains:{},closed:false,prepared:mode==='prepare',modes:MEDIA_MODES.filter(m=>mediaAllowed(device,m)),operation:0,phase:'preparing'};
     this.sessions.set(id,s);try{this.arm(s);}catch(error){this.sessions.delete(id);throw error;}
     return {ok:true,session_id:id,mode};
   }
@@ -67,7 +67,7 @@ export class MediaRelay {
     this.send(s,role,{type:'waiting'});
     const other=role==='browser'?'device':'browser';
     if(s.prepared)this.send(s,role,{type:'hello',mode:s.mode,camera:s.camera});
-    if(s.published[other])this.send(s,role,{type:'tracks',...s.published[other]});
+    if(s.published[other]&&(!s.prepared||s.announced[other]))this.send(s,role,{type:'tracks',...s.published[other]});
     if(!s.prepared&&s.roles.browser&&s.roles.device){this.send(s,'browser',{type:'hello',mode:s.mode,camera:s.camera});this.send(s,'device',{type:'hello',mode:s.mode,camera:s.camera});}
   }
   send(s,role,message){try{s.roles[role]?.send(JSON.stringify(message));}catch{this.close(s,'通信连接中断');}}
@@ -149,9 +149,9 @@ export class MediaRelay {
             s.published[role]={sessionId:id,tracks:tracks.map(t=>({location:'remote',sessionId:id,trackName:t.trackName}))};
           }else if(p.action==='published'){
             if(!s.published[role])throw Error('媒体尚未发布');
-            this.send(s,other,{type:'tracks',...s.published[role]});result={ok:true};
+            s.announced[role]=true;this.send(s,other,{type:'tracks',...s.published[role]});result={ok:true};
           }else if(p.action==='subscribe'){
-            if(!s.published[other])throw Error('对端媒体尚未就绪');
+            if(!s.published[other]||s.prepared&&!s.announced[other])throw Error('对端媒体尚未就绪');
             result=await this.sfu(prefix+'/tracks/new',{tracks:s.published[other].tracks});
           }else if(p.action==='answer')result=await this.sfu(prefix+'/renegotiate',{sessionDescription:p.body.sessionDescription},'PUT');
           else throw Error('媒体协商操作无效');
