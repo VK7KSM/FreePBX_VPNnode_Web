@@ -1289,8 +1289,19 @@ function renderRemoteConsole(){
   h+=(historical&&!(media&&media.isActive())?historical:(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d)))+'<div class="remote-controls">';
   h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
   h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
-  box.innerHTML=h;
-  var placeholder=box.querySelector('.trajectory-photo');if(placeholder&&retainPhoto)placeholder.replaceWith(retainPhoto);else if(placeholder&&photoKey)placeholder.dataset.trajectoryKey=photoKey;
+  var retained=media?.previewNode?.(d)||(historical&&!(media&&media.isActive())?retainPhoto:null);
+  if(retained&&retained.parentNode===box){
+    // 保持正在播放的元素始终连接DOM，仅更新外框前后的标题和控件。
+    var template=document.createElement('template');template.innerHTML=h;
+    var nextPreview=template.content.querySelector('.remote-preview');
+    if(nextPreview){
+      while(retained.previousSibling)retained.previousSibling.remove();
+      while(retained.nextSibling)retained.nextSibling.remove();
+      while(template.content.firstChild!==nextPreview)box.insertBefore(template.content.firstChild,retained);
+      nextPreview.remove();box.appendChild(template.content);
+    }else box.innerHTML=h;
+  }else box.innerHTML=h;
+  var placeholder=box.querySelector('.trajectory-photo');if(placeholder&&retainPhoto){if(placeholder!==retainPhoto)placeholder.replaceWith(retainPhoto);}else if(placeholder&&photoKey)placeholder.dataset.trajectoryKey=photoKey;
   if(media){media.mount(d);}
   trajectoryMount();
   if(d)loadReportPhotos(d);

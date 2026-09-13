@@ -152,16 +152,23 @@ window.ElfMedia=(function(){
     }catch(e){if(!cancelled())await stop(e.name==='NotAllowedError'?'未获得浏览器麦克风权限':e.message,true);}
   }
   function preparedIdle(s){if(active!==s||!s.idleAcknowledged||!s.finishComplete)return;s.mode='prepare';s.message='';s.started=0;s.deviceReady=false;render();}
+  function clearPreview(s){
+    if(!s.node)return;
+    var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}
+    // 释放媒体内容，但保留16:9外框，异步保存期间不能让窗口塌缩。
+    s.node.replaceChildren();s.node=null;
+  }
   async function stopPrepared(s,messageText){
     if(s.mode==='stopping'||s.mode==='prepare')return;
     s.activation=null;s.mode='stopping';s.message='正在结束…';s.recordEnded=Date.now();
     if(s.activationSent)send(s,{type:'deactivate',operation:s.operation});else s.idleAcknowledged=true;
     if(s.micPath)s.micPath.setActive(false);
+    render();
     if(s.recordCreating)await s.recordCreating;
     if(s.recorder&&s.recorder.state!=='inactive'){s.recorder.stop();await s.recordStopped;}
     if(s.animation)cancelAnimationFrame(s.animation);s.animation=null;
     if(s.audioContext)await s.audioContext.close();s.audioContext=null;s.audioInput=null;s.audioInputTrack=null;s.outputGain=null;
-    if(s.node){var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}s.node.remove();s.node=null;}
+    clearPreview(s);
     lastDevice=s.device.id;lastMessage=messageText||'已结束';
     if(s.recording){try{await s.upload;if(s.uploadError)throw s.uploadError;if(!s.parts)throw Error('未收到可保存的录制数据');await json(recordUrl(s)+'&action=finish',{parts:s.parts,duration_ms:s.recordEnded-s.recordStarted});lastMessage='录制已保存';}catch(e){lastMessage='录制保存失败：'+e.message;}}
     s.recording=null;s.recorder=null;s.recordCreating=null;s.finishComplete=true;preparedIdle(s);render();
@@ -179,7 +186,7 @@ window.ElfMedia=(function(){
     if(s.micPath)s.micPath.close();if(s.local)s.local.getTracks().forEach(function(t){t.stop();});if(s.pc)s.pc.close();if(s.remote)s.remote.getTracks().forEach(function(t){t.stop();});
     if(s.silentSource)s.silentSource.stop();if(s.silentTrack)s.silentTrack.stop();if(s.transportAudioContext)await s.transportAudioContext.close();
     if(s.animation)cancelAnimationFrame(s.animation);if(s.audioContext)s.audioContext.close();
-    if(s.node){var el=s.node.querySelector('video,audio');if(el){el.pause();el.srcObject=null;}s.node.remove();}
+    clearPreview(s);
     render();
     if(s.recording){try{await s.upload;if(s.uploadError)throw s.uploadError;if(!s.parts)throw Error('未收到可保存的录制数据');await json(recordUrl(s)+'&action=finish',{parts:s.parts,duration_ms:s.recordEnded-s.recordStarted});lastMessage='录制已保存';}catch(e){lastMessage='录制保存失败：'+e.message;}render();}
   }
@@ -249,5 +256,5 @@ window.ElfMedia=(function(){
   }
   async function toggleConnection(){var d=currentDev();if(active){await stop('已断开',true);return;}if(d&&ElfMediaCapabilities.allows(d,'prepare'))await start('prepare');}
   window.addEventListener('pagehide',function(){stop('',true);});
-  return {isActive:function(){return !!active&&active.mode!=='prepare';},connectionControl:connectionControl,toggleConnection:toggleConnection,switchPhoto:function(){var d=currentDev();if(!d||active&&active.mode!=='prepare')return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
+  return {previewNode:function(d){return active&&d&&active.device.id===d.id&&active.mode!=='prepare'?active.node:null;},isActive:function(){return !!active&&active.mode!=='prepare';},connectionControl:connectionControl,toggleConnection:toggleConnection,switchPhoto:function(){var d=currentDev();if(!d||active&&active.mode!=='prepare')return;cameraChoice[d.id]=cameraChoice[d.id]==='back'?'front':'back';start('photo',cameraChoice[d.id]);},start:start,stop:stop,mount:mount,preview:preview,controls:controls,feedback:feedback,cameraChoice:cameraChoice};
 })();
