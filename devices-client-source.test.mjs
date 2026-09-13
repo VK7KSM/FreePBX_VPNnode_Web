@@ -161,7 +161,7 @@ test("同地点按实际距离分组，显示锚点与缩放无关，不改真�
 test("devices-client-source 必须与 devices-client.js 逐字一致", () => {
   const root = path.dirname(fileURLToPath(import.meta.url));
   const raw = fs.readFileSync(path.join(root, "devices-client.js"), "utf8");
-  assert.equal(source, systemSettingAllowed.toString()+"\n"+contactsPagesClientSource+raw.replace(/\r\n/g, "\n"));
+  assert.equal(source, (systemSettingAllowed.toString()+"\n"+contactsPagesClientSource+raw).replace(/\r\n/g, "\n"));
 });
 
 test("远程ADB 含快捷任务，顶栏保留更新客户端，没有修机项", () => {

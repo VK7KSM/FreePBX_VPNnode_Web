@@ -8,7 +8,7 @@ import {contactsPagesClientSource} from './contacts-pages.js';
 const root = path.dirname(fileURLToPath(import.meta.url));
 await buildFaultClient(process.argv.includes('--check'));
 for (const name of ["devices-client", "sip-client", "media-client"]) {
-const src = (name==='devices-client'?systemSettingAllowed.toString()+'\n'+contactsPagesClientSource:'')+fs.readFileSync(path.join(root, name + ".js"), "utf8").replace(/\r\n/g, "\n");
+const src = ((name==='devices-client'?systemSettingAllowed.toString()+'\n'+contactsPagesClientSource:'')+fs.readFileSync(path.join(root, name + ".js"), "utf8")).replace(/\r\n/g, "\n");
 const dest = path.join(root, name + "-source.js");
 const output = "export default " + JSON.stringify(src) + ";\n";
 if (process.argv.includes("--check")) {
