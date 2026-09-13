@@ -7,6 +7,12 @@ import android.os.*;
 import org.json.*;
 import org.webrtc.*;
 import org.webrtc.audio.JavaAudioDeviceModule;
+import org.webrtc.audio.AudioProcessingOptions;
+import org.webrtc.audio.AudioProcessingComponentOptions;
+import org.webrtc.audio.AudioProcessingMode;
+import org.webrtc.audio.AudioProcessingOptionsResult;
+import org.webrtc.audio.AudioProcessingState;
+import org.webrtc.audio.AudioProcessingImplementation;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 import java.util.*;
@@ -133,11 +139,18 @@ final class MediaSession {
         try{createLocalCore(true);RuntimeLog.event("media_core_prepared");}
         catch(Exception|LinkageError e){releaseCore();RuntimeLog.error("media_core_prepare_failed",new Exception(e));}
     }
+    private int captureAudioSource(){
+        // 软件AEC需要原始采样，避免厂商通话采音源额外的AGC/降噪与AEC3串联。
+        boolean raw=Build.VERSION.SDK_INT>=24&&"true".equalsIgnoreCase(audio.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
+        int source=raw?android.media.MediaRecorder.AudioSource.UNPROCESSED:android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION;
+        RuntimeLog.event("media_capture_source value="+source+" unprocessed_supported="+raw);
+        return source;
+    }
     private void createLocalCore(boolean forPrepare)throws Exception{
         initializeNative(context);
         final CoreBinding binding=new CoreBinding();coreBinding=binding;corePrepared=forPrepare;
         egl=EglBase.create();adm=JavaAudioDeviceModule.builder(context)
-            .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioSource(captureAudioSource())
             .setAudioAttributes(new android.media.AudioAttributes.Builder().setUsage(forPrepare?android.media.AudioAttributes.USAGE_MEDIA:"call".equals(mode)?android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION:android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setUseLowLatency(true)
             .setEnableVolumeLogger(false)
@@ -155,7 +168,8 @@ final class MediaSession {
                     syntheticAudioDue=0;
                     if(owns(binding.owner,operation)&&Arrays.asList("call","microphone","video").contains(mode)){captureStarted=true;checkReady();}
                 }
-                return prepared?System.nanoTime():at;
+                // 硬件时间戳同属MONOTONIC；只在缺失时补当前时刻，不覆盖真实采样时间。
+                return prepared&&at<=0?System.nanoTime():at;
             })
             .setAudioRecordStateCallback(new JavaAudioDeviceModule.AudioRecordStateCallback(){
                 public void onWebRtcAudioRecordStart(){if(!prepared&&!closed&&binding.owner.equals(id)){captureStarted=true;checkReady();}}
@@ -217,7 +231,12 @@ final class MediaSession {
         if(capture){MediaConstraints constraints=new MediaConstraints();
             for(String key:new String[]{"googEchoCancellation","googNoiseSuppression","googHighpassFilter"})constraints.mandatory.add(new MediaConstraints.KeyValuePair(key,prepared||"call".equals(mode)?"true":"false"));
             constraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl","false"));
-            audioSource=factory.createAudioSource(constraints);audioTrack=factory.createAudioTrack("audio",audioSource);audioTrack.setEnabled(true);pc.addTransceiver(audioTrack,new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY));}
+            audioSource=factory.createAudioSource(constraints);audioTrack=factory.createAudioTrack("audio",audioSource);audioTrack.setEnabled(true);
+            AudioProcessingComponentOptions enabled=new AudioProcessingComponentOptions(true,AudioProcessingMode.SOFTWARE);
+            AudioProcessingComponentOptions disabled=new AudioProcessingComponentOptions(false,AudioProcessingMode.SOFTWARE);
+            AudioProcessingOptionsResult applied=audioTrack.setAudioProcessingOptions(new AudioProcessingOptions(enabled,enabled,disabled,enabled));
+            if(!applied.isSuccess())throw new Exception("消回声配置失败："+applied.code);
+            pc.addTransceiver(audioTrack,new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY));}
         if(prepared)createVideoTrack();else if("video".equals(mode))startCamera();
         phaseTime("tracks");
     }
@@ -233,9 +252,18 @@ final class MediaSession {
             set(parse(result.getJSONObject("sessionDescription")),false);phaseTime("published_sdp");
             long iceDeadline=SystemClock.elapsedRealtime()+15000L;while(!closed&&!iceConnected&&SystemClock.elapsedRealtime()<iceDeadline)Thread.sleep(10L);
             if(closed||!iceConnected)throw new Exception("媒体网络连接超时");
-            rpc("published",new JSONObject());published=true;
+            rpc("published",new JSONObject());published=true;verifyAudioProcessing();
         }
         if(!prepared)sendStatus();checkReady();
+    }
+    private void verifyAudioProcessing()throws Exception{
+        if(audioTrack==null)return;
+        AudioProcessingState state=factory.getAudioProcessingState();
+        boolean valid=state.hasAudioProcessingModule&&state.echoCancellation.isSoftwareActive
+            &&state.echoCancellation.effective==AudioProcessingImplementation.SOFTWARE;
+        RuntimeLog.event("media_aec engine=webrtc_aec3 software="+state.echoCancellation.isSoftwareActive
+            +" platform="+state.echoCancellation.isPlatformActive+" effective="+state.echoCancellation.effective);
+        if(!valid)throw new Exception("软件消回声未成功启用");
     }
     private void activateAudioRoute()throws Exception{
             if(route.getBoolean("saved",false)){restoreRoute();if(route.getBoolean("saved",false))throw new Exception("前次音频设置尚未恢复");}
@@ -288,6 +316,7 @@ final class MediaSession {
         RuntimeLog.event("media_activate mode="+mode+" operation="+operation);
         boolean capture=Arrays.asList("call","microphone","video").contains(mode),playback=Arrays.asList("ptt","call").contains(mode);
         if(capture&&context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new Exception("麦克风权限尚未就绪");
+        if(capture)verifyAudioProcessing();
         if(playback&&!prepared)activateAudioRoute();
         adm.setMicrophoneMute(false);adm.setSpeakerMute(!playback);
         adm.setAudioRecordEnabled(capture);
