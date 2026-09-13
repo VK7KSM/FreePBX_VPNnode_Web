@@ -550,6 +550,11 @@ const app = {
       if (!stub) return authJson({ ok: false, msg: "设备存储不可用" }, 503);
       return pushHttp(env, request, stub);
     }
+    if (env.__storage && pathname === "/api/devices/status-request" && method === "GET") {
+      return pushState(env.__storage, new Request("https://elf-store/__push/read", {
+        method: "POST", body: JSON.stringify({device_id:url.searchParams.get("device_id")})
+      }), () => loadDevices(env));
+    }
     if (!env.__storage && (pathname.startsWith("/api/devices") || pathname === "/api/device-models"
         || pathname.startsWith("/api/elfremote/"))) {
       const stub = elfDoStub(env);

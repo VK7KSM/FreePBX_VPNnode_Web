@@ -34,6 +34,26 @@ test('任务与上报回执的只读查询复用一次DO鉴权，不接受失效
  }
 });
 
+test('实际存在的上报请求可经单次DO读取终态，不派发或重建请求',async()=>{
+ for(const model of ['mdl_d31','mdl_d22']){
+  const f=fixture({admin_pass:'fixture-password',remote_devices:[{id:'fixture-device',enabled:true,model_id:model}]}),cookie=await login(f),count=countRequests(f);
+  const route='/api/devices/status-request?device_id=fixture-device';
+  for(const state of ['pending','completed']){
+   const record={request_id:'fixture-request',version:1,state,expires_at_ms:Date.now()+60000,publish_attempts:1,published:true};
+   f.data.set('push/request/fixture-device',structuredClone(record));
+   const before=count(),response=await worker.fetch(request(route,'GET',undefined,cookie),f.env);
+   assert.equal(response.status,200);assert.deepEqual(await response.json(),{ok:true,request:record});
+   assert.equal(count()-before,1);assert.deepEqual(f.data.get('push/request/fixture-device'),record);
+  }
+  assert.equal((await worker.fetch(request(route,'GET',undefined,'elf_admin=fake'),f.env)).status,401);
+  assert.equal((await worker.fetch(request(route,'GET',undefined,cookie,{Origin:'https://wrong.test'}),f.env)).status,403);
+  assert.equal((await worker.fetch(request('/api/devices/status-request?device_id=missing','GET',undefined,cookie),f.env)).status,404);
+  f.data.delete('push/request/fixture-device');
+  assert.deepEqual(await (await worker.fetch(request(route,'GET',undefined,cookie),f.env)).json(),{ok:true,request:null});
+  assert.equal(f.data.has('push/request/fixture-device'),false);
+ }
+});
+
 test('额度故障在通信终端合并显示，全部相关请求恢复后隐藏',async()=>{
  const label={textContent:'',hidden:true};const context=vm.createContext({Date,adminSession:{check(){}},setTimeout(){},setInterval(){},document:{hidden:false,addEventListener(){},getElementById:id=>id==='serviceError'?label:null}});
  vm.runInContext(fs.readFileSync('devices-client.js','utf8'),context);context.DEV=[{id:'xx'}];context.selDev='xx';
