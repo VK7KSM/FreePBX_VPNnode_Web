@@ -166,3 +166,26 @@ test("外部发布等待不占住存储事务，回执不能覆盖并发设备�
   const result = await (await pending).json();
   assert.equal(result.request.state, "completed");
 });
+
+
+test('新媒体连接独立唤醒，不复用等待定位报告的旧通知',async t=>{
+  const f=setup(),cookie=await login(f);t.after(()=>{for(const session of f.store.media.sessions.values())f.store.media.close(session,'测试结束');});f.data.get('remote_devices')[0].managed_media=true;
+  const prior=await (await call(f,'/api/devices/request-status',deviceBody,cookie)).json();
+  await call(f,'/api/devices/push-sync',{...deviceBody,received_request_id:prior.request.request_id,received_version:prior.request.version});
+  const first=await (await call(f,'/api/elfremote/media/session',{device_id:deviceBody.device_id,mode:'photo'},cookie)).json();
+  const firstNotice=f.data.get('push/request/fixture-device');
+  assert.notEqual(firstNotice.request_id,prior.request.request_id);assert.equal(firstNotice.version,prior.request.version+1);
+  assert.equal(firstNotice.wake_key,'media:'+first.session_id);
+  await worker.fetch(request('/api/elfremote/media/session','DELETE',{session_id:first.session_id},cookie),f.env);
+  await call(f,'/api/elfremote/media/session',{device_id:deviceBody.device_id,mode:'photo'},cookie);
+  const second=f.data.get('push/request/fixture-device');assert.equal(second.version,firstNotice.version+1);
+  assert.equal(f.calls.filter(c=>c.url.endsWith('/v1/publish')).length,3);
+});
+
+test('普通拉取仍去重，外部wake_key不能绕过去重间隔',async()=>{
+  const f=setup(),cookie=await login(f);
+  const first=await (await call(f,'/api/devices/request-status',deviceBody,cookie)).json();
+  await call(f,'/api/devices/request-status',{...deviceBody,wake_key:'media:'+crypto.randomUUID()},cookie);
+  assert.equal(f.data.get('push/request/fixture-device').request_id,first.request.request_id);
+  assert.equal(f.calls.filter(c=>c.url.endsWith('/v1/publish')).length,1);
+});

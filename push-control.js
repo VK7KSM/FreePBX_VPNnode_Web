@@ -56,10 +56,11 @@ export async function pushState(storage, request, loadDevices, now = Date.now())
     if (action === "read") return authJson({ ok: true, request: await pendingStatus(storage, id, now) });
     if (action === "prepare") {
       let current = await pendingStatus(storage, id, now);
-      if (current?.state !== "pending" || (safetyPending&&current.safety_task_id!==device.safety_task.id)) {
+      const wakeKey=typeof data.wake_key==='string'&&/^media:[a-f0-9-]{36}$/.test(data.wake_key)?data.wake_key:'';
+      if (current?.state !== "pending" || (wakeKey&&current.wake_key!==wakeKey) || (safetyPending&&current.safety_task_id!==device.safety_task.id)) {
         current = { request_id: crypto.randomUUID(), version: (current?.version || 0) + 1,
           state: "pending", created_at: new Date(now).toISOString(), expires_at_ms: now + TTL,
-          publish_attempts: 0, published: false,...(safetyPending?{managed_safety:true,safety_task_id:device.safety_task.id}:{}) };
+          publish_attempts: 0, published: false,...(wakeKey?{wake_key:wakeKey}:{}),...(safetyPending?{managed_safety:true,safety_task_id:device.safety_task.id}:{}) };
       }
       const shouldPublish = current.publish_attempts < 3 && (!current.last_publish_at_ms || now - current.last_publish_at_ms >= 5000);
       if (shouldPublish) {
@@ -107,7 +108,7 @@ export async function brokerCall(env, path, body) {
 export function isPushHttp(path) {
   return ["/api/devices/push-config", "/api/devices/push-sync", "/api/devices/request-status", "/api/devices/status-request", "/api/devices/delete"].includes(path);
 }
-export async function pushHttp(env, request, stub) {
+export async function pushHttp(env, request, stub, {wakeKey} = {}) {
   const url = new URL(request.url);
   const read = url.pathname === "/api/devices/status-request";
   if (request.method !== (read ? "GET" : "POST")) return authJson({ ok: false }, 405);
@@ -139,7 +140,8 @@ export async function pushHttp(env, request, stub) {
   }
   const action = { "/api/devices/push-config": "config", "/api/devices/push-sync": "sync",
     "/api/devices/request-status": "prepare", "/api/devices/status-request": "read" }[url.pathname];
-  const prepared = await rpc(action);
+  // 媒体唤醒标识只由已创建会话的内部调用传入，不接受外部请求伪造。
+  const prepared = await rpc(action, {...data,wake_key:action==='prepare'?wakeKey:undefined});
   if (!prepared.ok || read || action === "sync") return prepared;
   const result = await prepared.json();
   if (action === "config") {

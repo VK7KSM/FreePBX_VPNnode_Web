@@ -571,7 +571,7 @@ const app = {
         try {
           const notified = await pushHttp(env, new Request(new URL("/api/devices/request-status", request.url), {
             method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
-          }), stub);
+          }), stub, {wakeKey:pathname==='/api/elfremote/media/session'&&result.session_id?'media:'+result.session_id:undefined});
           const notice = await notified.json();
           result.notification = notice.request || null;
         } catch { result.notification = null; }
