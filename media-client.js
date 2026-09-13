@@ -209,7 +209,7 @@ window.ElfMedia=(function(){
   function connectionControl(d){
     if(!d||!ElfMediaCapabilities.allows(d,'prepare'))return '';
     var connected=active?.device.id===d.id,ready=connected&&active.transportReady;
-    return '<button type="button" class="traffic-link media-connect" aria-label="'+(connected?'断开媒体连接':'连接媒体')+'" aria-pressed="'+!!ready+'" onclick="ElfMedia.toggleConnection()">'+(connected?'断开':'连接')+'</button>';
+    return '<button type="button" class="device-action '+(connected?'action-unpair':'btn-green')+' media-connect" aria-label="'+(connected?'断开媒体连接':'连接媒体')+'" aria-pressed="'+!!ready+'" onclick="ElfMedia.toggleConnection()">'+(connected?'断开':'连接')+'</button>';
   }
   async function toggleConnection(){var d=currentDev();if(active){await stop('已断开',true);return;}if(d&&ElfMediaCapabilities.allows(d,'prepare'))await start('prepare');}
   window.addEventListener('pagehide',function(){stop('',true);});
