@@ -1,7 +1,7 @@
 // 显式能力集合优先；畸形或未知字段失败关闭，不提升旧客户端权限。
 export const MEDIA_MODES = Object.freeze(['ptt','call','microphone','video','photo','alarm']);
 export function mediaModes(device) {
-  if (!device || device.enabled === false) return [];
+  if (!device || device.enabled === false || device.product_id==='elfremote_gateway') return [];
   if (!Object.hasOwn(device, 'managed_media_modes')) return device.managed_media === true ? [...MEDIA_MODES] : [];
   const modes = device.managed_media_modes;
   if (!Array.isArray(modes) || modes.length > MEDIA_MODES.length || modes.some(mode => typeof mode !== 'string' || !MEDIA_MODES.includes(mode)) || new Set(modes).size !== modes.length) return [];

@@ -35,6 +35,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 `;
 
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
+import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -407,6 +408,7 @@ export class ElfStore {
             const device=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
             body.adb_session=device?.enabled!==false&&device?.managed_adb_session===true
               ?this.adb.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
+            if(isGateway(device))addManagedTaskOffer(body,device,device,Date.now());
             return json(body,result.status);
           }
           return result;
@@ -1261,7 +1263,7 @@ async function geoForIp(env, ip) {
 function publicDevice(d, modelName, model = {}) {
   const contact = recoveryContact(d);
   let channel=null;try{channel=deviceReleaseChannel(d,[model]);}catch{}
-  const canUpdate=channel==='d31' ? d.managed_update===true && d.managed_update_v2===true
+  const canUpdate=['d31','gateway'].includes(channel) ? d.managed_update===true && d.managed_update_v2===true
     : channel==='d22' && (!d.status_only || d.managed_update===true || !!verifiedManagedUpdater(d));
   const batteryPresent=model.power_type==='external' ? false : model.power_type==='battery' ? true
     : typeof d.battery_present==='boolean' ? d.battery_present : null;
@@ -1271,6 +1273,7 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
+    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway)}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -1298,6 +1301,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_reboot_tasks: d.managed_reboot_tasks === true,
     managed_adbd_tasks: d.managed_adbd_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
+    managed_alarm_tasks:d.managed_alarm_tasks===true,
     managed_media: d.managed_media === true,
     ...mediaCapabilityFields(d),
     media_cameras: Number(d.media_cameras)||0,
@@ -1451,6 +1455,7 @@ async function handleDeviceUpdate(env, request) {
         let okModel = false;
         for (let j = 0; j < models.length; j++) if (models[j].id === mid) okModel = true;
         if (!okModel) return json({ ok: false, msg: "请选择已有型号" }, 400);
+        if(isGateway(list[i]))gatewayProductFields({model_id:mid},list[i],list[i].hardware_identity);
         list[i].model_id = mid;
       }
       if (data.ip != null) {
@@ -1542,6 +1547,8 @@ async function handleDeviceEnroll(env, request) {
     }
     const now = Date.now();
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
+    const product = gatewayProductFields(data,null,normalizeDeviceIdentity(data.hardware_identity));
+    if(isGateway(product)&&!data.token)throw Error('网关注册必须证明持有设备令牌');
     let registered = null;
     if (data.token) {
       if (await sha256Hex(data.token) !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
@@ -1550,15 +1557,18 @@ async function handleDeviceEnroll(env, request) {
       // 已有凭据与刷后关联保留管理员选择；新设备才按网页维护的目录选型。
       const models = await loadDeviceModels(env);
       const identity = normalizeDeviceIdentity(data.hardware_identity,models);
-      if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now);
+      if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now,product);
+      gatewayProductFields(data,registered,identity);
       if (!registered) {
         const model = registrationModel(models,data,identity);
+        gatewayProductFields(data,{model_id:model.id},identity);
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
           name: String(data.device_name || data.model_hint || "未命名设备").slice(0, 80),
           model_id: model.id, enabled: true, status_only: true };
         devices.push(registered);
       }
       if (identity) registered.hardware_identity=identity;
+      Object.assign(registered,product);
       for (const [oldCode,row] of Object.entries(enrolls)) {
         if (row.device_id===registered.id && row.token_sha256!==tokenSha) delete enrolls[oldCode];
       }
@@ -1657,6 +1667,7 @@ async function handleDevicePair(env, request) {
     const models = await loadDeviceModels(env);
     if (!models.some(model => model.id === model_id)) return json({ ok: false, msg: "请选择已有型号" }, 400);
     if (registered) {
+      if(isGateway(registered))gatewayProductFields({model_id},registered,registered.hardware_identity);
       registered.paired = true;
       registered.name = name || registered.device_name || registered.name;
       registered.model_id = model_id;
@@ -1711,6 +1722,10 @@ async function handleDeviceReport(env, request) {
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
     if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
     const identity = normalizeDeviceIdentity(data.hardware_identity,data.hardware_identity ? await loadDeviceModels(env) : []);
+    const product=gatewayProductFields(data,matched,identity||matched.hardware_identity);
+    gatewayReportGuard({...matched,...product},data);
+    const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
+    Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
     let reportLocation = pickLocation(data, null);
@@ -1751,6 +1766,7 @@ async function handleDeviceReport(env, request) {
       list[i].last_seen = new Date().toISOString();
       list[i].online = true;
       if (fresh) {
+      if(isGateway(list[i]))list[i].gateway=gateway;
       list[i].last_reported_at = history.record.timeline_at;
       list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
       list[i].status_only = data.status_only === true;
@@ -1805,6 +1821,7 @@ async function handleDeviceReport(env, request) {
       if (data.battery != null && Number.isFinite(Number(data.battery))) {
         list[i].battery = Math.max(0, Math.min(100, Math.round(Number(data.battery))));
       }
+      if(isGateway(list[i])&&Object.hasOwn(data,'battery')&&data.battery===null)list[i].battery=null;
       list[i].charging = typeof data.charging === "boolean" ? data.charging : null;
       if(Object.hasOwn(data,'battery_present')) {
         list[i].battery_present=data.battery_present;
@@ -2035,7 +2052,8 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     const manifest = JSON.parse(rel.manifest_raw);
     const channel=manifestChannel(manifest);
     if(deviceReleaseChannel(list[i],await loadDeviceModels(env))!==channel)throw Error("设备与发布制品不匹配");
-    if(channel==='d31' && (list[i].managed_update!==true || list[i].managed_update_v2!==true))throw Error("D31客户端尚未启用独立更新器");
+    if(['d31','gateway'].includes(channel) && (list[i].managed_update!==true || list[i].managed_update_v2!==true))throw Error("客户端尚未启用独立更新器");
+    if(channel==='gateway'&&(list[i].app_package!==manifest.package||list[i].app_cert_sha256!==manifest.certSha256||list[i].app_abi!==manifest.abi))throw Error('网关已装应用与制品不匹配');
     if (manifest.device_id && manifest.device_id !== deviceId) throw new Error("清单目标设备不匹配");
     const recoveryUpdater = verifiedManagedUpdater(list[i]);
     if (list[i].status_only && list[i].managed_update !== true && !recoveryUpdater) throw new Error("当前客户端尚未接通更新");

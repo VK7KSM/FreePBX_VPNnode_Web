@@ -1,6 +1,8 @@
+import {GATEWAY_PRODUCT,isGateway,gatewayProductFields} from './gateway-product.js';
 export const RELEASE_CHANNELS = Object.freeze({
   d22: {package:'net.elfradio.elfremote',model_id:'mdl_d22'},
-  d31: {package:'net.elfradio.d31bootstrap',model_id:'mdl_d31',certSha256:'9b31f89fa50b672ecfe02d73a534cc03f6cf893739aec268f9fe0b71e72da72e'}
+  d31: {package:'net.elfradio.d31bootstrap',model_id:'mdl_d31',certSha256:'9b31f89fa50b672ecfe02d73a534cc03f6cf893739aec268f9fe0b71e72da72e'},
+  gateway: {package:GATEWAY_PRODUCT.app_package,model_id:GATEWAY_PRODUCT.model_id,product_id:GATEWAY_PRODUCT.product_id,certSha256:GATEWAY_PRODUCT.certSha256,abi:GATEWAY_PRODUCT.abi}
 });
 export function releaseChannel(value) {
   const channel=value === undefined ? 'd22' : value;
@@ -13,7 +15,8 @@ export function manifestChannel(m) {
   const channel=releaseChannel(m.channel),profile=RELEASE_CHANNELS[channel];
   if(m.package!==profile.package || (m.model_id!==undefined && m.model_id!==profile.model_id)
       || (channel!=='d22' && m.model_id!==profile.model_id)
-      || (profile.certSha256 && m.certSha256!==profile.certSha256))throw Error('清单通道、型号、包名或APK签名不匹配');
+      || (profile.certSha256 && m.certSha256!==profile.certSha256)
+      || (channel==='gateway'&&(m.product_id!==profile.product_id||m.abi!==profile.abi||m.versionCode<=6)))throw Error('清单通道、型号、包名或APK签名不匹配');
   return channel;
 }
 export function validateReleaseManifest(m,now=Date.now()) {
@@ -30,6 +33,11 @@ export function validateReleaseManifest(m,now=Date.now()) {
 }
 export function deviceReleaseChannel(device,models) {
   const model=models.find(m=>m.id && m.id===device.model_id);
+  if(isGateway(device)){
+    gatewayProductFields({},device,device.hardware_identity);
+    if(device.model_id!==GATEWAY_PRODUCT.model_id||(model&&model.registration_key!=='pixel3'))throw Error('网关型号不匹配');
+    return 'gateway';
+  }
   const identity=device.hardware_identity?.variant;
   const channel=identity || model?.registration_key || (!device.model_id ? 'd22' : '');
   if(identity && model && identity!==model.registration_key)throw Error('设备身份与所选型号不一致');

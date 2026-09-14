@@ -485,10 +485,28 @@ function onFnClick(ev){
   pickFn(t.getAttribute("data-fn"));
 }
 
+function gatewayDevice(d){return d&&d.product_id==='elfremote_gateway';}
+function gatewayFunctionVisible(d,key){
+  if(!gatewayDevice(d))return true;
+  if(key==='model'||key==='locate')return true;
+  if(key==='update')return d.can_update===true;
+  if(key==='adb')return ['managed_exec_tasks','managed_adb_session','managed_log_tasks','managed_heal_tasks','managed_reboot_tasks','managed_adbd_tasks'].some(function(k){return d[k]===true;});
+  if(key==='wifi')return d.managed_system_settings===true;
+  if(key==='files')return d.managed_file_operations===true;
+  if(key==='contacts')return d.managed_contacts_page_v1===true;
+  return false;
+}
+function gatewayAlarmHtml(d){
+  if(!d.managed_alarm_tasks)return '';
+  var pending=d.task&&['play_alarm','stop_alarm'].includes(d.task.type)&&['pending','claimed','running'].includes(d.task.state);
+  var label=pending?(d.task.label||'处理中'):d.alarm?.state==='playing'?'警报正在播放':'';
+  return '<div class="remote-controls"><button type="button" onclick="enqueueRepair(\'play_alarm\')"'+(d.enabled===false?' disabled':'')+'>警报</button><button type="button" onclick="enqueueRepair(\'stop_alarm\')"'+(d.enabled===false?' disabled':'')+'>停止警报</button>'+(label?'<span class="muted" role="status">'+esc(label)+'</span>':'')+'</div>';
+}
 function renderOps(){
   renderRemoteConsole();
   var box = $("devOps");
   var d = currentDev();
+  if(!gatewayFunctionVisible(d,selFn))selFn=FN_ITEMS.find(function(item){return gatewayFunctionVisible(d,item[0]);})[0];
   var dis = d ? "" : " disabled";
   var bat = batteryText(d);
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : (d.network==="ethernet" ? "有线网络" : "未知")));
@@ -525,6 +543,7 @@ function renderOps(){
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
     var it = FN_ITEMS[i];
+    if(!gatewayFunctionVisible(d,it[0]))continue;
     h += '<button type="button" class="fn-btn'+(selFn===it[0]?" on":"")+'" data-fn="'+it[0]+'">';
     h += '<svg class="fn-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+it[2]+"</svg>";
     h += "<span>"+it[1]+"</span></button>";
@@ -536,6 +555,7 @@ function renderOps(){
 }
 
 function fnPageHtml(){
+  if(!gatewayFunctionVisible(currentDev(),selFn))return '';
   var dis = disAttr();
   if(selFn==="update") return pageUpdate(dis);
   if(selFn==="wifi") return pageSystem(dis);
@@ -1286,13 +1306,17 @@ function dailyTrafficHtml(row){return row && row.available?'接收 '+trafficByte
 function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
-  var errorText=serviceErrorText(),media=typeof ElfMedia!=='undefined'?ElfMedia:null;
+  var errorText=serviceErrorText(),gateway=gatewayDevice(d),media=!gateway&&typeof ElfMedia!=='undefined'?ElfMedia:null;
   var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3>'+(media?.connectionControl(d)||'')+(media?media.feedback(d):'')+'<span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
+  if(gateway)h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3><span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d.name)+'</span></div></div>';
+  if(gateway&&d.gateway){var g=d.gateway;h+='<div class="remote-traffic"><span>网关：'+(g.running===true?'运行中':g.running===false?'已停止':'未知')+'</span><span>SIP：'+(g.sip_registered===true?'已注册':g.sip_registered===false?'未注册':'未知')+'</span><span>通话：'+(g.busy===true?'忙碌':g.busy===false?'空闲':'未知')+'</span></div>';}
   var historical=trajectoryPreview(),event=trajectoryEvent(),photoNode=box.querySelector('.trajectory-photo'),photoKey=event&&!historyState().playItem?JSON.stringify([selDev,event.key,historical]):null,retainPhoto=photoNode&&photoKey&&photoNode.dataset.trajectoryKey===photoKey?photoNode:null;if(retainPhoto)historical='<div class="remote-preview trajectory-photo"></div>';
   if(trajectoryEvent())h+='<div class="trajectory-preview-caption">历史 · '+esc(sydney(trajectoryEvent().at))+'<button type="button" class="traffic-link" onclick="trajectoryReturnLive()">返回实时</button></div>';
+  if(gateway)h+=gatewayAlarmHtml(d);else{
   h+=(historical&&!(media&&media.isActive())?historical:(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d)))+'<div class="remote-controls">';
   h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
-  h+='</div><div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
+  h+='</div>';}
+  h+='<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   var retained=media?.previewNode?.(d)||(historical&&!(media&&media.isActive())?retainPhoto:null);
   if(retained&&retained.parentNode===box){
     // 保持正在播放的元素始终连接DOM，仅更新外框前后的标题和控件。
@@ -1308,7 +1332,7 @@ function renderRemoteConsole(){
   var placeholder=box.querySelector('.trajectory-photo');if(placeholder&&retainPhoto){if(placeholder!==retainPhoto)placeholder.replaceWith(retainPhoto);}else if(placeholder&&photoKey)placeholder.dataset.trajectoryKey=photoKey;
   if(media){media.mount(d);}
   trajectoryMount();
-  if(d)loadReportPhotos(d);
+  if(d&&!gateway)loadReportPhotos(d);
   if(d && !document.hidden && (!cached||(cached.error&&Date.now()>=cached.retryAt))){
     DAILY_CACHE[key]={pending:true};
     fetch('/api/devices/traffic?'+new URLSearchParams({device_id:d.id,from:day,to:day})).then(readServiceJson).then(function(x){
@@ -1354,7 +1378,7 @@ var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录')readSystemSettings();}
 function pageSystem(dis){
-  var tabs=Object.keys(SYSTEM_GROUPS),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(SYSTEM_TAB==='故障记录'&&!faults)SYSTEM_TAB='Wi-Fi';
+  var tabs=Object.keys(SYSTEM_GROUPS).filter(function(k){return !gatewayDevice(currentDev())||k!=='账号配置';}),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';

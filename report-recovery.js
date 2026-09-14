@@ -1,5 +1,6 @@
 import { contactState, CONTROL_PLANE_ONLINE_MS } from './elfRemote/control-plane.js';
 import { pushState, pendingStatus, statusNotification, brokerCall } from './push-control.js';
+import {isGateway} from './gateway-product.js';
 
 export const PROBE_WAIT_MS = 90000;
 // 一分钟调度可能跨过等待边界，给两次尝试及调度抖动留出有限窗口。
@@ -10,7 +11,7 @@ export function nextContactChange(device,now=Date.now()) {
   return candidates.filter(at=>at>now&&Number.isFinite(at)&&recoveryContact(device,at).state!==current.state).sort((a,b)=>a-b)[0]||null;
 }
 export function recoveryContact(device, now = Date.now()) {
-  const contact = contactState(device.last_seen, now, device.status_only === true, device.network);
+  const contact = contactState(device.last_seen, now, device.status_only === true, device.network,isGateway(device)?60000:null);
   if (device.enabled === false || device.status_only !== true || contact.state !== 'report_overdue') return contact;
   const probe = device.report_probe;
   const deadline = Date.parse(contact.report_due_at) + 90000;
@@ -25,7 +26,7 @@ export async function prepareRecovery(storage, devices, now = Date.now()) {
   const outgoing = [];
   for (const device of devices) {
     if (device.enabled === false || device.status_only !== true) continue;
-    const contact = contactState(device.last_seen, now, true, device.network);
+    const contact = contactState(device.last_seen, now, true, device.network,isGateway(device)?60000:null);
     if (contact.state !== 'report_overdue') { delete device.report_probe; continue; }
     let probe = device.report_probe;
     if (!probe || probe.baseline !== device.last_seen) {

@@ -31,7 +31,7 @@ export function normalizeDeviceIdentity(value, models = []) {
   return {variant:matches[0]?.registration_key || variant,kind,source,value:mac.match(/../g).join(':')};
 }
 
-export async function restoreDeviceIdentity(storage,devices,identity,tokenSha,now) {
+export async function restoreDeviceIdentity(storage,devices,identity,tokenSha,now,product={}) {
   if (await storage.get('retired-device-token/'+tokenSha)) throw new Error('旧安装凭证已失效');
   if (!identity) return null;
   const matches=devices.filter(d=>d.hardware_identity?.variant===identity.variant
@@ -39,6 +39,7 @@ export async function restoreDeviceIdentity(storage,devices,identity,tokenSha,no
     && d.hardware_identity?.value===identity.value);
   if (matches.length!==1) return null;
   const device=matches[0];
+  if(device.product_id==='elfremote_gateway' && product.product_id!==device.product_id)throw Error('已有网关设备必须使用相同产品重新注册');
   await storage.put('retired-device-token/'+device.token_sha256,{retired_at:new Date(now).toISOString()});
   if (device.task) {
     if (['pending','claimed','running'].includes(device.task.state)) {
@@ -50,6 +51,7 @@ export async function restoreDeviceIdentity(storage,devices,identity,tokenSha,no
   const runtime=['task','update','last_seen','last_reported_at','last_report_clock_invalid','online','battery','battery_present','charging','network','ip','loc','traffic','ready','maintenance','report_probe','app_version','os_version','wifi_scan','contacts','alarm','lost_mode'];
   for (const k of Object.keys(device)) if (runtime.includes(k) || k.startsWith('managed_')) delete device[k];
   delete device.network_write;
+  delete device.gateway;
   delete device.contacts_page_snapshot;
   Object.assign(device,{token_sha256:tokenSha,installation_id:crypto.randomUUID(),status_only:true});
   await storage.delete('push/request/'+encodeURIComponent(device.id));
