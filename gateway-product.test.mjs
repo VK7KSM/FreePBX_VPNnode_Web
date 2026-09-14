@@ -71,14 +71,21 @@ test('网关普通警报不建立媒体会话，未实现能力拒绝入队',asy
  }
 });
 
-test('网关界面仅显示已实现管理能力，警报走任务且不加载媒体和照片',()=>{
+test('网关保留统一通信终端布局，五项媒体始终禁用且警报仅走普通任务',()=>{
  const box={innerHTML:'',querySelector:()=>null},context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{hidden:true,getElementById:()=>box}});
  vm.runInContext(source,context);const d={id:'gateway-ui',name:'测试网关',...fields};
  context.DEV=[d];context.selDev=d.id;context.serviceErrorText=()=>'';context.trajectoryPreview=()=>'';context.trajectoryEvent=()=>null;context.trajectoryMount=()=>{};
- context.loadReportPhotos=()=>{throw Error('网关不得请求照片');};context.ElfMedia={connectionControl(){throw Error('网关不得启动媒体');},mount(){throw Error('网关不得挂载媒体');}};
+ context.loadReportPhotos=()=>{throw Error('网关不得请求照片');};context.ElfMedia={connectionControl(){throw Error('网关不得启动媒体');},mount(){throw Error('网关不得挂载媒体');},preview(){return '';}};
  for(const key of ['adb','update','wifi','files','contacts','lost'])assert.equal(context.gatewayFunctionVisible(d,key),false);
- context.renderRemoteConsole();assert.doesNotMatch(box.innerHTML,/PTT|麦克风|相机|remote-preview|openMediaHistory|play_alarm/);
- d.managed_alarm_tasks=true;context.renderRemoteConsole();assert.match(box.innerHTML,/enqueueRepair\('play_alarm'\)/);assert.match(box.innerHTML,/stop_alarm/);assert.doesNotMatch(box.innerHTML,/ElfMedia|remote-preview/);
+ context.renderRemoteConsole();
+ const buttons=()=>Array.from(box.innerHTML.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g),m=>m[0]);
+ for(const label of ['PTT','电话','麦克风','拍照','录像','警报'])assert.ok(buttons().some(b=>b.includes('>'+label+'</button>')&&b.includes('disabled')),label);
+ assert.match(box.innerHTML,/remote-preview/);assert.match(box.innerHTML,/openMediaHistory/);assert.doesNotMatch(box.innerHTML,/网关：|SIP：|通话：/);
+ d.managed_alarm_tasks=true;d.managed_media=true;d.managed_media_prepare_v1=true;context.renderRemoteConsole();
+ const alarm=buttons().find(b=>b.includes('>警报</button>'));assert.match(alarm,/enqueueRepair\('play_alarm'\)/);assert.doesNotMatch(alarm,/disabled|ElfMedia/);
+ for(const label of ['PTT','电话','麦克风','拍照','录像'])assert.ok(buttons().some(b=>b.includes('>'+label+'</button>')&&b.includes('disabled')),label);
+ d.alarm={state:'playing'};context.renderRemoteConsole();assert.match(box.innerHTML,/enqueueRepair\('stop_alarm'\)/);assert.match(box.innerHTML,/>停止警报<\/button>/);
+ d.task={type:'stop_alarm',state:'pending'};context.renderRemoteConsole();assert.ok(buttons().find(b=>b.includes('>停止警报</button>')).includes('disabled'));
  d.can_update=true;assert.equal(context.gatewayFunctionVisible(d,'update'),true);d.managed_adb_session=true;assert.equal(context.gatewayFunctionVisible(d,'adb'),true);
  assert.equal(context.gatewayFunctionVisible({product_id:undefined},'adb'),true);
 });

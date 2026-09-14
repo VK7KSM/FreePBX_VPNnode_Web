@@ -497,10 +497,9 @@ function gatewayFunctionVisible(d,key){
   return false;
 }
 function gatewayAlarmHtml(d){
-  if(!d.managed_alarm_tasks)return '';
   var pending=d.task&&['play_alarm','stop_alarm'].includes(d.task.type)&&['pending','claimed','running'].includes(d.task.state);
-  var label=pending?(d.task.label||'处理中'):d.alarm?.state==='playing'?'警报正在播放':'';
-  return '<div class="remote-controls"><button type="button" onclick="enqueueRepair(\'play_alarm\')"'+(d.enabled===false?' disabled':'')+'>警报</button><button type="button" onclick="enqueueRepair(\'stop_alarm\')"'+(d.enabled===false?' disabled':'')+'>停止警报</button>'+(label?'<span class="muted" role="status">'+esc(label)+'</span>':'')+'</div>';
+  var playing=d.alarm?.state==='playing',disabled=d.enabled===false||d.managed_alarm_tasks!==true||pending;
+  return ['PTT','电话','麦克风','拍照','录像'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('')+'<button type="button" class="'+(playing?'active':'')+'" aria-pressed="'+playing+'" onclick="enqueueRepair(\''+(playing?'stop_alarm':'play_alarm')+'\')"'+(disabled?' disabled':'')+'>'+(playing?'停止警报':'警报')+'</button>';
 }
 function renderOps(){
   renderRemoteConsole();
@@ -1293,7 +1292,7 @@ function reportPhotoHtml(d){
   var state=d?photoHistory(d):null,photos=state?visiblePhotos(state):[];
   var index=state?Math.max(0,photos.findIndex(function(p){return p.report_id===state.selected;})):0,photo=photos[index];
   var h='<div class="remote-preview">';
-  h+=photo?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:photo.report_id}).toString())+'" alt="设备上报照片" onerror="this.hidden=true;this.parentNode.querySelector(\'.photo-error\').hidden=false"><span class="photo-error" hidden>照片暂不可用</span>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>'+(state?(state.error||(!state.loaded?'照片读取中…':'暂无上报照片')):'画面与播放区域')+'</span>';
+  h+=photo?'<img src="/api/elfremote/report-photo?'+esc(new URLSearchParams({device_id:d.id,report_id:photo.report_id}).toString())+'" alt="设备上报照片" onerror="this.hidden=true;this.parentNode.querySelector(\'.photo-error\').hidden=false"><span class="photo-error" hidden>照片暂不可用</span>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>'+(state?(state.error||(!state.loaded&&!gatewayDevice(d)?'照片读取中…':'暂无上报照片')):'画面与播放区域')+'</span>';
   h+='<button type="button" class="photo-nav photo-prev" aria-label="上一张照片" onclick="stepReportPhoto(1)"'+(index+1<photos.length?'':' disabled')+'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m14 6-6 6 6 6"/></svg></button>';
   h+='<button type="button" class="photo-nav photo-next" aria-label="下一张照片" onclick="stepReportPhoto(-1)"'+(index>0?'':' disabled')+'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m10 6 6 6-6 6"/></svg></button>';
   if(photo)h+='<time class="photo-time" datetime="'+esc(photo.captured_at)+'" title="拍摄时间 · 悉尼">'+esc(sydney(photo.captured_at))+'</time>';
@@ -1307,15 +1306,13 @@ function renderRemoteConsole(){
   var box=$('remoteConsole');if(!box) return;
   var d=currentDev(),day=trafficDay(),key=d?d.id+'|'+day+'|'+(d.traffic&&d.traffic.sampled_at_ms||0):'',cached=DAILY_CACHE[key];
   var errorText=serviceErrorText(),gateway=gatewayDevice(d),media=!gateway&&typeof ElfMedia!=='undefined'?ElfMedia:null;
-  var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3>'+(media?.connectionControl(d)||'')+(media?media.feedback(d):'')+'<span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
-  if(gateway)h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3><span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d.name)+'</span></div></div>';
-  if(gateway&&d.gateway){var g=d.gateway;h+='<div class="remote-traffic"><span>网关：'+(g.running===true?'运行中':g.running===false?'已停止':'未知')+'</span><span>SIP：'+(g.sip_registered===true?'已注册':g.sip_registered===false?'未注册':'未知')+'</span><span>通话：'+(g.busy===true?'忙碌':g.busy===false?'空闲':'未知')+'</span></div>';}
+  var h='<div class="remote-head"><div class="remote-title"><h3>通信终端</h3>'+(gateway?'<button type="button" class="device-action btn-green media-connect" disabled>连接</button>':(media?.connectionControl(d)||''))+(media?media.feedback(d):'')+'<span id="serviceError" role="status"'+(errorText?'':' hidden')+'>'+esc(errorText)+'</span></div><div class="remote-head-actions"><span class="remote-device">'+esc(d?d.name:'未选择设备')+'</span><button type="button" class="traffic-link" onclick="openMediaHistory()"'+(d?'':' disabled')+'>历史记录</button></div></div>';
   var historical=trajectoryPreview(),event=trajectoryEvent(),photoNode=box.querySelector('.trajectory-photo'),photoKey=event&&!historyState().playItem?JSON.stringify([selDev,event.key,historical]):null,retainPhoto=photoNode&&photoKey&&photoNode.dataset.trajectoryKey===photoKey?photoNode:null;if(retainPhoto)historical='<div class="remote-preview trajectory-photo"></div>';
   if(trajectoryEvent())h+='<div class="trajectory-preview-caption">历史 · '+esc(sydney(trajectoryEvent().at))+'<button type="button" class="traffic-link" onclick="trajectoryReturnLive()">返回实时</button></div>';
-  if(gateway)h+=gatewayAlarmHtml(d);else{
+  if(gateway&&typeof ElfMedia!=='undefined')ElfMedia.preview(d,'');
   h+=(historical&&!(media&&media.isActive())?historical:(media?media.preview(d,reportPhotoHtml(d)):reportPhotoHtml(d)))+'<div class="remote-controls">';
-  h+=media?media.controls(d):['PTT','电话','麦克风','拍照','录像','响铃'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
-  h+='</div>';}
+  h+=gateway?gatewayAlarmHtml(d):media?media.controls(d):['PTT','电话','麦克风','拍照','录像','警报'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('');
+  h+='</div>';
   h+='<div class="remote-traffic"><strong>当日流量</strong><span>'+(d?(cached?(cached.error?(DAILY_LAST[d.id+'|'+day]?dailyTrafficHtml(DAILY_LAST[d.id+'|'+day]):'—'):(cached.pending?'读取中…':dailyTrafficHtml(cached.row))):'读取中…'):'未选择设备')+'</span><button class="traffic-link" onclick="openTrafficHistory()"'+(d?'':' disabled')+'>查看历史流量</button></div>';
   var retained=media?.previewNode?.(d)||(historical&&!(media&&media.isActive())?retainPhoto:null);
   if(retained&&retained.parentNode===box){
