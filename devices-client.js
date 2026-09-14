@@ -598,9 +598,9 @@ function pageAdb(dis){
   if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
-  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-gray':'btn-green')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
+  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
   right+='<div class="adb-box"><div class="adb-term" id="adbTerm" style="padding:8px;overflow:hidden">'+(on?'ADB 已连接':'ADB 未连接')+'</div>';
-  right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="btn-gray" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>中断</button></div></div></section>';
+  right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="'+(on?'btn-red':'btn-gray')+'" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>中断</button></div></div></section>';
   return '<div class="monitor-grid">'+left+right+'</div>'+(foot?'<div class="terminal-status">'+foot+'</div>':'');
 }
 
@@ -1674,7 +1674,7 @@ function disposeAdbView(){if(ADB_VIEW){ADB_VIEW.resize.disconnect();ADB_VIEW.ter
 function bindAdbView(){
   var u=uiOf(),el=$('adbTerm');if(!u||!el)return;
   if(typeof Terminal==='undefined'||typeof FitAddon==='undefined'){el.textContent='终端资源未加载，请刷新页面';return;}
-  var adb=u.adb,terminal=new Terminal({fontSize:12,fontFamily:'Consolas, monospace',cursorBlink:true,disableStdin:!adb.connected,scrollback:1000,theme:{background:'#101827',foreground:'#d4deec'}}),fit=new FitAddon.FitAddon();
+  var adb=u.adb,terminal=new Terminal({fontSize:12,fontFamily:'Consolas, monospace',cursorBlink:true,disableStdin:!adb.connected,scrollback:1000,theme:{background:'#080f1a',foreground:'#d4deec'}}),fit=new FitAddon.FitAddon();
   el.textContent='';terminal.loadAddon(fit);terminal.open(el);fit.fit();
   terminal.write(adb.output||((adb.connecting?'ADB 连接中':'ADB 未连接')+'\r\n'));
   terminal.onData(function(data){adbWrite(u,data);});

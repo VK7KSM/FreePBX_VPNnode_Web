@@ -59,7 +59,22 @@ test('等待连接及空闲会话按时释放而新会话关闭旧连接',()=>{
   create(relay);assert.ok(browser.closed);assert.equal(relay.sessions.size,1);
   advance(60000);relay.sweep();assert.equal(relay.sessions.size,0);
   const session=create(relay),offer=relay.offer('fixture-device','https://example.test'),device=new Socket();relay.attach(relay.get(session.session_id,'device',offer.token),'device',device);
-  device.emit({type:'ready'});advance(300000);relay.sweep();assert.ok(device.closed);assert.equal(relay.sessions.size,0);
+  device.emit({type:'ready'});advance(1200000);relay.sweep();assert.ok(device.closed);assert.equal(relay.sessions.size,0);
+});
+test('只有非空命令输入续期20分钟，输出、窗口变化和重复就绪不续期',()=>{
+  const {relay,advance}=fixture(),created=create(relay),offer=relay.offer('fixture-device','https://example.test');
+  const browser=new Socket(),device=new Socket();
+  relay.attach(relay.get(created.session_id,'browser'),'browser',browser);
+  relay.attach(relay.get(created.session_id,'device',offer.token),'device',device);device.emit({type:'ready'});
+  advance(19*60000);browser.emit({type:'input',data:'cHdkCg=='});
+  advance(19*60000);device.emit({type:'output',data:'aGk='});device.emit({type:'ready'});
+  browser.emit({type:'resize',rows:24,columns:80});browser.emit({type:'input',data:''});
+  assert.equal(relay.sessions.size,1,'持续有输入的会话不应被旧30分钟总时长限制关闭');
+  advance(59999);relay.sweep();assert.equal(relay.sessions.size,1);
+  advance(1);browser.emit({type:'input',data:'cHdkCg=='});
+  assert.equal(relay.sessions.size,0,'到期后输入不能复活会话');
+  assert.ok(device.closed&&browser.closed);
+  assert.match(browser.sent.at(-1).message,/20分钟/);
 });
 test('浏览器稍晚接入仍取得真实连接状态与有界缓存输出',()=>{
   const {relay}=fixture(),created=create(relay),offer=relay.offer('fixture-device','https://example.test'),device=new Socket();

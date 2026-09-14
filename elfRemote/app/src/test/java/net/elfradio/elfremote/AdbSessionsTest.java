@@ -3,6 +3,12 @@ import org.json.JSONObject;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class AdbSessionsTest {
+    @Test public void idleDeadlineUsesTwentyMinutesOfMonotonicInputTime(){
+        assertFalse(AdbSessions.idleExpired(-1,1200001));
+        assertFalse(AdbSessions.idleExpired(1000,1200999));
+        assertTrue(AdbSessions.idleExpired(1000,1201000));
+        assertFalse(AdbSessions.idleExpired(1200999,1201000));
+    }
     private JSONObject request()throws Exception {
         String id="12345678-1234-1234-1234-123456789abc";
         return new JSONObject().put("session_id",id).put("token",String.join("",java.util.Collections.nCopies(64,"a")))

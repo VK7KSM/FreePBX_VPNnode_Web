@@ -14,6 +14,8 @@ final class AdbSessions implements Closeable {
     private final RescueJobs jobs;
     private final RollingLog log;
     private Session current;
+    static final long IDLE_LIMIT_MS=20*60*1000L;
+    static boolean idleExpired(long lastInput,long now){return lastInput>=0&&now-lastInput>=IDLE_LIMIT_MS;}
     AdbSessions(RescueJobs jobs,File root){this.jobs=jobs;log=new RollingLog(new File(root,"adb-log"),32768,2);}
     static URI validate(JSONObject request,long now)throws Exception {
         String id=request.getString("session_id"),token=request.getString("token");
@@ -39,6 +41,7 @@ final class AdbSessions implements Closeable {
     private final class Session {
         final String id;final WebSocketClient websocket;
         volatile AdbShell shell;volatile boolean ended;
+        volatile long lastInputElapsed=-1;
         Object power;android.os.IBinder wakeToken;
         final java.util.Timer deadline=new java.util.Timer("elfremote-adb-deadline",true);
         Session(String id,URI uri,String token){
@@ -51,7 +54,12 @@ final class AdbSessions implements Closeable {
                     JSONObject data=new JSONObject(raw);String type=data.optString("type");
                     if("closed".equals(type)){finish(null,"管理端已断开ADB");return;}
                     AdbShell active=shell;if(active==null||ended)throw new IOException("ADB尚未连接");
-                    if("input".equals(type))active.input(android.util.Base64.decode(data.getString("data"),android.util.Base64.DEFAULT));
+                    if("input".equals(type)){
+                        if(idleExpired(lastInputElapsed,android.os.SystemClock.elapsedRealtime())){finish(null,"20分钟未输入命令，ADB已自动断开");return;}
+                        byte[] bytes=android.util.Base64.decode(data.getString("data"),android.util.Base64.DEFAULT);
+                        active.input(bytes);
+                        if(bytes.length>0)lastInputElapsed=android.os.SystemClock.elapsedRealtime();
+                    }
                     else if("resize".equals(type))active.resize(data.getInt("rows"),data.getInt("columns"));
                     else throw new IOException("不支持的终端操作");
                 }catch(Exception failure){finish(null,"ADB输入失败");}}
@@ -64,7 +72,12 @@ final class AdbSessions implements Closeable {
         void connect(){
             try{
                 log.write(System.currentTimeMillis()+" ADB_CONNECT_BEGIN");
-                holdAwake();deadline.schedule(new java.util.TimerTask(){public void run(){finish(null,"本次终端已到时");}},1800000);
+                holdAwake();final long connectStarted=android.os.SystemClock.elapsedRealtime();
+                deadline.schedule(new java.util.TimerTask(){public void run(){
+                    long now=android.os.SystemClock.elapsedRealtime();
+                    if(lastInputElapsed<0&&now-connectStarted>=60000L)finish(null,"设备连接超时");
+                    else if(idleExpired(lastInputElapsed,now))finish(null,"20分钟未输入命令，ADB已自动断开");
+                }},10000L,10000L);
                 if(!websocket.connectBlocking(10,TimeUnit.SECONDS)||ended)throw new IOException("无法连接ADB中继");
                 String taskId="adb-"+id;
                 String reuse="[ \"$(getprop service.adb.tcp.port)\" = 5555 ] && [ \"$(getprop init.svc.adbd)\" = running ]"
@@ -87,6 +100,7 @@ final class AdbSessions implements Closeable {
                     public void closed(Integer exit,String error){finish(exit,error.isEmpty()?"ADB 已断开":error);}
                 });
                 if(ended){shell.close();return;}
+                lastInputElapsed=android.os.SystemClock.elapsedRealtime();
                 send(new JSONObject().put("type","ready"));log.write(System.currentTimeMillis()+" ADB_CONNECTED");shell.start();
             }catch(Exception error){
                 log.write(System.currentTimeMillis()+" ADB_FAILED "+error.getClass().getSimpleName()+" cause="+(error.getCause()==null?"none":error.getCause().getClass().getSimpleName())

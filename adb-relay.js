@@ -1,4 +1,5 @@
 // 仅在管理员打开终端期间中继；设备与浏览器均向Worker发起连接。
+export const ADB_IDLE_LIMIT_MS=20*60*1000;
 export class AdbRelay {
   constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id)}={}) {
     this.now=now;this.schedule=schedule;this.cancel=cancel;this.sessions=new Map();
@@ -21,8 +22,7 @@ export class AdbRelay {
     const now=this.now();
     for(const session of this.sessions.values()) {
       if(!session.ready&&now-session.created>=60000)this.close(session,'设备连接超时');
-      else if(now-session.created>=1800000)this.close(session,'本次终端已到时，请重新连接');
-      else if(session.ready&&now-session.activity>=300000)this.close(session,'终端空闲，已断开');
+      else if(session.ready&&now-session.activity>=ADB_IDLE_LIMIT_MS)this.close(session,'20分钟未输入命令，ADB已自动断开');
     }
   }
   offer(deviceId,origin) {
@@ -52,6 +52,7 @@ export class AdbRelay {
     }
   }
   message(session,role,raw) {
+    this.sweep();
     if(!this.sessions.has(session.id))return;
     try {
       if(typeof raw!=='string'||raw.length>90000)throw Error('终端消息过大');
@@ -61,15 +62,15 @@ export class AdbRelay {
         if(!session.ready||!session.device)throw Error('ADB尚未连接');
         if(data.type==='input') {
           if(typeof data.data!=='string'||data.data.length>87384||!base64(data.data))throw Error('终端输入无效');
+          if(data.data.length)session.activity=this.now();
         }else if(data.type==='resize') {
           if(!Number.isInteger(data.rows)||!Number.isInteger(data.columns)||data.rows<1||data.rows>500||data.columns<1||data.columns>500)throw Error('终端尺寸无效');
         }else throw Error('不支持的终端操作');
-        session.activity=this.now();session.device.send(raw);
+        session.device.send(raw);
       }else {
-        if(data.type==='ready'){session.ready=true;session.activity=this.now();}
+        if(data.type==='ready'){if(!session.ready)session.activity=this.now();session.ready=true;}
         else if(data.type==='output') {
           if(!session.ready||typeof data.data!=='string'||data.data.length>87384||!base64(data.data))throw Error('ADB输出无效');
-          session.activity=this.now();
         }else if(data.type==='closed'){this.close(session,typeof data.message==='string'?data.message.slice(0,120):'ADB 已断开',data.exit);return;}
         else throw Error('ADB返回未知消息');
         if(session.browser)session.browser.send(raw);

