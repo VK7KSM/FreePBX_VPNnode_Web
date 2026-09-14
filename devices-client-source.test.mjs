@@ -179,7 +179,7 @@ test("远程ADB 含快捷任务，顶栏保留更新客户端，没有修机项"
   assert.match(raw, /restart_adbd/);
   assert.equal(raw.includes("enqueueRepairApk"), false);
   assert.match(raw, /assignUpdate/);
-  assert.match(raw, /kv\("客户端版本"/);
+  assert.match(raw, /<div class="k">客户端版本<\/div>/);
   assert.equal(raw.includes('kv("制品哈希"'), false);
   assert.equal(raw.includes('kv("类型"'), false);
   assert.match(raw, /id="taskOut"/);

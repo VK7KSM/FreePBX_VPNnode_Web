@@ -534,7 +534,7 @@ function renderOps(){
   h += kv("IP & MAC", (d && d.ip ? d.ip : "—") + " / " + (d && d.mac ? d.mac : "未获取"));
   h += kv("定位", src);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
-  h += kv("客户端版本", d ? managerLabel(d) : "—");
+  h += '<div class="kv"><div class="k">客户端版本</div><div class="v">'+esc(d?managerLabel(d):'—')+(d&&d.update_available===true?'<button type="button" class="traffic-link" style="margin-left:8px" onclick="pickFn(\'update\')">更新</button>':'')+'</div></div>';
   h += kv("最后上报", d ? sydney(reportTime(d)) : "—", d ? '数据时间；服务器接收：'+sydney(d.last_seen) : '');
   h += kv("远程ADB", shell);
   h += "</div>";
