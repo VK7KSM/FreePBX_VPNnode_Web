@@ -18,6 +18,8 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page button:disabled{opacity:.45;cursor:default}
 #devOps .fn-page .btn-green{background:var(--device-ui-green);color:#fff}
 #devOps .fn-page .btn-green:disabled{background:var(--device-ui-control);color:var(--device-ui-text)}
+#devOps .fn-page .monitor .btn-red{background:var(--device-ui-red);color:#fff}
+#devOps .fn-page .monitor .adb-connecting:disabled{background:var(--device-ui-green);color:#fff;opacity:1}
 #devOps .fn-page .btn-gray:not(.active){background:var(--device-ui-control);color:var(--device-ui-text)}
 #devOps .fn-page .system-tabs .btn-gray{height:34px;min-height:34px;padding:8px 10px}
 #devOps .fn-page .system-tabs .btn-gray:not(.active){background:transparent;color:#aebcce}
