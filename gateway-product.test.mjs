@@ -76,7 +76,7 @@ test('网关保留统一通信终端布局，五项媒体始终禁用且警报�
  vm.runInContext(source,context);const d={id:'gateway-ui',name:'测试网关',...fields};
  context.DEV=[d];context.selDev=d.id;context.serviceErrorText=()=>'';context.trajectoryPreview=()=>'';context.trajectoryEvent=()=>null;context.trajectoryMount=()=>{};
  context.loadReportPhotos=()=>{throw Error('网关不得请求照片');};context.ElfMedia={connectionControl(){throw Error('网关不得启动媒体');},mount(){throw Error('网关不得挂载媒体');},preview(){return '';}};
- for(const key of ['adb','update','wifi','files','contacts','lost'])assert.equal(context.gatewayFunctionVisible(d,key),false);
+ for(const key of ['adb','update','wifi','files','contacts','lost'])assert.equal(context.gatewayFunctionAvailable(d,key),false);
  context.renderRemoteConsole();
  const buttons=()=>Array.from(box.innerHTML.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g),m=>m[0]);
  for(const label of ['PTT','电话','麦克风','拍照','录像','警报'])assert.ok(buttons().some(b=>b.includes('>'+label+'</button>')&&b.includes('disabled')),label);
@@ -86,8 +86,8 @@ test('网关保留统一通信终端布局，五项媒体始终禁用且警报�
  for(const label of ['PTT','电话','麦克风','拍照','录像'])assert.ok(buttons().some(b=>b.includes('>'+label+'</button>')&&b.includes('disabled')),label);
  d.alarm={state:'playing'};context.renderRemoteConsole();assert.match(box.innerHTML,/enqueueRepair\('stop_alarm'\)/);assert.match(box.innerHTML,/>停止警报<\/button>/);
  d.task={type:'stop_alarm',state:'pending'};context.renderRemoteConsole();assert.ok(buttons().find(b=>b.includes('>停止警报</button>')).includes('disabled'));
- d.can_update=true;assert.equal(context.gatewayFunctionVisible(d,'update'),true);d.managed_adb_session=true;assert.equal(context.gatewayFunctionVisible(d,'adb'),true);
- assert.equal(context.gatewayFunctionVisible({product_id:undefined},'adb'),true);
+ d.can_update=true;assert.equal(context.gatewayFunctionAvailable(d,'update'),true);d.managed_adb_session=true;assert.equal(context.gatewayFunctionAvailable(d,'adb'),true);
+ assert.equal(context.gatewayFunctionAvailable({product_id:undefined},'adb'),true);
 });
 
 test('安装级身份允许无MAC，网关状态只存白名单布尔值且不透传密码',async()=>{
@@ -111,4 +111,22 @@ test('网关按一分钟报告检查失联，不沿用D22蜂窝一小时窗口',
  assert.equal(recoveryContact(d,at+120000).state,'recent_contact');
  assert.equal(recoveryContact(d,at+151000).state,'report_overdue');
  assert.equal(recoveryContact({...d,product_id:undefined},at+151000).state,'awaiting_report');
+});
+
+
+test('所有型号保留八个功能入口，切到网关不重置当前页且未支持操作禁用',()=>{
+ const box={innerHTML:'',querySelector:()=>null};
+ const context=vm.createContext({adminSession:{check(){}},setTimeout(){},setInterval(){},document:{hidden:true,getElementById:()=>box}});
+ vm.runInContext(source,context);
+ context.renderRemoteConsole=()=>{};context.disposeAdbView=()=>{};context.terminalBind=()=>{};context.bindAdbView=()=>{};
+ const renderPage=context.fnPageHtml;context.fnPageHtml=()=>'<p>测试页面</p>';
+ for(const product of [undefined,'elfremote_gateway']){
+  const d={id:'menu-fixture',name:'测试设备',product_id:product,status_only:true};context.DEV=[d];context.selDev=d.id;
+  for(const key of ['adb','update','wifi','contacts','locate','files','lost','model']){
+   context.selFn=key;context.renderOps();
+   assert.equal((box.innerHTML.match(/data-fn=/g)||[]).length,8);assert.equal(context.selFn,key);
+  }
+ }
+ context.pageContacts=dis=>'<button'+dis+'>添加</button>';context.selFn='contacts';
+ assert.match(renderPage(),/<button disabled>添加/);
 });

@@ -486,7 +486,7 @@ function onFnClick(ev){
 }
 
 function gatewayDevice(d){return d&&d.product_id==='elfremote_gateway';}
-function gatewayFunctionVisible(d,key){
+function gatewayFunctionAvailable(d,key){
   if(!gatewayDevice(d))return true;
   if(key==='model'||key==='locate')return true;
   if(key==='update')return d.can_update===true;
@@ -505,7 +505,6 @@ function renderOps(){
   renderRemoteConsole();
   var box = $("devOps");
   var d = currentDev();
-  if(!gatewayFunctionVisible(d,selFn))selFn=FN_ITEMS.find(function(item){return gatewayFunctionVisible(d,item[0]);})[0];
   var dis = d ? "" : " disabled";
   var bat = batteryText(d);
   var net = !d ? "—" : (d.network==="wifi" ? "Wi-Fi" : (d.network==="cellular" ? "移动数据" : (d.network==="ethernet" ? "有线网络" : "未知")));
@@ -542,7 +541,6 @@ function renderOps(){
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
     var it = FN_ITEMS[i];
-    if(!gatewayFunctionVisible(d,it[0]))continue;
     h += '<button type="button" class="fn-btn'+(selFn===it[0]?" on":"")+'" data-fn="'+it[0]+'">';
     h += '<svg class="fn-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+it[2]+"</svg>";
     h += "<span>"+it[1]+"</span></button>";
@@ -554,8 +552,7 @@ function renderOps(){
 }
 
 function fnPageHtml(){
-  if(!gatewayFunctionVisible(currentDev(),selFn))return '';
-  var dis = disAttr();
+  var dis = gatewayFunctionAvailable(currentDev(),selFn)?disAttr():' disabled';
   if(selFn==="update") return pageUpdate(dis);
   if(selFn==="wifi") return pageSystem(dis);
   if(selFn==="contacts") return functionSection('联系人管理',pageContacts(dis));
