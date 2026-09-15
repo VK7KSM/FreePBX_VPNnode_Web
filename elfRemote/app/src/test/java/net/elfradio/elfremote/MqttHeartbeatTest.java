@@ -105,8 +105,8 @@ public class MqttHeartbeatTest {
             assertTrue(f.driver.events.contains("core_mqtt_ping_not_due"));assertTrue(f.driver.failures.isEmpty());
         }
     }
-    @Test public void allNetworksKeepFifteenMinutePolicy(){
-        assertEquals(900,MqttHeartbeat.keepAliveSeconds(900,false));assertEquals(900,MqttHeartbeat.keepAliveSeconds(900,true));
+    @Test public void cellularTrialUsesFiveMinutesWhileWifiKeepsFifteen(){
+        assertEquals(300,MqttHeartbeat.keepAliveSeconds(900,false));assertEquals(900,MqttHeartbeat.keepAliveSeconds(900,true));
         assertEquals(60,MqttHeartbeat.keepAliveSeconds(60,false));assertEquals(60,MqttHeartbeat.keepAliveSeconds(-1,false));
     }
 }

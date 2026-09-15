@@ -28,7 +28,7 @@ final class MqttHeartbeat implements MqttPingSender {
 
     MqttHeartbeat(Driver driver,LongSupplier clock){this(driver,clock,RESPONSE_TIMEOUT_MS);}
     MqttHeartbeat(Driver driver,LongSupplier clock,long timeout){this.driver=driver;this.clock=clock;this.responseTimeout=timeout;}
-    static int keepAliveSeconds(int configured,boolean wifi){return Math.max(60,Math.min(900,configured));}
+    static int keepAliveSeconds(int configured,boolean wifi){return Math.max(60,Math.min(wifi?900:300,configured));}
     public void init(ClientComms value){comms=value;}
     public void start(){driver.execute(()->{if(!closed){running=true;schedule(comms.getKeepAlive());}});}
     public void stop(){closed=true;driver.execute(()->{running=false;pending=null;driver.cancel("ping");driver.cancel("ping-response");driver.release();});}
