@@ -22,7 +22,7 @@ final class CorePush implements Closeable {
     private final ConnectivityManager network;
     private final ConnectivityManager.NetworkCallback callback;
     private MqttAsyncClient client;
-    private Ping ping;
+    private MqttHeartbeat ping;
     private volatile boolean connected,closed;
     private boolean connecting;
     private volatile String activeKey="";
@@ -66,7 +66,8 @@ final class CorePush implements Closeable {
             if(closed||!expectedKey.equals(CorePushState.key(state.snapshot()))){dispose();ensure();return;}
             final String topic=config.getString("topic");
             File persistence=new File(directory,PairingStore.sha256Hex(expectedKey));if(!persistence.isDirectory()&&!persistence.mkdir())throw new IOException("MQTT目录不可用");
-            ping=new Ping();
+            MqttWireLog.install(RuntimeLog::event);
+            ping=createHeartbeat();
             client=new MqttAsyncClient("ssl://"+config.getString("host")+":"+config.getInt("port"),config.getString("client_id"),
                     new MqttDefaultFilePersistence(persistence.getPath()),ping,null,SystemClock::elapsedRealtimeNanos);
             final MqttAsyncClient source=client;client.setManualAcks(true);
@@ -87,7 +88,11 @@ final class CorePush implements Closeable {
             });
             MqttConnectOptions options=new MqttConnectOptions();options.setMqttVersion(MqttConnectOptions.MQTT_VERSION_3_1_1);
             options.setCleanSession(false);options.setAutomaticReconnect(false);options.setConnectionTimeout(15);
-            options.setKeepAliveInterval(Math.max(60,Math.min(1800,config.optInt("keepalive_seconds",900))));options.setMaxInflight(4);
+            NetworkCapabilities capabilities=network.getNetworkCapabilities(network.getActiveNetwork());
+            boolean wifi=capabilities!=null&&capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+            int keepalive=MqttHeartbeat.keepAliveSeconds(config.optInt("keepalive_seconds",900),wifi);
+            options.setKeepAliveInterval(keepalive);options.setMaxInflight(4);
+            RuntimeLog.event("core_mqtt_policy keepalive_seconds="+keepalive+" response_timeout_ms="+MqttHeartbeat.RESPONSE_TIMEOUT_MS+" wifi="+wifi);
             options.setUserName(config.getString("username"));options.setPassword(config.getString("password").toCharArray());
             options.setSocketFactory(CoreTraffic.factory());options.setHttpsHostnameVerificationEnabled(true);
             RuntimeLog.event("core_mqtt_connect");
@@ -171,15 +176,20 @@ final class CorePush implements Closeable {
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buffer=new byte[2048];int n;while((n=in.read(buffer))!=-1){if(out.size()+n>16384)throw new IOException("核心推送响应过大");out.write(buffer,0,n);}JSONObject reply=new JSONObject(new String(out.toByteArray(),StandardCharsets.UTF_8));if(!reply.optBoolean("ok"))throw new IOException("核心推送请求被拒绝");return reply;}
         }finally{c.disconnect();}
     }
-    private final class Ping implements MqttPingSender {
-        private ClientComms comms;private boolean running;
-        public void init(ClientComms value){comms=value;}
-        public void start(){running=true;schedule(comms.getKeepAlive());}
-        public void stop(){running=false;wake.cancel("ping");wake.release("ping");}
-        public void schedule(long delay){if(running)wake.schedule("ping",delay,this::fire);}
-        private void fire(){if(!running)return;wake.hold("ping",30000);RuntimeLog.event("core_mqtt_ping_wake");
-            try{MqttToken token=comms.checkForActivity(new IMqttActionListener(){public void onSuccess(IMqttToken t){wake.release("ping");RuntimeLog.event("core_mqtt_ping_ok");}public void onFailure(IMqttToken t,Throwable error){wake.release("ping");}});if(token==null)wake.release("ping");}
-            catch(Exception error){wake.release("ping");retry(error);}
-        }
+    private MqttHeartbeat createHeartbeat(){
+        final MqttHeartbeat[] owner=new MqttHeartbeat[1];
+        owner[0]=new MqttHeartbeat(new MqttHeartbeat.Driver(){
+            public void execute(Runnable action){
+                Runnable guarded=()->{if(ping==owner[0])action.run();};
+                if(Looper.myLooper()==worker.getLooper())guarded.run();else worker.post(guarded);
+            }
+            public void schedule(String key,long delay,Runnable action){wake.schedule(key,delay,()->{if(ping==owner[0])action.run();});}
+            public void cancel(String key){wake.cancel(key);}
+            public void hold(long timeout){wake.hold("ping",timeout);}
+            public void release(){wake.release("ping");}
+            public void failed(Throwable error){if(ping==owner[0])retry(error);}
+            public void event(String message){RuntimeLog.event(message);}
+        },SystemClock::elapsedRealtime);
+        return owner[0];
     }
 }
