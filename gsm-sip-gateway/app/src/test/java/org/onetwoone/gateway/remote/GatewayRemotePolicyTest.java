@@ -25,6 +25,7 @@ public class GatewayRemotePolicyTest {
         org.json.JSONObject profile=GatewayRemotePolicy.profile();
         assertTrue(profile.getBoolean("managed_wifi_scan_tasks"));
         assertTrue(profile.getBoolean("managed_wifi_config_tasks"));
+        assertTrue(profile.getBoolean("managed_mobile_status"));
         assertFalse(profile.getBoolean("managed_config_tasks"));
         assertFalse(profile.has("managed_hotspot_tasks"));
     }

@@ -19,7 +19,10 @@ public final class GatewayCoreMain {
         if (!auth.matches("[0-9a-f]{64}")) throw new IOException("invalid core identity");
         long started = SystemClock.elapsedRealtime();
         LocalServerSocket server = new LocalServerSocket(GatewayCoreProtocol.SOCKET);
-        GatewayCorePush push=null;try{push=new GatewayCorePush(systemContext(),new File(GatewayCoreClient.DIR));}catch(Exception ignored){}
+        android.content.Context resolvedContext=null;
+        try{resolvedContext=systemContext();}catch(Exception ignored){}
+        final android.content.Context context=resolvedContext;
+        GatewayCorePush push=null;try{if(context!=null)push=new GatewayCorePush(context,new File(GatewayCoreClient.DIR));}catch(Exception ignored){}
         boolean running=true;
         try {
             while (running) {
@@ -34,6 +37,8 @@ public final class GatewayCoreMain {
                                     .put("uptime_ms",SystemClock.elapsedRealtime()-started).put("update_ready",true)
                                     .put("independent_push",push!=null).put("push_connected",push!=null&&push.status().optBoolean("connected"));
                         else if("pixel-module-health".equals(operation))response.put("pixel_modules",GatewayPixelLegacyHealth.snapshot());
+                        else if("mobile-status".equals(operation))response.put("mobile_status",context==null
+                                ?GatewayMobileStatus.unavailable():GatewayMobileStatusCollector.collect(context));
                         else if("push-config".equals(operation)&&push!=null)response.put("push",push.configure(request));
                         else if("push-status".equals(operation)&&push!=null)response.put("push",push.status());
                         else if("push-tick".equals(operation)&&push!=null){push.tick();response.put("ticked",true);}

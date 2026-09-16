@@ -76,6 +76,12 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.edit().putBoolean("pixel_assets_verified",false)
                         .putString("pixel_module_error",unavailable.getClass().getSimpleName()).apply();
             }
+            try {
+                JSONObject mobile=GatewayCoreClient.mobileStatus(this);
+                store.prefs.edit().putString("mobile_status",mobile.toString()).remove("mobile_status_error").apply();
+            } catch(Exception unavailable) {
+                store.prefs.edit().remove("mobile_status").putString("mobile_status_error",unavailable.getClass().getSimpleName()).apply();
+            }
             scheduleCoreWake(push==null?-1:push.optLong("next_wake_delay_ms",-1));
             coreFailures=0;
         } catch(Exception unavailable) {
@@ -199,6 +205,7 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.getBoolean("pixel_assets_verified",false),
                 store.prefs.getString("pixel_module_health",""),
                 store.prefs.getString("pixel_module_error","")));
+        body.put("mobile_network",GatewayMobileStatus.stored(store.prefs.getString("mobile_status","")));
         return body;
     }
     @Override public void onDestroy() {

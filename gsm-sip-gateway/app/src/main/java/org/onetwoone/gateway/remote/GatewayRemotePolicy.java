@@ -21,6 +21,7 @@ public final class GatewayRemotePolicy {
                 "managed_lost_tasks", "managed_wipe_v1", "managed_config_tasks"}) body.put(key, false);
         return body.put("managed_update",true).put("managed_update_v2",true).put("managed_adb_session",true).put("managed_adb_tunnel_v1",true)
                 .put("managed_sip_account",true)
+                .put("managed_mobile_status",true)
                 .put("managed_wifi_scan_tasks",true).put("managed_wifi_config_tasks",true)
                 .put("managed_media_modes", new JSONArray());
     }

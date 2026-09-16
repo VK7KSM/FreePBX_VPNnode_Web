@@ -31,6 +31,9 @@ final class GatewayCoreClient {
     static JSONObject pixelModuleHealth(Context context) throws Exception {
         return request(context,new JSONObject().put("operation","pixel-module-health")).getJSONObject("pixel_modules");
     }
+    static JSONObject mobileStatus(Context context) throws Exception {
+        return request(context,new JSONObject().put("operation","mobile-status")).getJSONObject("mobile_status");
+    }
     private static JSONObject request(Context context,JSONObject body) throws Exception {
         try(LocalSocket socket=new LocalSocket()) {
             socket.connect(new LocalSocketAddress(GatewayCoreProtocol.SOCKET)); socket.setSoTimeout(3000);

@@ -12,7 +12,7 @@ final class GatewayCoreProtocol {
         return expected != null && expected.matches("[0-9a-f]{64}")
                 && supplied.matches("[0-9a-f]{64}")
                 && MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),supplied.getBytes(StandardCharsets.UTF_8))
-                && java.util.Arrays.asList("health","pixel-module-health","push-config","push-status","push-tick","push-ack","push-hint","shutdown")
+                && java.util.Arrays.asList("health","pixel-module-health","mobile-status","push-config","push-status","push-tick","push-ack","push-hint","shutdown")
                 .contains(request.optString("operation"));
     }
     private GatewayCoreProtocol() {}
