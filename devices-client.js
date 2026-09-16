@@ -1373,30 +1373,30 @@ var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&!gatewayDevice(currentDev()))readSystemSettings();}
 function pageSystem(dis){
-  var gateway=gatewayDevice(currentDev()),tabs=gateway?['Wi-Fi','移动网络/APN']:Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
+  var gateway=gatewayDevice(currentDev()),tabs=Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
-  if(SYSTEM_TAB==='移动网络/APN')return h+pageGatewayMobileStatus()+'</section></div>';
   return h+pageSystemSettings(dis)+'</section></div>';
 }
 
-function pageGatewayMobileStatus(){
-  var d=currentDev(),m=d&&d.mobile_network;
-  if(!d||!gatewayDevice(d))return '<p class="muted">该页面仅适用于 Pixel Gateway</p>';
-  if(d.managed_mobile_status!==true)return '<p class="muted">请更新客户端后查看移动网络状态</p>';
-  if(!m)return '<p class="muted">尚未收到移动网络状态</p>';
-  if(m.available!==true)return '<div class="system-items"><div><span>移动网络/APN</span><span>状态暂不可用</span></div></div>';
+function gatewayNetworkValue(label,value){return '<div><span>'+esc(label)+'</span><span>'+esc(value)+'</span></div>';}
+function pageGatewayNetworkSettings(d){
+  var m=d&&d.mobile_network,snapshot=d&&d.system_settings&&d.system_settings.network||{},mobile='尚未收到状态';
+  if(d.managed_mobile_status!==true)mobile='请更新客户端后查看';
+  else if(m&&m.available!==true)mobile='状态暂不可用';
+  else if(m)mobile=m.data_switch_readable?(m.mobile_data_enabled?'已开启':'已关闭'):'状态不可读取';
   var networkNames={unknown:'未知',gprs:'GPRS',edge:'EDGE',umts:'UMTS',hsdpa:'HSDPA',hsupa:'HSUPA',hspa:'HSPA',cdma:'CDMA',
     '1xrtt':'1xRTT',evdo_0:'EVDO 0',evdo_a:'EVDO A',evdo_b:'EVDO B',ehrpd:'eHRPD',iden:'iDEN',hspap:'HSPA+',lte:'LTE',td_scdma:'TD-SCDMA',iwlan:'IWLAN',nr:'5G NR'};
-  var rows=[['活动订阅',String(m.active_subscription_count)],['SIM状态',m.sim_ready?'已就绪':'未就绪'],
-    ['默认数据订阅',m.default_data_subscription_valid?'有效':'无效'],
-    ['移动数据',m.data_switch_readable?(m.mobile_data_enabled?'已开启':'已关闭'):'状态不可读取'],
-    ['当前数据网络',networkNames[m.current_data_network_type]||'未知'],
-    ['运营商配置',m.carrier_config_readable?'可读取':'不可读取'],['APN配置',m.apn_provider_readable?'可读取':'不可读取'],
-    ['配置权限',m.write_locked?'只读':'未知']];
-  return '<div class="system-items">'+rows.map(function(row){return '<div><span>'+esc(row[0])+'</span><span>'+esc(row[1])+'</span></div>';}).join('')+'</div>';
+  var bluetooth=typeof snapshot.bluetooth==='boolean'?(snapshot.bluetooth?'已开启':'已关闭'):'状态不可用';
+  var usb=typeof snapshot.usb==='string'&&snapshot.usb?snapshot.usb.split(',').map(function(mode){return {mtp:'文件传输',adb:'USB调试',rndis:'USB网络共享',ptp:'照片传输',none:'未启用'}[mode]||mode;}).join(' · '):'状态不可用';
+  var h='<div class="system-items">'+gatewayNetworkValue('移动数据',mobile);
+  if(m&&m.available===true)h+=gatewayNetworkValue('SIM状态',m.sim_ready?'已就绪':'未就绪')+gatewayNetworkValue('当前数据网络',networkNames[m.current_data_network_type]||'未知')
+    +gatewayNetworkValue('运营商配置',m.carrier_config_readable?'可读取':'不可读取')+gatewayNetworkValue('APN配置',m.apn_provider_readable?'可读取':'不可读取');
+  h+=gatewayNetworkValue('蓝牙',bluetooth)+gatewayNetworkValue('USB状态',usb)+'</div>';
+  h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((snapshot.paired||[]).length?'<div class="system-items">'+snapshot.paired.map(function(p){return gatewayNetworkValue(p.name||'蓝牙设备',p.address||'');}).join('')+'</div>':'<p class="muted">'+(snapshot.bluetooth===false?'蓝牙已关闭':'暂无已配对设备信息')+'</p>')+'</div>';
+  return h;
 }
 
 var SYSTEM_GROUP_IDS={'Wi-Fi':'wifi','网络与连接':'network','应用':'apps','声音与显示':'sound','语言与时间':'time'};
@@ -1413,6 +1413,7 @@ function systemBackgroundSetting(data,blocked){
 function pageSystemSettings(dis){
   var d=currentDev();if(!d)return '<p class="muted">请先选择设备</p>';
   var state=systemSettingsState(),data=systemSnapshot(),group=SYSTEM_GROUP_IDS[SYSTEM_TAB],blocked=dis||(!d.managed_system_settings||d.enabled===false||state.pending?' disabled':'');
+  if(gatewayDevice(d)&&group==='network')return pageGatewayNetworkSettings(d);
   var h='<div class="ops-actions"><button class="btn-gray" onclick="readSystemSettings()"'+blocked+'>读取当前设置</button><span role="status">'+esc(state.message||(!d.managed_system_settings?'请更新客户端后使用':data?'读取于 '+sydney(data.sampled_at):'尚未读取设备设置'))+'</span></div>';
   if(!data)return h;
   if(group==='sound'){
