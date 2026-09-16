@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 58
-        versionName "1.5.0-gateway-alpha51-pixel-health"
+        versionCode 59
+        versionName "1.5.0-gateway-alpha52-pixel-health-sysfs"
 
         // NDK build config
         externalNativeBuild {
