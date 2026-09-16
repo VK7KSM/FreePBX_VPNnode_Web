@@ -16,9 +16,10 @@ import org.json.JSONObject;
 final class GatewayWifiScanner {
     static JSONObject scan(Context context) throws Exception {
         grantLocation(context);
-        String previousMode=GatewayLocationAppOp.current(context);
+        String previousMode=GatewayLocationAppOp.currentUid();
+        GatewayLocationAppOp.allowPackage();
         boolean restore=!"allow".equals(previousMode);
-        if(restore)GatewayLocationAppOp.set("allow");
+        if(restore)GatewayLocationAppOp.setUid("allow");
         WifiManager wifi=(WifiManager)context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         try {
             if(wifi==null||!wifi.isWifiEnabled())throw new IOException("wifi disabled");
@@ -39,7 +40,7 @@ final class GatewayWifiScanner {
                 if(!receivedFresh)throw new IOException("wifi scan stale");
                 return new JSONObject().put("sampled_at_ms",System.currentTimeMillis()).put("networks",GatewayWifiScanPolicy.networks(fresh));
             } finally {context.unregisterReceiver(receiver);}
-        } finally {if(restore)GatewayLocationAppOp.set(previousMode);}
+        } finally {if(restore)GatewayLocationAppOp.setUid(previousMode);}
     }
     private static void grantLocation(Context context) throws Exception {
         if(context.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")==android.content.pm.PackageManager.PERMISSION_GRANTED)return;
