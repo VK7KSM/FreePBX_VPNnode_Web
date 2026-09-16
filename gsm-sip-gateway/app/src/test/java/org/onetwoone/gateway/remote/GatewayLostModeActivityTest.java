@@ -25,6 +25,7 @@ public class GatewayLostModeActivityTest {
         ViewGroup content=activity.findViewById(android.R.id.content);LinearLayout root=(LinearLayout)content.getChildAt(0);
         assertEquals("设备已进入丢失模式",((TextView)root.getChildAt(0)).getText().toString());
         assertEquals("请联系管理员",((TextView)root.getChildAt(1)).getText().toString());
+        assertEquals(android.view.View.SYSTEM_UI_FLAG_VISIBLE,activity.getWindow().getDecorView().getSystemUiVisibility());
         assertFalse(activity.isFinishing());activity.onBackPressed();assertFalse(activity.isFinishing());
         GatewayLostModeActivity.closeOpenInstance();assertTrue(activity.isFinishing());controller.destroy();}
     @Test public void fullScreenNotificationPersistsUntilRemoteClear(){Context context=RuntimeEnvironment.getApplication();GatewayLostModeActivity.open(context);
