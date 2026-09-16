@@ -26,6 +26,7 @@ public final class GatewayRemotePolicy {
                 .put("managed_sip_account",true)
                 .put("managed_mobile_status",true)
                 .put("managed_proxy_tasks",true).put("managed_proxy_v1",true)
+                .put("managed_pixel_companion_v1",true)
                 .put("managed_file_operations",true).put("managed_file_delete",true)
                 .put("managed_file_tasks",true).put("managed_file_return",true)
                 .put("managed_wifi_scan_tasks",true).put("managed_wifi_config_tasks",true)

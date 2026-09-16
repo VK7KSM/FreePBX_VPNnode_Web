@@ -34,6 +34,7 @@ public class GatewayRemotePolicyTest {
         assertFalse(profile.optBoolean("managed_lost_safety_v1"));assertFalse(profile.getBoolean("managed_wipe_v1"));
         assertTrue(profile.getBoolean("managed_proxy_tasks"));
         assertTrue(profile.getBoolean("managed_proxy_v1"));
+        assertTrue(profile.getBoolean("managed_pixel_companion_v1"));
         assertFalse(profile.getBoolean("managed_config_tasks"));
         assertFalse(profile.optBoolean("managed_contacts"));
         assertFalse(profile.has("managed_hotspot_tasks"));

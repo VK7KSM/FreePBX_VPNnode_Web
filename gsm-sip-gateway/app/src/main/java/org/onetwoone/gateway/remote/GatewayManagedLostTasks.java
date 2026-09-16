@@ -35,8 +35,10 @@ final class GatewayManagedLostTasks {
             else status=alarm.stop();terminal(id,"success","alarm-"+status.getString("state"),new JSONObject().put("stage","alarm").put("action",status.getString("state")).put("alarm",status));
         }catch(Exception failure){try{if(!id.isEmpty()){JSONObject saved=receipts().read(id);if(saved!=null){if(!saved.optBoolean("acknowledged"))post(saved);clearIfSame(id);}else terminal(id,"failed",safeReason(failure),null);}else clear();}catch(Exception ignored){}}}
     private synchronized void locationComplete(String id){if(!id.equals(locating))return;locating="";try{String outcome=location.requestOutcome();
-            terminal(id,"sampled".equals(outcome)?"success":"failed","location-"+outcome,new JSONObject().put("stage","location").put("action",outcome));}
+            terminal(id,"sampled".equals(outcome)?"success":"failed","location-"+outcome,locationResult(outcome));}
         catch(Exception ignored){changed.run();}}
+    static JSONObject locationResult(String outcome)throws Exception{return new JSONObject().put("stage","location")
+            .put("action",outcome).put("verified","sampled".equals(outcome));}
     JSONObject alarmSnapshot()throws Exception{return alarm.snapshot();}
     void close(){alarm.close();}
     private static JSONObject validate(JSONObject task)throws Exception {String type=task==null?"":task.optString("type");if("show_lost_message".equals(type)||"clear_lost_message".equals(type))return GatewayLostMessagePolicy.offer(task,System.currentTimeMillis());if(task==null||!task.optString("id").matches("[A-Za-z0-9-]{1,96}")
