@@ -23,4 +23,11 @@ public class GatewayLocationSamplerTest {
         assertFalse(GatewayLocationSampler.recent(location,1_000_000_000L+GatewayLocationSampler.MAX_AGE_NS+1));
         assertFalse(GatewayLocationSampler.recent(location,999_999_999L));
     }
+    @Test public void forcedRequestAcceptsOnlyFixCreatedAfterRequest(){
+        Location oldFix=new Location(LocationManager.GPS_PROVIDER);oldFix.setElapsedRealtimeNanos(1000);
+        Location newFix=new Location(LocationManager.GPS_PROVIDER);newFix.setElapsedRealtimeNanos(3000);
+        assertFalse(GatewayLocationSampler.freshForRequest(oldFix,4000,2000));
+        assertTrue(GatewayLocationSampler.freshForRequest(newFix,4000,2000));
+        assertFalse(GatewayLocationSampler.freshForRequest(newFix,2000,2000));
+    }
 }

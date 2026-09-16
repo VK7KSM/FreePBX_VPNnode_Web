@@ -27,6 +27,7 @@ public final class GatewayRemoteService extends Service {
     private GatewayManagedFileTasks fileTasks;
     private GatewayManagedExecTasks execTasks;
     private GatewayLocationSampler location;
+    private GatewayManagedLostTasks lostTasks;
     private volatile boolean stopped;
     private int failures;
     private volatile long nextAttempt;
@@ -58,9 +59,11 @@ public final class GatewayRemoteService extends Service {
         fileTasks = new GatewayManagedFileTasks(this,store,this::scheduleImmediateReport);
         execTasks = new GatewayManagedExecTasks(this,store,this::scheduleImmediateReport);
         location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
+        lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
         worker.post(execTasks::tick);
+        worker.post(lostTasks::tick);
         location.begin();
         coreThread=new HandlerThread("gateway-core-monitor");coreThread.start();
         coreWorker=new Handler(coreThread.getLooper());coreAlarms=getSystemService(AlarmManager.class);
@@ -129,7 +132,7 @@ public final class GatewayRemoteService extends Service {
     private void consumePush() {
         try {
             JSONObject status=GatewayCoreClient.pushStatus(this),pending=status.optJSONObject("pending");if(pending==null)return;
-            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);
+            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);
             JSONObject request=reply.optJSONObject("status_request");
             if(request!=null&&request.optString("request_id").matches("[A-Za-z0-9-]{1,96}"))
                 if(!store.prefs.edit().putString("status_request_id",request.getString("request_id")).commit())
@@ -164,7 +167,7 @@ public final class GatewayRemoteService extends Service {
             JSONObject reply=GatewayRemoteHttp.request("/api/devices/report",pendingReport);
             if(!pendingReport.getString("report_id").equals(reply.optString("report_id")))
                 throw new java.io.IOException("report acknowledgement mismatch");
-            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);
+            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);
             if (!store.prefs.edit().remove("pending_report").commit()) {
                 throw new java.io.IOException("report acknowledgement persistence failed");
             }
@@ -219,10 +222,11 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.getString("pixel_module_health",""),
                 store.prefs.getString("pixel_module_error","")));
         body.put("mobile_network",GatewayMobileStatus.stored(store.prefs.getString("mobile_status","")));
+        body.put("alarm",lostTasks.alarmSnapshot());
         return body;
     }
     @Override public void onDestroy() {
-        stopped=true;if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();
+        stopped=true;if(lostTasks!=null)lostTasks.close();if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();
         if(appHealth!=null)try{appHealth.close();}catch(java.io.IOException ignored){}
         if(coreAlarms!=null&&coreAlarm!=null)try{coreAlarms.cancel(coreAlarm);}catch(Exception ignored){}
         coreWorker.removeCallbacksAndMessages(null);coreThread.quitSafely();super.onDestroy();

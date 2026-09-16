@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 46
-        versionName "1.5.0-gateway-alpha39-terminal-location"
+        versionCode 47
+        versionName "1.5.0-gateway-alpha40-alarm-locate"
 
         // NDK build config
         externalNativeBuild {

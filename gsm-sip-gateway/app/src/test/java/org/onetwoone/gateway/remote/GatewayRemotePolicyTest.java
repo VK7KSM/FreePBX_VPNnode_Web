@@ -27,6 +27,8 @@ public class GatewayRemotePolicyTest {
         assertTrue(profile.getBoolean("managed_wifi_config_tasks"));
         assertTrue(profile.getBoolean("managed_mobile_status"));
         assertTrue(profile.getBoolean("managed_exec_tasks"));
+        assertTrue(profile.getBoolean("managed_alarm_tasks"));
+        assertTrue(profile.getBoolean("managed_locate_tasks"));
         assertFalse(profile.getBoolean("managed_config_tasks"));
         assertFalse(profile.has("managed_hotspot_tasks"));
     }
