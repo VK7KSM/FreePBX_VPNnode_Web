@@ -12,6 +12,7 @@ final class GatewayProxyRoute {
     static void setPreferred(boolean value){preferred=value;if(!value)last="direct";}
     static Proxy[] attempts(){return preferred?new Proxy[]{LOCAL_HTTP,Proxy.NO_PROXY}:new Proxy[]{Proxy.NO_PROXY};}
     static boolean preferred(){return preferred;}
+    static Proxy httpProxy(){return LOCAL_HTTP;}
     static Proxy socksProxy(){return new Proxy(Proxy.Type.SOCKS,new InetSocketAddress("127.0.0.1",GatewayProxyPolicy.SOCKS_PORT));}
     static URLConnection open(URL url,Proxy route)throws Exception{return route==Proxy.NO_PROXY?url.openConnection():url.openConnection(route);}
     static void succeeded(Proxy route){last=route==Proxy.NO_PROXY?"direct":"proxy";}

@@ -14,6 +14,7 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSocket;
 import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.drafts.Draft_6455;
 import org.java_websocket.handshake.ServerHandshake;
 import org.json.JSONObject;
 
@@ -40,19 +41,19 @@ final class GatewayAdbSessions implements Closeable {
     public synchronized void close(){if(current!=null)current.finish("core stopping");current=null;}
     private final class Session {
         final String id;final WebSocketClient websocket;final java.util.Timer deadline=new java.util.Timer("gateway-adb-deadline",true);
-        GatewayMaintenanceShell shell;PowerManager.WakeLock wake;boolean ended;
-        Session(String id,URI uri,String token){this.id=id;websocket=new WebSocketClient(uri,Collections.singletonMap("Authorization","Bearer "+token)){
+        GatewayMaintenanceShell shell;PowerManager.WakeLock wake;boolean ended,opened,connecting;
+        Session(String id,URI uri,String token){this.id=id;websocket=new WebSocketClient(uri,new Draft_6455(),Collections.singletonMap("Authorization","Bearer "+token),10000){
             @Override protected void onSetSSLParameters(SSLParameters parameters){try{SSLSocket socket=(SSLSocket)getSocket();socket.setSoTimeout(10000);socket.startHandshake();
                 if(!HttpsURLConnection.getDefaultHostnameVerifier().verify(uri.getHost(),socket.getSession()))throw new SSLPeerUnverifiedException("relay hostname mismatch");socket.setSoTimeout(0);
             }catch(IOException error){throw new IllegalStateException("relay TLS validation failed",error);}}
-            public void onOpen(ServerHandshake handshake){openShell();}
+            public void onOpen(ServerHandshake handshake){opened=true;connecting=false;openShell();}
             public void onMessage(String raw){receive(raw);}
-            public void onClose(int code,String reason,boolean remote){finish("relay closed");}
-            public void onError(Exception error){log.write(System.currentTimeMillis()+" ADB_WS_ERROR "+error.getClass().getSimpleName());finish("network error");}
+            public void onClose(int code,String reason,boolean remote){if(!opened&&connecting)return;finish("relay closed");}
+            public void onError(Exception error){log.write(System.currentTimeMillis()+" ADB_WS_ERROR "+error.getClass().getSimpleName());if(opened||!connecting)finish("network error");}
         };websocket.setConnectionLostTimeout(30);}
         void start(){Thread thread=new Thread(()->{try{holdAwake();deadline.schedule(new java.util.TimerTask(){public void run(){finish("deadline");}},1800000);
-                    log.write(System.currentTimeMillis()+" ADB_CONNECT_BEGIN");if(!websocket.connectBlocking(10,TimeUnit.SECONDS))throw new IOException("relay unavailable");}
-                catch(Exception error){log.write(System.currentTimeMillis()+" ADB_CONNECT_FAILED "+error.getClass().getSimpleName());finish("connect failed");}},"gateway-adb-connect");thread.setDaemon(true);thread.start();}
+                    connecting=true;log.write(System.currentTimeMillis()+" ADB_CONNECT_BEGIN");if(!GatewayProxyWebSocket.connect(websocket))throw new IOException("relay unavailable");}
+                catch(Exception error){connecting=false;log.write(System.currentTimeMillis()+" ADB_CONNECT_FAILED "+error.getClass().getSimpleName());finish("connect failed");}},"gateway-adb-connect");thread.setDaemon(true);thread.start();}
         synchronized void openShell(){if(ended)return;try{shell=new GatewayMaintenanceShell(new GatewayMaintenanceShell.Listener(){public void output(int channel,byte[] data){sendOutput(channel,data);}
                 public void closed(String reason){finish("shell closed");}});shell.start();send(new JSONObject().put("type","ready").put("protocol","shell").put("resize_supported",false));log.write(System.currentTimeMillis()+" ADB_CONNECTED");}
             catch(Exception error){log.write(System.currentTimeMillis()+" ADB_SHELL_FAILED "+error.getClass().getSimpleName());finish("shell unavailable");}}

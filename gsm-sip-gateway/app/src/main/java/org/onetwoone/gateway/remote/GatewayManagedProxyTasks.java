@@ -4,6 +4,7 @@ import android.content.Context;
 import java.io.File;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.URL;
 import org.json.JSONObject;
 
 /** Persistent typed proxy tasks. Sensitive configuration never enters receipts or preferences. */
@@ -34,8 +35,8 @@ final class GatewayManagedProxyTasks {
         }catch(Exception failure){try{if(!id.isEmpty())terminal(id,"failed",category(failure),null);else clear();}catch(Exception ignored){}}}
     private boolean cancelled(String id){try{JSONObject active=GatewayUpdateProgress.read(activeFile),task=active.getJSONObject("task");return id.equals(task.optString("id"))&&task.optBoolean("cancel_requested");}catch(Exception ignored){return true;}}
     private void cleanupConfigs(){File parent=new File(context.getFilesDir(),"proxy-config"),files[]=parent.listFiles((dir,name)->name.matches("[0-9a-f]{64}\\.yaml"));if(files!=null)for(File file:files)file.delete();}
-    static JSONObject validate(JSONObject task)throws Exception {String type=task==null?"":task.optString("type");if(task==null||!task.optString("id").matches("[A-Za-z0-9-]{1,96}")||task.optLong("expires_at")<=0||!supported(type))throw new IOException("invalid proxy task");
-        if("configure_proxy".equals(type)){JSONObject params=task.optJSONObject("params");if(params==null||params.length()!=3)throw new IOException("invalid proxy parameters");GatewayProxyConfigDownload.validateUrl(params.optString("url"));if(params.optLong("size")<2||params.optLong("size")>GatewayProxyPolicy.MAX_CONFIG_BYTES||!params.optString("sha256").matches("[0-9a-f]{64}"))throw new IOException("invalid proxy parameters");}
+    static JSONObject validate(JSONObject task)throws Exception {String type=task==null?"":task.optString("type"),id=task==null?"":task.optString("id");long expires=task==null?0:task.optLong("expires_at"),now=System.currentTimeMillis();if(task==null||!id.matches("[A-Za-z0-9-]{1,96}")||expires<=0||expires>now+1_800_000L||!supported(type))throw new IOException("invalid proxy task");
+        if("configure_proxy".equals(type)){JSONObject params=task.optJSONObject("params");if(params==null||params.length()!=3)throw new IOException("invalid proxy parameters");URL url=GatewayProxyConfigDownload.validateUrl(params.optString("url"));if(!url.getPath().endsWith("/"+id)||params.optLong("size")<2||params.optLong("size")>GatewayProxyPolicy.MAX_CONFIG_BYTES||!params.optString("sha256").matches("[0-9a-f]{64}"))throw new IOException("invalid proxy parameters");}
         else if(task.has("params")&&task.optJSONObject("params")!=null&&task.optJSONObject("params").length()!=0)throw new IOException("unexpected proxy parameters");return task;}
     private static boolean supported(String type){return "configure_proxy".equals(type)||"start_proxy".equals(type)||"stop_proxy".equals(type)||"test_proxy".equals(type);}
     private static String category(Exception failure){if(failure instanceof InterruptedIOException)return "proxy-task-cancelled";if(failure instanceof SecurityException)return "proxy-security-rejected";if(failure instanceof java.net.SocketTimeoutException)return "proxy-network-timeout";return "proxy-operation-failed";}

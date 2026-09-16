@@ -16,6 +16,7 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSocket;
 import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.drafts.Draft_6455;
 import org.java_websocket.handshake.ServerHandshake;
 import org.json.JSONObject;
 
@@ -42,20 +43,20 @@ final class GatewayAdbTunnel implements Closeable {
     public synchronized void close(){if(current!=null)current.finish("core stopping");current=null;}
     private final class Session {
         final String id;final WebSocketClient websocket;final java.util.Timer deadline=new java.util.Timer("gateway-adb-tunnel-deadline",true);
-        Socket local;PowerManager.WakeLock wake;boolean ended;long upstream,downstream;
-        Session(String id,URI uri,String token){this.id=id;websocket=new WebSocketClient(uri,Collections.singletonMap("Authorization","Bearer "+token)){
+        Socket local;PowerManager.WakeLock wake;boolean ended,opened,connecting;long upstream,downstream;
+        Session(String id,URI uri,String token){this.id=id;websocket=new WebSocketClient(uri,new Draft_6455(),Collections.singletonMap("Authorization","Bearer "+token),10000){
             @Override protected void onSetSSLParameters(SSLParameters parameters){try{SSLSocket socket=(SSLSocket)getSocket();socket.setSoTimeout(10000);socket.startHandshake();
                 if(!HttpsURLConnection.getDefaultHostnameVerifier().verify(uri.getHost(),socket.getSession()))throw new SSLPeerUnverifiedException("tunnel hostname mismatch");socket.setSoTimeout(0);
             }catch(IOException error){throw new IllegalStateException("tunnel TLS validation failed",error);}}
-            public void onOpen(ServerHandshake handshake){connectLocal();}
+            public void onOpen(ServerHandshake handshake){opened=true;connecting=false;connectLocal();}
             public void onMessage(String raw){try{if(!"closed".equals(new JSONObject(raw).optString("type")))throw new IOException("unexpected control frame");}catch(Exception ignored){}finally{finish("relay closed");}}
             public void onMessage(ByteBuffer bytes){writeLocal(bytes);}
-            public void onClose(int code,String reason,boolean remote){finish("relay closed");}
-            public void onError(Exception error){log.write(System.currentTimeMillis()+" TUNNEL_WS_ERROR "+error.getClass().getSimpleName());finish("network error");}
+            public void onClose(int code,String reason,boolean remote){if(!opened&&connecting)return;finish("relay closed");}
+            public void onError(Exception error){log.write(System.currentTimeMillis()+" TUNNEL_WS_ERROR "+error.getClass().getSimpleName());if(opened||!connecting)finish("network error");}
         };websocket.setConnectionLostTimeout(30);}
         void start(){Thread thread=new Thread(()->{try{holdAwake();deadline.schedule(new java.util.TimerTask(){public void run(){finish("deadline");}},1800000);
-                    log.write(System.currentTimeMillis()+" TUNNEL_CONNECT_BEGIN");if(!websocket.connectBlocking(10,TimeUnit.SECONDS))throw new IOException("relay unavailable");}
-                catch(Exception error){log.write(System.currentTimeMillis()+" TUNNEL_CONNECT_FAILED "+error.getClass().getSimpleName());finish("connect failed");}},"gateway-adb-tunnel-connect");thread.setDaemon(true);thread.start();}
+                    connecting=true;log.write(System.currentTimeMillis()+" TUNNEL_CONNECT_BEGIN");if(!GatewayProxyWebSocket.connect(websocket))throw new IOException("relay unavailable");}
+                catch(Exception error){connecting=false;log.write(System.currentTimeMillis()+" TUNNEL_CONNECT_FAILED "+error.getClass().getSimpleName());finish("connect failed");}},"gateway-adb-tunnel-connect");thread.setDaemon(true);thread.start();}
         synchronized void connectLocal(){if(ended)return;try{Socket socket=new Socket();socket.setTcpNoDelay(true);socket.connect(new InetSocketAddress("127.0.0.1",5555),3000);local=socket;
                 Thread reader=new Thread(this::readLocal,"gateway-adb-tunnel-reader");reader.setDaemon(true);reader.start();log.write(System.currentTimeMillis()+" TUNNEL_CONNECTED");}
             catch(Exception error){log.write(System.currentTimeMillis()+" TUNNEL_LOCAL_FAILED "+error.getClass().getSimpleName());finish("local adbd unavailable");}}

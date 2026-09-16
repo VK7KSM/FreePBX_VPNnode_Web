@@ -28,7 +28,8 @@ final class GatewayProxyConfigDownload {
         int expectedPort=expected.getPort()==-1?expected.getDefaultPort():expected.getPort(),actualPort=actual.getPort()==-1?actual.getDefaultPort():actual.getPort();
         if(!"https".equalsIgnoreCase(actual.getProtocol())||!expected.getHost().equalsIgnoreCase(actual.getHost())||expectedPort!=actualPort
                 ||actual.getUserInfo()!=null||actual.getRef()!=null||!actual.getPath().matches("/api/elfremote/proxy-config/[A-Za-z0-9-]{1,128}")
-                ||!actual.getPath().equals(actual.toURI().getRawPath()))throw new SecurityException("proxy config origin rejected");return actual;}
+                ||!actual.getPath().equals(actual.toURI().getRawPath())||actual.getQuery()==null
+                ||!actual.getQuery().matches("device_id=[A-Za-z0-9_-]{1,128}&token=[A-Za-z0-9_-]{16,256}"))throw new SecurityException("proxy config origin rejected");return actual;}
     private static final class CancelInput extends FilterInputStream {private final Cancel cancel;CancelInput(InputStream in,Cancel cancel){super(in);this.cancel=cancel;}
         @Override public int read(byte[] b,int off,int len)throws IOException{if(cancel.cancelled())throw new InterruptedIOException("proxy task cancelled");return super.read(b,off,len);}
         @Override public int read()throws IOException{if(cancel.cancelled())throw new InterruptedIOException("proxy task cancelled");return super.read();}}
