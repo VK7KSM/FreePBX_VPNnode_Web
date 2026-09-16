@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">elfRemote Gateway</string>
+    <string name="remote_connect">Connect and report</string>
+    <string name="remote_paired">Paired</string>
+    <string name="remote_pair_pending">Waiting for pairing</string>
+    <string name="remote_no_report">No report yet</string>
+    <string name="remote_last_report">Last report: %1$s</string>
+    <string name="remote_error">Connection: %1$s</string>
+    <string name="remote_core">Maintenance core: %1$s</string>
+    <string name="remote_running">Running</string>
+    <string name="remote_not_ready">Not ready</string>
+    <string name="remote_notification">Remote management</string>
+    <string name="select_capture">Select Capture Device (GSM→SIP)</string>
+    <string name="select_playback">Select Playback Device (SIP→GSM)</string>
+    <string name="select_mixer">Select Mixer Route</string>
+</resources>

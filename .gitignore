@@ -37,8 +37,12 @@ draft/
 scratch/
 staging/
 
+# Pixel Gateway 是本仓库内的 SIP 系统源码，允许维护其文档
+!gsm-sip-gateway/**/*.md
+!gsm-sip-gateway/docs/
+!gsm-sip-gateway/docs/**
+
 # 非 Cloudflare Worker 子项目
-gsm-sip-gateway/
 mqtt-server/
 sip-server/
 tools/
@@ -60,6 +64,10 @@ scripts/*
 captures/
 artifacts/
 releases/
+
+# Pixel Gateway 构建所需的受控本地库与 Gradle wrapper
+!gsm-sip-gateway/**/*.so
+!gsm-sip-gateway/gradle/wrapper/*.jar
 
 # 旧配置已由 wrangler.jsonc 取代
 wrangler.toml
