@@ -53,6 +53,7 @@ import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.
 
 import { LOGO_PNG_B64 } from "./logo.js";
 import { AdbRelay } from "./adb-relay.js";
+import { AdbTunnelRelay } from "./adb-tunnel-relay.js";
 import {normalizeSipTargets,applySipRegistrations,publicSipAccounts,checkSipTarget,sipAllowed} from './sip-accounts.js';
 import {sipDirectory,managedSipParams} from './sip-provisioning.js';
 import { terminalScript,terminalCss } from "./terminal-assets.js";
@@ -232,6 +233,7 @@ export class ElfStore {
     this.ctx = ctx;
     this.env = env;
     this.adb = new AdbRelay();
+    this.adbTunnel = new AdbTunnelRelay();
     this.media = new MediaRelay(env,{authorizePhoto:async(deviceId,reportId)=>{
       const key='manual-photo/'+deviceId+'/'+reportId,expires=Date.now()+86400000;
       await this.ctx.storage.put({[key]:{received_at:new Date().toISOString(),expires_at:expires},['manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+reportId]:key});
@@ -306,6 +308,44 @@ export class ElfStore {
         if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false},426);
         const s=this.media.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
         const pair=new WebSocketPair();this.media.attach(s,role,pair[1]);return new Response(null,{status:101,webSocket:pair[0]});
+      }catch(error){return json({ok:false,msg:error.message},400);}
+    }
+    if(url.pathname.startsWith('/api/elfremote/adb-tunnel/')) {
+      try {
+        if(url.pathname==='/api/elfremote/adb-tunnel/session') {
+          if(request.method==='GET') {
+            const id=url.searchParams.get('session_id')||'';
+            if(!/^[a-f0-9-]{36}$/.test(id))return json({ok:false,msg:'ADB隧道会话编号无效'},400);
+            return json(this.adbTunnel.status(id));
+          }
+          const raw=await request.text();if(raw.length>4096)return json({ok:false,msg:'请求过大'},400);
+          const data=JSON.parse(raw||'{}');
+          if(request.method==='POST') {
+            return await this.ctx.blockConcurrencyWhile(async()=>{
+              try{
+                const device=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(value=>value.id===data.device_id);
+                const origin=new URL(this.env.ELF_BASE_URL||request.url).origin;
+                return json(this.adbTunnel.create(device,origin));
+              }catch(error){return json({ok:false,msg:error.message},400);}
+            });
+          }
+          if(request.method==='DELETE') {
+            const session=this.adbTunnel.sessions.get(data.session_id);
+            if(session)this.adbTunnel.close(session,'admin_closed',1000);
+            return json({ok:true,active:false,session_id:data.session_id||null});
+          }
+          return json({ok:false},405);
+        }
+        const role=url.pathname==='/api/elfremote/adb-tunnel/host'?'host'
+          :url.pathname==='/api/elfremote/adb-tunnel/device'?'device':null;
+        if(!role||request.method!=='GET')return json({ok:false},404);
+        if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false,msg:'需要WebSocket连接'},426);
+        if(!trustedOrigin(request))return json({ok:false,msg:'请求来源不匹配'},403);
+        const authorization=request.headers.get('Authorization')||'';
+        const presented=authorization.startsWith('Bearer ')?authorization.slice(7):'';
+        const session=this.adbTunnel.get(url.searchParams.get('session_id'),role,presented);
+        const pair=new WebSocketPair();this.adbTunnel.attach(session,role,pair[1]);
+        return new Response(null,{status:101,webSocket:pair[0]});
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/adb/')) {
@@ -408,6 +448,8 @@ export class ElfStore {
             const device=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
             body.adb_session=device?.enabled!==false&&device?.managed_adb_session===true
               ?this.adb.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
+            body.adb_tunnel=device?.enabled!==false&&device?.managed_adb_tunnel_v1===true
+              ?this.adbTunnel.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
             if(isGateway(device))addManagedTaskOffer(body,device,device,Date.now());
             return json(body,result.status);
           }
@@ -428,7 +470,8 @@ export class ElfStore {
             }
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
-              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,__media:this.media });
+              __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,
+              __adbTunnel:this.adbTunnel,__media:this.media });
             if (!response.ok) throw response;
             return response;
           });
@@ -575,7 +618,8 @@ const app = {
         }
         return response;
       }
-      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session","/api/elfremote/media/session"].includes(pathname)) {
+      if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session",
+          "/api/elfremote/adb-tunnel/session","/api/elfremote/media/session"].includes(pathname)) {
         const payload = await request.clone().json().catch(() => null);
         const saved = await stub.fetch(request);
         if (!saved.ok || !payload?.device_id) return saved;
@@ -585,7 +629,8 @@ const app = {
           const notified = await pushHttp(env, new Request(new URL("/api/devices/request-status", request.url), {
             method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
           }), stub, {wakeKey:result.session_id?(pathname==='/api/elfremote/media/session'?'media:'+result.session_id
-            :pathname==='/api/elfremote/adb/session'?'adb:'+result.session_id:undefined):undefined});
+            :pathname==='/api/elfremote/adb/session'?'adb:'+result.session_id
+            :pathname==='/api/elfremote/adb-tunnel/session'?'adb_tunnel:'+result.session_id:undefined):undefined});
           const notice = await notified.json();
           result.notification = notice.request || null;
         } catch { result.notification = null; }
@@ -1301,6 +1346,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_reboot_tasks: d.managed_reboot_tasks === true,
     managed_adbd_tasks: d.managed_adbd_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
+    managed_adb_tunnel_v1: d.managed_adb_tunnel_v1 === true,
     managed_alarm_tasks:d.managed_alarm_tasks===true,
     managed_media: d.managed_media === true,
     ...mediaCapabilityFields(d),
@@ -1789,6 +1835,7 @@ async function handleDeviceReport(env, request) {
       list[i].managed_reboot_tasks = data.managed_reboot_tasks === true;
       list[i].managed_adbd_tasks = data.managed_adbd_tasks === true;
       list[i].managed_adb_session = data.managed_adb_session === true;
+      list[i].managed_adb_tunnel_v1 = data.managed_adb_tunnel_v1 === true;
       list[i].managed_media = data.managed_media === true;
       applyMediaCapabilities(list[i],data);
       env.__media?.updateCapabilities(list[i]);
@@ -1862,6 +1909,7 @@ async function handleDeviceReport(env, request) {
     const body = { ok: true, paired: found.paired !== false, server_time:Date.now(), unpaired_at_ms: found.unpaired_at_ms || 0, report_id: history.record.report_id };
     if(found.enabled!==false&&mediaModes(found).length>0)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
+    if(found.enabled!==false&&data.managed_adb_tunnel_v1===true)body.adb_tunnel=env.__adbTunnel?.offer(found.id,new URL(request.url).origin)||null;
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     addManagedTaskOffer(body, found, data, now);
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
