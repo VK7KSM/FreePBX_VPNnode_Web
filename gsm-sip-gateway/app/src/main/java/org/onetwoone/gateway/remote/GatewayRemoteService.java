@@ -28,6 +28,7 @@ public final class GatewayRemoteService extends Service {
     private GatewayManagedExecTasks execTasks;
     private GatewayLocationSampler location;
     private GatewayManagedLostTasks lostTasks;
+    private boolean proxyAssetsChecked;
     private volatile boolean stopped;
     private int failures;
     private volatile long nextAttempt;
@@ -73,8 +74,16 @@ public final class GatewayRemoteService extends Service {
         if(stopped)return;
         long delay=60_000L;
         try {
+            if(!proxyAssetsChecked)try {
+                GatewayProxyAssets.manifest(this);JSONObject proxyAsset=GatewayProxyAssets.stage(this);
+                store.prefs.edit().putString("proxy_asset",proxyAsset.toString()).remove("proxy_asset_error").apply();proxyAssetsChecked=true;
+            } catch(Exception unavailable) {
+                store.prefs.edit().remove("proxy_asset").putString("proxy_asset_error",unavailable.getClass().getSimpleName()).apply();
+            }
             JSONObject health=GatewayCoreClient.ensure(this);
             boolean ready=health.optInt("uid",-1)==0;
+            try {JSONObject proxy=GatewayCoreClient.prepareProxy(this);store.prefs.edit().putString("proxy_runtime",proxy.toString()).remove("proxy_runtime_error").apply();}
+            catch(Exception unavailable){store.prefs.edit().remove("proxy_runtime").putString("proxy_runtime_error",unavailable.getClass().getSimpleName()).apply();}
             JSONObject push=store.prefs.getBoolean("paired",false)&&!store.deviceId().isEmpty()
                     ?GatewayCoreClient.configurePush(this,store.deviceId(),store.token()):null;
             store.prefs.edit().putBoolean("core_ready",ready).putInt("core_version",health.optInt("version_code"))
@@ -223,7 +232,17 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.getString("pixel_module_error","")));
         body.put("mobile_network",GatewayMobileStatus.stored(store.prefs.getString("mobile_status","")));
         body.put("alarm",lostTasks.alarmSnapshot());
+        body.put("proxy_runtime",proxyRuntimeStatus());
         return body;
+    }
+    private JSONObject proxyRuntimeStatus()throws Exception {
+        String runtime=store.prefs.getString("proxy_runtime","");if(!runtime.isEmpty())return new JSONObject(runtime);
+        String raw=store.prefs.getString("proxy_asset","");boolean assetVerified=!raw.isEmpty()&&new JSONObject(raw).optBoolean("verified");
+        String error=store.prefs.getString("proxy_runtime_error",store.prefs.getString("proxy_asset_error","unavailable"));
+        return new JSONObject().put("schema_version",1).put("bundled",true).put("version",GatewayProxyAssets.VERSION).put("abi","arm64-v8a")
+                .put("asset_verified",assetVerified).put("core_verified",false).put("configured",false).put("running",false)
+                .put("http_ready",false).put("socks_ready",false).put("proxy_reachable",false).put("management_via","direct")
+                .put("write_locked",true).put("error",error);
     }
     @Override public void onDestroy() {
         stopped=true;if(lostTasks!=null)lostTasks.close();if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();

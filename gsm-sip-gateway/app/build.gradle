@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 47
-        versionName "1.5.0-gateway-alpha40-alarm-locate"
+        versionCode 48
+        versionName "1.5.0-gateway-alpha41-proxy-core"
 
         // NDK build config
         externalNativeBuild {
@@ -78,6 +78,10 @@ android {
 
     packagingOptions {
         pickFirst 'lib/arm64-v8a/libc++_shared.so'
+    }
+
+    androidResources {
+        noCompress 'dat'
     }
 }
 

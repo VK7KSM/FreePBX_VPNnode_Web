@@ -23,6 +23,7 @@ public final class GatewayCoreMain {
         try{resolvedContext=systemContext();}catch(Exception ignored){}
         final android.content.Context context=resolvedContext;
         GatewayCorePush push=null;try{if(context!=null)push=new GatewayCorePush(context,new File(GatewayCoreClient.DIR));}catch(Exception ignored){}
+        GatewayProxyRuntime proxy=new GatewayProxyRuntime();
         boolean running=true;
         try {
             while (running) {
@@ -43,6 +44,8 @@ public final class GatewayCoreMain {
                             catch(Exception failure){response.put("mobile_status",GatewayMobileStatus.unavailable())
                                     .put("mobile_error",GatewayMobileStatusCollector.errorCategory(failure));}
                         }
+                        else if("proxy-prepare".equals(operation))response.put("proxy",proxy.prepare(request));
+                        else if("proxy-status".equals(operation))response.put("proxy",proxy.status());
                         else if("push-config".equals(operation)&&push!=null)response.put("push",push.configure(request));
                         else if("push-status".equals(operation)&&push!=null)response.put("push",push.status());
                         else if("push-tick".equals(operation)&&push!=null){push.tick();response.put("ticked",true);}

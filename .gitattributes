@@ -1,2 +1,3 @@
 # 第三方许可与二进制资源保持上游原始字节。
 vendor/webrtcaec3/* -text -whitespace
+gsm-sip-gateway/app/src/main/assets/proxy/* -text -whitespace

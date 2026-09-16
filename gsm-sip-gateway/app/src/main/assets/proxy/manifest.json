@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "mihomo",
+  "version": "v1.19.31",
+  "abi": "arm64-v8a",
+  "upstream": "https://github.com/MetaCubeX/mihomo",
+  "license": "MIT",
+  "compressed_file": "mihomo-android-arm64-v8-v1.19.31.dat",
+  "compressed_size": 21808349,
+  "compressed_sha256": "de00bc53ed151636ca078c812a82a5315687d8d52164db230f1935b2a37904f6",
+  "executable_size": 63866712,
+  "executable_sha256": "dbd8af275219a097d66362d543b32f65ba0d4de9d96a49bf5e9abdcdad3af6f1"
+}

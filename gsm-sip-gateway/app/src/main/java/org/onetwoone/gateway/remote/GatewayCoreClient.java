@@ -34,6 +34,14 @@ final class GatewayCoreClient {
     static JSONObject mobileStatus(Context context) throws Exception {
         return request(context,new JSONObject().put("operation","mobile-status"));
     }
+    static JSONObject prepareProxy(Context context) throws Exception {
+        File asset=GatewayProxyAssets.stagedFile(context);return request(context,new JSONObject().put("operation","proxy-prepare")
+                .put("asset_path",asset.getCanonicalPath()).put("size",GatewayProxyAssets.EXECUTABLE_SIZE)
+                .put("sha256",GatewayProxyAssets.EXECUTABLE_SHA256)).getJSONObject("proxy");
+    }
+    static JSONObject proxyStatus(Context context) throws Exception {
+        return request(context,new JSONObject().put("operation","proxy-status")).getJSONObject("proxy");
+    }
     private static JSONObject request(Context context,JSONObject body) throws Exception {
         try(LocalSocket socket=new LocalSocket()) {
             socket.connect(new LocalSocketAddress(GatewayCoreProtocol.SOCKET)); socket.setSoTimeout(3000);
