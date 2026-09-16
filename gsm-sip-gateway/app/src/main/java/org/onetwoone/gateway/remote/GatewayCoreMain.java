@@ -38,6 +38,7 @@ public final class GatewayCoreMain {
                                     .put("uptime_ms",SystemClock.elapsedRealtime()-started).put("update_ready",true)
                                     .put("independent_push",push!=null).put("push_connected",push!=null&&push.status().optBoolean("connected"));
                         else if("pixel-module-health".equals(operation))response.put("pixel_modules",GatewayPixelLegacyHealth.snapshot());
+                        else if("pixel-runtime-health".equals(operation))response.put("pixel_health",GatewayPixelRuntimeHealth.snapshot());
                         else if("mobile-status".equals(operation)){
                             try {response.put("mobile_status",context==null
                                     ?GatewayMobileStatus.unavailable():GatewayMobileStatusCollector.collect(context));}

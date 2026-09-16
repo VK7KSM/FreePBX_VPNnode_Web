@@ -31,6 +31,9 @@ final class GatewayCoreClient {
     static JSONObject pixelModuleHealth(Context context) throws Exception {
         return request(context,new JSONObject().put("operation","pixel-module-health")).getJSONObject("pixel_modules");
     }
+    static JSONObject pixelRuntimeHealth(Context context) throws Exception {
+        return request(context,new JSONObject().put("operation","pixel-runtime-health")).getJSONObject("pixel_health");
+    }
     static JSONObject mobileStatus(Context context) throws Exception {
         return request(context,new JSONObject().put("operation","mobile-status"));
     }

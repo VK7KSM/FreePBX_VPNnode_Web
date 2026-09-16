@@ -105,6 +105,8 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.edit().putBoolean("pixel_assets_verified",false)
                         .putString("pixel_module_error",unavailable.getClass().getSimpleName()).apply();
             }
+            try {store.prefs.edit().putString("pixel_runtime_health",GatewayCoreClient.pixelRuntimeHealth(this).toString()).remove("pixel_runtime_health_error").apply();}
+            catch(Exception unavailable){store.prefs.edit().remove("pixel_runtime_health").putString("pixel_runtime_health_error",unavailable.getClass().getSimpleName()).apply();}
             try {
                 JSONObject mobile=GatewayCoreClient.mobileStatus(this),status=mobile.getJSONObject("mobile_status");
                 android.content.SharedPreferences.Editor edit=store.prefs.edit().putString("mobile_status",status.toString());
@@ -241,6 +243,8 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.getBoolean("pixel_assets_verified",false),
                 store.prefs.getString("pixel_module_health",""),
                 store.prefs.getString("pixel_module_error","")));
+        String runtimeHealth=store.prefs.getString("pixel_runtime_health","");
+        if(!runtimeHealth.isEmpty())body.put("pixel_health",new JSONObject(runtimeHealth));
         body.put("mobile_network",GatewayMobileStatus.stored(store.prefs.getString("mobile_status","")));
         body.put("alarm",lostTasks.alarmSnapshot());
         body.put("lost_display",lostDisplay.snapshot());
