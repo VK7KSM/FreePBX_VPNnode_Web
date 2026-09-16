@@ -6,6 +6,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -36,5 +39,19 @@ public class GatewayWifiPolicyTest {
         assertEquals("Enterprise",GatewayWifiScanPolicy.security("[RSN-EAP-CCMP]"));
     }
     @Test public void shellQuoteKeepsPathsSingleArgument(){assertEquals("'a'\"'\"'b'",GatewayWifiConnector.quote("a'b"));}
+    @Test public void scanGrantIncludesBackgroundLocation() {
+        String command=GatewayWifiScanner.locationGrantCommand();
+        assertTrue(command.contains("ACCESS_COARSE_LOCATION"));
+        assertTrue(command.contains("ACCESS_FINE_LOCATION"));
+        assertTrue(command.contains("ACCESS_BACKGROUND_LOCATION"));
+    }
+    @Test public void rootResultWriterRequiresAppPrecreatedFile() throws Exception {
+        File directory=Files.createTempDirectory("gateway-wifi-result").toFile();
+        File result=new File(directory,"result.json");
+        try {GatewayWifiRootMain.write(result,new JSONObject().put("ok",true));fail();}catch(IllegalStateException expected){}
+        assertTrue(result.createNewFile());
+        GatewayWifiRootMain.write(result,new JSONObject().put("ok",true));
+        assertEquals("{\"ok\":true}\n",new String(Files.readAllBytes(result.toPath()),StandardCharsets.UTF_8));
+    }
     private static void expectInvalid(JSONObject value)throws Exception{try{GatewayWifiPolicy.connectParams(value);fail();}catch(Exception expected){}}
 }

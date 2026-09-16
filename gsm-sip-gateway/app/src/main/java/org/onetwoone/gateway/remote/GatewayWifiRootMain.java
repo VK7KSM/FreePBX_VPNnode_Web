@@ -102,11 +102,11 @@ public final class GatewayWifiRootMain {
         byte[] bytes=new byte[(int)file.length()];try(FileInputStream in=new FileInputStream(file)){int at=0,n;while(at<bytes.length&&(n=in.read(bytes,at,bytes.length-at))>0)at+=n;if(at!=bytes.length)throw new IllegalArgumentException("short read");}
         return new JSONObject(new String(bytes,StandardCharsets.UTF_8));
     }
-    private static void write(File file,JSONObject value) throws Exception {
-        File temp=new File(file.getPath()+".new");byte[] bytes=(value.toString()+"\n").getBytes(StandardCharsets.UTF_8);
-        try(FileOutputStream out=new FileOutputStream(temp)){out.write(bytes);out.getFD().sync();}
-        temp.setReadable(true,false);temp.setWritable(true,true);if(file.exists()&&!file.delete())throw new IllegalStateException("result cleanup failed");
-        if(!temp.renameTo(file))throw new IllegalStateException("result commit failed");
+    static void write(File file,JSONObject value) throws Exception {
+        if(!file.isFile()||!file.getName().equals("result.json")||!file.getCanonicalFile().equals(file.getAbsoluteFile()))
+            throw new IllegalStateException("result target unavailable");
+        byte[] bytes=(value.toString()+"\n").getBytes(StandardCharsets.UTF_8);
+        try(FileOutputStream out=new FileOutputStream(file,false)){out.write(bytes);out.getFD().sync();}
     }
     private GatewayWifiRootMain() {}
 }

@@ -80,6 +80,7 @@ final class GatewayWifiConnector {
         new File(dir,"request.json").delete();Done callback=done;done=null;if(callback!=null)callback.finish(ok,detail,result);
     }
     private void runRoot(String operation,File dir,long timeout)throws Exception {
+        GatewayUpdateProgress.write(new File(dir,"result.json"),new JSONObject().put("pending",true));
         String command="export CLASSPATH="+quote(context.getApplicationInfo().sourceDir)+"; exec /system/bin/app_process /system/bin org.onetwoone.gateway.remote.GatewayWifiRootMain "
                 +operation+" "+quote(dir.getCanonicalPath());
         Process process=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();

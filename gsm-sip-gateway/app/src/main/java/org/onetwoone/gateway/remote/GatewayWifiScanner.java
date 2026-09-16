@@ -15,7 +15,7 @@ import org.json.JSONObject;
 
 final class GatewayWifiScanner {
     static JSONObject scan(Context context) throws Exception {
-        grantLocation(context);
+        grantLocation();
         GatewayLocationAppOp.Scope location=GatewayLocationAppOp.open();
         WifiManager wifi=(WifiManager)context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         try {
@@ -39,11 +39,14 @@ final class GatewayWifiScanner {
             } finally {context.unregisterReceiver(receiver);}
         } finally {location.close();}
     }
-    private static void grantLocation(Context context) throws Exception {
-        if(context.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")==android.content.pm.PackageManager.PERMISSION_GRANTED
-                &&context.checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION")==android.content.pm.PackageManager.PERMISSION_GRANTED)return;
-        Process process=new ProcessBuilder("su","-c","pm grant org.onetwoone.gateway android.permission.ACCESS_COARSE_LOCATION; pm grant org.onetwoone.gateway android.permission.ACCESS_FINE_LOCATION").redirectErrorStream(true).start();
+    private static void grantLocation() throws Exception {
+        Process process=new ProcessBuilder("su","-c",locationGrantCommand()).redirectErrorStream(true).start();
         if(!process.waitFor(10,TimeUnit.SECONDS)||process.exitValue()!=0)throw new IOException("location permission unavailable");
+    }
+    static String locationGrantCommand() {
+        return "pm grant org.onetwoone.gateway android.permission.ACCESS_COARSE_LOCATION"
+                +"; pm grant org.onetwoone.gateway android.permission.ACCESS_FINE_LOCATION"
+                +"; pm grant org.onetwoone.gateway android.permission.ACCESS_BACKGROUND_LOCATION";
     }
     private GatewayWifiScanner() {}
 }
