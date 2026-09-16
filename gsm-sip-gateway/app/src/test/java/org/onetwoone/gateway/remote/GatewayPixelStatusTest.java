@@ -19,6 +19,7 @@ public class GatewayPixelStatusTest {
         assertTrue(result.getBoolean("enabled"));assertTrue(result.getBoolean("write_locked"));
         assertFalse(result.has("secret_path"));assertFalse(result.getJSONObject("charge_bypass").has("sha256"));
         assertFalse(result.getJSONObject("charge_bypass").has("id"));
+        assertFalse(result.getJSONObject("companion").getBoolean("installed"));
     }
 
     @Test public void preservesMissingAndDisabledModuleState() throws Exception {
@@ -85,7 +86,7 @@ public class GatewayPixelStatusTest {
     }
 
     private static void assertCompleteUnavailable(JSONObject value) throws Exception {
-        assertEquals(8,value.length());assertEquals(1,value.getInt("schema_version"));
+        assertEquals(9,value.length());assertEquals(1,value.getInt("schema_version"));
         assertFalse(value.getBoolean("recognized"));assertFalse(value.getBoolean("enabled"));
         assertTrue(value.getBoolean("write_locked"));
         for(String key:new String[]{"charge_bypass","sip_audio_access"}) {
@@ -93,5 +94,8 @@ public class GatewayPixelStatusTest {
             assertFalse(module.getBoolean("installed"));assertFalse(module.getBoolean("disabled"));
             assertFalse(module.getBoolean("recognized"));assertFalse(module.getBoolean("files_verified"));
         }
+        JSONObject companion=value.getJSONObject("companion");assertEquals(6,companion.length());
+        assertFalse(companion.getBoolean("installed"));assertFalse(companion.getBoolean("recognized"));
+        assertFalse(companion.getBoolean("active"));
     }
 }

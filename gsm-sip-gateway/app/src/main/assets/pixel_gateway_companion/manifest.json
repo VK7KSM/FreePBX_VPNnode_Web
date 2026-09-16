@@ -43,6 +43,46 @@
       "path": "system/pixel_gateway_debloat_restore.sh",
       "size": 290,
       "sha256": "232dac06df0cdf5d28e3c6b94a37a6a2bb590e2743be41c38a6788560d6b47bc"
+    },
+    {
+      "path": "unified/default.conf",
+      "size": 83,
+      "sha256": "6e4d694e2e89797f1dab0aa7ba158a1f0ae9584b30bfc8b79fb4a058df1c0ab0"
+    },
+    {
+      "path": "unified/module.prop",
+      "size": 221,
+      "sha256": "165b1bcfa41d247c58558a0505bbfe0b47e39a3cd528e68c34373ee5f563c9e3"
+    },
+    {
+      "path": "unified/post-fs-data.sh",
+      "size": 606,
+      "sha256": "51084f0cdff7db9839dc74d1c13ab7d7f5ccc6eb1426fe114516ca752c243b35"
+    },
+    {
+      "path": "unified/sepolicy.rule",
+      "size": 206,
+      "sha256": "86032c436541f7b0a0d0e93dc7e63ade877bfd953b46521c0696c022dd9690b1"
+    },
+    {
+      "path": "unified/service.sh",
+      "size": 788,
+      "sha256": "4853b3867565826a3275a118ab2419642cd62eaa358da52c6bd37bfb0750b4fe"
+    },
+    {
+      "path": "unified/units/adb.sh",
+      "size": 276,
+      "sha256": "6a32eea071d329301f35cd87662d30719981f330ef953f1fc25c254ee417c970"
+    },
+    {
+      "path": "unified/units/audio.sh",
+      "size": 1242,
+      "sha256": "97822479c64f1b45ccfd43f3e015d4664be7510595ac9c65283d6fa5869bc451"
+    },
+    {
+      "path": "unified/units/charge.sh",
+      "size": 2619,
+      "sha256": "04a82255cc96e15f59918fe279e19346b22222201ea4d69bf6822cbe1cbd2f6f"
     }
   ]
 }

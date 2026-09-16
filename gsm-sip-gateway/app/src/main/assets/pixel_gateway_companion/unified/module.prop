@@ -1,0 +1,6 @@
+id=elfremote_gateway_companion
+name=elfRemote Gateway Pixel Companion
+version=0.1.0
+versionCode=1
+author=VK7KSM
+description=Pixel 3 XL root companion with independently gated power, SIP audio and RSA-protected ADB units.

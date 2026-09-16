@@ -32,11 +32,14 @@ final class GatewayPixelLegacyHealth {
     static JSONObject snapshot(File modulesRoot) throws Exception {
         JSONObject charge=module(modulesRoot,CHARGE_ID);
         JSONObject audio=module(modulesRoot,AUDIO_ID);
-        boolean recognized=charge.optBoolean("recognized")&&audio.optBoolean("recognized");
-        boolean enabled=recognized&&!charge.optBoolean("disabled")&&!audio.optBoolean("disabled");
-        return new JSONObject().put("mode","legacy_managed")
-                .put("recognized",recognized).put("enabled",enabled).put("write_locked",true)
-                .put("charge_bypass",charge).put("sip_audio_access",audio);
+        JSONObject companion=GatewayPixelCompanionInstaller.inspect(modulesRoot,new File("/data/adb/elfremote-gateway/companion.conf"));
+        boolean legacyRecognized=charge.optBoolean("recognized")&&audio.optBoolean("recognized");
+        boolean legacyEnabled=legacyRecognized&&!charge.optBoolean("disabled")&&!audio.optBoolean("disabled");
+        boolean companionRecognized=companion.optBoolean("recognized"),companionActive=companion.optBoolean("active");
+        String mode=companionActive?"companion_active":companionRecognized?"companion_staged":legacyRecognized?"legacy_managed":"unavailable";
+        return new JSONObject().put("mode",mode)
+                .put("recognized",legacyRecognized||companionRecognized).put("enabled",legacyEnabled||companionActive).put("write_locked",true)
+                .put("charge_bypass",charge).put("sip_audio_access",audio).put("companion",companion);
     }
 
     private static JSONObject module(File root,String expectedId) throws Exception {

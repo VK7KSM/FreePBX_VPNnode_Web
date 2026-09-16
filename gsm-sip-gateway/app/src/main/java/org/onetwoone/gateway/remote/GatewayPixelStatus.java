@@ -16,16 +16,30 @@ final class GatewayPixelStatus {
             return unavailable(assetsVerified,"invalid_snapshot");
         try {
             JSONObject source=new JSONObject(healthJson);
-            if(!"legacy_managed".equals(source.optString("mode",null)))throw new IllegalArgumentException();
-            result.put("mode","legacy_managed")
+            String mode=source.optString("mode",null);
+            if(!java.util.Arrays.asList("legacy_managed","companion_staged","companion_active","unavailable").contains(mode))throw new IllegalArgumentException();
+            result.put("mode",mode)
                     .put("recognized",requiredBoolean(source,"recognized"))
                     .put("enabled",requiredBoolean(source,"enabled"))
                     .put("charge_bypass",module(source,"charge_bypass"))
-                    .put("sip_audio_access",module(source,"sip_audio_access"));
+                    .put("sip_audio_access",module(source,"sip_audio_access"))
+                    .put("companion",companion(source));
             return result;
         } catch(Exception invalid) {
             return unavailable(assetsVerified,"invalid_snapshot");
         }
+    }
+
+    private static JSONObject companion(JSONObject source) throws Exception {
+        Object raw=source.opt("companion");if(!(raw instanceof JSONObject))return emptyCompanion();
+        JSONObject input=(JSONObject)raw,units=input.optJSONObject("units");if(units==null)throw new IllegalArgumentException();
+        JSONObject output=new JSONObject().put("installed",requiredBoolean(input,"installed"))
+                .put("disabled",requiredBoolean(input,"disabled")).put("recognized",requiredBoolean(input,"recognized"))
+                .put("active",requiredBoolean(input,"active")).put("rollback_available",requiredBoolean(input,"rollback_available"))
+                .put("units",new JSONObject().put("charge",requiredBoolean(units,"charge"))
+                        .put("audio",requiredBoolean(units,"audio")).put("adb_tcp",requiredBoolean(units,"adb_tcp")));
+        if(input.has("version")){String version=input.optString("version","");if(version.isEmpty()||version.length()>MAX_VERSION_LENGTH||hasControl(version))throw new IllegalArgumentException();output.put("version",version);}
+        return output;
     }
 
     private static JSONObject module(JSONObject source,String key) throws Exception {
@@ -57,7 +71,7 @@ final class GatewayPixelStatus {
 
     private static JSONObject unavailable(boolean assetsVerified,String mode) throws Exception {
         return base(assetsVerified,mode).put("recognized",false).put("enabled",false)
-                .put("charge_bypass",emptyModule()).put("sip_audio_access",emptyModule());
+                .put("charge_bypass",emptyModule()).put("sip_audio_access",emptyModule()).put("companion",emptyCompanion());
     }
 
     private static JSONObject base(boolean assetsVerified,String mode) throws Exception {
@@ -68,6 +82,11 @@ final class GatewayPixelStatus {
     private static JSONObject emptyModule() throws Exception {
         return new JSONObject().put("installed",false).put("disabled",false)
                 .put("recognized",false).put("files_verified",false);
+    }
+    private static JSONObject emptyCompanion() throws Exception {
+        return new JSONObject().put("installed",false).put("disabled",false).put("recognized",false)
+                .put("active",false).put("rollback_available",false)
+                .put("units",new JSONObject().put("charge",false).put("audio",false).put("adb_tcp",false));
     }
 
     private static boolean hasControl(String value) {

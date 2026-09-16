@@ -16,7 +16,7 @@ public class GatewayPixelAssetsTest {
         File root=assets();
         JSONObject result=GatewayPixelAssets.verify(new FileInputStream(new File(root,"manifest.json")),
                 path->new FileInputStream(new File(root,path)));
-        assertTrue(result.getBoolean("verified"));assertEquals(8,result.getInt("file_count"));
+        assertTrue(result.getBoolean("verified"));assertEquals(16,result.getInt("file_count"));
         assertEquals("do_not_replace_recognized_legacy_modules",result.getString("deployment_policy"));
     }
 
@@ -39,6 +39,8 @@ public class GatewayPixelAssetsTest {
     private static File assets() throws Exception {
         File current=new File(System.getProperty("user.dir")).getCanonicalFile();
         for(int depth=0;depth<8&&current!=null;depth++,current=current.getParentFile()) {
+            File direct=new File(current,"gsm-sip-gateway/app/src/main/assets/pixel_gateway_companion");
+            if(new File(direct,"manifest.json").isFile())return direct;
             File candidate=new File(current,"research/FreePBX_VPNnode_Web/gsm-sip-gateway/app/src/main/assets/pixel_gateway_companion");
             if(new File(candidate,"manifest.json").isFile())return candidate;
         }
