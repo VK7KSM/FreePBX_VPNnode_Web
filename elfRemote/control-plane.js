@@ -2,6 +2,7 @@ import {systemSettingsParams,applySystemSettingsResult,systemSettingAllowed} fro
 import {isNetworkTask,prepareNetworkTask,applyNetworkProgress,publicNetwork} from '../network-confirmation.js';
 import {normalizeContactsPageParams,normalizeContactsPageResult,validateContactsPageSnapshot} from '../contacts-pages.js';
 import {sipDestination,sipKey,sipAllowed,checkSipTarget,validateSipResult,sipConfigurationResult,redactSipText} from '../sip-accounts.js';
+import {gatewayRoutingParams,gatewayRoutingResult,saveGatewayRoutingResult} from '../gateway-routing.js';
 export const CONTROL_PLANE_ONLINE_MS = 120000;
 export const PAIR_CODE_TTL_MS = 60 * 60 * 1000;
 
@@ -127,7 +128,7 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
+export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "configure_gateway_routing", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -143,6 +144,7 @@ export const REPAIR_TYPE_LABELS = {
   contacts_page: "读取通讯录页",
   system_config: "系统配置",
   configure_sip: "配置Linphone账号",
+  configure_gateway_routing: "配置SIP Gateway路由",
   configure_zello: "配置Zello账号",
   root_exec: "执行命令",
   file_manage: "管理文件",
@@ -220,14 +222,14 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello","configure_gateway_routing"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
   return {
     id,
     type,
-    params: type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params: type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="configure_gateway_routing" ? gatewayRoutingParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -516,6 +518,14 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   }
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
+  const gatewayRouting=device.task.type==='configure_gateway_routing'&&state==='success'
+    ? gatewayRoutingResult(result,device.task.params):null;
+  if(gatewayRouting&&device.task.state===state){
+    const saved=device.gateway_routing_result;
+    if(!saved||saved.task_id!==taskId||Object.entries(gatewayRouting).some(([key,value])=>saved[key]!==value))
+      throw Error('SIP Gateway路由重复回执不一致');
+    return device;
+  }
   if(device.task.type==='configure_zello' && state==='success' && (!result||result.logged_in!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少Zello登录成功证据');
   const modernSip=device.task.type==='configure_sip'&&validateSipResult(device,state,result);
   if(device.task.type==='configure_sip' && !modernSip && state==='success' && (!result||result.registered!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少SIP注册成功证据');
@@ -568,6 +578,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   }
   device.task.state = state;
   device.task.detail = detail == null ? "" : String(detail).slice(0, 200);
+  if(gatewayRouting)saveGatewayRoutingResult(device,taskId,gatewayRouting,device.task.completed_at);
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
   if (lost) mergeLostMode(device,lost,nowMs);
@@ -585,10 +596,11 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       truncated: !!result.truncated,
       artifact: result.artifact || null,
       text: String(result.text || "").slice(0, ["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? 16000 : 2048),
-      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
+      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello","configure_gateway_routing"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
-      reason: String(result.reason || "").slice(0, 80)
+      reason: String(result.reason || "").slice(0, 80),
+      ...(gatewayRouting?{gateway_routing:gatewayRouting}:{})
     };
   }
   return device;
@@ -720,12 +732,13 @@ export function publicRepair(task) {
       truncated: !!r.truncated,
       artifact: r.artifact || null,
       text: r.text || "",
-      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
+      ...(["system_config","root_exec","file_manage","configure_sip","configure_zello","configure_gateway_routing"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
       reason: r.reason || ""
       ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
       ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
+      ,...(r.gateway_routing?{gateway_routing:r.gateway_routing}:{})
     } : null
   };
 }

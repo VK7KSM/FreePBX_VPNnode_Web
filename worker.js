@@ -36,6 +36,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
 import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus} from './gateway-product.js';
+import {gatewayRoutingParams,gatewayRoutingReport,applyGatewayRoutingReport} from './gateway-routing.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -1318,7 +1319,8 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
-    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),pixel_runtime:pixelRuntimeStatus(d.pixel_runtime,d)}:{}),
+    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),pixel_runtime:pixelRuntimeStatus(d.pixel_runtime,d),
+      managed_gateway_routing:d.managed_gateway_routing===true,gateway_routing:d.gateway_routing||null,gateway_routing_result:d.gateway_routing_result||null}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -1772,6 +1774,7 @@ async function handleDeviceReport(env, request) {
     gatewayReportGuard({...matched,...product},data);
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
     const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
+    const gatewayRouting=gatewayRoutingReport(data,{...matched,...product});
     Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
@@ -1816,6 +1819,9 @@ async function handleDeviceReport(env, request) {
       if(isGateway(list[i])){
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
+        list[i].managed_gateway_routing=gatewayRouting.managed;
+        if(gatewayRouting.status)applyGatewayRoutingReport(list[i],gatewayRouting.status,history.record.received_at);
+        else if(!gatewayRouting.managed)delete list[i].gateway_routing;
       }
       list[i].last_reported_at = history.record.timeline_at;
       list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
@@ -1888,7 +1894,7 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true || found.task?.type === 'configure_gateway_routing') && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       if(!holdNetworkTask(found.task)){
       found.task.state = "expired";
@@ -2228,6 +2234,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
+  if(device.enabled!==false && report.status_only===true && report.managed_gateway_routing===true
+      && device.task?.type==='configure_gateway_routing' && shouldOfferRepair(device,now))
+    body.managed_task=repairOfferPayload(device.task);
   if(report.managed_lost_safety_v1===true&&device.safety_task&&shouldOfferRepair({task:device.safety_task},now))
     body.managed_safety_task={...repairOfferPayload(device.safety_task),managed_lost_v1:true};
   if(device.enabled!==false && report.status_only===true && report.managed_lost_tasks===true
@@ -2275,6 +2284,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="system_config" && found.managed_system_settings===true)
         || (data.type==="configure_sip" && found.managed_sip_account===true)
         || (data.type==="configure_zello" && found.managed_zello_account===true)
+        || (data.type==="configure_gateway_routing" && isGateway(found) && found.managed_gateway_routing===true)
         || (data.type==="get_file" && found.managed_file_return===true)
         || (data.type==="send_file" && found.managed_file_tasks===true)
         || (data.type==="pull_logs" && found.managed_log_tasks===true)
@@ -2294,11 +2304,16 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package)&&!allowNetworkAcceptance)return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
     if(data.type==='connect_wifi'&&!systemSettingAllowed(found,'wifi','connect'))return json({ok:false,msg:'设备网络修改尚未接通，未下发修改'},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
+    if(data.type==='configure_gateway_routing'){
+      if(!isGateway(found))return json({ok:false,msg:'该任务仅限Pixel Gateway'},409);
+      if(found.managed_gateway_routing!==true)return json({ok:false,msg:'客户端尚未支持SIP Gateway路由配置'},409);
+      try{gatewayRoutingParams(data.params);}catch(e){return json({ok:false,msg:e.message},400);}
+    }
     if(data.type==="configure_sip"){
       try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
     }
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)&&!holdNetworkTask(found.task)) found.task.state="expired";
-    let params = data.params;
+    let params = data.type==='configure_gateway_routing'?gatewayRoutingParams(data.params):data.params;
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
       try {
@@ -2387,6 +2402,9 @@ async function handleElfTaskProgress(env, request) {
         }
         return previous ? json({ok:true,task:publicRepair(previous)}) : json({ok:false,msg:"未找到该任务"},404);
       }
+      if(list[i].task?.type==='configure_gateway_routing'
+          && !['claimed','running','success','failed','rejected'].includes(state))
+        return json({ok:false,msg:'SIP Gateway路由任务状态无效'},400);
       if(isNetworkTask(list[i].task)||list[i].task?.type==='contacts_page'){
         try{applyRepairProgress(list[i],taskId,state,data.detail,data.result);}catch(e){return json({ok:false,msg:e.message},409);}
         await saveDevices(env,list);return json({ok:true,task:publicRepair(list[i].task)});
