@@ -35,7 +35,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 `;
 
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
-import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,mobileNetworkStatus} from './gateway-product.js';
+import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -86,7 +86,7 @@ import {
   normalizeAlarm,
   normalizeLostMode,
   prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
-  CONFIG_TYPES,
+  CONFIG_TYPES, PROXY_TASK_TYPES,
   repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
@@ -110,6 +110,7 @@ import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
+import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig} from './proxy-config.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -369,6 +370,14 @@ export class ElfStore {
     if(url.pathname==='/__release_cleanup'&&request.method==='POST'){
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>json({ok:true,...await cleanupRetiredReleases(storage,this.env.ELF_ARTIFACTS)})));
     }
+    if(url.pathname==='/__proxy_config'&&request.method==='POST'){
+      const raw=await request.text();if(raw.length>8192)return json({ok:false,msg:'代理配置元数据过大'},400);
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>{
+        const scoped={...this.env,__storage:storage};
+        return proxyConfigMetadata(storage,new Request(request.url,{method:'POST',body:raw}),
+          ()=>loadDevices(scoped),list=>saveDevices(scoped,list));
+      }));
+    }
     if(url.pathname==='/__returns'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
@@ -567,6 +576,10 @@ const app = {
     if (!env.__storage && (pathname==='/api/elfremote/file-download' || pathname==='/api/elfremote/files' || pathname.startsWith('/api/elfremote/files/'))) {
       const stub=elfDoStub(env);
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
+    }
+    if(!env.__storage&&((pathname==='/api/elfremote/proxy-config'&&method==='POST')
+      ||(pathname==='/api/elfremote/proxy-config/download'&&method==='GET'))){
+      const stub=elfDoStub(env);return stub?proxyConfigHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
     }
     if(!env.__storage&&pathname==='/api/elfremote/releases/upload'&&method==='PUT'){
       try{
@@ -1319,7 +1332,9 @@ function publicDevice(d, modelName, model = {}) {
     model_id: d.model_id,
     model_name: modelName || "",
     ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),
-      managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null}:{}),
+      managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null,
+      managed_proxy_tasks:d.managed_proxy_tasks===true,proxy_runtime:d.proxy_runtime||null,
+      proxy_config:publicProxyConfig(d.proxy_config)}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -1783,6 +1798,7 @@ async function handleDeviceReport(env, request) {
     gatewayReportGuard(reportDevice,data);
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
     const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
+    const proxyRuntime=proxyRuntimeStatus(data.proxy_runtime,{...matched,...product},data.managed_proxy_tasks);
     const mobileNetwork=mobileNetworkStatus(data.mobile_network,{...matched,...product},data.managed_mobile_status);
     Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
@@ -1828,6 +1844,8 @@ async function handleDeviceReport(env, request) {
       if(isGateway(list[i])){
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
+        list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
+        if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
         list[i].managed_mobile_status=data.managed_mobile_status===true;
         if(mobileNetwork)list[i].mobile_network=mobileNetwork;
         else delete list[i].mobile_network;
@@ -2252,6 +2270,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && !isGateway(device) && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
+  if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_proxy_tasks===true
+      &&device.task?.managed_proxy_v1===true&&PROXY_TASK_TYPES.includes(device.task.type)&&shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_proxy_v1:true};
   if(report.managed_lost_safety_v1===true&&device.safety_task&&shouldOfferRepair({task:device.safety_task},now))
     body.managed_safety_task={...repairOfferPayload(device.safety_task),managed_lost_v1:true};
   if(device.enabled!==false && report.status_only===true && report.managed_lost_tasks===true
@@ -2281,7 +2302,7 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==='wipe_data'){data.expires_at=authorizeWipe(found,data.params);if(found.managed_lost_safety_v1)data.params={...data.params,expected_revision:found.lost_mode?.revision};}
     if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello'].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello',...PROXY_TASK_TYPES].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(isNetworkTask(found.task)){const cancel_outcome=cancelNetworkTask(found.task);await saveDevices(env,list);return json({ok:true,cancel_outcome,task:publicRepair(found.task)});}
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
@@ -2313,6 +2334,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
+        || (PROXY_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_proxy_tasks===true)
         || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
@@ -2324,8 +2346,18 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==="configure_sip"){
       try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
     }
-    if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)&&!holdNetworkTask(found.task)) found.task.state="expired";
+    if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)&&!holdNetworkTask(found.task)){
+      found.task.state="expired";
+      if(PROXY_TASK_TYPES.includes(found.task.type)){found.task.params={};found.task.detail='代理任务已过期';found.task.completed_at=new Date().toISOString();}
+    }
     let params = data.params;
+    if(PROXY_TASK_TYPES.includes(data.type)){
+      if(!isGateway(found)||found.managed_proxy_tasks!==true)return json({ok:false,msg:'客户端尚未支持代理管理'},409);
+      data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
+      const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
+      data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
+      params=proxyConfigureParams(found,params||{},data.id);
+    }
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
       try {
@@ -2369,6 +2401,7 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="restart_adbd") found.task.managed_adbd_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="scan_wifi") found.task.managed_wifi_scan_v1=true;
     if(!queued.duplicate && found.status_only && isGateway(found) && data.type==="connect_wifi") found.task.managed_wifi_config_v1=true;
+    if(!queued.duplicate && found.status_only && isGateway(found) && PROXY_TASK_TYPES.includes(data.type)) found.task.managed_proxy_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;
