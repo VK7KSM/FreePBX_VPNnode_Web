@@ -44,14 +44,17 @@ final class GatewayCoreClient {
     }
     static JSONObject configureProxy(Context context,File staged,long size,String sha256)throws Exception {
         return request(context,new JSONObject().put("operation","proxy-configure").put("config_path",staged.getCanonicalPath())
-                .put("size",size).put("sha256",sha256)).getJSONObject("proxy");
+                .put("size",size).put("sha256",sha256),90_000).getJSONObject("proxy");
     }
-    static JSONObject startProxy(Context context)throws Exception {return request(context,new JSONObject().put("operation","proxy-start")).getJSONObject("proxy");}
+    static JSONObject startProxy(Context context)throws Exception {return request(context,new JSONObject().put("operation","proxy-start"),30_000).getJSONObject("proxy");}
     static JSONObject stopProxy(Context context)throws Exception {return request(context,new JSONObject().put("operation","proxy-stop")).getJSONObject("proxy");}
-    static JSONObject testProxy(Context context)throws Exception {return request(context,new JSONObject().put("operation","proxy-test")).getJSONObject("proxy");}
+    static JSONObject testProxy(Context context)throws Exception {return request(context,new JSONObject().put("operation","proxy-test"),15_000).getJSONObject("proxy");}
     private static JSONObject request(Context context,JSONObject body) throws Exception {
+        return request(context,body,3000);
+    }
+    private static JSONObject request(Context context,JSONObject body,int timeout) throws Exception {
         try(LocalSocket socket=new LocalSocket()) {
-            socket.connect(new LocalSocketAddress(GatewayCoreProtocol.SOCKET)); socket.setSoTimeout(3000);
+            socket.connect(new LocalSocketAddress(GatewayCoreProtocol.SOCKET)); socket.setSoTimeout(timeout);
             body.put("auth",auth(context));
             socket.getOutputStream().write((body+"\n").getBytes(StandardCharsets.UTF_8));
             JSONObject result=new JSONObject(GatewayCoreMain.readLine(socket.getInputStream()));

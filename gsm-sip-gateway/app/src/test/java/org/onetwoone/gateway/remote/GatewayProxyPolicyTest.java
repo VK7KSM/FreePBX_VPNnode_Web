@@ -15,7 +15,7 @@ public class GatewayProxyPolicyTest {
     }
     @Test public void acceptsFixedLoopbackListeners()throws Exception {GatewayProxyPolicy.validateConfig(config(""));}
     @Test public void rejectsLanTunAndDuplicateOverrides()throws Exception {
-        for(String unsafe:new String[]{"tun:\n  enable: true\n","listeners: []\n","external-controller: 0.0.0.0:9090\n","dns:\n  listen: 0.0.0.0:53\n","allow-lan: true\n","port: 8080\n"}){
+        for(String unsafe:new String[]{"tun:\n  enable: true\n","listeners: []\n","external-controller: 0.0.0.0:9090\n","external-controller-unix: /tmp/control.sock\n","dns:\n  listen: 0.0.0.0:53\n","allow-lan: true\n","port: 8080\n"}){
             try{GatewayProxyPolicy.validateConfig(config(unsafe));fail("accepted "+unsafe);}catch(SecurityException expected){}
         }
     }

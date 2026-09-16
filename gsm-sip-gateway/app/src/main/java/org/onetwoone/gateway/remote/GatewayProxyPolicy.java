@@ -21,6 +21,7 @@ final class GatewayProxyPolicy {
             int colon=line.indexOf(':');if(colon<=0)continue;
             String key=unquote(line.substring(0,colon).trim()).toLowerCase(Locale.ROOT);
             String value=line.substring(colon+1).trim();
+            if(key.startsWith("external-"))throw new SecurityException("proxy feature forbidden: external control");
             if(top.put(key,value)!=null)throw new SecurityException("duplicate proxy key: "+key);
         }
         require(top,"allow-lan","false");
