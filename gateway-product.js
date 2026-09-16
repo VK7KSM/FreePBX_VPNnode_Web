@@ -20,8 +20,10 @@ export function gatewayProductFields(data,existing=null,identity=null){
 }
 export function gatewayReportGuard(device,data){
   if(!isGateway(device)){
-    if(Object.hasOwn(data,'managed_mobile_status')||Object.hasOwn(data,'mobile_network'))
-      throw Error('移动网络状态仅限网关产品');
+    if(Object.hasOwn(data,'managed_mobile_status')||Object.hasOwn(data,'mobile_network')
+      ||Object.hasOwn(data,'managed_proxy_tasks')||Object.hasOwn(data,'proxy_runtime')
+      ||Object.hasOwn(data,'managed_lost_message_v1'))
+      throw Error('网关专用状态仅限网关产品');
     return;
   }
   if(data.status_only!==true)throw Error('网关必须采用显式管理能力协议');
@@ -29,6 +31,12 @@ export function gatewayReportGuard(device,data){
     if(Object.hasOwn(data,field)&&typeof data[field]!=='boolean')throw Error('网关 Wi-Fi 能力必须为布尔值');
   if(Object.hasOwn(data,'managed_mobile_status')&&typeof data.managed_mobile_status!=='boolean')
     throw Error('网关移动网络状态能力必须为布尔值');
+  if(Object.hasOwn(data,'managed_proxy_tasks')&&typeof data.managed_proxy_tasks!=='boolean')
+    throw Error('网关代理任务能力必须为布尔值');
+  if(Object.hasOwn(data,'managed_lost_message_v1')&&typeof data.managed_lost_message_v1!=='boolean')
+    throw Error('网关丢失信息能力必须为布尔值');
+  if(data.managed_proxy_tasks===true&&!Object.hasOwn(data,'proxy_runtime'))
+    throw Error('网关代理任务能力缺少运行状态');
   if(data.managed_config_tasks===true)throw Error('网关不得声明整套安卓配置能力');
   if(data.network!=null&&!['wifi','cellular','ethernet','unknown'].includes(data.network))throw Error('网关网络类型无效');
   if(data.battery!=null&&(typeof data.battery!=='number'||!Number.isFinite(data.battery)||data.battery<0||data.battery>100))throw Error('网关电量无效');
@@ -36,7 +44,7 @@ export function gatewayReportGuard(device,data){
   if(data.managed_media===true||data.managed_media_prepare_v1===true
     ||(Object.hasOwn(data,'managed_media_modes')&&(!Array.isArray(data.managed_media_modes)||data.managed_media_modes.length)))
     throw Error('网关不提供媒体会话，请使用普通警报任务');
-  if(data.managed_wipe_v1===true||data.managed_lost_v2===true||data.managed_lost_safety_v1===true)
+  if(data.managed_lost_tasks===true||data.managed_wipe_v1===true||data.managed_lost_v2===true||data.managed_lost_safety_v1===true)
     throw Error('网关尚未接入该丢失模式协议');
 }
 export function gatewayStatus(value){
@@ -93,8 +101,13 @@ export function mobileNetworkStatus(value,device,managed){
   return result;
 }
 
-const PIXEL_RUNTIME_FIELDS=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access'];
+const PIXEL_RUNTIME_FIELDS=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access','companion'];
+const PIXEL_RUNTIME_REQUIRED=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access'];
+const PIXEL_RUNTIME_MODES=new Set(['legacy_managed','companion_staged','companion_active','unavailable','asset_verification_failed','invalid_snapshot']);
 const PIXEL_MODULE_FIELDS=['installed','disabled','recognized','version','files_verified'];
+const PIXEL_COMPANION_FIELDS=['installed','disabled','recognized','active','rollback_available','units','version'];
+const PIXEL_COMPANION_REQUIRED=['installed','disabled','recognized','active','rollback_available','units'];
+const PIXEL_COMPANION_UNIT_FIELDS=['charge','audio','adb_tcp'];
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 function exactFields(value,allowed,required,message){
   const keys=Object.keys(value);
@@ -120,6 +133,20 @@ function pixelModuleStatus(value){
   if(Object.hasOwn(value,'version'))result.version=boundedString(value.version,64,'Pixel模块版本无效');
   return result;
 }
+function pixelCompanionStatus(value){
+  if(!record(value))throw Error('Pixel伴随组件状态格式无效');
+  exactFields(value,PIXEL_COMPANION_FIELDS,PIXEL_COMPANION_REQUIRED,'Pixel伴随组件状态字段无效');
+  if(!record(value.units))throw Error('Pixel伴随组件单元状态格式无效');
+  exactFields(value.units,PIXEL_COMPANION_UNIT_FIELDS,PIXEL_COMPANION_UNIT_FIELDS,'Pixel伴随组件单元状态字段无效');
+  const result={};
+  for(const key of ['installed','disabled','recognized','active','rollback_available'])
+    result[key]=requiredBoolean(value,key,'Pixel伴随组件状态必须为布尔值');
+  result.units={};
+  for(const key of PIXEL_COMPANION_UNIT_FIELDS)
+    result.units[key]=requiredBoolean(value.units,key,'Pixel伴随组件单元状态必须为布尔值');
+  if(Object.hasOwn(value,'version'))result.version=boundedString(value.version,64,'Pixel伴随组件版本无效');
+  return result;
+}
 export function pixelRuntimeStatus(value,device){
   if(!isGateway(device)){
     if(value!==undefined)throw Error('Pixel运行状态仅限网关产品');
@@ -128,16 +155,89 @@ export function pixelRuntimeStatus(value,device){
   if(value===undefined)return null;
   if(!record(value))throw Error('Pixel运行状态格式无效');
   if(new TextEncoder().encode(JSON.stringify(value)).length>2048)throw Error('Pixel运行状态内容过长');
-  exactFields(value,PIXEL_RUNTIME_FIELDS,PIXEL_RUNTIME_FIELDS,'Pixel运行状态字段无效');
+  exactFields(value,PIXEL_RUNTIME_FIELDS,PIXEL_RUNTIME_REQUIRED,'Pixel运行状态字段无效');
   if(value.schema_version!==1)throw Error('Pixel运行状态版本无效');
-  return {
+  if(!PIXEL_RUNTIME_MODES.has(value.mode))throw Error('Pixel运行模式无效');
+  const result={
     schema_version:1,
     assets_verified:requiredBoolean(value,'assets_verified','Pixel运行状态必须为布尔值'),
-    mode:boundedString(value.mode,32,'Pixel运行模式无效'),
+    mode:value.mode,
     recognized:requiredBoolean(value,'recognized','Pixel运行状态必须为布尔值'),
     enabled:requiredBoolean(value,'enabled','Pixel运行状态必须为布尔值'),
     write_locked:requiredBoolean(value,'write_locked','Pixel运行状态必须为布尔值'),
     charge_bypass:pixelModuleStatus(value.charge_bypass),
     sip_audio_access:pixelModuleStatus(value.sip_audio_access)
   };
+  if(Object.hasOwn(value,'companion'))result.companion=pixelCompanionStatus(value.companion);
+  return result;
+}
+
+const PROXY_RUNTIME_FIELDS=['schema_version','bundled','version','abi','asset_verified','core_verified','configured',
+  'running','http_ready','socks_ready','proxy_reachable','management_via','write_locked','checked_at_ms','error',
+  'config_version','config_sha256','management_https_via_proxy','management_mqtt_via_proxy',
+  'adb_wss_via_proxy_ready','file_download_via_proxy_ready','error_category'];
+const PROXY_RUNTIME_REQUIRED=['schema_version','bundled','version','abi','asset_verified','core_verified','configured',
+  'running','http_ready','socks_ready','proxy_reachable','management_via','write_locked'];
+const PROXY_RUNTIME_V2_FIELDS=[...PROXY_RUNTIME_REQUIRED,'http_port','socks_port','checked_at_ms'];
+export const PROXY_ERROR_CATEGORIES=Object.freeze(['none','not_configured','core_missing','core_verification_failed',
+  'config_invalid','config_read_failed','config_hash_mismatch','process_start_failed','process_stop_failed','process_not_running','listener_unavailable',
+  'proxy_unreachable','https_test_failed','mqtt_test_failed','adb_wss_test_failed','file_download_test_failed',
+  'rollback_failed','unknown']);
+const proxyErrorCategories=new Set(PROXY_ERROR_CATEGORIES);
+
+export function proxyRuntimeStatus(value,device,managed){
+  if(!isGateway(device)){
+    if(value!==undefined||managed!==undefined)throw Error('代理运行状态仅限网关产品');
+    return null;
+  }
+  if(managed!==undefined&&typeof managed!=='boolean')throw Error('网关代理任务能力必须为布尔值');
+  if(value===undefined)return null;
+  if(!record(value))throw Error('代理运行状态格式无效');
+  if(new TextEncoder().encode(JSON.stringify(value)).length>4096)throw Error('代理运行状态内容过长');
+  if(value.schema_version===2){
+    exactFields(value,PROXY_RUNTIME_V2_FIELDS,PROXY_RUNTIME_V2_FIELDS,'代理运行状态字段无效');
+    if(value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)throw Error('代理运行状态版本或只读标记无效');
+    const version=boundedString(value.version,32,'代理核心版本无效');
+    if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
+    const result={schema_version:2,bundled:true,version,abi:'arm64-v8a'};
+    for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
+      result[key]=requiredBoolean(value,key,'代理运行状态必须为布尔值');
+    if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
+        ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理运行状态边界无效');
+    return {...result,management_via:value.management_via,write_locked:true,http_port:17890,socks_port:17891,checked_at_ms:value.checked_at_ms};
+  }
+  exactFields(value,PROXY_RUNTIME_FIELDS,PROXY_RUNTIME_REQUIRED,'代理运行状态字段无效');
+  if(value.schema_version!==1||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
+    throw Error('代理运行状态版本或只读标记无效');
+  const version=boundedString(value.version,32,'代理核心版本无效');
+  if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
+  const result={schema_version:1,bundled:true,version,abi:'arm64-v8a'};
+  for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
+    result[key]=requiredBoolean(value,key,'代理运行状态必须为布尔值');
+  if(!['direct','proxy'].includes(value.management_via))throw Error('代理管理通道无效');
+  result.management_via=value.management_via;result.write_locked=true;
+  if(Object.hasOwn(value,'checked_at_ms')){
+    if(!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理检查时间无效');
+    result.checked_at_ms=value.checked_at_ms;
+  }
+  if(Object.hasOwn(value,'config_version')){
+    if(value.config_version!==null)result.config_version=boundedString(value.config_version,64,'代理配置版本无效');
+    else result.config_version=null;
+  }
+  if(Object.hasOwn(value,'config_sha256')){
+    if(value.config_sha256!==null&&(!/^[a-f0-9]{64}$/.test(value.config_sha256)))throw Error('代理配置校验值无效');
+    result.config_sha256=value.config_sha256;
+  }
+  for(const key of ['management_https_via_proxy','management_mqtt_via_proxy','adb_wss_via_proxy_ready','file_download_via_proxy_ready'])
+    if(Object.hasOwn(value,key))result[key]=requiredBoolean(value,key,'代理路径状态必须为布尔值');
+  let category=value.error_category;
+  if(Object.hasOwn(value,'error')){
+    if(typeof value.error!=='string'||value.error.length<1||value.error.length>64||!/^[A-Za-z][A-Za-z0-9_$]*$/.test(value.error))
+      throw Error('代理错误类别无效');
+    category=value.error==='unavailable'?'unknown':category??'unknown';
+  }
+  if(category!==undefined){if(!proxyErrorCategories.has(category))throw Error('代理错误类别无效');result.error_category=category;}
+  if(result.configured&&Object.hasOwn(result,'config_sha256')&&result.config_sha256===null)throw Error('代理配置身份缺失');
+  if(!result.configured&&(result.config_version!=null||result.config_sha256!=null))throw Error('未配置状态不能携带配置身份');
+  return result;
 }

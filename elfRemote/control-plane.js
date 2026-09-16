@@ -127,7 +127,9 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...CONFIG_TYPES];
+export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy"];
+export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"];
+export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -159,6 +161,12 @@ export const REPAIR_TYPE_LABELS = {
   locate_now: "立即定位",
   set_lost_mode: "设置丢失模式",
   wipe_data: "清除设备数据",
+  show_lost_message: "显示丢失信息",
+  clear_lost_message: "清除丢失信息",
+  configure_proxy: "配置代理",
+  start_proxy: "启动代理",
+  stop_proxy: "停止代理",
+  test_proxy: "检测代理",
   connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
 
@@ -220,19 +228,97 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello"].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  const typedIdMax=PROXY_TASK_TYPES.includes(type)?96:64;
+  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello",...LOST_MESSAGE_TASK_TYPES,...PROXY_TASK_TYPES].includes(type)
+      && !(new RegExp('^[a-zA-Z0-9-]{1,'+typedIdMax+'}$')).test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
+  const params=type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : LOST_MESSAGE_TASK_TYPES.includes(type) ? lostMessageParams(type,src.params) : PROXY_TASK_TYPES.includes(type) ? proxyTaskParams(type,src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {});
   return {
     id,
     type,
-    params: type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {}),
+    params,
+    ...(type==='configure_proxy'?{proxy_config_sha256:params.sha256}:{}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
     detail: ""
   };
+}
+
+export function lostMessageParams(type,value={}){
+  if(!value||typeof value!=="object"||Array.isArray(value))throw Error("丢失信息任务参数无效");
+  const keys=Object.keys(value);
+  if(type==="clear_lost_message"){
+    if(keys.length)throw Error("清除丢失信息不接受参数");
+    return {};
+  }
+  if(type!=="show_lost_message"||keys.length!==1||keys[0]!=="message"||typeof value.message!=="string")
+    throw Error("显示丢失信息参数无效");
+  const message=value.message.trim();
+  if(!message||message.length>500||message.includes("\0"))throw Error("丢失信息须为1至500个字符");
+  return {message};
+}
+
+export function proxyTaskParams(type,value={}){
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务参数无效');
+  if(type!=='configure_proxy'){
+    if(Object.keys(value).length)throw Error('代理控制任务不接受参数');
+    return {};
+  }
+  const fields=['url','size','sha256'];
+  if(Object.keys(value).length!==fields.length||Object.keys(value).some(key=>!fields.includes(key)))throw Error('代理配置任务字段无效');
+  if(typeof value.url!=='string'||value.url.length>4096
+      ||!/^https:\/\/v\.elfradio\.net\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}(?:\?[^#]*)?$/.test(value.url))throw Error('代理配置下载地址无效');
+  if(!Number.isInteger(value.size)||value.size<2||value.size>2*1024*1024)throw Error('代理配置大小无效');
+  if(!/^[a-f0-9]{64}$/.test(value.sha256||''))throw Error('代理配置校验值无效');
+  return Object.fromEntries(fields.map(key=>[key,value[key]]));
+}
+
+const PROXY_STATUS_FIELDS=['schema_version','bundled','version','abi','asset_verified','core_verified','configured','running',
+  'http_ready','socks_ready','proxy_reachable','management_via','write_locked','http_port','socks_port','checked_at_ms'];
+function proxyTaskStatus(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务状态无效');
+  const keys=Object.keys(value);
+  if(keys.length!==PROXY_STATUS_FIELDS.length||keys.some(key=>!PROXY_STATUS_FIELDS.includes(key)))throw Error('代理任务状态字段无效');
+  if(value.schema_version!==2||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
+    throw Error('代理任务状态版本无效');
+  if(typeof value.version!=='string'||value.version.length<1||value.version.length>32)throw Error('代理核心版本无效');
+  for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
+    if(typeof value[key]!=='boolean')throw Error('代理任务状态必须为布尔值');
+  if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
+      ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理任务状态边界无效');
+  return Object.fromEntries(PROXY_STATUS_FIELDS.map(key=>[key,value[key]]));
+}
+
+export function proxyTaskResult(type,state,value){
+  if(!['success','failed','rejected'].includes(state))throw Error('代理任务终态无效');
+  if(value==null){
+    if(state==='success')throw Error('代理任务成功回执缺失');
+    return {stage:'proxy',action:type,proxy:null};
+  }
+  if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==3
+      ||Object.keys(value).some(key=>!['stage','action','proxy'].includes(key))||value.stage!=='proxy'||value.action!==type)
+    throw Error('代理任务终态回执无效');
+  const proxy=proxyTaskStatus(value.proxy);
+  if(state==='success'){
+    if(!proxy.asset_verified||!proxy.core_verified||!proxy.configured)throw Error('代理任务成功状态不完整');
+    if(type==='stop_proxy'){
+      if(proxy.running||proxy.http_ready||proxy.socks_ready||proxy.proxy_reachable)throw Error('代理停止回执仍显示活动进程');
+    }else if(type!=='configure_proxy'&&(!proxy.running||!proxy.http_ready||!proxy.socks_ready||!proxy.proxy_reachable))
+      throw Error('代理启动或检测回执不完整');
+  }
+  return {stage:'proxy',action:type,proxy};
+}
+
+function proxyTaskDetail(type,state,result){
+  if(state==='claimed')return '设备已领取代理任务';
+  if(state==='running')return '设备正在执行代理任务';
+  if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过'}[type];
+  if(state==='failed')return '代理任务执行失败';
+  if(state==='rejected')return '设备拒绝代理任务';
+  return '';
 }
 
 export function zelloAccountParams(value={}) {
@@ -514,6 +600,27 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     task.state=state;if(network)task.result={network_transaction:network};
     return device;
   }
+  if(PROXY_TASK_TYPES.includes(device.task.type)){
+    const task=device.task;
+    if(!canAdvanceRepair(task.state,state))throw Error('代理任务状态不匹配');
+    if(state==='expired'){
+      task.updated_at=new Date(nowMs).toISOString();task.completed_at=task.updated_at;task.state='expired';task.detail='代理任务已过期';task.params={};delete task.proxy_download_token_sha256;
+      return device;
+    }
+    const terminal=['success','failed','rejected'].includes(state);
+    if(!terminal&&result!=null)throw Error('代理任务进度不能携带终态回执');
+    const normalized=terminal?proxyTaskResult(task.type,state,result):null;
+    if(['success','failed','rejected','expired'].includes(task.state)){
+      if(task.state!==state||JSON.stringify(task.result)!==JSON.stringify(normalized))throw Error('代理任务重复回执不一致');
+      return device;
+    }
+    task.updated_at=new Date(nowMs).toISOString();
+    if(state==='claimed')task.claimed_at=task.updated_at;
+    if(state==='running'&&!task.started_at)task.started_at=task.updated_at;
+    if(terminal){task.completed_at=task.updated_at;task.result=normalized;task.params={};delete task.proxy_download_token_sha256;}
+    task.state=state;task.detail=proxyTaskDetail(task.type,state,normalized);
+    return device;
+  }
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='connect_wifi'&&device.task.managed_wifi_config_v1===true){
     if(state==='success'&&(!result||result.stage!=='wifi'||!['connected','unchanged'].includes(result.action)||result.verified!==true))
@@ -540,6 +647,15 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       || result.sha256!==device.task.params.sha256 || result.bytes!==device.task.params.size)) throw Error('缺少文件完整接收证据');
   if(device.task.type==='get_file'&&state==='success'&&(!result||result.action!=='uploaded'||!Number.isSafeInteger(result.bytes)||result.bytes<0||!/^[a-f0-9]{64}$/.test(result.sha256||'')))throw Error('缺少文件取回证据');
   if(device.task.type==='wipe_data'&&state==='success')throw new Error('擦除后离线不能作为成功证明');
+  if(LOST_MESSAGE_TASK_TYPES.includes(device.task.type)&&state==='success'){
+    const expected=device.task.type==='show_lost_message'?'displayed':'cleared';
+    if(!result||typeof result!=='object'||Array.isArray(result)
+        ||Object.keys(result).length!==2||result.action!==expected||result.verified!==true)
+      throw Error('缺少丢失信息操作完成证明');
+    device.lost_message={active:device.task.type==='show_lost_message',
+      message:device.task.type==='show_lost_message'?device.task.params.message:'',
+      updated_at:new Date(nowMs).toISOString()};
+  }
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
@@ -581,7 +697,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
   if (lost) mergeLostMode(device,lost,nowMs);
-  if(["set_lost_mode","wipe_data"].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
+  if(["set_lost_mode","wipe_data",...LOST_MESSAGE_TASK_TYPES].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if((device.task.type==="system_config"||CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
@@ -737,9 +853,11 @@ export function publicRepair(task) {
       ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
-      reason: r.reason || ""
+      reason: r.reason || "",
+      verified: r.verified === true
       ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
       ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
+      ,...(Object.hasOwn(r,'proxy')?{proxy:r.proxy}:{})
     } : null
   };
 }

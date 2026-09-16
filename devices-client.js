@@ -491,9 +491,10 @@ function gatewayFunctionAvailable(d,key){
   if(key==='model'||key==='locate')return true;
   if(key==='update')return d.can_update===true;
   if(key==='adb')return ['managed_exec_tasks','managed_adb_session','managed_log_tasks','managed_heal_tasks','managed_reboot_tasks','managed_adbd_tasks'].some(function(k){return d[k]===true;});
-  if(key==='wifi')return d.managed_wifi_scan_tasks===true||d.managed_wifi_config_tasks===true;
+  if(key==='wifi')return d.managed_wifi_scan_tasks===true||d.managed_wifi_config_tasks===true||d.managed_proxy_tasks===true||!!d.proxy_runtime;
   if(key==='files')return d.managed_file_operations===true;
   if(key==='contacts')return d.managed_contacts_page_v1===true;
+  if(key==='lost')return d.managed_lost_message_v1===true;
   return false;
 }
 function gatewayAlarmHtml(d){
@@ -581,7 +582,7 @@ function setModelPower(id,value){
   .catch(function(e){alert(e.message);renderOps();});
 }
 var MAINTENANCE_RUN={};
-var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks',configure_proxy:'managed_proxy_tasks',start_proxy:'managed_proxy_tasks',stop_proxy:'managed_proxy_tasks',test_proxy:'managed_proxy_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
@@ -1382,6 +1383,8 @@ function pageSystem(dis){
 }
 
 function gatewayNetworkValue(label,value){return '<div><span>'+esc(label)+'</span><span>'+esc(value)+'</span></div>';}
+function gatewayProxyFlag(value,on,off){return typeof value==='boolean'?(value?(on||'正常'):(off||'未就绪')):'尚未上报';}
+function gatewayProxyError(value){return ({none:'无',not_configured:'尚未配置',core_missing:'代理核心缺失',core_verification_failed:'代理核心校验失败',config_invalid:'配置无效',config_read_failed:'配置读取失败',config_hash_mismatch:'配置校验不一致',process_start_failed:'代理启动失败',process_stop_failed:'代理停止失败',process_not_running:'代理未运行',listener_unavailable:'监听端口不可用',proxy_unreachable:'代理节点不可达',https_test_failed:'管理 HTTPS 检测失败',mqtt_test_failed:'管理 MQTT 检测失败',adb_wss_test_failed:'ADB WSS 检测失败',file_download_test_failed:'文件下载检测失败',rollback_failed:'配置回滚失败',unknown:'未知错误'})[value]||'无';}
 function pageGatewayNetworkSettings(d){
   var m=d&&d.mobile_network,snapshot=d&&d.system_settings&&d.system_settings.network||{},mobile='尚未收到状态';
   if(d.managed_mobile_status!==true)mobile='请更新客户端后查看';
@@ -1396,6 +1399,29 @@ function pageGatewayNetworkSettings(d){
     +gatewayNetworkValue('运营商配置',m.carrier_config_readable?'可读取':'不可读取')+gatewayNetworkValue('APN配置',m.apn_provider_readable?'可读取':'不可读取');
   h+=gatewayNetworkValue('蓝牙',bluetooth)+gatewayNetworkValue('USB状态',usb)+'</div>';
   h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((snapshot.paired||[]).length?'<div class="system-items">'+snapshot.paired.map(function(p){return gatewayNetworkValue(p.name||'蓝牙设备',p.address||'');}).join('')+'</div>':'<p class="muted">'+(snapshot.bluetooth===false?'蓝牙已关闭':'暂无已配对设备信息')+'</p>')+'</div>';
+  var p=d.proxy_runtime||{},cfg=d.proxy_config||{},run=MAINTENANCE_RUN[d.id]||{},blocked=d.enabled===false||d.managed_proxy_tasks!==true||run.pending?' disabled':'';
+  var management=p.management_via==='proxy'?'代理':p.management_via==='direct'?'直连':'尚未上报';
+  h+='<div class="system-setting-section"><h4>代理核心与管理路径</h4><div class="system-items">'
+    +gatewayNetworkValue('当前直连网络',d.network==='cellular'?'移动数据':d.network==='wifi'?'Wi-Fi':d.network==='ethernet'?'有线网络':'未知')
+    +gatewayNetworkValue('当前管理通道',management)
+    +gatewayNetworkValue('Mihomo 核心',p.version?(p.version+' · '+gatewayProxyFlag(p.core_verified,'已核验','校验失败')):'尚未上报')
+    +gatewayNetworkValue('内置资源',gatewayProxyFlag(p.asset_verified,'已核验','校验失败'))
+    +gatewayNetworkValue('配置版本',p.config_version||cfg.version||'尚未配置')
+    +gatewayNetworkValue('配置状态',gatewayProxyFlag(p.configured,'已配置','未配置'))
+    +gatewayNetworkValue('HTTP 监听',gatewayProxyFlag(p.http_ready,'就绪','未就绪'))
+    +gatewayNetworkValue('SOCKS 监听',gatewayProxyFlag(p.socks_ready,'就绪','未就绪'))
+    +gatewayNetworkValue('代理节点',gatewayProxyFlag(p.proxy_reachable,'可达','不可达'))
+    +gatewayNetworkValue('管理 HTTPS',gatewayProxyFlag(p.management_https_via_proxy,'代理可用','尚未验证'))
+    +gatewayNetworkValue('管理 MQTT',gatewayProxyFlag(p.management_mqtt_via_proxy,'代理可用','尚未验证'))
+    +gatewayNetworkValue('ADB WSS',gatewayProxyFlag(p.adb_wss_via_proxy_ready,'代理可用','尚未验证'))
+    +gatewayNetworkValue('文件下载',gatewayProxyFlag(p.file_download_via_proxy_ready,'代理可用','尚未验证'))
+    +gatewayNetworkValue('SIP TLS / RTP','直连（固定）')+gatewayNetworkValue('蜂窝 IMS','直连（固定）')
+    +gatewayNetworkValue('局域网','直连（固定）')
+    +gatewayNetworkValue('最后检查',p.checked_at_ms?sydney(new Date(p.checked_at_ms).toISOString()):'尚未上报')
+    +gatewayNetworkValue('错误状态',gatewayProxyError(p.error_category))+'</div>';
+  h+='<div class="ops-actions" style="margin-top:14px"><input class="inp" id="proxyConfigVersion" maxlength="64" placeholder="配置版本" value="'+esc(cfg.version||'')+'"'+blocked+'><input id="proxyConfigFile" type="file" accept=".yaml,.yml,text/yaml,application/yaml"'+blocked+'><button class="btn-green" onclick="uploadProxyConfig()"'+blocked+'>上传并配置</button><button class="btn-green" onclick="enqueueProxyTask(\'start_proxy\')"'+blocked+'>启动</button><button class="btn-gray" onclick="enqueueProxyTask(\'stop_proxy\')"'+blocked+'>停止</button><button class="btn-gray" onclick="enqueueProxyTask(\'test_proxy\')"'+blocked+'>检测</button><span role="status">'+esc(run.pending?'正在下发':run.message||(!d.managed_proxy_tasks?'请更新客户端后使用':d.task&&['configure_proxy','start_proxy','stop_proxy','test_proxy'].includes(d.task.type)?(d.task.detail||d.task.label):''))+'</span></div>';
+  if(cfg.sha256)h+='<p class="muted">已保存配置：'+esc(cfg.version)+' · '+esc(cfg.size)+' 字节 · SHA-256 '+esc(cfg.sha256.slice(0,12))+'…</p>';
+  h+='</div>';
   return h;
 }
 
@@ -1625,6 +1651,7 @@ function pageAlarm(dis){
 }
 
 function pageLost(dis){
+  if(currentDev()&&currentDev().product_id==='elfremote_gateway')return pageGatewayLost(dis);
   var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_safety_v1&&m.state!=='unknown'?'':' disabled'),exitOff=d&&(d.managed_lost_v2||d.managed_lost_safety_v1)?'':' disabled';
   var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<input id="lostMessage" class="inp" maxlength="300" value="'+esc(m.message||'')+'"'+off+'></label>';
   h+='<label style="display:flex;flex-direction:column;gap:4px">解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+exitOff+'>退出</button></div>';
@@ -1635,6 +1662,15 @@ function pageLost(dis){
   if(m.wipe_state==='failed'||m.wipe_state==='started')h+='<p style="color:#fca5a5">'+(m.wipe_state==='failed'?'数据清除执行失败，尚未完成':'数据清除已开始，离线不代表已完成')+'</p>';
   if(d&&d.task&&['set_lost_mode','wipe_data'].includes(d.task.type))h+='<p class="muted">'+esc(d.task.label)+' · '+esc(lostTaskText(d.task.detail))+'</p>';
   h+='<div style="border-top:1px solid #334155;margin-top:20px;padding-top:16px"><p style="color:#fca5a5">永久清除设备内部数据，保留操作系统；此操作无法撤销。</p><div class="ops-actions"><input id="lostWipePhrase" class="inp" autocomplete="off" placeholder="请输入：擦除数据" oninput="lostWipeInput()" style="width:210px"><button id="lostWipeNext" class="btn-gray" style="background:#783c49;color:#fff" onclick="lostWipe()" disabled>继续</button></div></div>';
+  return h;
+}
+function pageGatewayLost(dis){
+  var d=currentDev(),state=d&&d.lost_message||{},task=d&&d.task,pending=task&&['show_lost_message','clear_lost_message'].includes(task.type)&&['pending','claimed','running'].includes(task.state);
+  var off=dis||(pending?' disabled':'');
+  var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<textarea id="gatewayLostMessage" class="inp" maxlength="500" rows="4"'+off+'>'+esc(state.message||'')+'</textarea></label>';
+  h+='<button class="btn-green" onclick="gatewayShowLostMessage()"'+off+'>显示</button><button class="btn-gray" onclick="gatewayClearLostMessage()"'+off+'>清除</button></div>';
+  h+='<p class="muted">'+(state.active?'丢失信息已显示':'丢失信息未显示')+(state.updated_at?' · '+esc(sydney(state.updated_at)):'')+'</p>';
+  if(task&&['show_lost_message','clear_lost_message'].includes(task.type))h+='<p class="muted">'+esc(task.type_label)+' · '+esc(task.label)+(task.detail?' · '+esc(task.detail):'')+'</p>';
   return h;
 }
 function lostTaskText(detail){return ({'lost-enabled':'系统锁屏已启用','lost-disabled':'已退出并关闭自毁程序','lost-password-required':'请填写解锁密码','lost-current-password-required':'设备已有系统密码，请填写当前密码','lost-current-password-changed':'系统密码已改变，请先核对','lost-system-credential-unsupported':'该系统的锁屏接口尚未适配','lost-system-operation-failed':'系统操作失败，未确认完成','lost-boot-setting-unavailable':'无法读取开机解密设置，已停止操作','lost-boot-setting-failed':'开机解密设置未保存，已停止操作','lost-boot-password-required':'设备需要开机解密密码，暂不能远程更改锁屏','lost-system-lock-pending':'系统尚未确认锁屏，请检查状态','lost-system-password-failed':'系统未成功保存解锁密码'})[detail]||detail||'';}
@@ -1850,6 +1886,26 @@ function enqueueRepair(type,params){
     }).catch(function(){if(run)run.error=true;alert('下发失败，请检查连接');})
     .finally(function(){if(run){run.pending=false;if(selDev===d.id)renderOps();}});
 }
+function enqueueProxyTask(type){
+  var d=currentDev();if(!d||!gatewayDevice(d)||d.managed_proxy_tasks!==true)return Promise.resolve();
+  return enqueueRepair(type,{});
+}
+async function uploadProxyConfig(){
+  var d=currentDev(),file=$('proxyConfigFile')&&$('proxyConfigFile').files[0],version=$('proxyConfigVersion')?$('proxyConfigVersion').value.trim():'';
+  if(!d||!gatewayDevice(d)||d.managed_proxy_tasks!==true)return;
+  if(!version){alert('请填写配置版本');return;}
+  if(!file){alert('请选择 YAML 配置文件');return;}
+  if(file.size<1||file.size>65536){alert('配置文件须为 1 至 64 KiB');return;}
+  if(d.proxy_config&&!confirm('设备已有代理配置，确定替换为新配置？'))return;
+  var run={pending:true,message:'正在上传私有配置'};MAINTENANCE_RUN[d.id]=run;renderOps();
+  try{
+    var response=await fetch('/api/elfremote/proxy-config?'+new URLSearchParams({device_id:d.id,version:version}),{method:'POST',headers:{'Content-Type':'application/yaml; charset=utf-8'},body:file});
+    var result=await response.json();if(!response.ok||!result.ok)throw Error(result.msg||'代理配置上传失败');
+    run.pending=false;run.message='配置已私有保存，正在下发';
+    if(selDev===d.id)renderOps();
+    return enqueueRepair('configure_proxy',{config_version:result.config.version,config_sha256:result.config.sha256,config_size:result.config.size});
+  }catch(error){run.pending=false;run.error=true;run.message=error.message;if(selDev===d.id)renderOps();alert(error.message);}
+}
 function wifiScan(){
   enqueueRepair('scan_wifi');
 }
@@ -1919,6 +1975,16 @@ function setLostMode(enabled){
   if(enabled&&(!d.managed_lost_safety_v1||m.state==='unknown'||!m.revision))return;
   if(auto&&!confirm('启用 '+d.name+' 的自毁程序：失联或解除配对持续 '+hours+' 小时后清除设备数据。输入正确系统密码可在设备上取消。确定启用？'))return;
   return enqueueRepair('set_lost_mode',{version:2,enabled:enabled,message:enabled?$('lostMessage').value:'',password:enabled?$('lockPw').value:'',auto_wipe_enabled:auto,timeout_hours:hours,...(enabled?{expected_revision:m.revision}:{})});
+}
+function gatewayShowLostMessage(){
+  var d=currentDev(),box=$('gatewayLostMessage'),message=box?box.value.trim():'';
+  if(!d||!gatewayDevice(d)||d.managed_lost_message_v1!==true)return;
+  if(!message||message.length>500){alert('请填写1至500个字符的锁屏文字');return;}
+  return enqueueRepair('show_lost_message',{message:message});
+}
+function gatewayClearLostMessage(){
+  var d=currentDev();if(!d||!gatewayDevice(d)||d.managed_lost_message_v1!==true)return;
+  return enqueueRepair('clear_lost_message',{});
 }
 function lostVideo(cam){
   unavailableAction('远程录像');

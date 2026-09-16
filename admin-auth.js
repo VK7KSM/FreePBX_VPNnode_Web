@@ -40,7 +40,8 @@ export function isMachineRoute(path, method) {
     "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo",
     "POST /api/elfremote/file-return", "PUT /api/elfremote/file-return", "GET /api/elfremote/adb/device", "GET /api/elfremote/media/device",
     "GET /api/elfremote/adb-tunnel/host", "GET /api/elfremote/adb-tunnel/device"
-  ]).has(`${method} ${path}`) || (method === "GET" && /^\/api\/elfremote\/apk\/[^/]+$/.test(path));
+  ]).has(`${method} ${path}`) || (method === "GET" && (/^\/api\/elfremote\/apk\/[^/]+$/.test(path)
+    || /^\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}$/.test(path)));
 }
 async function jsonInput(request) {
   const text = await request.text();
