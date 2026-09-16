@@ -408,6 +408,12 @@
 
         </LinearLayout>
 
+        <Button
+            android:id="@+id/remoteSettingsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="elfRemote Gateway" />
+
         <!-- Save / Restart buttons at bottom -->
         <LinearLayout
             android:layout_width="match_parent"

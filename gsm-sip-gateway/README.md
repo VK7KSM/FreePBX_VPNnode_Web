@@ -2,17 +2,20 @@
 
 把高通 Android 手机变成 GSM 与 SIP 之间的网关：公网手机来电/短信进内部分机，内部分机经 SIM 卡打出公网号码。当前生产机是 **Pixel 3 XL**，SIP 账号 **300**，对接 `sip.elfradio.net`。
 
-安装包不进 Git，请到仓库 [Releases](https://github.com/VK7KSM/FreePBX_VPNnode_Web/releases) 下载。
+安装包不进 Git，请到仓库 [Releases](https://github.com/VK7KSM/FreePBX_VPNnode_Web/releases) 下载。Pixel 3 XL 首次部署前请先阅读 [Root 与 Magisk 安装流程](docs/pixel3-root-magisk.md)。
 
 ## 当前版本
 
 | 项 | 值 |
 |---|---|
-| 版本名 | 1.4.2 |
-| versionCode | 7 |
+| 源码候选版本 | 1.5.0-gateway-alpha25-pixel-integration-readonly |
+| versionCode | 32 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha23，versionCode 30 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**alpha25 候选变更：** 在 alpha23 的远程管理、远程更新、原生 ADB 隧道和网关配置能力上，增加 Pixel 生产 Magisk 模块的只读识别与完整关键文件哈希核验。识别到健康旧模块时固定为`legacy_managed`和`write_locked=true`，不卸载、不覆盖、不重装。该候选已通过90项单元测试和APK静态核验，但尚未安装到生产机。
 
 **1.4.2 变更：** 出站短信按正文 `SMS <号码>: <内容>` 发送，不再要求 SIP From 等于 SIM 目的分机。102、106 等有短信权限的分机经 PBX 改写后都可以经 300 发 GSM 短信。To 已是 10–15 位号码的 MESSAGE 仍直发。乱正文仍拒绝。
 

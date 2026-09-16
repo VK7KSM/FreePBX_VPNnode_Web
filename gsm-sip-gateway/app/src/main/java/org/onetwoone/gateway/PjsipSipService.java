@@ -24,7 +24,7 @@ import org.onetwoone.gateway.sip.ReconnectionStrategy;
 import org.onetwoone.gateway.sip.ServiceWatchdog;
 import org.onetwoone.gateway.sip.SipAccountManager;
 import org.onetwoone.gateway.sip.SipEndpointManager;
-import org.onetwoone.gateway.sip.SipSmsDispatch;
+import org.onetwoone.gateway.sip.SmsCommand;
 import org.onetwoone.gateway.sip.SipUri;
 import org.pjsip.pjsua2.*;
 
@@ -50,13 +50,13 @@ public class PjsipSipService extends Service implements SipCallService {
     private static final String CHANNEL_ID = "gateway_channel";
     private static final int NOTIFICATION_ID = 1;
 
-    private static PjsipSipService instance;
+    private static volatile PjsipSipService instance;
 
     // Managers
     private GatewayConfig config;
     private SipEndpointManager endpointManager;
-    private SipAccountManager accountManager;
-    private CallManager callManager;
+    private volatile SipAccountManager accountManager;
+    private volatile CallManager callManager;
     private AudioBridgeManager audioBridge;
     private PowerController powerController;
     private ReconnectionStrategy reconnection;
@@ -66,10 +66,11 @@ public class PjsipSipService extends Service implements SipCallService {
     // Telephony
     private TelephonyManager telephonyManager;
     private PhoneStateListener phoneStateListener;
-    private int lastPhoneState = TelephonyManager.CALL_STATE_IDLE;
+    private volatile int lastPhoneState = TelephonyManager.CALL_STATE_IDLE;
+    private volatile boolean phoneStateObserved;
 
     // State
-    private boolean isRunning = false;
+    private volatile boolean isRunning = false;
     private volatile boolean stopRequested = false;
     private Handler mainHandler;
 
@@ -459,6 +460,7 @@ public class PjsipSipService extends Service implements SipCallService {
         }
 
         lastPhoneState = state;
+        phoneStateObserved = true;
     }
 
     public void onIncomingGsmCall(String callerNumber, int simSlot) {
@@ -676,21 +678,32 @@ public class PjsipSipService extends Service implements SipCallService {
     private void handleIncomingSipMessage(String from, String to, String body, int simSlot) {
         Log.d(TAG, "handleIncomingSipMessage: from=" + from + " to=" + to + " body=\"" + body + "\" SIM" + simSlot);
 
-        SipSmsDispatch.Result decided = SipSmsDispatch.resolve(from, to, body);
-        if (decided == null) {
-            String sipUser = SipUri.extractUser(from);
-            if (!config.isAuthorizedSipCaller(sipUser)) {
-                Log.w(TAG, "Ignoring SIP MESSAGE from unauthorized user: " + sipUser);
-            } else {
-                Log.w(TAG, "Ignoring malformed SMS command from authorized user");
-            }
+        // Preserve the installed 1.4.1 SMS authorization during management rollout.
+        String sipUser = SipUri.extractUser(from);
+        String phoneNumber = extractPhoneNumber(to);
+        if ((phoneNumber == null || phoneNumber.isEmpty()) && !config.isAuthorizedSipCaller(sipUser)) {
+            Log.w(TAG, "Ignoring SIP MESSAGE from unauthorized user: " + sipUser);
             return;
         }
-
-        Log.d(TAG, "handleIncomingSipMessage: Sending GSM SMS to " + decided.phoneNumber);
-        if (smsHandler != null) {
-            smsHandler.sendSms(decided.phoneNumber, decided.body, simSlot);
+        String messageBody = body;
+        if (phoneNumber == null || phoneNumber.isEmpty()) {
+            SmsCommand command = SmsCommand.parse(body);
+            if (command == null) {
+                Log.w(TAG, "Ignoring malformed SMS command from authorized user");
+                return;
+            }
+            phoneNumber = command.getDestination();
+            messageBody = command.getBody();
         }
+        Log.d(TAG, "handleIncomingSipMessage: Sending GSM SMS to " + phoneNumber);
+        if (smsHandler != null) {
+            smsHandler.sendSms(phoneNumber, messageBody, simSlot);
+        }
+    }
+
+    private String extractPhoneNumber(String uri) {
+        String user = SipUri.extractUser(uri);
+        return user.matches("^\\+?[0-9]{10,15}$") ? user : null;
     }
 
     // ========== Watchdog ==========
@@ -807,6 +820,7 @@ public class PjsipSipService extends Service implements SipCallService {
     }
 
     private volatile boolean reloadInProgress = false;
+    private volatile long reloadGeneration = 0;
 
     private void doReloadConfig() {
         if (reloadInProgress) {
@@ -814,6 +828,7 @@ public class PjsipSipService extends Service implements SipCallService {
             return;
         }
         reloadInProgress = true;
+        reloadGeneration++;
 
         Log.i(TAG, "Reloading configuration...");
         updateNotification("Reloading...");
@@ -943,8 +958,28 @@ public class PjsipSipService extends Service implements SipCallService {
         return isRunning;
     }
 
+    public Boolean remoteBusy() {
+        CallManager calls = callManager;
+        if (calls != null && (calls.hasActiveCall() || calls.getCurrentSipCall() != null)) return true;
+        if (!isRunning || calls == null || !phoneStateObserved) return null;
+        try {
+            android.telecom.TelecomManager telecom = getSystemService(android.telecom.TelecomManager.class);
+            if (telecom == null) return null;
+            return lastPhoneState != TelephonyManager.CALL_STATE_IDLE || telecom.isInCall();
+        } catch (SecurityException unavailable) { return null; }
+    }
+
+    public boolean remoteReloadInProgress() {
+        return reloadInProgress;
+    }
+
+    public long remoteReloadGeneration() {
+        return reloadGeneration;
+    }
+
     public boolean isSipRegistered() {
-        return accountManager.isRegistered();
+        SipAccountManager current = accountManager;
+        return current != null && current.isRegistered();
     }
 
     // ========== Notifications ==========

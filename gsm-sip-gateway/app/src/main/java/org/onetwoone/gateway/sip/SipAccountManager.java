@@ -23,7 +23,7 @@ public class SipAccountManager {
 
     private GatewayAccount account;
     private AccountConfig accountConfig;
-    private boolean registered = false;
+    private volatile boolean registered = false;
     private String lastError = null;
 
     public interface AccountListener {

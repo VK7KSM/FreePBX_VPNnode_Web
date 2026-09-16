@@ -33,7 +33,7 @@
     <application
         android:name=".GatewayApplication"
         android:allowBackup="false"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_gateway"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
@@ -56,6 +56,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <activity android:name=".remote.GatewayRemoteActivity" android:exported="false" />
+        <service android:name=".remote.GatewayRemoteService" android:exported="false" />
 
         <!-- InCallService - handles GSM calls -->
         <service
@@ -90,6 +93,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
