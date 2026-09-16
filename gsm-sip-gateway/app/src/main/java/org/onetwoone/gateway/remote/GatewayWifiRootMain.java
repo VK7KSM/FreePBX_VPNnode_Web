@@ -28,7 +28,7 @@ public final class GatewayWifiRootMain {
             else if("apply".equals(args[0]))result=apply(dir);
             else if("restore".equals(args[0]))result=restore(dir);
             else result=commit(dir);
-            if(args.length==4)sendResult(args[2],args[3],result);System.out.println("WIFI_OPERATION_OK");
+            if(args.length==4)sendResult(args[2],args[3],result);System.out.println("WIFI_OPERATION_OK");System.exit(0);
         } catch(Throwable error) {System.err.println("WIFI_OPERATION_FAILED");System.exit(1);}
     }
 
