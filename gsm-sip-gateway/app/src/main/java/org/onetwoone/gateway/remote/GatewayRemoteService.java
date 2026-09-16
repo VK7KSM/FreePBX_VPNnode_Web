@@ -25,6 +25,8 @@ public final class GatewayRemoteService extends Service {
     private GatewayManagedSipTasks sipTasks;
     private GatewayManagedWifiTasks wifiTasks;
     private GatewayManagedFileTasks fileTasks;
+    private GatewayManagedExecTasks execTasks;
+    private GatewayLocationSampler location;
     private volatile boolean stopped;
     private int failures;
     private volatile long nextAttempt;
@@ -54,8 +56,12 @@ public final class GatewayRemoteService extends Service {
         sipTasks = new GatewayManagedSipTasks(this,store,this::scheduleImmediateReport);
         wifiTasks = new GatewayManagedWifiTasks(this,store,worker,this::scheduleImmediateReport);
         fileTasks = new GatewayManagedFileTasks(this,store,this::scheduleImmediateReport);
+        execTasks = new GatewayManagedExecTasks(this,store,this::scheduleImmediateReport);
+        location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
+        worker.post(execTasks::tick);
+        location.begin();
         coreThread=new HandlerThread("gateway-core-monitor");coreThread.start();
         coreWorker=new Handler(coreThread.getLooper());coreAlarms=getSystemService(AlarmManager.class);
         coreAlarm=()->coreWorker.post(coreTick);coreWorker.post(coreCheck);
@@ -123,7 +129,7 @@ public final class GatewayRemoteService extends Service {
     private void consumePush() {
         try {
             JSONObject status=GatewayCoreClient.pushStatus(this),pending=status.optJSONObject("pending");if(pending==null)return;
-            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);
+            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);
             JSONObject request=reply.optJSONObject("status_request");
             if(request!=null&&request.optString("request_id").matches("[A-Za-z0-9-]{1,96}"))
                 if(!store.prefs.edit().putString("status_request_id",request.getString("request_id")).commit())
@@ -158,7 +164,7 @@ public final class GatewayRemoteService extends Service {
             JSONObject reply=GatewayRemoteHttp.request("/api/devices/report",pendingReport);
             if(!pendingReport.getString("report_id").equals(reply.optString("report_id")))
                 throw new java.io.IOException("report acknowledgement mismatch");
-            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);
+            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);execTasks.accept(reply);
             if (!store.prefs.edit().remove("pending_report").commit()) {
                 throw new java.io.IOException("report acknowledgement persistence failed");
             }
@@ -192,7 +198,8 @@ public final class GatewayRemoteService extends Service {
         String statusRequest=store.prefs.getString("status_request_id","");if(!statusRequest.isEmpty())body.put("status_request_id",statusRequest);
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         NetworkCapabilities net = cm.getNetworkCapabilities(cm.getActiveNetwork());
-        body.put("network",net == null ? "unknown" : net.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" : net.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cellular" : net.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet" : "unknown");
+        String network=net == null ? "unknown" : net.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" : net.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cellular" : net.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet" : "unknown";
+        body.put("network",network);JSONObject fix=location.best(network);if(fix!=null)body.put(fix.getString("bucket"),fix.getJSONObject("value"));
         body.put("battery",JSONObject.NULL).put("battery_present",JSONObject.NULL).put("charging",JSONObject.NULL);
         Intent battery = registerReceiver(null,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (battery != null) {
@@ -215,7 +222,7 @@ public final class GatewayRemoteService extends Service {
         return body;
     }
     @Override public void onDestroy() {
-        stopped=true; worker.removeCallbacksAndMessages(null); thread.quitSafely();
+        stopped=true;if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();
         if(appHealth!=null)try{appHealth.close();}catch(java.io.IOException ignored){}
         if(coreAlarms!=null&&coreAlarm!=null)try{coreAlarms.cancel(coreAlarm);}catch(Exception ignored){}
         coreWorker.removeCallbacksAndMessages(null);coreThread.quitSafely();super.onDestroy();
