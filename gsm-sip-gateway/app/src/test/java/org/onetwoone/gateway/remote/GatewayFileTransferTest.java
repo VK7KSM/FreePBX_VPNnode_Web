@@ -53,6 +53,15 @@ public class GatewayFileTransferTest {
             assertEquals(GatewayFileCommit.hex(java.security.MessageDigest.getInstance("SHA-256").digest(new byte[]{4,5,6})),GatewayManagedTransferTasks.segmentHash(file,start,3));}
     }
 
+    @Test public void stoppedDownloadPrefersCancellationAndExpiry()throws Exception {
+        File task=temp.newFolder("stopped-task");JSONObject live=new JSONObject().put("expires_at",2000L);
+        assertNull(GatewayManagedTransferTasks.stoppedReason(live,task,1000L));
+        assertEquals("expired",GatewayManagedTransferTasks.stoppedReason(live,task,2000L));
+        assertTrue(new File(task,"cancel").createNewFile());
+        assertEquals("cancelled",GatewayManagedTransferTasks.stoppedReason(live,task,3000L));
+        assertEquals("cancelled",GatewayManagedTransferTasks.stoppedReason(new JSONObject().put("cancel_requested",true).put("expires_at",4000L),temp.newFolder("server-cancel"),1000L));
+    }
+
     private static String hash(File file)throws Exception {return GatewayFileCommit.hex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file.toPath())));}
     private static String repeat(char value,int count){char[] chars=new char[count];java.util.Arrays.fill(chars,value);return new String(chars);}
 }

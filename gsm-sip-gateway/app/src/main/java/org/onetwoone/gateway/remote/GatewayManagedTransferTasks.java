@@ -154,7 +154,9 @@ final class GatewayManagedTransferTasks {
             if(task!=null){requireNetwork(cellular);check(task,dir);}HttpURLConnection c=open(url,route,method,token,body==null?-1:body.length);connection=c;
             try{
                 if(body!=null){c.setRequestProperty("Content-Type","PUT".equals(method)?"application/octet-stream":"application/json");try(OutputStream out=c.getOutputStream()){for(int at=0;at<body.length;at+=65536){if(task!=null){check(task,dir);requireNetwork(cellular);}out.write(body,at,Math.min(65536,body.length-at));}}}
-                int code=c.getResponseCode();if(code>=400&&code<500&&code!=429)throw new Permanent("HTTP-"+code);if(code!=200)throw new IOException("HTTP-"+code);
+                int code=c.getResponseCode();
+                if(code==409&&task!=null&&url.startsWith(GatewayRemotePolicy.BASE_URL+"/api/elfremote/file-download?"))awaitStopped(task,dir);
+                if(code>=400&&code<500&&code!=429)throw new Permanent("HTTP-"+code);if(code!=200)throw new IOException("HTTP-"+code);
                 try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buffer=new byte[4096];int count;while((count=in.read(buffer))!=-1){if(out.size()+count>150000)throw new IOException("response too large");out.write(buffer,0,count);}
                     JSONObject result=new JSONObject(out.toString("UTF-8"));if(!result.optBoolean("ok"))throw new IOException("operation not acknowledged");GatewayProxyRoute.succeeded(route);return result;}
             }finally{c.disconnect();connection=null;}
@@ -173,6 +175,20 @@ final class GatewayManagedTransferTasks {
     private void check(JSONObject task,File dir)throws Exception {
         if(stopped)throw new IOException("service stopping");if(task.optBoolean("cancel_requested")||new File(dir,"cancel").exists())throw new Permanent("cancelled");
         if(System.currentTimeMillis()>=task.getLong("expires_at"))throw new Permanent("expired");
+    }
+    private void awaitStopped(JSONObject task,File dir)throws Exception {
+        long deadline=android.os.SystemClock.elapsedRealtime()+5000L;
+        do{
+            JSONObject current=task;
+            try{if(activeFile.exists())current=GatewayUpdateProgress.read(activeFile).getJSONObject("task");}catch(Exception ignored){}
+            String reason=stoppedReason(current,dir,System.currentTimeMillis());if(reason!=null)throw new Permanent(reason);
+            Thread.sleep(100);
+        }while(android.os.SystemClock.elapsedRealtime()<deadline);
+        throw new Permanent("task-stopped");
+    }
+    static String stoppedReason(JSONObject task,File dir,long now){
+        if((task!=null&&task.optBoolean("cancel_requested"))||(dir!=null&&new File(dir,"cancel").exists()))return "cancelled";
+        return task!=null&&now>=task.optLong("expires_at",Long.MAX_VALUE)?"expired":null;
     }
     private static JSONObject validate(JSONObject task)throws Exception {
         if(task==null||!task.optString("id").matches("[A-Za-z0-9-]{1,96}")||task.optLong("expires_at")<=0)throw new IOException("invalid task");
