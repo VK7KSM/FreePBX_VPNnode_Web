@@ -15,6 +15,7 @@ public class GatewayLocationSamplerTest {
         assertEquals("gps",GatewayLocationSampler.sourceBucket(LocationManager.GPS_PROVIDER,"wifi"));
         assertEquals("wifi",GatewayLocationSampler.sourceBucket(LocationManager.NETWORK_PROVIDER,"wifi"));
         assertEquals("cell",GatewayLocationSampler.sourceBucket(LocationManager.NETWORK_PROVIDER,"cellular"));
+        assertEquals("wifi",GatewayLocationSampler.sourceBucket(GatewayLocationSampler.FUSED_PROVIDER,"wifi"));
     }
     @Test public void rejectsFutureAndExpiredFixes(){
         Location location=new Location(LocationManager.GPS_PROVIDER);location.setElapsedRealtimeNanos(1_000_000_000L);

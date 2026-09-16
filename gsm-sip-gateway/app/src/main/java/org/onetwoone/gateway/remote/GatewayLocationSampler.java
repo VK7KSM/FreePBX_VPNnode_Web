@@ -16,6 +16,7 @@ import org.json.JSONObject;
 /** Periodically obtains an Android location fix without changing location settings. */
 final class GatewayLocationSampler {
     static final long SAMPLE_INTERVAL_MS=15*60_000L,MAX_AGE_NS=15*60_000_000_000L,SAMPLE_TIMEOUT_MS=30_000L;
+    static final String FUSED_PROVIDER="fused";
     private final Context context;private final Handler worker;private final Runnable changed;private final LocationManager manager;
     private LocationListener listener;private Location gpsFix,networkFix;private boolean sampling;
     private final Runnable timeout=this::finish;
@@ -27,7 +28,7 @@ final class GatewayLocationSampler {
     private void start(){
         if(sampling||manager==null||context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)!=android.content.pm.PackageManager.PERMISSION_GRANTED)return;
         try{
-            boolean gps=enabled(LocationManager.GPS_PROVIDER),network=enabled(LocationManager.NETWORK_PROVIDER);if(!gps&&!network)return;
+            boolean gps=enabled(LocationManager.GPS_PROVIDER),fused=enabled(FUSED_PROVIDER),network=enabled(LocationManager.NETWORK_PROVIDER);if(!gps&&!fused&&!network)return;
             sampling=true;listener=new LocationListener(){
                 @Override public void onLocationChanged(Location location){if(!sampling||!recent(location,SystemClock.elapsedRealtimeNanos()))return;if(LocationManager.GPS_PROVIDER.equals(location.getProvider())){gpsFix=location;finish();}else networkFix=location;}
                 @Override public void onStatusChanged(String provider,int status,Bundle extras){}
@@ -35,6 +36,7 @@ final class GatewayLocationSampler {
                 @Override public void onProviderDisabled(String provider){}
             };
             if(gps)manager.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0,listener,worker.getLooper());
+            if(fused)manager.requestLocationUpdates(FUSED_PROVIDER,1000,0,listener,worker.getLooper());
             if(network)manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,1000,0,listener,worker.getLooper());
             worker.postDelayed(timeout,SAMPLE_TIMEOUT_MS);
         }catch(SecurityException denied){sampling=false;removeListener();}
@@ -47,7 +49,7 @@ final class GatewayLocationSampler {
     JSONObject best(String networkType){
         if(manager==null)return null;try{
             Location best=null;long now=SystemClock.elapsedRealtimeNanos();
-            for(String provider:new String[]{LocationManager.GPS_PROVIDER,LocationManager.NETWORK_PROVIDER}){
+            for(String provider:new String[]{LocationManager.GPS_PROVIDER,FUSED_PROVIDER,LocationManager.NETWORK_PROVIDER}){
                 if(!enabled(provider))continue;Location candidate=manager.getLastKnownLocation(provider);
                 if(candidate==null||!recent(candidate,now))continue;
                 if(best==null||LocationManager.GPS_PROVIDER.equals(provider))best=candidate;
