@@ -9,17 +9,30 @@ import java.util.regex.Pattern;
 
 /** Temporarily permits this root-managed gateway to scan Wi-Fi while its UI is backgrounded. */
 final class GatewayLocationAppOp {
-    private static final Pattern UID_MODE=Pattern.compile("FINE_LOCATION:\\s*(allow|foreground|ignore|deny|default)");
-    static String currentUid() throws Exception {
-        return parseUidMode(run("appops get --uid org.onetwoone.gateway FINE_LOCATION",true));
+    private static final String[] OPS={"FINE_LOCATION","COARSE_LOCATION"};
+    static Scope open() throws Exception {
+        String[] previous=new String[OPS.length];int changed=0;
+        try {
+            for(int i=0;i<OPS.length;i++){
+                previous[i]=currentUid(OPS[i]);allowPackage(OPS[i]);
+                if(!"allow".equals(previous[i])){setUid(OPS[i],"allow");changed=i+1;}
+            }
+            return new Scope(previous);
+        } catch(Exception error) {
+            for(int i=changed-1;i>=0;i--)try{setUid(OPS[i],previous[i]);}catch(Exception ignored){}
+            throw error;
+        }
     }
-    static void allowPackage() throws Exception {run("appops set org.onetwoone.gateway FINE_LOCATION allow",false);}
-    static void setUid(String mode) throws Exception {
+    private static String currentUid(String op) throws Exception {return parseUidMode(run("appops get --uid org.onetwoone.gateway "+op,true),op);}
+    private static void allowPackage(String op) throws Exception {run("appops set org.onetwoone.gateway "+op+" allow",false);}
+    private static void setUid(String op,String mode) throws Exception {
+        if(!"FINE_LOCATION".equals(op)&&!"COARSE_LOCATION".equals(op))throw new IOException("invalid appop");
         if(!mode.matches("allow|foreground|ignore|deny|default"))throw new IOException("invalid appop mode");
-        run("appops set --uid org.onetwoone.gateway FINE_LOCATION "+mode,false);
+        run("appops set --uid org.onetwoone.gateway "+op+" "+mode,false);
     }
-    static String parseUidMode(String output) throws IOException {
-        Matcher match=UID_MODE.matcher(output==null?"":output);
+    static String parseUidMode(String output,String op) throws IOException {
+        if(!"FINE_LOCATION".equals(op)&&!"COARSE_LOCATION".equals(op))throw new IOException("invalid appop");
+        Matcher match=Pattern.compile(Pattern.quote(op)+":\\s*(allow|foreground|ignore|deny|default)").matcher(output==null?"":output);
         if(!match.find())throw new IOException("unknown uid appop mode");
         return match.group(1);
     }
@@ -34,6 +47,15 @@ final class GatewayLocationAppOp {
         java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();byte[] buffer=new byte[512];int count;
         while((count=input.read(buffer))>=0){if(count>0)out.write(buffer,0,count);if(out.size()>4096)throw new IOException("appops output too large");}
         return out.toByteArray();
+    }
+    static final class Scope implements AutoCloseable {
+        private final String[] previous;private boolean closed;
+        Scope(String[] previous){this.previous=previous.clone();}
+        @Override public void close() throws Exception {
+            if(closed)return;closed=true;Exception failure=null;
+            for(int i=OPS.length-1;i>=0;i--)if(!"allow".equals(previous[i]))try{setUid(OPS[i],previous[i]);}catch(Exception error){if(failure==null)failure=error;}
+            if(failure!=null)throw failure;
+        }
     }
     private GatewayLocationAppOp() {}
 }
