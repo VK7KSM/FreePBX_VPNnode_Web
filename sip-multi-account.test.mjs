@@ -108,7 +108,7 @@ test('SIP页面只显示声明账号、分别呈现失败和过期；切换预�
  const c=browser();c.DEV=[d];c.selDev=d.id;c.renderOps=()=>{};
  let html=c.pageSipAccount('');assert.match(html,/SIP|配置账号/);assert.match(html,/注册失败/);assert.doesNotMatch(html,/<script>fixture/);assert.doesNotMatch(html,/sipAccountAuth|sipAccountRealm/);
  c.selectSipAccount(1);html=c.pageSipAccount('');assert.match(html,/value="second.invalid"/);assert.equal(c.uiOf().sipSelection,'nexui|line-b');
- c.selectSipAccount(2);html=c.pageSipAccount('');assert.doesNotMatch(html,/sipAccountAuth|second.invalid/);
+ c.selectSipAccount(2);html=c.pageSipAccount('');assert.doesNotMatch(html,/sipAccountAuth/);assert.match(html,/id="sipAccountServer"[^>]*value=""/);
  d.online=false;assert.match(c.pageSipAccount(''),/设备离线，注册状态待确认/);
  delete d.sip_targets;delete d.sip_accounts;assert.match(c.pageSipAccount(''),/保存并登录/);
  d.sip_targets=[];d.sip_accounts=[];assert.match(c.pageSipAccount(''),/尚未开放/);

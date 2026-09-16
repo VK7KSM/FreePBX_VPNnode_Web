@@ -1,5 +1,5 @@
 // 应用目标和稳定账号标识组成键；密码只存在私有配置中。
-const targets=new Set(['linphone','nexui','quik']);
+const targets=new Set(['linphone','nexui','quik','gateway']);
 const id=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(value);
 export function sipDestination(p={}) {
   if(p.target===undefined&&p.account_id===undefined)return null;
@@ -12,6 +12,7 @@ export function normalizeSipTargets(rows){
   const seen=new Set();
   return rows.map(row=>{
     if(!row||!targets.has(row.target)||seen.has(row.target)||!Array.isArray(row.accounts)||row.accounts.length>32)throw Error('SIP目标声明无效');
+    if(row.target==='gateway'&&(row.auth_username_supported===true||row.accounts.length!==1||row.accounts[0]?.account_id!=='primary'))throw Error('Gateway SIP目标声明无效');
     seen.add(row.target);const accounts=new Set();
     return {target:row.target,label:String(row.label||row.target).slice(0,80),auth_username_supported:row.auth_username_supported===true,...(row.realm_supported===false?{realm_supported:false}:{}),accounts:row.accounts.map(a=>{
       if(!a||!id(a.account_id)||accounts.has(a.account_id))throw Error('SIP账号声明无效');
@@ -27,6 +28,7 @@ export function sipAllowed(d,p){
 }
 export function checkSipTarget(d,p){
   if(!sipAllowed(d,p))throw Error('设备尚未声明此SIP配置目标或账号');
+  if(p.target==='gateway'&&(p.account_id!=='primary'||p.auth_username!==undefined))throw Error('Gateway SIP配置目标无效');
   if(p.target&&d.sip_targets.find(t=>t.target===p.target).auth_username_supported!==true&&p.auth_username!==undefined&&p.auth_username!==p.username)throw Error('此配置目标不支持独立认证账号');
   if(p.target&&d.sip_targets.find(t=>t.target===p.target).realm_supported===false&&p.realm!==undefined)throw Error('此配置目标不支持认证域');
 }

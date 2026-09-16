@@ -297,12 +297,17 @@ export async function queueSystemRestore(device,storage,now) {
 
 export function sipAccountParams(value={}) {
   const destination=sipDestination(value);
-  const {server,username,password}=value,auth_username=value.auth_username??username,transport=String(value.transport??'tls').toLowerCase(),port=value.port??(transport==='tls'?5061:5060);
+  const {server,username}=value,gateway=destination?.target==='gateway',hasPassword=Object.hasOwn(value,'password'),keepPassword=Object.hasOwn(value,'keep_password'),password=value.password,
+    auth_username=value.auth_username??username,transport=String(value.transport??'tls').toLowerCase(),port=value.port??(transport==='tls'?5061:5060);
   if(typeof server!=='string'||!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(server)||typeof username!=='string'||!/^[A-Za-z0-9_.+-]{1,128}$/.test(username)
-    ||typeof auth_username!=='string'||!/^[A-Za-z0-9_.+@-]{1,128}$/.test(auth_username)||typeof password!=='string'||!password||password.length>256||password!==password.trim()||/[\x00-\x1f\x7f]/.test(password)
+    ||typeof auth_username!=='string'||!/^[A-Za-z0-9_.+@-]{1,128}$/.test(auth_username)
     ||!['tls','tcp','udp'].includes(transport)||!Number.isInteger(port)||port<1||port>65535)throw Error('SIP账号参数无效');
+  const validPassword=typeof password==='string'&&!!password&&password.length<=256&&password===password.trim()&&!/[\x00-\x1f\x7f]/.test(password);
+  if(gateway){
+    if(destination.account_id!=='primary'||value.auth_username!==undefined||!['tls','udp'].includes(transport)||hasPassword===keepPassword||(hasPassword&&!validPassword)||(keepPassword&&value.keep_password!==true))throw Error('Gateway SIP密码或传输参数无效');
+  }else if(keepPassword||!hasPassword||!validPassword)throw Error('SIP账号参数无效');
   if(value.realm!==undefined&&(!destination||typeof value.realm!=='string'||!/^[A-Za-z0-9*_.@:-]{1,253}$/.test(value.realm)))throw Error('SIP realm无效或旧客户端不支持');
-  return {server:server.toLowerCase(),username,auth_username,password,transport,port,...(destination||{}),...(value.realm!==undefined?{realm:value.realm}:{})};
+  return {server:server.toLowerCase(),username,...(!gateway?{auth_username}:{}),...(hasPassword?{password}:{keep_password:true}),transport,port,...(destination||{}),...(value.realm!==undefined?{realm:value.realm}:{})};
 }
 
 export async function queueSipRestore(device,storage,now) {
@@ -544,9 +549,11 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     }
   }
   if(device.task.type==='configure_zello' && state==='success' && device.task.params?.password)device.account_configs={...device.account_configs,zello:{params:zelloAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString()}};
-  if(device.task.type==='configure_sip' && state==='success' && device.task.params?.password){
+  if(device.task.type==='configure_sip' && state==='success' && (device.task.params?.password||device.task.params?.keep_password===true)){
     const key=modernSip?sipKey(device.task.sip_destination):'linphone';
-    device.account_configs={...device.account_configs,[key]:{params:sipAccountParams(device.task.params),applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString(),...(modernSip?{config_task_id:taskId}:{})}};
+    const normalized=sipAccountParams(device.task.params),previous=device.account_configs?.[key]?.params;
+    if(normalized.keep_password===true&&previous?.password){normalized.password=previous.password;delete normalized.keep_password;}
+    device.account_configs={...device.account_configs,[key]:{params:normalized,applied_token_sha:device.token_sha256,updated_at:new Date(nowMs).toISOString(),...(modernSip?{config_task_id:taskId}:{})}};
   }
   if(modernSip)sipConfigurationResult(device,device.task,state,detail,nowMs);
   if (device.task.state !== state) {
