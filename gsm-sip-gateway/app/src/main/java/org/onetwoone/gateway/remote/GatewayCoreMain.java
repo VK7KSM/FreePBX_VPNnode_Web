@@ -45,10 +45,10 @@ public final class GatewayCoreMain {
                                     .put("mobile_error",GatewayMobileStatusCollector.errorCategory(failure));}
                         }
                         else if("proxy-prepare".equals(operation))response.put("proxy",proxy.prepare(request));
-                        else if("proxy-configure".equals(operation))response.put("proxy",proxy.configure(request));
-                        else if("proxy-start".equals(operation))response.put("proxy",proxy.start());
-                        else if("proxy-stop".equals(operation))response.put("proxy",proxy.stop());
-                        else if("proxy-test".equals(operation))response.put("proxy",proxy.test());
+                        else if("proxy-configure".equals(operation)){response.put("proxy",proxy.configure(request));if(push!=null)push.routeChanged();}
+                        else if("proxy-start".equals(operation)){response.put("proxy",proxy.start());if(push!=null)push.routeChanged();}
+                        else if("proxy-stop".equals(operation)){response.put("proxy",proxy.stop());if(push!=null)push.routeChanged();}
+                        else if("proxy-test".equals(operation)){response.put("proxy",proxy.test());if(push!=null)push.routeChanged();}
                         else if("proxy-status".equals(operation))response.put("proxy",proxy.status());
                         else if("push-config".equals(operation)&&push!=null)response.put("push",push.configure(request));
                         else if("push-status".equals(operation)&&push!=null)response.put("push",push.status());

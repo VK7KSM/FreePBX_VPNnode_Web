@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 50
-        versionName "1.5.0-gateway-alpha43-proxy-tasks"
+        versionCode 51
+        versionName "1.5.0-gateway-alpha44-proxy-routing"
 
         // NDK build config
         externalNativeBuild {

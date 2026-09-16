@@ -2,12 +2,17 @@ package org.onetwoone.gateway.remote;
 
 import java.io.*;
 import java.net.HttpURLConnection;
+import java.net.Proxy;
 import java.net.URL;
 import org.json.JSONObject;
 
 final class GatewayArtifactDownload {
     static void download(JSONObject verifiedManifest,File destination) throws Exception {
-        HttpURLConnection connection=(HttpURLConnection)new URL(verifiedManifest.getString("url")).openConnection();
+        URL url=new URL(verifiedManifest.getString("url"));Exception last=null;for(Proxy route:GatewayProxyRoute.attempts())try{download(verifiedManifest,destination,url,route);return;}
+        catch(SecurityException rejected){throw rejected;}catch(IOException unavailable){last=unavailable;}throw last==null?new IOException("APK download unavailable"):last;
+    }
+    private static void download(JSONObject verifiedManifest,File destination,URL url,Proxy route) throws Exception {
+        HttpURLConnection connection=(HttpURLConnection)GatewayProxyRoute.open(url,route);
         connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(15000);connection.setReadTimeout(20000);
         connection.setRequestProperty("User-Agent","elfRemote-Gateway/1.5.0");
         connection.setRequestProperty("Accept-Encoding","identity");
@@ -18,6 +23,7 @@ final class GatewayArtifactDownload {
             try(InputStream input=connection.getInputStream()) {
                 copyVerified(input,destination,verifiedManifest.getLong("size"),verifiedManifest.getString("sha256"),System.nanoTime()+300_000_000_000L);
             }
+            GatewayProxyRoute.succeeded(route);
         } finally {connection.disconnect();}
     }
     static void copyVerified(InputStream source,File destination,long expected,String hash,long deadline) throws Exception {

@@ -15,7 +15,7 @@ final class GatewayProxyRuntime {
     private final File root,binary,state,config,pidFile,log;
     private boolean verified;private Process child;
     GatewayProxyRuntime(){this(new File(ROOT));}
-    GatewayProxyRuntime(File root){this.root=root;binary=new File(root,"mihomo");state=new File(root,"state.json");config=new File(root,"config.yaml");pidFile=new File(root,"mihomo.pid");log=new File(root,"mihomo.log");try{verified=verifyInstalled();}catch(Exception ignored){verified=false;}}
+    GatewayProxyRuntime(File root){this.root=root;binary=new File(root,"mihomo");state=new File(root,"state.json");config=new File(root,"config.yaml");pidFile=new File(root,"mihomo.pid");log=new File(root,"mihomo.log");try{verified=verifyInstalled();}catch(Exception ignored){verified=false;}refreshRoute();}
     synchronized JSONObject prepare(JSONObject request)throws Exception {
         String source=request.optString("asset_path");
         if(!safeSource(source)||request.optLong("size")!=GatewayProxyAssets.EXECUTABLE_SIZE
@@ -62,7 +62,7 @@ final class GatewayProxyRuntime {
     synchronized JSONObject status()throws Exception {boolean configured=config.isFile();boolean running=isRunning();boolean http=running&&portOpen(GatewayProxyPolicy.HTTP_PORT),socks=running&&socksReady();JSONObject saved=readState();return new JSONObject().put("schema_version",2)
             .put("bundled",true).put("version",GatewayProxyAssets.VERSION).put("abi","arm64-v8a").put("asset_verified",true).put("core_verified",verified)
             .put("configured",configured).put("running",running).put("http_ready",http).put("socks_ready",socks)
-            .put("proxy_reachable",running&&saved.optBoolean("proxy_reachable")&&http&&socks).put("management_via","direct").put("write_locked",true)
+            .put("proxy_reachable",running&&saved.optBoolean("proxy_reachable")&&http&&socks).put("management_via",GatewayProxyRoute.managementVia()).put("write_locked",true)
             .put("http_port",GatewayProxyPolicy.HTTP_PORT).put("socks_port",GatewayProxyPolicy.SOCKS_PORT).put("checked_at_ms",System.currentTimeMillis());}
     private boolean verifyInstalled()throws Exception {if(!binary.isFile()||binary.length()!=GatewayProxyAssets.EXECUTABLE_SIZE||!state.isFile())return false;
         JSONObject saved=new JSONObject(read(state,4096));
@@ -79,8 +79,9 @@ final class GatewayProxyRuntime {
         Os.chmod(log.getPath(),0600);
         long deadline=System.currentTimeMillis()+15000;while(System.currentTimeMillis()<deadline){if(!child.isAlive())throw new IOException("proxy exited during startup");if(portOpen(GatewayProxyPolicy.HTTP_PORT)&&socksReady())return;Thread.sleep(200);}
         stopInternal();throw new IOException("proxy listener startup timeout");}
-    private void stopInternal()throws Exception {int pid=readPid();if(pid>1&&identity(pid)){Os.kill(pid,OsConstants.SIGTERM);for(int n=0;n<30&&new File("/proc/"+pid).exists();n++)Thread.sleep(100);if(new File("/proc/"+pid).exists())Os.kill(pid,OsConstants.SIGKILL);}if(child!=null&&child.isAlive()){child.destroy();child.waitFor(2,TimeUnit.SECONDS);if(child.isAlive())child.destroyForcibly();}child=null;cleanup(pidFile);trimLog();}
-    private JSONObject testInternal()throws Exception {boolean running=isRunning(),http=running&&portOpen(GatewayProxyPolicy.HTTP_PORT),socks=running&&socksReady(),reachable=http&&httpConnect();JSONObject saved=readState();saved.put("proxy_reachable",reachable).put("last_test_ms",System.currentTimeMillis());write(state,saved);return status();}
+    private void stopInternal()throws Exception {int pid=readPid();if(pid>1&&identity(pid)){Os.kill(pid,OsConstants.SIGTERM);for(int n=0;n<30&&new File("/proc/"+pid).exists();n++)Thread.sleep(100);if(new File("/proc/"+pid).exists())Os.kill(pid,OsConstants.SIGKILL);}if(child!=null&&child.isAlive()){child.destroy();child.waitFor(2,TimeUnit.SECONDS);if(child.isAlive())child.destroyForcibly();}child=null;cleanup(pidFile);GatewayProxyRoute.setPreferred(false);trimLog();}
+    private JSONObject testInternal()throws Exception {boolean running=isRunning(),http=running&&portOpen(GatewayProxyPolicy.HTTP_PORT),socks=running&&socksReady(),reachable=http&&httpConnect();JSONObject saved=readState();saved.put("proxy_reachable",reachable).put("last_test_ms",System.currentTimeMillis());write(state,saved);GatewayProxyRoute.setPreferred(reachable&&socks);return status();}
+    private void refreshRoute(){try{JSONObject saved=readState();GatewayProxyRoute.setPreferred(isRunning()&&saved.optBoolean("proxy_reachable")&&portOpen(GatewayProxyPolicy.HTTP_PORT)&&socksReady());}catch(Exception ignored){GatewayProxyRoute.setPreferred(false);}}
     private boolean isRunning(){int pid=readPid();return pid>1&&identity(pid);}
     private int readPid(){try{return Integer.parseInt(new String(readBytes(pidFile,32),StandardCharsets.US_ASCII).trim());}catch(Exception ignored){return -1;}}
     private boolean identity(int pid){try{byte[] raw=readBytes(new File("/proc/"+pid+"/cmdline"),4096);String cmd=new String(raw,StandardCharsets.UTF_8).replace('\0',' ');return cmd.startsWith(binary.getPath()+" ")&&cmd.contains(" -f "+config.getPath());}catch(Exception ignored){return false;}}

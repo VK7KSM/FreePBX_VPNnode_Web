@@ -85,7 +85,7 @@ public final class GatewayRemoteService extends Service {
             }
             JSONObject health=GatewayCoreClient.ensure(this);
             boolean ready=health.optInt("uid",-1)==0;
-            try {JSONObject proxy=GatewayCoreClient.prepareProxy(this);store.prefs.edit().putString("proxy_runtime",proxy.toString()).remove("proxy_runtime_error").apply();}
+            try {JSONObject proxy=GatewayCoreClient.prepareProxy(this);GatewayProxyRoute.setPreferred(proxy.optBoolean("proxy_reachable")&&proxy.optBoolean("http_ready"));store.prefs.edit().putString("proxy_runtime",proxy.toString()).remove("proxy_runtime_error").apply();}
             catch(Exception unavailable){store.prefs.edit().remove("proxy_runtime").putString("proxy_runtime_error",unavailable.getClass().getSimpleName()).apply();}
             JSONObject push=store.prefs.getBoolean("paired",false)&&!store.deviceId().isEmpty()
                     ?GatewayCoreClient.configurePush(this,store.deviceId(),store.token()):null;

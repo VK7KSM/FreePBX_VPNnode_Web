@@ -16,7 +16,7 @@ final class GatewayCorePush implements Closeable {
     private final GatewayAdbSessions adb;private final GatewayAdbTunnel tunnel;
     private final HandlerThread thread;private final Handler worker;private final ConnectivityManager network;private final GatewayCoreWake wake;
     private final ConnectivityManager.NetworkCallback callback;
-    private JSONObject state;private MqttAsyncClient client;private GatewayMqttHeartbeat ping;private boolean connected,connecting,closed;private int failures;private String activeNetwork="";
+    private JSONObject state;private MqttAsyncClient client;private GatewayMqttHeartbeat ping;private boolean connected,connecting,closed,mqttProxyAttempt,connectedViaProxy,mqttDirectFallback;private int failures;private String activeNetwork="";
     GatewayCorePush(Context context,File coreRoot) throws Exception {
         this.context=context;root=new File(coreRoot,"push");if(!root.isDirectory()&&!root.mkdir())throw new IOException("push directory unavailable");
         android.system.Os.chmod(root.getPath(),0700);stateFile=new File(root,"state.json");pendingFile=new File(root,"pending.json");noticeFile=new File(root,"notice.json");
@@ -36,6 +36,7 @@ final class GatewayCorePush implements Closeable {
     }
     synchronized JSONObject status() throws Exception {
         JSONObject result=new JSONObject().put("connected",connected).put("configured",!state.optString("device_id").isEmpty())
+                .put("transport",connected?(connectedViaProxy?"proxy":"direct"):"none")
                 .put("last_stage",state.optString("last_stage")).put("last_error_class",state.optString("last_error_class"))
                 .put("last_attempt_at",state.optLong("last_attempt_at")).put("connected_at",state.optLong("connected_at"))
                 .put("next_wake_delay_ms",wake.nextDelay());
@@ -49,7 +50,8 @@ final class GatewayCorePush implements Closeable {
         if(!pendingFile.delete())throw new IOException("pending push cleanup failed");
         if(noticeFile.exists()&&!noticeFile.delete())throw new IOException("notice cleanup failed");
     }
-    void hint(){worker.post(()->{String next=networkId();if(!next.equals(activeNetwork)){tunnel.close();dispose();failures=0;ensure();}else if(!connecting&&!connected&&failures==0)ensure();});}
+    void hint(){worker.post(()->{String next=networkId();if(!next.equals(activeNetwork)){tunnel.close();dispose();failures=0;mqttDirectFallback=false;ensure();}else if(!connecting&&!connected&&failures==0)ensure();});}
+    void routeChanged(){worker.post(()->{mqttDirectFallback=false;if(!connected&&!connecting){failures=0;ensure();}});}
     private String networkId(){Network value=network.getActiveNetwork();return value==null?"":value.toString();}
     private void ensure() {
         synchronized(this){if(closed||connected||connecting||state.optString("device_id").isEmpty())return;connecting=true;}
@@ -78,12 +80,14 @@ final class GatewayCorePush implements Closeable {
         int keepalive=GatewayMqttHeartbeat.keepAliveSeconds(config.optInt("keepalive_seconds",900),wifi);
         options.setKeepAliveInterval(keepalive);options.setMaxInflight(4);diagnostic("mqtt_policy_"+keepalive,null);
         options.setUserName(config.getString("username"));options.setPassword(config.getString("password").toCharArray());options.setHttpsHostnameVerificationEnabled(true);
+        mqttProxyAttempt=GatewayProxyRoute.preferred()&&!mqttDirectFallback;if(mqttProxyAttempt)options.setSocketFactory(GatewayProxyTlsSocketFactory.create());
         synchronized(this){client=next;}
         next.connect(options,null,new IMqttActionListener(){public void onSuccess(IMqttToken token){try{next.subscribe(topic,1,null,new IMqttActionListener(){
-            public void onSuccess(IMqttToken subscribed){worker.post(()->{synchronized(GatewayCorePush.this){if(client!=next)return;connecting=false;connected=true;failures=0;}wake.cancel("connect-timeout");wake.release("connect");diagnostic("connected",null);sync(null);});}
-            public void onFailure(IMqttToken token,Throwable error){worker.post(()->{diagnostic("subscribe_failed",error);retry();});}});}catch(Exception e){worker.post(()->{diagnostic("subscribe_failed",e);retry();});}}
-            public void onFailure(IMqttToken token,Throwable error){worker.post(()->{diagnostic("connect_failed",error);retry();});}});
+            public void onSuccess(IMqttToken subscribed){worker.post(()->{synchronized(GatewayCorePush.this){if(client!=next)return;connecting=false;connected=true;connectedViaProxy=mqttProxyAttempt;failures=0;}wake.cancel("connect-timeout");wake.release("connect");diagnostic(connectedViaProxy?"connected_proxy":"connected_direct",null);sync(null);});}
+            public void onFailure(IMqttToken token,Throwable error){worker.post(()->{diagnostic("subscribe_failed",error);connectionFailed(error);});}});}catch(Exception e){worker.post(()->{diagnostic("subscribe_failed",e);connectionFailed(e);});}}
+            public void onFailure(IMqttToken token,Throwable error){worker.post(()->{diagnostic("connect_failed",error);connectionFailed(error);});}});
     }
+    private void connectionFailed(Throwable error){if(mqttProxyAttempt){mqttDirectFallback=true;dispose();failures=0;diagnostic("proxy_fallback_direct",error);wake.schedule("retry",1000,this::ensure);}else retry(error);}
     private void receive(MqttAsyncClient source,String topic,String received,MqttMessage message,byte[] bytes) {
         try {
             JSONObject notice=bytes.length<=4096&&topic.equals(received)?new JSONObject(new String(bytes,StandardCharsets.UTF_8)):null;
@@ -117,12 +121,12 @@ final class GatewayCorePush implements Closeable {
     private void wake() throws Exception {new ProcessBuilder("/system/bin/am","start-foreground-service","--user","0","-a",GatewayRemoteService.ACTION_PUSH,
             "-n",GatewayRemotePolicy.PACKAGE+"/.remote.GatewayRemoteService").redirectErrorStream(true).redirectOutput(new File(root,"wake-last.txt")).start();}
     private void retry(){retry(null);}
-    private synchronized void retry(Throwable error){dispose();if(closed)return;long delay=GatewayPushPolicy.retry(failures++);diagnostic("retry_"+(error==null?"connection":error.getClass().getSimpleName()),error);wake.schedule("retry",delay,this::ensure);}
-    private synchronized void dispose(){connected=false;connecting=false;wake.cancel("connect-timeout");wake.cancel("retry");wake.release("connect");if(ping!=null){ping.stop();ping=null;}MqttAsyncClient old=client;client=null;if(old!=null){try{old.disconnectForcibly(0,500,false);}catch(Exception ignored){}try{old.close(true);}catch(Exception ignored){}}}
+    private synchronized void retry(Throwable error){boolean failedProxy=connectedViaProxy;dispose();if(closed)return;if(failedProxy){mqttDirectFallback=true;failures=0;diagnostic("proxy_fallback_direct",error);wake.schedule("retry",1000,this::ensure);return;}long delay=GatewayPushPolicy.retry(failures++);diagnostic("retry_"+(error==null?"connection":error.getClass().getSimpleName()),error);wake.schedule("retry",delay,this::ensure);}
+    private synchronized void dispose(){connected=false;connecting=false;connectedViaProxy=false;wake.cancel("connect-timeout");wake.cancel("retry");wake.release("connect");if(ping!=null){ping.stop();ping=null;}MqttAsyncClient old=client;client=null;if(old!=null){try{old.disconnectForcibly(0,500,false);}catch(Exception ignored){}try{old.close(true);}catch(Exception ignored){}}}
     private synchronized void diagnostic(String stage,Throwable error){
         try{state.put("last_stage",stage).put("last_attempt_at",System.currentTimeMillis())
                 .put("last_error_class",error==null?"":error.getClass().getSimpleName());
-            if("connected".equals(stage))state.put("connected_at",System.currentTimeMillis());save(stateFile,state);}catch(Exception ignored){}
+            if(stage.startsWith("connected"))state.put("connected_at",System.currentTimeMillis());save(stateFile,state);}catch(Exception ignored){}
     }
     private GatewayMqttHeartbeat createHeartbeat(){
         final GatewayMqttHeartbeat[] owner=new GatewayMqttHeartbeat[1];

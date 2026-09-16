@@ -29,6 +29,7 @@ final class GatewayManagedProxyTasks {
             else if("start_proxy".equals(type))status=GatewayCoreClient.startProxy(context);
             else if("stop_proxy".equals(type))status=GatewayCoreClient.stopProxy(context);
             else status=GatewayCoreClient.testProxy(context);
+            GatewayProxyRoute.setPreferred(status.optBoolean("proxy_reachable")&&status.optBoolean("http_ready"));
             terminal(id,"success","proxy-task-complete",new JSONObject().put("stage","proxy").put("action",type).put("proxy",status));
         }catch(Exception failure){try{if(!id.isEmpty())terminal(id,"failed",category(failure),null);else clear();}catch(Exception ignored){}}}
     private boolean cancelled(String id){try{JSONObject active=GatewayUpdateProgress.read(activeFile),task=active.getJSONObject("task");return id.equals(task.optString("id"))&&task.optBoolean("cancel_requested");}catch(Exception ignored){return true;}}

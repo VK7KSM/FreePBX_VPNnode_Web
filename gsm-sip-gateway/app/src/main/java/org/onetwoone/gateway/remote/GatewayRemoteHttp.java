@@ -4,11 +4,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Proxy;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 final class GatewayRemoteHttp {
+    private static final class HttpRejected extends java.io.IOException {HttpRejected(int code){super("HTTP "+code);}}
     static final class RetryLater extends java.io.IOException {
         final long delayMs;
         RetryLater(int code,long delay) { super("HTTP "+code); delayMs=delay; }
@@ -16,18 +18,22 @@ final class GatewayRemoteHttp {
     static JSONObject request(String path, JSONObject body) throws Exception {
         if (!path.startsWith("/api/devices/") && !"/api/elfremote/update-progress".equals(path)
                 && !"/api/elfremote/task-progress".equals(path)) throw new IllegalArgumentException("invalid route");
-        HttpURLConnection connection = (HttpURLConnection) new URL(GatewayRemotePolicy.BASE_URL + path).openConnection();
+        URL url=new URL(GatewayRemotePolicy.BASE_URL+path);byte[] bytes=body==null?null:body.toString().getBytes(StandardCharsets.UTF_8);Exception last=null;
+        for(Proxy route:GatewayProxyRoute.attempts())try{return request(url,bytes,route);}catch(RetryLater limited){throw limited;}catch(HttpRejected rejected){throw rejected;}catch(SecurityException rejected){throw rejected;}catch(java.io.IOException unavailable){last=unavailable;}
+        throw last==null?new java.io.IOException("request unavailable"):last;
+    }
+    private static JSONObject request(URL url,byte[] body,Proxy route) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) GatewayProxyRoute.open(url,route);
         connection.setConnectTimeout(15000); connection.setReadTimeout(20000);
         connection.setInstanceFollowRedirects(false);
         connection.setRequestProperty("User-Agent", "elfRemote-Gateway/1.5.0");
         connection.setRequestProperty("Accept", "application/json");
         try {
             if (body != null) {
-                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
                 connection.setRequestMethod("POST"); connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
-                connection.setFixedLengthStreamingMode(bytes.length);
-                try (OutputStream out = connection.getOutputStream()) { out.write(bytes); }
+                connection.setFixedLengthStreamingMode(body.length);
+                try (OutputStream out = connection.getOutputStream()) { out.write(body); }
             }
             int code = connection.getResponseCode();
             if (code == 429 || code == 503) {
@@ -42,7 +48,7 @@ final class GatewayRemoteHttp {
                 }
                 throw new RetryLater(code,delay);
             }
-            if (code != 200) throw new java.io.IOException("HTTP " + code);
+            if (code != 200) throw new HttpRejected(code);
             try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[4096]; int count;
                 while ((count = in.read(buffer)) != -1) {
@@ -51,6 +57,7 @@ final class GatewayRemoteHttp {
                 }
                 JSONObject result = new JSONObject(out.toString("UTF-8"));
                 if (!result.optBoolean("ok")) throw new java.io.IOException("request rejected");
+                GatewayProxyRoute.succeeded(route);
                 return result;
             }
         } finally { connection.disconnect(); }
