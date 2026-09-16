@@ -45,7 +45,7 @@ public class CallManager {
     private final GatewayConfig config;
 
     // Current calls
-    private GatewayCall currentSipCall;
+    private volatile GatewayCall currentSipCall;
     private String pendingGsmDestination;
     private int pendingGsmSimSlot = 1;
     private long gsmCallPlacedTime = 0;
@@ -62,7 +62,7 @@ public class CallManager {
         TERMINATING        // Calls being terminated
     }
 
-    private CallState state = CallState.IDLE;
+    private volatile CallState state = CallState.IDLE;
 
     public interface CallListener {
         void onCallStateChanged(CallState state);

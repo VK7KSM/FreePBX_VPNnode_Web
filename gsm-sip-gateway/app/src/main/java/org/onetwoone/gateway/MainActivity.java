@@ -97,6 +97,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        findViewById(R.id.remoteSettingsButton).setOnClickListener(v -> startActivity(
+                new android.content.Intent(this, org.onetwoone.gateway.remote.GatewayRemoteActivity.class)));
 
         viewModel = new ViewModelProvider(this).get(MainViewModel.class);
 

@@ -17,7 +17,7 @@ public class BootReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
+        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) {
             Log.i(TAG, "Boot completed, starting gateway services");
 
             // Start SIP service
@@ -28,6 +28,9 @@ public class BootReceiver extends BroadcastReceiver {
                 context.startService(serviceIntent);
             }
             Log.i(TAG, "SIP service started");
+            if (context.getSharedPreferences("elfremote_gateway", Context.MODE_PRIVATE).getBoolean("enabled",false)) {
+                org.onetwoone.gateway.remote.GatewayRemoteService.start(context);
+            }
 
         }
     }

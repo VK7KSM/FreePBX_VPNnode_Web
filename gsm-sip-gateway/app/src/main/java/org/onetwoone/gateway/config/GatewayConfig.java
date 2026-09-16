@@ -445,6 +445,19 @@ public class GatewayConfig {
             .apply();
     }
 
+    /** Synchronous commit used by the managed configuration transaction. */
+    public boolean commitSipConfig(String server, int port, String user, String password,
+                                   String realm, boolean useTls) {
+        return gatewayPrefs.edit()
+            .putString(KEY_SIP_SERVER, server)
+            .putInt(KEY_SIP_PORT, port)
+            .putString(KEY_SIP_USER, user)
+            .putString(KEY_SIP_PASSWORD, password)
+            .putString(KEY_SIP_REALM, realm)
+            .putBoolean(KEY_USE_TLS, useTls)
+            .commit();
+    }
+
     /** Compatibility for older code and saved configurations. */
     @Deprecated
     public void updateAudioConfig(int card, int capture, int playback, String route) {
