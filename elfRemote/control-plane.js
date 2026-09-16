@@ -129,7 +129,8 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
 export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy"];
 export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"];
-export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
+export const PIXEL_COMPANION_TASK_TYPE = "stage_pixel_companion";
+export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", PIXEL_COMPANION_TASK_TYPE, ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -167,6 +168,7 @@ export const REPAIR_TYPE_LABELS = {
   start_proxy: "启动代理",
   stop_proxy: "停止代理",
   test_proxy: "检测代理",
+  stage_pixel_companion: "暂存Pixel根组件",
   connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
 
@@ -234,7 +236,8 @@ export function makeRepairTask(input, nowMs) {
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
-  const params=type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : LOST_MESSAGE_TASK_TYPES.includes(type) ? lostMessageParams(type,src.params) : PROXY_TASK_TYPES.includes(type) ? proxyTaskParams(type,src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {});
+  if(type===PIXEL_COMPANION_TASK_TYPE)exp=Math.min(exp,nowMs+30*60*1000);
+  const params=type===PIXEL_COMPANION_TASK_TYPE?pixelCompanionParams(src.params):type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : LOST_MESSAGE_TASK_TYPES.includes(type) ? lostMessageParams(type,src.params) : PROXY_TASK_TYPES.includes(type) ? proxyTaskParams(type,src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {});
   return {
     id,
     type,
@@ -245,6 +248,28 @@ export function makeRepairTask(input, nowMs) {
     state: "pending",
     detail: ""
   };
+}
+
+const PIXEL_COMPANION_FAILURES=new Set(['companion-task-expired','companion-task-cancelled','gateway-not-confirmed-idle','companion-security-rejected','companion-stage-failed']);
+export function pixelCompanionParams(value={}){
+  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length)throw Error('Pixel伴随组件暂存任务不接受参数');
+  return {};
+}
+function pixelCompanionResult(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Pixel伴随组件成功回执无效');
+  const fields=['stage','action','state','units_enabled','rollback_available','legacy_modules'];
+  const keys=Object.keys(value);
+  if(keys.length!==fields.length||keys.some(key=>!fields.includes(key))||value.stage!=='pixel_companion'||value.action!=='staged'
+      ||!['installed','unchanged','upgraded'].includes(value.state)||value.units_enabled!==false
+      ||typeof value.rollback_available!=='boolean'||!['preserved','partial','absent'].includes(value.legacy_modules))
+    throw Error('Pixel伴随组件成功回执无效');
+  return Object.fromEntries(fields.map(key=>[key,value[key]]));
+}
+function pixelCompanionDetail(state,detail){
+  const fixed={claimed:'companion-task-claimed',running:'companion-task-running',success:'companion-staged-disabled',expired:'companion-task-expired'}[state];
+  if(fixed){if(detail!==fixed)throw Error('Pixel伴随组件任务进度详情无效');return fixed;}
+  if(['failed','rejected'].includes(state)&&PIXEL_COMPANION_FAILURES.has(detail))return detail;
+  throw Error('Pixel伴随组件任务失败类别无效');
 }
 
 export function lostMessageParams(type,value={}){
@@ -621,6 +646,29 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     task.state=state;task.detail=proxyTaskDetail(task.type,state,normalized);
     return device;
   }
+  if(device.task.type===PIXEL_COMPANION_TASK_TYPE){
+    const task=device.task;
+    if(!canAdvanceRepair(task.state,state))throw Error('Pixel伴随组件任务状态不匹配');
+    const terminal=['success','failed','rejected','expired'].includes(state);
+    if(!terminal&&result!=null)throw Error('Pixel伴随组件进度不能携带终态回执');
+    if(state!=='success'&&result!=null)throw Error('Pixel伴随组件失败回执不接受结果字段');
+    const normalized=state==='success'?pixelCompanionResult(result):null;
+    const nextDetail=pixelCompanionDetail(state,String(detail||''));
+    if(['success','failed','rejected','expired'].includes(task.state)){
+      if(task.state!==state||task.detail!==nextDetail||JSON.stringify(task.result||null)!==JSON.stringify(normalized))throw Error('Pixel伴随组件重复回执不一致');
+      return device;
+    }
+    if(task.state===state){
+      if(task.detail!==nextDetail)throw Error('Pixel伴随组件重复进度不一致');
+      return device;
+    }
+    task.updated_at=new Date(nowMs).toISOString();
+    if(state==='claimed')task.claimed_at=task.updated_at;
+    if(state==='running'&&!task.started_at)task.started_at=task.updated_at;
+    if(terminal){task.completed_at=task.updated_at;task.params={};task.result=normalized;}
+    task.state=state;task.detail=nextDetail;
+    return device;
+  }
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='connect_wifi'&&device.task.managed_wifi_config_v1===true){
     if(state==='success'&&(!result||result.stage!=='wifi'||!['connected','unchanged'].includes(result.action)||result.verified!==true))
@@ -715,7 +763,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
       reason: String(result.reason || "").slice(0, 80),
-      verified: result.verified === true
+      verified: device.task.type==='locate_now' ? false : result.verified === true
     };
   }
   return device;
@@ -844,7 +892,10 @@ export function publicRepair(task) {
     claimed_at: task.claimed_at || null,
     started_at: task.started_at || null,
     completed_at: task.completed_at || null,
-    result: r ? {
+    result: r ? (task.type===PIXEL_COMPANION_TASK_TYPE ? {
+      stage:r.stage,action:r.action,state:r.state,units_enabled:r.units_enabled,
+      rollback_available:r.rollback_available,legacy_modules:r.legacy_modules
+    } : {
       sha256: r.sha256 || "",
       bytes: r.bytes || 0,
       truncated: !!r.truncated,
@@ -858,7 +909,7 @@ export function publicRepair(task) {
       ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
       ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
       ,...(Object.hasOwn(r,'proxy')?{proxy:r.proxy}:{})
-    } : null
+    }) : null
   };
 }
 
