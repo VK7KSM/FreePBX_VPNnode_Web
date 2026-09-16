@@ -111,6 +111,7 @@ import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
 import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig} from './proxy-config.js';
+import {acknowledgeStaleGatewayRollbackReport} from './gateway-stale-report.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -1791,6 +1792,8 @@ async function handleDeviceReport(env, request) {
     const matched = list.find(d => d.id === deviceId);
     if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    const staleAck=await acknowledgeStaleGatewayRollbackReport(env.__storage,matched,data);
+    if(staleAck)return json(staleAck);
     if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
     const identity = normalizeDeviceIdentity(data.hardware_identity,data.hardware_identity ? await loadDeviceModels(env) : []);
     const product=gatewayProductFields(data,matched,identity||matched.hardware_identity);

@@ -101,8 +101,13 @@ export function mobileNetworkStatus(value,device,managed){
   return result;
 }
 
-const PIXEL_RUNTIME_FIELDS=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access'];
+const PIXEL_RUNTIME_FIELDS=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access','companion'];
+const PIXEL_RUNTIME_REQUIRED=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access'];
+const PIXEL_RUNTIME_MODES=new Set(['legacy_managed','companion_staged','companion_active','unavailable','asset_verification_failed','invalid_snapshot']);
 const PIXEL_MODULE_FIELDS=['installed','disabled','recognized','version','files_verified'];
+const PIXEL_COMPANION_FIELDS=['installed','disabled','recognized','active','rollback_available','units','version'];
+const PIXEL_COMPANION_REQUIRED=['installed','disabled','recognized','active','rollback_available','units'];
+const PIXEL_COMPANION_UNIT_FIELDS=['charge','audio','adb_tcp'];
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 function exactFields(value,allowed,required,message){
   const keys=Object.keys(value);
@@ -128,6 +133,20 @@ function pixelModuleStatus(value){
   if(Object.hasOwn(value,'version'))result.version=boundedString(value.version,64,'Pixel模块版本无效');
   return result;
 }
+function pixelCompanionStatus(value){
+  if(!record(value))throw Error('Pixel伴随组件状态格式无效');
+  exactFields(value,PIXEL_COMPANION_FIELDS,PIXEL_COMPANION_REQUIRED,'Pixel伴随组件状态字段无效');
+  if(!record(value.units))throw Error('Pixel伴随组件单元状态格式无效');
+  exactFields(value.units,PIXEL_COMPANION_UNIT_FIELDS,PIXEL_COMPANION_UNIT_FIELDS,'Pixel伴随组件单元状态字段无效');
+  const result={};
+  for(const key of ['installed','disabled','recognized','active','rollback_available'])
+    result[key]=requiredBoolean(value,key,'Pixel伴随组件状态必须为布尔值');
+  result.units={};
+  for(const key of PIXEL_COMPANION_UNIT_FIELDS)
+    result.units[key]=requiredBoolean(value.units,key,'Pixel伴随组件单元状态必须为布尔值');
+  if(Object.hasOwn(value,'version'))result.version=boundedString(value.version,64,'Pixel伴随组件版本无效');
+  return result;
+}
 export function pixelRuntimeStatus(value,device){
   if(!isGateway(device)){
     if(value!==undefined)throw Error('Pixel运行状态仅限网关产品');
@@ -136,18 +155,21 @@ export function pixelRuntimeStatus(value,device){
   if(value===undefined)return null;
   if(!record(value))throw Error('Pixel运行状态格式无效');
   if(new TextEncoder().encode(JSON.stringify(value)).length>2048)throw Error('Pixel运行状态内容过长');
-  exactFields(value,PIXEL_RUNTIME_FIELDS,PIXEL_RUNTIME_FIELDS,'Pixel运行状态字段无效');
+  exactFields(value,PIXEL_RUNTIME_FIELDS,PIXEL_RUNTIME_REQUIRED,'Pixel运行状态字段无效');
   if(value.schema_version!==1)throw Error('Pixel运行状态版本无效');
-  return {
+  if(!PIXEL_RUNTIME_MODES.has(value.mode))throw Error('Pixel运行模式无效');
+  const result={
     schema_version:1,
     assets_verified:requiredBoolean(value,'assets_verified','Pixel运行状态必须为布尔值'),
-    mode:boundedString(value.mode,32,'Pixel运行模式无效'),
+    mode:value.mode,
     recognized:requiredBoolean(value,'recognized','Pixel运行状态必须为布尔值'),
     enabled:requiredBoolean(value,'enabled','Pixel运行状态必须为布尔值'),
     write_locked:requiredBoolean(value,'write_locked','Pixel运行状态必须为布尔值'),
     charge_bypass:pixelModuleStatus(value.charge_bypass),
     sip_audio_access:pixelModuleStatus(value.sip_audio_access)
   };
+  if(Object.hasOwn(value,'companion'))result.companion=pixelCompanionStatus(value.companion);
+  return result;
 }
 
 const PROXY_RUNTIME_FIELDS=['schema_version','bundled','version','abi','asset_verified','core_verified','configured',
