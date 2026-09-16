@@ -494,6 +494,7 @@ function gatewayFunctionAvailable(d,key){
   if(key==='wifi')return d.managed_wifi_scan_tasks===true||d.managed_wifi_config_tasks===true||d.managed_proxy_tasks===true||!!d.proxy_runtime;
   if(key==='files')return d.managed_file_operations===true;
   if(key==='contacts')return d.managed_contacts_page_v1===true;
+  if(key==='lost')return d.managed_lost_message_v1===true;
   return false;
 }
 function gatewayAlarmHtml(d){
@@ -1650,6 +1651,7 @@ function pageAlarm(dis){
 }
 
 function pageLost(dis){
+  if(currentDev()&&currentDev().product_id==='elfremote_gateway')return pageGatewayLost(dis);
   var d=currentDev(),m=d&&d.lost_mode||{},off=dis||(d&&d.managed_lost_safety_v1&&m.state!=='unknown'?'':' disabled'),exitOff=d&&(d.managed_lost_v2||d.managed_lost_safety_v1)?'':' disabled';
   var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<input id="lostMessage" class="inp" maxlength="300" value="'+esc(m.message||'')+'"'+off+'></label>';
   h+='<label style="display:flex;flex-direction:column;gap:4px">解锁密码<input id="lockPw" class="inp" type="password" autocomplete="new-password" placeholder="'+(m.enabled?'留空保留密码':'4至32位字母或数字')+'" style="width:180px"'+off+'></label><button class="btn-green" onclick="setLostMode(true)"'+off+'>启用</button><button class="btn-gray" onclick="setLostMode(false)"'+exitOff+'>退出</button></div>';
@@ -1660,6 +1662,15 @@ function pageLost(dis){
   if(m.wipe_state==='failed'||m.wipe_state==='started')h+='<p style="color:#fca5a5">'+(m.wipe_state==='failed'?'数据清除执行失败，尚未完成':'数据清除已开始，离线不代表已完成')+'</p>';
   if(d&&d.task&&['set_lost_mode','wipe_data'].includes(d.task.type))h+='<p class="muted">'+esc(d.task.label)+' · '+esc(lostTaskText(d.task.detail))+'</p>';
   h+='<div style="border-top:1px solid #334155;margin-top:20px;padding-top:16px"><p style="color:#fca5a5">永久清除设备内部数据，保留操作系统；此操作无法撤销。</p><div class="ops-actions"><input id="lostWipePhrase" class="inp" autocomplete="off" placeholder="请输入：擦除数据" oninput="lostWipeInput()" style="width:210px"><button id="lostWipeNext" class="btn-gray" style="background:#783c49;color:#fff" onclick="lostWipe()" disabled>继续</button></div></div>';
+  return h;
+}
+function pageGatewayLost(dis){
+  var d=currentDev(),state=d&&d.lost_message||{},task=d&&d.task,pending=task&&['show_lost_message','clear_lost_message'].includes(task.type)&&['pending','claimed','running'].includes(task.state);
+  var off=dis||(pending?' disabled':'');
+  var h='<div class="ops-actions" style="align-items:flex-end;gap:12px"><label style="flex:1;display:flex;flex-direction:column;gap:4px">锁屏显示文字<textarea id="gatewayLostMessage" class="inp" maxlength="500" rows="4"'+off+'>'+esc(state.message||'')+'</textarea></label>';
+  h+='<button class="btn-green" onclick="gatewayShowLostMessage()"'+off+'>显示</button><button class="btn-gray" onclick="gatewayClearLostMessage()"'+off+'>清除</button></div>';
+  h+='<p class="muted">'+(state.active?'丢失信息已显示':'丢失信息未显示')+(state.updated_at?' · '+esc(sydney(state.updated_at)):'')+'</p>';
+  if(task&&['show_lost_message','clear_lost_message'].includes(task.type))h+='<p class="muted">'+esc(task.type_label)+' · '+esc(task.label)+(task.detail?' · '+esc(task.detail):'')+'</p>';
   return h;
 }
 function lostTaskText(detail){return ({'lost-enabled':'系统锁屏已启用','lost-disabled':'已退出并关闭自毁程序','lost-password-required':'请填写解锁密码','lost-current-password-required':'设备已有系统密码，请填写当前密码','lost-current-password-changed':'系统密码已改变，请先核对','lost-system-credential-unsupported':'该系统的锁屏接口尚未适配','lost-system-operation-failed':'系统操作失败，未确认完成','lost-boot-setting-unavailable':'无法读取开机解密设置，已停止操作','lost-boot-setting-failed':'开机解密设置未保存，已停止操作','lost-boot-password-required':'设备需要开机解密密码，暂不能远程更改锁屏','lost-system-lock-pending':'系统尚未确认锁屏，请检查状态','lost-system-password-failed':'系统未成功保存解锁密码'})[detail]||detail||'';}
@@ -1964,6 +1975,16 @@ function setLostMode(enabled){
   if(enabled&&(!d.managed_lost_safety_v1||m.state==='unknown'||!m.revision))return;
   if(auto&&!confirm('启用 '+d.name+' 的自毁程序：失联或解除配对持续 '+hours+' 小时后清除设备数据。输入正确系统密码可在设备上取消。确定启用？'))return;
   return enqueueRepair('set_lost_mode',{version:2,enabled:enabled,message:enabled?$('lostMessage').value:'',password:enabled?$('lockPw').value:'',auto_wipe_enabled:auto,timeout_hours:hours,...(enabled?{expected_revision:m.revision}:{})});
+}
+function gatewayShowLostMessage(){
+  var d=currentDev(),box=$('gatewayLostMessage'),message=box?box.value.trim():'';
+  if(!d||!gatewayDevice(d)||d.managed_lost_message_v1!==true)return;
+  if(!message||message.length>500){alert('请填写1至500个字符的锁屏文字');return;}
+  return enqueueRepair('show_lost_message',{message:message});
+}
+function gatewayClearLostMessage(){
+  var d=currentDev();if(!d||!gatewayDevice(d)||d.managed_lost_message_v1!==true)return;
+  return enqueueRepair('clear_lost_message',{});
 }
 function lostVideo(cam){
   unavailableAction('远程录像');

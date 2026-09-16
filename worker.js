@@ -86,7 +86,7 @@ import {
   normalizeAlarm,
   normalizeLostMode,
   prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
-  CONFIG_TYPES, PROXY_TASK_TYPES,
+  CONFIG_TYPES, PROXY_TASK_TYPES, LOST_MESSAGE_TASK_TYPES,
   repairExpired
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
@@ -1334,6 +1334,7 @@ function publicDevice(d, modelName, model = {}) {
     ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),
       managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null,
       managed_proxy_tasks:d.managed_proxy_tasks===true,proxy_runtime:d.proxy_runtime||null,
+      managed_lost_message_v1:d.managed_lost_message_v1===true,lost_message:d.lost_message||null,
       proxy_config:publicProxyConfig(d.proxy_config)}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
@@ -1845,6 +1846,7 @@ async function handleDeviceReport(env, request) {
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
         list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
+        list[i].managed_lost_message_v1=data.managed_lost_message_v1===true;
         if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
         list[i].managed_mobile_status=data.managed_mobile_status===true;
         if(mobileNetwork)list[i].mobile_network=mobileNetwork;
@@ -2273,6 +2275,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_proxy_tasks===true
       &&device.task?.managed_proxy_v1===true&&PROXY_TASK_TYPES.includes(device.task.type)&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_proxy_v1:true};
+  if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_lost_message_v1===true
+      &&device.task?.managed_lost_message_v1===true&&LOST_MESSAGE_TASK_TYPES.includes(device.task.type)&&shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_lost_message_v1:true};
   if(report.managed_lost_safety_v1===true&&device.safety_task&&shouldOfferRepair({task:device.safety_task},now))
     body.managed_safety_task={...repairOfferPayload(device.safety_task),managed_lost_v1:true};
   if(device.enabled!==false && report.status_only===true && report.managed_lost_tasks===true
@@ -2334,10 +2339,13 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
+        || (LOST_MESSAGE_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_lost_message_v1===true)
         || (PROXY_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_proxy_tasks===true)
         || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
+    if(LOST_MESSAGE_TASK_TYPES.includes(data.type)&&(!isGateway(found)||found.managed_lost_message_v1!==true))
+      return json({ok:false,msg:'当前 Pixel Gateway 尚未支持丢失信息控制'},409);
     if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
     const allowNetworkAcceptance=isNetworkTask(data)&&networkAcceptanceAllowed(found,data.params,env.D31_NETWORK_ACCEPTANCE_JSON);
     if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package)&&!allowNetworkAcceptance)return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
@@ -2407,6 +2415,7 @@ async function handleElfEnqueueTask(env, request) {
       found.task.managed_proxy_v1=true;
       if(data.type==='configure_proxy')found.task.proxy_download_token_sha256=proxyDownloadTokenSha256;
     }
+    if(!queued.duplicate && found.status_only && isGateway(found) && LOST_MESSAGE_TASK_TYPES.includes(data.type)) found.task.managed_lost_message_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;

@@ -21,7 +21,8 @@ export function gatewayProductFields(data,existing=null,identity=null){
 export function gatewayReportGuard(device,data){
   if(!isGateway(device)){
     if(Object.hasOwn(data,'managed_mobile_status')||Object.hasOwn(data,'mobile_network')
-      ||Object.hasOwn(data,'managed_proxy_tasks')||Object.hasOwn(data,'proxy_runtime'))
+      ||Object.hasOwn(data,'managed_proxy_tasks')||Object.hasOwn(data,'proxy_runtime')
+      ||Object.hasOwn(data,'managed_lost_message_v1'))
       throw Error('网关专用状态仅限网关产品');
     return;
   }
@@ -32,6 +33,8 @@ export function gatewayReportGuard(device,data){
     throw Error('网关移动网络状态能力必须为布尔值');
   if(Object.hasOwn(data,'managed_proxy_tasks')&&typeof data.managed_proxy_tasks!=='boolean')
     throw Error('网关代理任务能力必须为布尔值');
+  if(Object.hasOwn(data,'managed_lost_message_v1')&&typeof data.managed_lost_message_v1!=='boolean')
+    throw Error('网关丢失信息能力必须为布尔值');
   if(data.managed_proxy_tasks===true&&!Object.hasOwn(data,'proxy_runtime'))
     throw Error('网关代理任务能力缺少运行状态');
   if(data.managed_config_tasks===true)throw Error('网关不得声明整套安卓配置能力');
@@ -41,7 +44,7 @@ export function gatewayReportGuard(device,data){
   if(data.managed_media===true||data.managed_media_prepare_v1===true
     ||(Object.hasOwn(data,'managed_media_modes')&&(!Array.isArray(data.managed_media_modes)||data.managed_media_modes.length)))
     throw Error('网关不提供媒体会话，请使用普通警报任务');
-  if(data.managed_wipe_v1===true||data.managed_lost_v2===true||data.managed_lost_safety_v1===true)
+  if(data.managed_lost_tasks===true||data.managed_wipe_v1===true||data.managed_lost_v2===true||data.managed_lost_safety_v1===true)
     throw Error('网关尚未接入该丢失模式协议');
 }
 export function gatewayStatus(value){

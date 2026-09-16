@@ -128,7 +128,8 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
 export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy"];
-export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
+export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"];
+export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
 
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
@@ -160,6 +161,8 @@ export const REPAIR_TYPE_LABELS = {
   locate_now: "立即定位",
   set_lost_mode: "设置丢失模式",
   wipe_data: "清除设备数据",
+  show_lost_message: "显示丢失信息",
+  clear_lost_message: "清除丢失信息",
   configure_proxy: "配置代理",
   start_proxy: "启动代理",
   stop_proxy: "停止代理",
@@ -226,12 +229,12 @@ export function makeRepairTask(input, nowMs) {
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
   const typedIdMax=PROXY_TASK_TYPES.includes(type)?96:64;
-  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello",...PROXY_TASK_TYPES].includes(type)
+  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello",...LOST_MESSAGE_TASK_TYPES,...PROXY_TASK_TYPES].includes(type)
       && !(new RegExp('^[a-zA-Z0-9-]{1,'+typedIdMax+'}$')).test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
-  const params=type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : PROXY_TASK_TYPES.includes(type) ? proxyTaskParams(type,src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {});
+  const params=type==='contacts_page'?normalizeContactsPageParams(src.params):type==="system_config" ? systemSettingsParams(src.params) : type==="configure_zello" ? zelloAccountParams(src.params) : type==="configure_sip" ? sipAccountParams(src.params) : type==="file_manage" ? fileOperationParams(src.params) : type==="root_exec" ? commandParams(src.params) : type==="set_lost_mode" ? lostModeParams(src.params) : type==="wipe_data" ? wipeParams(src.params) : LOST_MESSAGE_TASK_TYPES.includes(type) ? lostMessageParams(type,src.params) : PROXY_TASK_TYPES.includes(type) ? proxyTaskParams(type,src.params) : CONFIG_TYPES.includes(type) ? configParams(type,src.params) : (src.params && typeof src.params === "object" ? src.params : {});
   return {
     id,
     type,
@@ -242,6 +245,20 @@ export function makeRepairTask(input, nowMs) {
     state: "pending",
     detail: ""
   };
+}
+
+export function lostMessageParams(type,value={}){
+  if(!value||typeof value!=="object"||Array.isArray(value))throw Error("丢失信息任务参数无效");
+  const keys=Object.keys(value);
+  if(type==="clear_lost_message"){
+    if(keys.length)throw Error("清除丢失信息不接受参数");
+    return {};
+  }
+  if(type!=="show_lost_message"||keys.length!==1||keys[0]!=="message"||typeof value.message!=="string")
+    throw Error("显示丢失信息参数无效");
+  const message=value.message.trim();
+  if(!message||message.length>500||message.includes("\0"))throw Error("丢失信息须为1至500个字符");
+  return {message};
 }
 
 export function proxyTaskParams(type,value={}){
@@ -630,6 +647,15 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       || result.sha256!==device.task.params.sha256 || result.bytes!==device.task.params.size)) throw Error('缺少文件完整接收证据');
   if(device.task.type==='get_file'&&state==='success'&&(!result||result.action!=='uploaded'||!Number.isSafeInteger(result.bytes)||result.bytes<0||!/^[a-f0-9]{64}$/.test(result.sha256||'')))throw Error('缺少文件取回证据');
   if(device.task.type==='wipe_data'&&state==='success')throw new Error('擦除后离线不能作为成功证明');
+  if(LOST_MESSAGE_TASK_TYPES.includes(device.task.type)&&state==='success'){
+    const expected=device.task.type==='show_lost_message'?'displayed':'cleared';
+    if(!result||typeof result!=='object'||Array.isArray(result)
+        ||Object.keys(result).length!==2||result.action!==expected||result.verified!==true)
+      throw Error('缺少丢失信息操作完成证明');
+    device.lost_message={active:device.task.type==='show_lost_message',
+      message:device.task.type==='show_lost_message'?device.task.params.message:'',
+      updated_at:new Date(nowMs).toISOString()};
+  }
   const scan = device.task.type === "scan_wifi" && state === "success" ? normalizeWifiScan(result?.wifi_scan) : null;
   const contacts = device.task.type.startsWith("contact") && state === "success" ? normalizeContacts(result?.contacts) : null;
   const lost = device.task.type === "set_lost_mode" && state === "success" ? normalizeLostMode(result?.lost_mode) : null;
@@ -671,7 +697,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
   if (scan) device.wifi_scan = scan;
   if (contacts) device.contacts = contacts;
   if (lost) mergeLostMode(device,lost,nowMs);
-  if(["set_lost_mode","wipe_data"].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
+  if(["set_lost_mode","wipe_data",...LOST_MESSAGE_TASK_TYPES].includes(device.task.type) && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if((device.task.type==="system_config"||CONFIG_TYPES.includes(device.task.type)||device.task.type==="configure_sip"||device.task.type==="configure_zello") && ["success","failed","rejected","expired"].includes(state)) device.task.params={};
   if (["play_alarm", "stop_alarm"].includes(device.task.type) && state === "success") {
     const alarm = normalizeAlarm(result?.alarm);
@@ -827,7 +853,8 @@ export function publicRepair(task) {
       ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(task.type) ? {exit_code:r.exit_code??null,elapsed_ms:r.elapsed_ms||0}:{}),
       stage: r.stage || "",
       action: r.action || "",
-      reason: r.reason || ""
+      reason: r.reason || "",
+      verified: r.verified === true
       ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
       ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
       ,...(Object.hasOwn(r,'proxy')?{proxy:r.proxy}:{})
