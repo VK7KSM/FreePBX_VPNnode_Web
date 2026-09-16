@@ -40,3 +40,52 @@ export function gatewayStatus(value){
   }
   return result;
 }
+
+const PIXEL_RUNTIME_FIELDS=['schema_version','assets_verified','mode','recognized','enabled','write_locked','charge_bypass','sip_audio_access'];
+const PIXEL_MODULE_FIELDS=['installed','disabled','recognized','version','files_verified'];
+const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+function exactFields(value,allowed,required,message){
+  const keys=Object.keys(value);
+  if(keys.some(key=>!allowed.includes(key))||required.some(key=>!Object.hasOwn(value,key)))throw Error(message);
+}
+function requiredBoolean(value,key,message){
+  if(typeof value[key]!=='boolean')throw Error(message);
+  return value[key];
+}
+function boundedString(value,max,message){
+  if(typeof value!=='string'||value.length<1||value.length>max||/[\u0000-\u001f\u007f]/.test(value))throw Error(message);
+  return value;
+}
+function pixelModuleStatus(value){
+  if(!record(value))throw Error('Pixel模块状态格式无效');
+  exactFields(value,PIXEL_MODULE_FIELDS,['installed','disabled','recognized','files_verified'],'Pixel模块状态字段无效');
+  const result={
+    installed:requiredBoolean(value,'installed','Pixel模块状态必须为布尔值'),
+    disabled:requiredBoolean(value,'disabled','Pixel模块状态必须为布尔值'),
+    recognized:requiredBoolean(value,'recognized','Pixel模块状态必须为布尔值'),
+    files_verified:requiredBoolean(value,'files_verified','Pixel模块状态必须为布尔值')
+  };
+  if(Object.hasOwn(value,'version'))result.version=boundedString(value.version,64,'Pixel模块版本无效');
+  return result;
+}
+export function pixelRuntimeStatus(value,device){
+  if(!isGateway(device)){
+    if(value!==undefined)throw Error('Pixel运行状态仅限网关产品');
+    return null;
+  }
+  if(value===undefined)return null;
+  if(!record(value))throw Error('Pixel运行状态格式无效');
+  if(new TextEncoder().encode(JSON.stringify(value)).length>2048)throw Error('Pixel运行状态内容过长');
+  exactFields(value,PIXEL_RUNTIME_FIELDS,PIXEL_RUNTIME_FIELDS,'Pixel运行状态字段无效');
+  if(value.schema_version!==1)throw Error('Pixel运行状态版本无效');
+  return {
+    schema_version:1,
+    assets_verified:requiredBoolean(value,'assets_verified','Pixel运行状态必须为布尔值'),
+    mode:boundedString(value.mode,32,'Pixel运行模式无效'),
+    recognized:requiredBoolean(value,'recognized','Pixel运行状态必须为布尔值'),
+    enabled:requiredBoolean(value,'enabled','Pixel运行状态必须为布尔值'),
+    write_locked:requiredBoolean(value,'write_locked','Pixel运行状态必须为布尔值'),
+    charge_bypass:pixelModuleStatus(value.charge_bypass),
+    sip_audio_access:pixelModuleStatus(value.sip_audio_access)
+  };
+}

@@ -35,7 +35,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 `;
 
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
-import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus} from './gateway-product.js';
+import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -1318,7 +1318,7 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
-    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway)}:{}),
+    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),pixel_runtime:pixelRuntimeStatus(d.pixel_runtime,d)}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -1771,6 +1771,7 @@ async function handleDeviceReport(env, request) {
     const product=gatewayProductFields(data,matched,identity||matched.hardware_identity);
     gatewayReportGuard({...matched,...product},data);
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
+    const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
     Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
     const observedIp = request.headers.get("CF-Connecting-IP") || "";
@@ -1812,7 +1813,10 @@ async function handleDeviceReport(env, request) {
       list[i].last_seen = new Date().toISOString();
       list[i].online = true;
       if (fresh) {
-      if(isGateway(list[i]))list[i].gateway=gateway;
+      if(isGateway(list[i])){
+        list[i].gateway=gateway;
+        if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
+      }
       list[i].last_reported_at = history.record.timeline_at;
       list[i].last_report_clock_invalid = history.record.reported_at > history.record.received_at;
       list[i].status_only = data.status_only === true;
