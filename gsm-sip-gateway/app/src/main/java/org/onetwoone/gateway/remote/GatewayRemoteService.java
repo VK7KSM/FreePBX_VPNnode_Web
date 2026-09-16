@@ -24,6 +24,7 @@ public final class GatewayRemoteService extends Service {
     private GatewayRemoteStore store;
     private GatewayManagedSipTasks sipTasks;
     private GatewayManagedWifiTasks wifiTasks;
+    private GatewayManagedFileTasks fileTasks;
     private volatile boolean stopped;
     private int failures;
     private volatile long nextAttempt;
@@ -52,7 +53,9 @@ public final class GatewayRemoteService extends Service {
         thread = new HandlerThread("gateway-management"); thread.start(); worker = new Handler(thread.getLooper());
         sipTasks = new GatewayManagedSipTasks(this,store,this::scheduleImmediateReport);
         wifiTasks = new GatewayManagedWifiTasks(this,store,worker,this::scheduleImmediateReport);
+        fileTasks = new GatewayManagedFileTasks(this,store,this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
+        worker.post(fileTasks::tick);
         coreThread=new HandlerThread("gateway-core-monitor");coreThread.start();
         coreWorker=new Handler(coreThread.getLooper());coreAlarms=getSystemService(AlarmManager.class);
         coreAlarm=()->coreWorker.post(coreTick);coreWorker.post(coreCheck);
@@ -120,7 +123,7 @@ public final class GatewayRemoteService extends Service {
     private void consumePush() {
         try {
             JSONObject status=GatewayCoreClient.pushStatus(this),pending=status.optJSONObject("pending");if(pending==null)return;
-            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);
+            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);
             JSONObject request=reply.optJSONObject("status_request");
             if(request!=null&&request.optString("request_id").matches("[A-Za-z0-9-]{1,96}"))
                 if(!store.prefs.edit().putString("status_request_id",request.getString("request_id")).commit())
@@ -155,7 +158,7 @@ public final class GatewayRemoteService extends Service {
             JSONObject reply=GatewayRemoteHttp.request("/api/devices/report",pendingReport);
             if(!pendingReport.getString("report_id").equals(reply.optString("report_id")))
                 throw new java.io.IOException("report acknowledgement mismatch");
-            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);
+            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);
             if (!store.prefs.edit().remove("pending_report").commit()) {
                 throw new java.io.IOException("report acknowledgement persistence failed");
             }
