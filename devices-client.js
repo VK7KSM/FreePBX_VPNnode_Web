@@ -475,7 +475,7 @@ function pickFn(id){
   if(id==='locate'){var history=historyState();if(history&&!history.loaded)queryHistory();else if(history){history.historical=history.events.length>0;renderOps();trajectoryDrawMap(true);}}
   if(id==='update')loadReleases();
   if(id==='files')loadFileManagerOnEntry();
-  if(id==='wifi'&&SYSTEM_TAB!=='账号配置')readSystemSettings();
+  if(id==='wifi'&&SYSTEM_TAB!=='账号配置'&&!gatewayDevice(currentDev()))readSystemSettings();
 }
 
 function onFnClick(ev){
@@ -491,7 +491,7 @@ function gatewayFunctionAvailable(d,key){
   if(key==='model'||key==='locate')return true;
   if(key==='update')return d.can_update===true;
   if(key==='adb')return ['managed_exec_tasks','managed_adb_session','managed_log_tasks','managed_heal_tasks','managed_reboot_tasks','managed_adbd_tasks'].some(function(k){return d[k]===true;});
-  if(key==='wifi')return d.managed_system_settings===true||d.managed_sip_account===true;
+  if(key==='wifi')return d.managed_wifi_scan_tasks===true||d.managed_wifi_config_tasks===true;
   if(key==='files')return d.managed_file_operations===true;
   if(key==='contacts')return d.managed_contacts_page_v1===true;
   return false;
@@ -1070,12 +1070,14 @@ function pageWifi(dis){
   var u = uiOf();
   var device = currentDev();
   var scan = device && device.wifi_scan;
-  var connectBlocked=dis||(!systemSettingAllowed(device,'wifi','connect')?' disabled':'');
+  var scanBlocked=dis||(gatewayDevice(device)&&device.managed_wifi_scan_tasks!==true?' disabled':'');
+  var connectAllowed=gatewayDevice(device)?device.managed_wifi_config_tasks===true:systemSettingAllowed(device,'wifi','connect');
+  var connectBlocked=dis||(!connectAllowed?' disabled':'');
   var list = scan ? scan.networks : [];
   var sel = u ? u.wifiSel : "";
   var last = scan ? sydney(scan.sampled_at_ms) : "";
   var h = '<div class="ops-actions">';
-  h += '<button class="btn-gray" onclick="wifiScan()"'+dis+'>刷新扫描</button>';
+  h += '<button class="btn-gray" onclick="wifiScan()"'+scanBlocked+'>刷新扫描</button>';
   if(last) h += '<span class="muted">上次成功：'+esc(last)+"</span>";
   if(device && device.task && device.task.type==='scan_wifi') h += '<span class="muted">'+esc(device.task.label)+' '+esc(device.task.detail||'')+'</span>';
   h += "</div>";
@@ -1092,8 +1094,8 @@ function pageWifi(dis){
   h += '<input id="wifiPw" class="inp" type="password" placeholder="密码" style="max-width:200px"'+connectBlocked+'>';
   h += '<button class="btn-green" onclick="wifiConnect()"'+connectBlocked+'>连接</button>';
   h += "</div>";
-  h += '<p class="muted">'+(device&&device.managed_system_settings?'已保存网络留空则沿用密码，填写新密码则修改。连接失败自动恢复原网络。':'已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。')+'</p>';
-  if(device&&device.managed_system_settings){var ws=systemSettingsState();h+='<span role="status">'+esc(ws.message||'')+'</span>';}
+  h += '<p class="muted">'+(device&&!gatewayDevice(device)&&device.managed_system_settings?'已保存网络留空则沿用密码，填写新密码则修改。连接失败自动恢复原网络。':'已保存的网络密码留空；新网络支持开放网络或 WPA/WPA2。连接失败自动恢复原网络。')+'</p>';
+  if(device&&!gatewayDevice(device)&&device.managed_system_settings){var ws=systemSettingsState();h+='<span role="status">'+esc(ws.message||'')+'</span>';}
   h += configTaskStatus(device);
   return h;
 }
@@ -1369,9 +1371,9 @@ function selectTrafficBar(i){
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
-function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录')readSystemSettings();}
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&!gatewayDevice(currentDev()))readSystemSettings();}
 function pageSystem(dis){
-  var tabs=Object.keys(SYSTEM_GROUPS).filter(function(k){return !gatewayDevice(currentDev())||k!=='账号配置'||currentDev().managed_sip_account===true;}),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
+  var gateway=gatewayDevice(currentDev()),tabs=gateway?['Wi-Fi']:Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
@@ -1842,8 +1844,13 @@ function wifiPick(ssid){
   renderOps();
 }
 function wifiConnect(){
-  if(!systemSettingAllowed(currentDev(),'wifi','connect'))return;
-  if(currentDev()&&currentDev().managed_system_settings)return runSystemSettings({group:'wifi',action:'set',key:'connect',value:{ssid:$('wifiSsid').value.trim(),password:$('wifiPw').value}});
+  var device=currentDev();
+  if(gatewayDevice(device)){
+    if(device.managed_wifi_config_tasks!==true)return;
+  }else{
+    if(!systemSettingAllowed(device,'wifi','connect'))return;
+    if(device&&device.managed_system_settings)return runSystemSettings({group:'wifi',action:'set',key:'connect',value:{ssid:$('wifiSsid').value.trim(),password:$('wifiPw').value}});
+  }
   var ssid=$('wifiSsid').value,password=$('wifiPw').value;
   return enqueueRepair('connect_wifi',{ssid:ssid,password:password});
 }

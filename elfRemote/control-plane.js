@@ -515,6 +515,16 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     return device;
   }
   if (!canAdvanceRepair(device.task.state, state)) return device;
+  if(device.task.type==='connect_wifi'&&device.task.managed_wifi_config_v1===true){
+    if(state==='success'&&(!result||result.stage!=='wifi'||!['connected','unchanged'].includes(result.action)||result.verified!==true))
+      throw Error('缺少 Wi-Fi 连接成功证据');
+    if(state==='failed'&&result!=null){
+      if(typeof result!=='object'||Array.isArray(result)||result.stage!=='wifi'||!['rolled_back','failed'].includes(result.action))
+        throw Error('Wi-Fi 连接失败结果无效');
+      if(result.action==='rolled_back'&&result.verified!==true)throw Error('缺少 Wi-Fi 回滚验证证据');
+      if(Object.hasOwn(result,'verified')&&typeof result.verified!=='boolean')throw Error('Wi-Fi 验证状态无效');
+    }
+  }
   if(device.task.type==='system_config' && state==='success')applySystemSettingsResult(device,result,nowMs);
   if(device.task.type==='configure_zello' && state==='success' && (!result||result.logged_in!==true||result.exit_code!==0||result.action!=='completed'))throw Error('缺少Zello登录成功证据');
   const modernSip=device.task.type==='configure_sip'&&validateSipResult(device,state,result);
@@ -588,7 +598,8 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
       ...(["system_config","root_exec","file_manage","configure_sip","configure_zello"].includes(device.task.type) ? {exit_code:Number.isInteger(result.exit_code)?result.exit_code:null,elapsed_ms:Math.max(0,Number(result.elapsed_ms)||0)} : {}),
       stage: String(result.stage || "").slice(0, 16),
       action: String(result.action || "").slice(0, 40),
-      reason: String(result.reason || "").slice(0, 80)
+      reason: String(result.reason || "").slice(0, 80),
+      verified: result.verified === true
     };
   }
   return device;
@@ -652,6 +663,9 @@ export function authorizeWipe(device,params,now=Date.now()){
 export function configParams(type,value={}) {
   if(type==='contacts_read') return {};
   if(type==='connect_wifi') {
+    if(!value||typeof value!=='object'||Array.isArray(value)
+        ||Object.keys(value).length!==2||!Object.hasOwn(value,'ssid')||!Object.hasOwn(value,'password'))
+      throw new Error('Wi-Fi 连接参数只能包含名称和密码');
     const ssid=value?.ssid, password=value?.password??'';
     if(typeof ssid!=='string'||!ssid.length||new TextEncoder().encode(ssid).length>32||ssid.includes('\0')) throw new Error('Wi-Fi 名称无效');
     if(typeof password!=='string'||(password!==''&&!/^[0-9a-fA-F]{64}$/.test(password)&&!/^[\x20-\x7e]{8,63}$/.test(password))) throw new Error('Wi-Fi 密码格式无效');

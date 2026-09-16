@@ -1347,6 +1347,8 @@ function publicDevice(d, modelName, model = {}) {
     managed_adbd_tasks: d.managed_adbd_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
     managed_adb_tunnel_v1: d.managed_adb_tunnel_v1 === true,
+    managed_wifi_scan_tasks:d.managed_wifi_scan_tasks===true,
+    managed_wifi_config_tasks:d.managed_wifi_config_tasks===true,
     managed_alarm_tasks:d.managed_alarm_tasks===true,
     managed_media: d.managed_media === true,
     ...mediaCapabilityFields(d),
@@ -1769,7 +1771,9 @@ async function handleDeviceReport(env, request) {
     if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
     const identity = normalizeDeviceIdentity(data.hardware_identity,data.hardware_identity ? await loadDeviceModels(env) : []);
     const product=gatewayProductFields(data,matched,identity||matched.hardware_identity);
-    gatewayReportGuard({...matched,...product},data);
+    const reportDevice={...matched,...product};
+    if(!isGateway(reportDevice)&&Object.hasOwn(data,'managed_wifi_config_tasks'))throw Error('专用 Wi-Fi 配置能力仅限网关产品');
+    gatewayReportGuard(reportDevice,data);
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
     const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
     Object.assign(matched,product);
@@ -1845,9 +1849,15 @@ async function handleDeviceReport(env, request) {
       env.__media?.updateCapabilities(list[i]);
       list[i].media_cameras = Math.min(4,Math.max(0,Number(data.media_cameras)||0));
       list[i].managed_wifi_scan_tasks = data.managed_wifi_scan_tasks === true;
+      if(isGateway(list[i])){
+        list[i].managed_wifi_config_tasks=data.managed_wifi_config_tasks===true;
+        delete list[i].managed_config_tasks;
+      }else{
+        delete list[i].managed_wifi_config_tasks;
+        list[i].managed_config_tasks = data.managed_config_tasks === true;
+      }
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
-      list[i].managed_config_tasks = data.managed_config_tasks === true;
       list[i].managed_lost_tasks = data.managed_lost_tasks === true;
       list[i].managed_lost_safety_v1=data.managed_lost_safety_v1===true;
       list[i].managed_lost_v2 = data.managed_lost_v2 === true; list[i].managed_wipe_v1 = data.managed_wipe_v1 === true;
@@ -1888,7 +1898,7 @@ async function handleDeviceReport(env, request) {
     }
     if (!found) return json({ ok: false, msg: "未找到该设备" }, 404);
     const now = Date.now();
-    if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
+    if ((!data.status_only || found.task?.managed_exec_v1 === true || found.task?.managed_log_v1 === true || found.task?.managed_heal_v1 === true || found.task?.managed_reboot_v1 === true || found.task?.managed_adbd_v1 === true || found.task?.managed_wifi_scan_v1 === true || found.task?.managed_wifi_config_v1 === true || found.task?.managed_alarm_v1 === true || found.task?.managed_locate_v1 === true || found.task?.managed_config_v1 === true || found.task?.managed_lost_v1 === true) && found.task && repairExpired(found.task, now)
         && (found.task.state === "pending" || found.task.state === "claimed" || found.task.state === "running")) {
       if(!holdNetworkTask(found.task)){
       found.task.state = "expired";
@@ -2219,13 +2229,16 @@ function addManagedTaskOffer(body, device, report, now) {
   if (device.enabled !== false && report.status_only === true && report.managed_wifi_scan_tasks === true
       && device.task?.managed_wifi_scan_v1 === true && device.task.type === "scan_wifi" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_wifi_scan_v1:true};
+  if (device.enabled !== false && isGateway(device) && report.status_only === true && report.managed_wifi_config_tasks === true
+      && device.task?.managed_wifi_config_v1 === true && device.task.type === "connect_wifi" && shouldOfferRepair(device, now))
+    body.managed_task = {...repairOfferPayload(device.task), managed_wifi_config_v1:true};
   if (device.enabled !== false && report.status_only === true && report.managed_alarm_tasks === true
       && device.task?.managed_alarm_v1 === true && ["play_alarm", "stop_alarm"].includes(device.task.type) && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_alarm_v1:true};
   if (device.enabled !== false && report.status_only === true && report.managed_locate_tasks === true
       && device.task?.managed_locate_v1 === true && device.task.type === "locate_now" && shouldOfferRepair(device, now))
     body.managed_task = {...repairOfferPayload(device.task), managed_locate_v1:true};
-  if(device.enabled!==false && report.status_only===true && report.managed_config_tasks===true
+  if(device.enabled!==false && !isGateway(device) && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
   if(report.managed_lost_safety_v1===true&&device.safety_task&&shouldOfferRepair({task:device.safety_task},now))
@@ -2270,6 +2283,9 @@ async function handleElfEnqueueTask(env, request) {
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
+    const configTaskCapable=CONFIG_TYPES.includes(data.type)&&(isGateway(found)
+      ?data.type==='connect_wifi'&&found.managed_wifi_config_tasks===true
+      :found.managed_config_tasks===true);
     if(found.status_only && !((data.type==='contacts_page'&&found.managed_contacts_page_v1===true)||(data.type==="root_exec" && found.managed_exec_tasks===true)
         || (data.type==="file_manage" && found.managed_file_operations===true)
         || (data.type==="system_config" && found.managed_system_settings===true)
@@ -2286,13 +2302,13 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
-        || (CONFIG_TYPES.includes(data.type) && found.managed_config_tasks===true))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+        || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
     if(data.type==="system_config" && !found.managed_system_settings)return json({ok:false,msg:"请更新客户端后使用系统配置"},409);
     const allowNetworkAcceptance=isNetworkTask(data)&&networkAcceptanceAllowed(found,data.params,env.D31_NETWORK_ACCEPTANCE_JSON);
     if(data.type==='system_config'&&data.params?.action==='set'&&!systemSettingAllowed(found,data.params.group,data.params.key,data.params.package)&&!allowNetworkAcceptance)return json({ok:false,msg:'设备尚不支持此设置，未下发修改'},409);
-    if(data.type==='connect_wifi'&&!systemSettingAllowed(found,'wifi','connect'))return json({ok:false,msg:'设备网络修改尚未接通，未下发修改'},409);
+    if(data.type==='connect_wifi'&&!isGateway(found)&&!systemSettingAllowed(found,'wifi','connect'))return json({ok:false,msg:'设备网络修改尚未接通，未下发修改'},409);
     if(data.type==="configure_zello" && !found.managed_zello_account)return json({ok:false,msg:"客户端尚未支持Zello账号配置"},409);
     if(data.type==="configure_sip"){
       try{checkSipTarget(found,data.params||{});}catch(e){return json({ok:false,msg:e.message},409);}
@@ -2341,12 +2357,13 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="reboot") found.task.managed_reboot_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="restart_adbd") found.task.managed_adbd_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="scan_wifi") found.task.managed_wifi_scan_v1=true;
+    if(!queued.duplicate && found.status_only && isGateway(found) && data.type==="connect_wifi") found.task.managed_wifi_config_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;
     if(data.type==='set_lost_mode'&&found.task.params?.version===2)Object.assign(found.task.params,{paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0});
     if(data.type==='wipe_data')delete found.wipe_confirmation;
-    if(!queued.duplicate && found.status_only && CONFIG_TYPES.includes(data.type)) found.task.managed_config_v1=true;
+    if(!queued.duplicate && found.status_only && !isGateway(found) && CONFIG_TYPES.includes(data.type)) found.task.managed_config_v1=true;
     await saveDevices(env, list);
     return json({ ok: true, duplicate: !!queued.duplicate, task: publicRepair(queued.task) });
   } catch (e) {

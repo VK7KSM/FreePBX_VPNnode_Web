@@ -21,6 +21,9 @@ export function gatewayProductFields(data,existing=null,identity=null){
 export function gatewayReportGuard(device,data){
   if(!isGateway(device))return;
   if(data.status_only!==true)throw Error('网关必须采用显式管理能力协议');
+  for(const field of ['managed_wifi_scan_tasks','managed_wifi_config_tasks'])
+    if(Object.hasOwn(data,field)&&typeof data[field]!=='boolean')throw Error('网关 Wi-Fi 能力必须为布尔值');
+  if(data.managed_config_tasks===true)throw Error('网关不得声明整套安卓配置能力');
   if(data.network!=null&&!['wifi','cellular','ethernet','unknown'].includes(data.network))throw Error('网关网络类型无效');
   if(data.battery!=null&&(typeof data.battery!=='number'||!Number.isFinite(data.battery)||data.battery<0||data.battery>100))throw Error('网关电量无效');
   if(data.charging!=null&&typeof data.charging!=='boolean')throw Error('网关充电状态无效');
