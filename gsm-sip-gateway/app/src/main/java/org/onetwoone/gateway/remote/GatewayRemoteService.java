@@ -180,7 +180,9 @@ public final class GatewayRemoteService extends Service {
                 if (status.optBoolean("paired")) store.registered(status);
             }
             if (pendingReport == null && store.prefs.contains("pending_report")) {
-                pendingReport = new JSONObject(store.prefs.getString("pending_report","{}"));
+                pendingReport = GatewayReportOutbox.resume(store.prefs.getString("pending_report","{}"),version());
+                if(pendingReport==null&&!store.prefs.edit().remove("pending_report").commit())
+                    throw new java.io.IOException("stale report cleanup failed");
             }
             if (pendingReport == null) pendingReport = snapshot();
             if (!store.prefs.edit().putString("pending_report",pendingReport.toString()).commit()) {
