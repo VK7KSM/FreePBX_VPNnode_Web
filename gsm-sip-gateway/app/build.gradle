@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 66
-        versionName "1.5.0-gateway-alpha59-proxy-route-report"
+        versionCode 67
+        versionName "1.5.0-gateway-alpha60-mqtt-socks-connect"
 
         // NDK build config
         externalNativeBuild {
