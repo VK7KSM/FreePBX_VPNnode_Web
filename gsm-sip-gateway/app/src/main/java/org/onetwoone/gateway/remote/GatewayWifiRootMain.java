@@ -7,7 +7,6 @@ import android.net.wifi.WifiManager;
 import android.os.Looper;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.json.JSONArray;
@@ -26,7 +25,7 @@ public final class GatewayWifiRootMain {
             else if("apply".equals(args[0]))result=apply(dir);
             else if("restore".equals(args[0]))result=restore(dir);
             else result=commit(dir);
-            write(new File(dir,"result.json"),result);System.out.println("WIFI_OPERATION_OK");
+            System.out.println("WIFI_RESULT_HEX="+encodeResult(result));System.out.println("WIFI_OPERATION_OK");
         } catch(Throwable error) {System.err.println("WIFI_OPERATION_FAILED");System.exit(1);}
     }
 
@@ -102,11 +101,10 @@ public final class GatewayWifiRootMain {
         byte[] bytes=new byte[(int)file.length()];try(FileInputStream in=new FileInputStream(file)){int at=0,n;while(at<bytes.length&&(n=in.read(bytes,at,bytes.length-at))>0)at+=n;if(at!=bytes.length)throw new IllegalArgumentException("short read");}
         return new JSONObject(new String(bytes,StandardCharsets.UTF_8));
     }
-    static void write(File file,JSONObject value) throws Exception {
-        if(!file.isFile()||!file.getName().equals("result.json")||!file.getCanonicalFile().equals(file.getAbsoluteFile()))
-            throw new IllegalStateException("result target unavailable");
-        byte[] bytes=(value.toString()+"\n").getBytes(StandardCharsets.UTF_8);
-        try(FileOutputStream out=new FileOutputStream(file,false)){out.write(bytes);out.getFD().sync();}
+    static String encodeResult(JSONObject value) {
+        byte[] bytes=value.toString().getBytes(StandardCharsets.UTF_8);StringBuilder encoded=new StringBuilder(bytes.length*2);
+        for(byte item:bytes)encoded.append(String.format(java.util.Locale.ROOT,"%02x",item&0xff));
+        return encoded.toString();
     }
     private GatewayWifiRootMain() {}
 }

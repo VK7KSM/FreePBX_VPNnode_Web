@@ -10,10 +10,14 @@ import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.SystemClock;
 import java.io.File;
+import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONObject;
 
 /** Root-assisted Wi-Fi transaction with independent timeout rollback. */
@@ -32,7 +36,7 @@ final class GatewayWifiConnector {
         GatewayWifiPolicy.connectParams(params);if(busy())throw new IOException("wifi busy");
         if(wifi==null||!wifi.isWifiEnabled())throw new IOException("wifi disabled");
         dir=new File(base,GatewayRemoteStore.hash(task));if(!dir.isDirectory()&&!dir.mkdirs())throw new IOException("wifi transaction unavailable");
-        write(new File(dir,"request.json"),params);runRoot("prepare",dir,15);JSONObject prepared=readResult(dir);
+        write(new File(dir,"request.json"),params);JSONObject prepared=runRoot("prepare",dir,15);
         JSONObject state=new JSONObject().put("task",task).put("old",prepared.getInt("old")).put("target",prepared.getInt("target"))
                 .put("created",prepared.getBoolean("created")).put("ssid",prepared.getString("ssid")).put("enabled",prepared.getJSONArray("enabled"));
         write(new File(dir,"state.json"),state);
@@ -41,7 +45,7 @@ final class GatewayWifiConnector {
         done=callback;
         if(state.getInt("old")==state.getInt("target")){complete(true,"wifi-unchanged",new JSONObject().put("stage","wifi").put("action","unchanged").put("verified",true));return;}
         try {
-            armGuard(dir);runRoot("apply",dir,15);target=readResult(dir).getInt("target");prefs.edit().putInt("target",target).apply();
+            armGuard(dir);target=runRoot("apply",dir,15).getInt("target");prefs.edit().putInt("target",target).apply();
             deadline=SystemClock.elapsedRealtime()+90_000L;worker.postDelayed(poll,2_000L);
         } catch(Exception failure) {rollback("wifi-connect-failed-rolled-back");}
     }
@@ -79,15 +83,28 @@ final class GatewayWifiConnector {
         if(!prefs.edit().putBoolean("active",false).putBoolean("ok",ok).putString("result",detail).commit())throw new IOException("wifi state unavailable");
         new File(dir,"request.json").delete();Done callback=done;done=null;if(callback!=null)callback.finish(ok,detail,result);
     }
-    private void runRoot(String operation,File dir,long timeout)throws Exception {
-        GatewayUpdateProgress.write(new File(dir,"result.json"),new JSONObject().put("pending",true));
+    private JSONObject runRoot(String operation,File dir,long timeout)throws Exception {
         String command="export CLASSPATH="+quote(context.getApplicationInfo().sourceDir)+"; exec /system/bin/app_process /system/bin org.onetwoone.gateway.remote.GatewayWifiRootMain "
                 +operation+" "+quote(dir.getCanonicalPath());
         Process process=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();
         if(!process.waitFor(timeout,TimeUnit.SECONDS)){process.destroy();throw new IOException("wifi helper timeout");}
+        String output=readOutput(process.getInputStream());
         if(process.exitValue()!=0)throw new IOException("wifi helper failed");
+        return parseRootOutput(output);
     }
-    private static JSONObject readResult(File dir)throws Exception{return GatewayUpdateProgress.read(new File(dir,"result.json"));}
+    static JSONObject parseRootOutput(String output)throws Exception {
+        Matcher match=Pattern.compile("(?m)^WIFI_RESULT_HEX=([0-9a-f]+)\\r?$").matcher(output==null?"":output);
+        if(!match.find())throw new IOException("wifi helper result missing");
+        String value=match.group(1);if((value.length()&1)!=0||value.length()>32768)throw new IOException("wifi helper result invalid");
+        byte[] decoded=new byte[value.length()/2];
+        for(int i=0;i<decoded.length;i++)decoded[i]=(byte)Integer.parseInt(value.substring(i*2,i*2+2),16);
+        return new JSONObject(new String(decoded,StandardCharsets.UTF_8));
+    }
+    private static String readOutput(InputStream input)throws Exception {
+        ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buffer=new byte[1024];int count;
+        while((count=input.read(buffer))>=0){if(count>0)out.write(buffer,0,count);if(out.size()>16384)throw new IOException("wifi helper output too large");}
+        return new String(out.toByteArray(),StandardCharsets.UTF_8);
+    }
     private static void write(File file,JSONObject value)throws Exception{GatewayUpdateProgress.write(file,value);}
     static String quote(String value){if(value==null||value.indexOf('\0')>=0||value.indexOf('\n')>=0||value.indexOf('\r')>=0)throw new IllegalArgumentException("invalid path");return "'"+value.replace("'","'\"'\"'")+"'";}
 }

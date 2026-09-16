@@ -6,9 +6,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
-import java.io.File;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -45,13 +42,12 @@ public class GatewayWifiPolicyTest {
         assertTrue(command.contains("ACCESS_FINE_LOCATION"));
         assertTrue(command.contains("ACCESS_BACKGROUND_LOCATION"));
     }
-    @Test public void rootResultWriterRequiresAppPrecreatedFile() throws Exception {
-        File directory=Files.createTempDirectory("gateway-wifi-result").toFile();
-        File result=new File(directory,"result.json");
-        try {GatewayWifiRootMain.write(result,new JSONObject().put("ok",true));fail();}catch(IllegalStateException expected){}
-        assertTrue(result.createNewFile());
-        GatewayWifiRootMain.write(result,new JSONObject().put("ok",true));
-        assertEquals("{\"ok\":true}\n",new String(Files.readAllBytes(result.toPath()),StandardCharsets.UTF_8));
+    @Test public void rootReceiptRoundTripsWithoutRawSsidLines() throws Exception {
+        JSONObject expected=new JSONObject().put("ok",true).put("ssid","Line1\nLine2");
+        String output="WIFI_RESULT_HEX="+GatewayWifiRootMain.encodeResult(expected)+"\nWIFI_OPERATION_OK\n";
+        JSONObject actual=GatewayWifiConnector.parseRootOutput(output);
+        assertTrue(actual.getBoolean("ok"));assertEquals("Line1\nLine2",actual.getString("ssid"));
+        try {GatewayWifiConnector.parseRootOutput("WIFI_OPERATION_OK\n");fail();}catch(Exception expectedFailure){}
     }
     private static void expectInvalid(JSONObject value)throws Exception{try{GatewayWifiPolicy.connectParams(value);fail();}catch(Exception expected){}}
 }
