@@ -14,17 +14,28 @@ final class GatewayPixelCompanionInstaller {
     private static final String PREFIX="unified/";
     private static final String FINGERPRINT="google/crosshatch/crosshatch:12/SP1A.210812.016.B2/8602260:user/release-keys";
     private static final String RECEIPT=".elfremote-manifest.json";
+    private static final String ABSENT_ROLLBACK="."+MODULE_ID+".rollback-absent.json";
 
     interface Source { InputStream open(String path) throws Exception; }
     interface Hook { void afterBackup() throws Exception; }
 
     static JSONObject install(File modulesRoot,InputStream manifestInput,Source source,
                               String device,String fingerprint) throws Exception {
-        return install(modulesRoot,manifestInput,source,device,fingerprint,()->{});
+        return install(modulesRoot,manifestInput,source,device,fingerprint,null,()->{});
+    }
+
+    static JSONObject install(File modulesRoot,InputStream manifestInput,Source source,
+                              String device,String fingerprint,File configFile) throws Exception {
+        return install(modulesRoot,manifestInput,source,device,fingerprint,configFile,()->{});
     }
 
     static JSONObject install(File modulesRoot,InputStream manifestInput,Source source,
                               String device,String fingerprint,Hook hook) throws Exception {
+        return install(modulesRoot,manifestInput,source,device,fingerprint,null,hook);
+    }
+
+    static JSONObject install(File modulesRoot,InputStream manifestInput,Source source,
+                              String device,String fingerprint,File configFile,Hook hook) throws Exception {
         if(!"crosshatch".equals(device)||!FINGERPRINT.equals(fingerprint))
             throw new SecurityException("unsupported Pixel build");
         if(Files.isSymbolicLink(modulesRoot.toPath())||(!modulesRoot.isDirectory()&&!modulesRoot.mkdirs()))
@@ -40,12 +51,16 @@ final class GatewayPixelCompanionInstaller {
         rejectUnknownLegacy(modulesRoot);
 
         File target=new File(modulesRoot,MODULE_ID),stage=new File(modulesRoot,"."+MODULE_ID+".stage"),
-                backup=new File(modulesRoot,"."+MODULE_ID+".rollback");
+                backup=new File(modulesRoot,"."+MODULE_ID+".rollback"),absentRollback=new File(modulesRoot,ABSENT_ROLLBACK);
         if(stage.exists())removeOwned(stage);
         if(backup.exists())throw new IOException("previous rollback retained");
+        if(absentRollback.exists()&&(!target.isDirectory()||!validAbsentRollback(absentRollback,target)))
+            throw new SecurityException("unrecognized absent rollback state");
         if(target.exists()&&!trustedInstalled(target))throw new SecurityException("unrecognized companion conflict");
-        if(target.isDirectory()&&matches(target,selected))
-            return result("unchanged",false,false,legacyMode(modulesRoot));
+        if(target.isDirectory()&&matches(target,selected)) {
+            if(!absentRollback.exists())writeAbsentRollback(absentRollback,target);
+            return result("unchanged",false,modulesRoot,configFile);
+        }
 
         if(!stage.mkdir())throw new IOException("staging create failed");
         boolean movedOld=false,committed=false;
@@ -61,7 +76,10 @@ final class GatewayPixelCompanionInstaller {
             if(!stage.renameTo(target))throw new IOException("companion commit failed");
             committed=true;
             if(!matches(target,selected))throw new SecurityException("installed verification failed");
-            return result(movedOld?"upgraded":"installed",movedOld,movedOld,legacyMode(modulesRoot));
+            if(!movedOld)writeAbsentRollback(absentRollback,target);
+            JSONObject result=result(movedOld?"upgraded":"installed",movedOld,modulesRoot,configFile);
+            if(movedOld&&absentRollback.exists()&&!absentRollback.delete())throw new IOException("absent rollback cleanup failed");
+            return result;
         } catch(Exception failure) {
             if(committed&&target.exists()) {
                 if(!trustedInstalled(target))throw new SecurityException("failed companion became untrusted",failure);
@@ -69,6 +87,8 @@ final class GatewayPixelCompanionInstaller {
             }
             if(!target.exists()&&movedOld&&!backup.renameTo(target))
                 throw new IOException("companion rollback failed",failure);
+            if(!movedOld&&absentRollback.exists()&&!absentRollback.delete())
+                throw new IOException("absent rollback cleanup failed",failure);
             throw failure;
         } finally {
             if(stage.exists())removeOwned(stage);
@@ -77,18 +97,26 @@ final class GatewayPixelCompanionInstaller {
 
     static JSONObject rollback(File modulesRoot) throws Exception {
         File target=new File(modulesRoot,MODULE_ID),backup=new File(modulesRoot,"."+MODULE_ID+".rollback"),
-                failed=new File(modulesRoot,"."+MODULE_ID+".failed");
-        if(!backup.isDirectory()||!trustedInstalled(backup))throw new IOException("trusted rollback unavailable");
+                failed=new File(modulesRoot,"."+MODULE_ID+".failed"),absentRollback=new File(modulesRoot,ABSENT_ROLLBACK);
+        boolean previous=backup.isDirectory()&&trustedInstalled(backup),absent=validAbsentRollback(absentRollback,target);
+        if(!previous&&!absent)throw new IOException("trusted rollback unavailable");
         if(failed.exists())throw new IOException("failed version retained");
         if(target.exists()) {
             if(!trustedInstalled(target))throw new SecurityException("current companion unrecognized");
             if(!target.renameTo(failed))throw new IOException("current companion preserve failed");
         }
+        if(absent) {
+            if(!absentRollback.delete()) {
+                if(failed.exists())failed.renameTo(target);
+                throw new IOException("absent rollback commit failed");
+            }
+            return result("rolled_back_absent",false,modulesRoot,null);
+        }
         if(!backup.renameTo(target)) {
             if(failed.exists())failed.renameTo(target);
             throw new IOException("rollback commit failed");
         }
-        return result("rolled_back",false,true,legacyMode(modulesRoot));
+        return result("rolled_back",false,modulesRoot,null);
     }
 
     static JSONObject inspect(File modulesRoot,File configFile) throws Exception {
@@ -96,6 +124,7 @@ final class GatewayPixelCompanionInstaller {
         boolean installed=module.isDirectory(),recognized=false,rollback=false;
         try{recognized=installed&&trustedInstalled(module);}catch(Exception ignored){}
         try{rollback=backup.isDirectory()&&trustedInstalled(backup);}catch(Exception ignored){}
+        try{rollback=rollback||validAbsentRollback(new File(modulesRoot,ABSENT_ROLLBACK),module);}catch(Exception ignored){}
         JSONObject units=new JSONObject().put("charge",false).put("audio",false).put("adb_tcp",false);
         String version="";
         if(recognized) {
@@ -211,9 +240,36 @@ final class GatewayPixelCompanionInstaller {
         try(FileOutputStream output=new FileOutputStream(new File(stage,RECEIPT))){output.write(body);output.getFD().sync();}
     }
 
-    private static JSONObject result(String state,boolean upgraded,boolean rollbackAvailable,String legacy) throws Exception {
-        return new JSONObject().put("state",state).put("module_id",MODULE_ID).put("units_enabled",false)
-                .put("upgraded",upgraded).put("rollback_available",rollbackAvailable).put("legacy_modules",legacy);
+    private static JSONObject result(String state,boolean upgraded,File modulesRoot,File configFile) throws Exception {
+        JSONObject companion=inspect(modulesRoot,configFile),all=GatewayPixelLegacyHealth.snapshot(modulesRoot);
+        JSONObject units=companion.getJSONObject("units"),charge=legacyPublic(all.getJSONObject("charge_bypass")),audio=legacyPublic(all.getJSONObject("sip_audio_access"));
+        String legacy=charge.getBoolean("installed")&&audio.getBoolean("installed")?"preserved":charge.getBoolean("installed")||audio.getBoolean("installed")?"partial":"absent";
+        return new JSONObject().put("state",state).put("module_id",MODULE_ID).put("units_enabled",companion.getBoolean("active"))
+                .put("upgraded",upgraded).put("rollback_available",companion.getBoolean("rollback_available")).put("legacy_modules",legacy)
+                .put("units",units).put("legacy",new JSONObject().put("charge_bypass",charge).put("sip_audio_access",audio));
+    }
+
+    private static JSONObject legacyPublic(JSONObject value) throws Exception {
+        return new JSONObject().put("installed",value.getBoolean("installed")).put("disabled",value.getBoolean("disabled"))
+                .put("recognized",value.getBoolean("recognized"));
+    }
+
+    private static void writeAbsentRollback(File marker,File target) throws Exception {
+        if(!trustedInstalled(target))throw new SecurityException("untrusted absent rollback target");
+        File receipt=new File(target,RECEIPT),next=new File(marker.getPath()+".new");
+        JSONObject value=new JSONObject().put("schema_version",1).put("module_id",MODULE_ID).put("restore","absent")
+                .put("receipt_sha256",sha256(receipt));
+        try(FileOutputStream output=new FileOutputStream(next)){output.write(value.toString().getBytes(StandardCharsets.UTF_8));output.getFD().sync();}
+        if(!next.setReadable(true,true)||!next.setWritable(true,true))throw new IOException("absent rollback mode failed");
+        if(marker.exists()&&!marker.delete())throw new IOException("absent rollback replacement failed");
+        if(!next.renameTo(marker))throw new IOException("absent rollback commit failed");
+    }
+
+    private static boolean validAbsentRollback(File marker,File target) throws Exception {
+        if(!marker.isFile()||Files.isSymbolicLink(marker.toPath())||!target.isDirectory()||!trustedInstalled(target))return false;
+        JSONObject value=new JSONObject(read(new FileInputStream(marker),4096));
+        return value.length()==4&&value.optInt("schema_version")==1&&MODULE_ID.equals(value.optString("module_id"))
+                &&"absent".equals(value.optString("restore"))&&sha256(new File(target,RECEIPT)).equals(value.optString("receipt_sha256"));
     }
 
     private static void removeOwned(File value) throws Exception {

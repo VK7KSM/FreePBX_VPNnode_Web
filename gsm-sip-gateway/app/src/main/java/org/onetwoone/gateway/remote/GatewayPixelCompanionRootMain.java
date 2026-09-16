@@ -25,7 +25,7 @@ public final class GatewayPixelCompanionRootMain {
                     GatewayPixelAssets.verify(app);
                     result=GatewayPixelCompanionInstaller.install(MODULES,
                             app.getAssets().open("pixel_gateway_companion/manifest.json"),
-                            path->app.getAssets().open("pixel_gateway_companion/"+path),Build.DEVICE,Build.FINGERPRINT);
+                            path->app.getAssets().open("pixel_gateway_companion/"+path),Build.DEVICE,Build.FINGERPRINT,CONFIG);
                 }
             }
             send(args[1],args[2],new JSONObject().put("ok",true).put("result",result));System.exit(0);

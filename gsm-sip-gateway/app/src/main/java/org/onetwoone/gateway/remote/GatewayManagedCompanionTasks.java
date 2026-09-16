@@ -85,13 +85,37 @@ final class GatewayManagedCompanionTasks {
 
     static JSONObject publicResult(JSONObject raw)throws Exception {
         String state=raw==null?"":raw.optString("state"),legacy=raw==null?"":raw.optString("legacy_modules");
+        JSONObject units=raw==null?null:raw.optJSONObject("units"),legacyStatus=raw==null?null:raw.optJSONObject("legacy");
         if(!java.util.Arrays.asList("installed","unchanged","upgraded").contains(state)
                 ||raw.optBoolean("units_enabled",true)
-                ||!java.util.Arrays.asList("preserved","partial","absent").contains(legacy))
+                ||raw.optBoolean("rollback_available")!=true
+                ||!disabledUnits(units)||!validLegacy(legacy,legacyStatus))
             throw new SecurityException("invalid companion result");
         return new JSONObject().put("stage","pixel_companion").put("action","staged")
                 .put("state",state).put("units_enabled",false)
-                .put("rollback_available",raw.optBoolean("rollback_available")).put("legacy_modules",legacy);
+                .put("rollback_available",true).put("legacy_modules",legacy).put("units",units).put("legacy",legacyStatus);
+    }
+
+    private static boolean disabledUnits(JSONObject value) {
+        return value!=null&&value.length()==3&&!value.optBoolean("charge",true)&&!value.optBoolean("audio",true)&&!value.optBoolean("adb_tcp",true);
+    }
+    private static boolean validLegacy(String mode,JSONObject value) {
+        if(value==null||value.length()!=2)return false;
+        JSONObject charge=value.optJSONObject("charge_bypass"),audio=value.optJSONObject("sip_audio_access");
+        if(!legacyEntry(charge)||!legacyEntry(audio))return false;
+        boolean chargeInstalled=charge.optBoolean("installed"),audioInstalled=audio.optBoolean("installed");
+        if("preserved".equals(mode))return chargeInstalled&&audioInstalled&&!charge.optBoolean("disabled",true)&&!audio.optBoolean("disabled",true)
+                &&charge.optBoolean("recognized")&&audio.optBoolean("recognized");
+        if("partial".equals(mode)) {
+            JSONObject installed=chargeInstalled?charge:audio;
+            return chargeInstalled^audioInstalled&&!installed.optBoolean("disabled",true)&&installed.optBoolean("recognized");
+        }
+        return "absent".equals(mode)&&!chargeInstalled&&!audioInstalled
+                &&!charge.optBoolean("disabled")&&!charge.optBoolean("recognized")&&!audio.optBoolean("disabled")&&!audio.optBoolean("recognized");
+    }
+    private static boolean legacyEntry(JSONObject value) {
+        return value!=null&&value.length()==3&&value.has("installed")&&value.has("disabled")&&value.has("recognized")
+                &&value.opt("installed") instanceof Boolean&&value.opt("disabled") instanceof Boolean&&value.opt("recognized") instanceof Boolean;
     }
 
     private static String category(Exception failure) {

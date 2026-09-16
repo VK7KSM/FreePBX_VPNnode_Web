@@ -11,4 +11,8 @@ public class GatewayProxyRuntimeTest {
         assertFalse(GatewayProxyRuntime.safeSource("/data/user/0/org.onetwoone.gateway/files/proxy-core/../secret"));
         assertFalse(GatewayProxyRuntime.safeSource("/sdcard/mihomo-v1.19.31"));
     }
+    @Test public void probesTheConfiguredIpv4LoopbackAddress(){
+        assertEquals("127.0.0.1",GatewayProxyRuntime.loopback(17890).getAddress().getHostAddress());
+        assertEquals(17890,GatewayProxyRuntime.loopback(17890).getPort());
+    }
 }

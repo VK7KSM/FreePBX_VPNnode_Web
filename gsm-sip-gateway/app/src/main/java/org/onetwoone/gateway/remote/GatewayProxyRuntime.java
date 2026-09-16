@@ -4,6 +4,7 @@ import android.system.Os;
 import android.system.OsConstants;
 import java.io.*;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
@@ -85,9 +86,10 @@ final class GatewayProxyRuntime {
     private boolean isRunning(){int pid=readPid();return pid>1&&identity(pid);}
     private int readPid(){try{return Integer.parseInt(new String(readBytes(pidFile,32),StandardCharsets.US_ASCII).trim());}catch(Exception ignored){return -1;}}
     private boolean identity(int pid){try{byte[] raw=readBytes(new File("/proc/"+pid+"/cmdline"),4096);String cmd=new String(raw,StandardCharsets.UTF_8).replace('\0',' ');return cmd.startsWith(binary.getPath()+" ")&&cmd.contains(" -f "+config.getPath());}catch(Exception ignored){return false;}}
-    private static boolean portOpen(int port){try(Socket socket=new Socket()){socket.connect(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(),port),500);return true;}catch(Exception ignored){return false;}}
-    private static boolean socksReady(){try(Socket socket=new Socket()){socket.connect(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(),GatewayProxyPolicy.SOCKS_PORT),500);socket.setSoTimeout(1000);socket.getOutputStream().write(new byte[]{5,1,0});byte[] answer=new byte[2];return socket.getInputStream().read(answer)==2&&answer[0]==5&&answer[1]==0;}catch(Exception ignored){return false;}}
-    private static boolean httpConnect(){try(Socket socket=new Socket()){socket.connect(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(),GatewayProxyPolicy.HTTP_PORT),1000);socket.setSoTimeout(5000);socket.getOutputStream().write(("CONNECT v.elfradio.net:443 HTTP/1.1\r\nHost: v.elfradio.net:443\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));BufferedReader reader=new BufferedReader(new InputStreamReader(socket.getInputStream(),StandardCharsets.US_ASCII));String line=reader.readLine();return line!=null&&line.matches("HTTP/1\\.[01] 200(?: .*)?");}catch(Exception ignored){return false;}}
+    static InetSocketAddress loopback(int port){return new InetSocketAddress("127.0.0.1",port);}
+    private static boolean portOpen(int port){try(Socket socket=new Socket()){socket.connect(loopback(port),500);return true;}catch(Exception ignored){return false;}}
+    private static boolean socksReady(){try(Socket socket=new Socket()){socket.connect(loopback(GatewayProxyPolicy.SOCKS_PORT),500);socket.setSoTimeout(1000);socket.getOutputStream().write(new byte[]{5,1,0});byte[] answer=new byte[2];return socket.getInputStream().read(answer)==2&&answer[0]==5&&answer[1]==0;}catch(Exception ignored){return false;}}
+    private static boolean httpConnect(){try(Socket socket=new Socket()){socket.connect(loopback(GatewayProxyPolicy.HTTP_PORT),1000);socket.setSoTimeout(5000);socket.getOutputStream().write(("CONNECT v.elfradio.net:443 HTTP/1.1\r\nHost: v.elfradio.net:443\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));BufferedReader reader=new BufferedReader(new InputStreamReader(socket.getInputStream(),StandardCharsets.US_ASCII));String line=reader.readLine();return line!=null&&line.matches("HTTP/1\\.[01] 200(?: .*)?");}catch(Exception ignored){return false;}}
     private JSONObject baseState()throws Exception {JSONObject current=readState();return current.put("version",GatewayProxyAssets.VERSION).put("size",GatewayProxyAssets.EXECUTABLE_SIZE).put("sha256",GatewayProxyAssets.EXECUTABLE_SHA256).put("proxy_reachable",false);}
     private JSONObject readState(){try{return state.isFile()?new JSONObject(read(state,8192)):new JSONObject();}catch(Exception ignored){return new JSONObject();}}
     private static void copy(File source,File target,long size,String hash)throws Exception {try(InputStream input=new BufferedInputStream(new FileInputStream(source))){GatewayProxyAssets.copyVerified(input,target,size,hash,size);}}

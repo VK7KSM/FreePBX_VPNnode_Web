@@ -22,17 +22,25 @@ public class GatewayManagedCompanionTasksTest {
 
     @Test public void publishesOnlySanitizedDisabledResult()throws Exception {
         JSONObject raw=new JSONObject().put("state","installed").put("module_id","elfremote_gateway_companion")
-                .put("units_enabled",false).put("rollback_available",false).put("legacy_modules","preserved");
+                .put("units_enabled",false).put("rollback_available",true).put("legacy_modules","preserved")
+                .put("units",units()).put("legacy",legacy());
         JSONObject result=GatewayManagedCompanionTasks.publicResult(raw);
-        assertEquals(6,result.length());assertEquals("staged",result.getString("action"));assertFalse(result.getBoolean("units_enabled"));
+        assertEquals(8,result.length());assertEquals("staged",result.getString("action"));assertFalse(result.getBoolean("units_enabled"));
         assertFalse(result.has("module_id"));
     }
 
     @Test public void rejectsEnabledOrUnknownRootResults()throws Exception {
         JSONObject base=new JSONObject().put("state","installed").put("units_enabled",false)
-                .put("rollback_available",false).put("legacy_modules","preserved");
+                .put("rollback_available",true).put("legacy_modules","preserved").put("units",units()).put("legacy",legacy());
         for(JSONObject value:new JSONObject[]{new JSONObject(base.toString()).put("units_enabled",true),
+                new JSONObject(base.toString()).put("rollback_available",false),
+                new JSONObject(base.toString()).put("units",units().put("audio",true)),
                 new JSONObject(base.toString()).put("state","active"),new JSONObject(base.toString()).put("legacy_modules","unknown")})
             try{GatewayManagedCompanionTasks.publicResult(value);fail("accepted "+value);}catch(SecurityException expected){}
     }
+
+    private static JSONObject units()throws Exception{return new JSONObject().put("charge",false).put("audio",false).put("adb_tcp",false);}
+    private static JSONObject legacy()throws Exception{return new JSONObject()
+            .put("charge_bypass",new JSONObject().put("installed",true).put("disabled",false).put("recognized",true))
+            .put("sip_audio_access",new JSONObject().put("installed",true).put("disabled",false).put("recognized",true));}
 }

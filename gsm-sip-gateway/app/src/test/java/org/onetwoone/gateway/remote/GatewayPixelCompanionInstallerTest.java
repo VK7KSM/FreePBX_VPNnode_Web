@@ -21,12 +21,15 @@ public class GatewayPixelCompanionInstallerTest {
         File modules=temporary.newFolder("modules"),assets=assets();
         JSONObject installed=install(modules,assets,()->{});
         assertEquals("installed",installed.getString("state"));assertFalse(installed.getBoolean("units_enabled"));
+        assertTrue(installed.getBoolean("rollback_available"));
         assertEquals("absent",installed.getString("legacy_modules"));
         File module=new File(modules,GatewayPixelCompanionInstaller.MODULE_ID);
         assertTrue(new File(module,".elfremote-manifest.json").isFile());
         String config=new String(Files.readAllBytes(new File(module,"default.conf").toPath()),"UTF-8");
         assertTrue(config.contains("CHARGE_ENABLED=0"));assertTrue(config.contains("AUDIO_ENABLED=0"));assertTrue(config.contains("ADB_TCP_ENABLED=0"));
         assertEquals("unchanged",install(modules,assets,()->{}).getString("state"));
+        assertEquals("rolled_back_absent",GatewayPixelCompanionInstaller.rollback(modules).getString("state"));
+        assertFalse(module.exists());
     }
 
     @Test public void preservesRecognizedLegacyModules() throws Exception {
@@ -35,8 +38,19 @@ public class GatewayPixelCompanionInstallerTest {
         copy(new File(assets,"legacy/pixel_sip_audio_access"),new File(modules,"pixel_sip_audio_access"));
         JSONObject result=install(modules,assets,()->{});
         assertEquals("preserved",result.getString("legacy_modules"));
+        assertTrue(result.getJSONObject("legacy").getJSONObject("charge_bypass").getBoolean("recognized"));
+        assertTrue(result.getJSONObject("legacy").getJSONObject("sip_audio_access").getBoolean("recognized"));
         assertTrue(new File(modules,"pixel_charge_bypass/service.sh").isFile());
         assertTrue(new File(modules,"pixel_sip_audio_access/sepolicy.rule").isFile());
+    }
+
+    @Test public void reportsUnitsFromEffectiveExternalConfig() throws Exception {
+        File modules=temporary.newFolder("external-config"),assets=assets(),config=temporary.newFile("companion.conf");
+        Files.write(config.toPath(),("SCHEMA_VERSION=1\nCHARGE_ENABLED=0\nAUDIO_ENABLED=1\nADB_TCP_ENABLED=0\n").getBytes("UTF-8"));
+        JSONObject result=GatewayPixelCompanionInstaller.install(modules,manifest(assets),source(assets),"crosshatch",FP,config);
+        assertTrue(result.getBoolean("units_enabled"));
+        assertTrue(result.getJSONObject("units").getBoolean("audio"));
+        try{GatewayManagedCompanionTasks.publicResult(result);fail("accepted enabled effective config");}catch(SecurityException expected){}
     }
 
     @Test public void rejectsUnknownLegacyAndWrongBuild() throws Exception {
