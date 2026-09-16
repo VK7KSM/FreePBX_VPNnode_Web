@@ -257,13 +257,42 @@ export function pixelCompanionParams(value={}){
 }
 function pixelCompanionResult(value){
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Pixel伴随组件成功回执无效');
-  const fields=['stage','action','state','units_enabled','rollback_available','legacy_modules'];
+  const fields=['stage','action','state','units_enabled','rollback_available','legacy_modules','units','legacy'];
   const keys=Object.keys(value);
   if(keys.length!==fields.length||keys.some(key=>!fields.includes(key))||value.stage!=='pixel_companion'||value.action!=='staged'
       ||!['installed','unchanged','upgraded'].includes(value.state)||value.units_enabled!==false
-      ||typeof value.rollback_available!=='boolean'||!['preserved','partial','absent'].includes(value.legacy_modules))
+      ||value.rollback_available!==true||!['preserved','partial','absent'].includes(value.legacy_modules))
     throw Error('Pixel伴随组件成功回执无效');
-  return Object.fromEntries(fields.map(key=>[key,value[key]]));
+  const unitFields=['charge','audio','adb_tcp'];
+  if(!value.units||typeof value.units!=='object'||Array.isArray(value.units)
+      ||Object.keys(value.units).length!==unitFields.length||Object.keys(value.units).some(key=>!unitFields.includes(key))
+      ||unitFields.some(key=>value.units[key]!==false))throw Error('Pixel伴随组件单元状态无效');
+  const legacyFields=['charge_bypass','sip_audio_access'],moduleFields=['installed','disabled','recognized'];
+  if(!value.legacy||typeof value.legacy!=='object'||Array.isArray(value.legacy)
+      ||Object.keys(value.legacy).length!==legacyFields.length||Object.keys(value.legacy).some(key=>!legacyFields.includes(key)))
+    throw Error('Pixel旧模块状态无效');
+  const legacy={};
+  for(const key of legacyFields){
+    const module=value.legacy[key];
+    if(!module||typeof module!=='object'||Array.isArray(module)
+        ||Object.keys(module).length!==moduleFields.length||Object.keys(module).some(field=>!moduleFields.includes(field))
+        ||moduleFields.some(field=>typeof module[field]!=='boolean')
+        ||(!module.installed&&(module.disabled||module.recognized))||(module.recognized&&!module.installed))
+      throw Error('Pixel旧模块状态无效');
+    legacy[key]=Object.fromEntries(moduleFields.map(field=>[field,module[field]]));
+  }
+  const installed=legacyFields.filter(key=>legacy[key].installed);
+  if(value.legacy_modules==='preserved'
+      &&(installed.length!==2||legacyFields.some(key=>legacy[key].disabled||!legacy[key].recognized)))
+    throw Error('Pixel旧模块保留状态不一致');
+  if(value.legacy_modules==='partial'
+      &&(installed.length!==1||legacyFields.some(key=>legacy[key].installed&&(legacy[key].disabled||!legacy[key].recognized))))
+    throw Error('Pixel旧模块部分保留状态不一致');
+  if(value.legacy_modules==='absent'&&installed.length!==0)throw Error('Pixel旧模块缺失状态不一致');
+  return {
+    stage:value.stage,action:value.action,state:value.state,units_enabled:false,rollback_available:true,
+    legacy_modules:value.legacy_modules,units:Object.fromEntries(unitFields.map(key=>[key,false])),legacy
+  };
 }
 function pixelCompanionDetail(state,detail){
   const fixed={claimed:'companion-task-claimed',running:'companion-task-running',success:'companion-staged-disabled',expired:'companion-task-expired'}[state];
@@ -894,7 +923,11 @@ export function publicRepair(task) {
     completed_at: task.completed_at || null,
     result: r ? (task.type===PIXEL_COMPANION_TASK_TYPE ? {
       stage:r.stage,action:r.action,state:r.state,units_enabled:r.units_enabled,
-      rollback_available:r.rollback_available,legacy_modules:r.legacy_modules
+      rollback_available:r.rollback_available,legacy_modules:r.legacy_modules,
+      ...(r.units&&r.legacy?{units:{charge:r.units.charge,audio:r.units.audio,adb_tcp:r.units.adb_tcp},legacy:{
+        charge_bypass:{installed:r.legacy.charge_bypass.installed,disabled:r.legacy.charge_bypass.disabled,recognized:r.legacy.charge_bypass.recognized},
+        sip_audio_access:{installed:r.legacy.sip_audio_access.installed,disabled:r.legacy.sip_audio_access.disabled,recognized:r.legacy.sip_audio_access.recognized}
+      }}:{})
     } : {
       sha256: r.sha256 || "",
       bytes: r.bytes || 0,
