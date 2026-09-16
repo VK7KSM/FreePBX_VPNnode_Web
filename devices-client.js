@@ -486,13 +486,6 @@ function onFnClick(ev){
 }
 
 function gatewayDevice(d){return d&&d.product_id==='elfremote_gateway';}
-function pixelRuntimeValue(value){return value===true?'是':value===false?'否':'—';}
-function pixelModuleValue(module){
-  if(!module)return '—';
-  var states=[module.installed?'已安装':'未安装',module.disabled?'已禁用':'已启用',module.recognized?'已识别':'未识别',module.files_verified?'文件已核验':'文件未核验'];
-  if(module.version)states.push('版本 '+module.version);
-  return states.join(' · ');
-}
 function gatewayFunctionAvailable(d,key){
   if(!gatewayDevice(d))return true;
   if(key==='model'||key==='locate')return true;
@@ -544,16 +537,6 @@ function renderOps(){
   h += '<div class="kv"><div class="k">客户端版本</div><div class="v">'+esc(d?managerLabel(d):'—')+(d&&d.update_available===true?'<button type="button" class="traffic-link" style="margin-left:8px" onclick="pickFn(\'update\')">更新</button>':'')+'</div></div>';
   h += kv("最后上报", d ? sydney(reportTime(d)) : "—", d ? '数据时间；服务器接收：'+sydney(d.last_seen) : '');
   h += kv("远程ADB", shell);
-  if(gatewayDevice(d)&&d.pixel_runtime){
-    h += kv("Pixel状态协议",'v'+d.pixel_runtime.schema_version);
-    h += kv("Pixel运行模式",d.pixel_runtime.mode||'—');
-    h += kv("内置资源已核验",pixelRuntimeValue(d.pixel_runtime.assets_verified));
-    h += kv("模块已识别",pixelRuntimeValue(d.pixel_runtime.recognized));
-    h += kv("模块已启用",pixelRuntimeValue(d.pixel_runtime.enabled));
-    h += kv("写入已锁定",pixelRuntimeValue(d.pixel_runtime.write_locked));
-    h += kv("充电旁路",pixelModuleValue(d.pixel_runtime.charge_bypass));
-    h += kv("SIP音频访问",pixelModuleValue(d.pixel_runtime.sip_audio_access));
-  }
   h += "</div>";
   h += '<div class="fn-menu" onclick="onFnClick(event)">';
   for(var i=0;i<FN_ITEMS.length;i++){
