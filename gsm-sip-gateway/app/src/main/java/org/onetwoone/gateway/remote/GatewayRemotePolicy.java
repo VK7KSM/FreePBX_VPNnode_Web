@@ -22,6 +22,7 @@ public final class GatewayRemotePolicy {
         return body.put("managed_update",true).put("managed_update_v2",true).put("managed_adb_session",true).put("managed_adb_tunnel_v1",true)
                 .put("managed_exec_tasks",true)
                 .put("managed_alarm_tasks",true).put("managed_locate_tasks",true)
+                .put("managed_lost_message_v1",true)
                 .put("managed_sip_account",true)
                 .put("managed_mobile_status",true)
                 .put("managed_proxy_tasks",true).put("managed_proxy_v1",true)

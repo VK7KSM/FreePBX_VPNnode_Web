@@ -63,9 +63,9 @@ public final class GatewayRemoteService extends Service {
         fileTasks = new GatewayManagedFileTasks(this,store,this::scheduleImmediateReport);
         transferTasks = new GatewayManagedTransferTasks(this,store,this::scheduleImmediateReport);
         execTasks = new GatewayManagedExecTasks(this,store,this::scheduleImmediateReport);
-        location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
-        lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),this::scheduleImmediateReport);
         lostDisplay = new GatewayLostDisplay(this);
+        location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
+        lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),lostDisplay,this::scheduleImmediateReport);
         proxyTasks = new GatewayManagedProxyTasks(this,store,this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
