@@ -192,6 +192,10 @@ public final class GatewayRemoteService extends Service {
                 .put("sip_registered",gateway!=null && gateway.isSipRegistered()).put("busy",busy==null?JSONObject.NULL:busy));
         JSONObject sip=sipTasks.targets();body.put("managed_sip_account",sip.getBoolean("managed_sip_account"))
                 .put("sip_targets",sip.getJSONArray("sip_targets")).put("sip_registrations",sipTasks.registrations());
+        body.put("pixel_runtime",GatewayPixelStatus.snapshot(
+                store.prefs.getBoolean("pixel_assets_verified",false),
+                store.prefs.getString("pixel_module_health",""),
+                store.prefs.getString("pixel_module_error","")));
         return body;
     }
     @Override public void onDestroy() {

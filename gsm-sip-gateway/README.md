@@ -8,14 +8,14 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha25-pixel-integration-readonly |
-| versionCode | 32 |
-| 当前生产机已安装版本 | 1.5.0-gateway-alpha23，versionCode 30 |
+| 源码候选版本 | 1.5.0-gateway-alpha26-pixel-runtime-report |
+| versionCode | 33 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha26-pixel-runtime-report，versionCode 33 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
 
-**alpha25 候选变更：** 在 alpha23 的远程管理、远程更新、原生 ADB 隧道和网关配置能力上，增加 Pixel 生产 Magisk 模块的只读识别与完整关键文件哈希核验。识别到健康旧模块时固定为`legacy_managed`和`write_locked=true`，不卸载、不覆盖、不重装。该候选已通过90项单元测试和APK静态核验，但尚未安装到生产机。
+**alpha26 候选变更：** 在 alpha25 的Pixel生产Magisk模块只读识别基础上，增加严格白名单的`pixel_runtime`状态报告。报告只包含资源核验、模式、识别、启用、写锁及两个既有模块的只读状态，不上传路径、哈希或异常原文，不开放模块写操作。该候选已通过95项单元测试、APK静态核验和当前生产Pixel 3 XL的Web远程覆盖更新验收；管理端严格合同已接受完整schema 1状态，网关、SIP、MQTT、供电、音频权限、模块和业务配置基线均未回退。
 
 **1.4.2 变更：** 出站短信按正文 `SMS <号码>: <内容>` 发送，不再要求 SIP From 等于 SIM 目的分机。102、106 等有短信权限的分机经 PBX 改写后都可以经 300 发 GSM 短信。To 已是 10–15 位号码的 MESSAGE 仍直发。乱正文仍拒绝。
 
