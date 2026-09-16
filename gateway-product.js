@@ -22,7 +22,7 @@ export function gatewayReportGuard(device,data){
   if(!isGateway(device)){
     if(Object.hasOwn(data,'managed_mobile_status')||Object.hasOwn(data,'mobile_network')
       ||Object.hasOwn(data,'managed_proxy_tasks')||Object.hasOwn(data,'proxy_runtime')
-      ||Object.hasOwn(data,'managed_lost_message_v1'))
+      ||Object.hasOwn(data,'managed_lost_message_v1')||Object.hasOwn(data,'managed_pixel_companion_v1'))
       throw Error('网关专用状态仅限网关产品');
     return;
   }
@@ -35,6 +35,8 @@ export function gatewayReportGuard(device,data){
     throw Error('网关代理任务能力必须为布尔值');
   if(Object.hasOwn(data,'managed_lost_message_v1')&&typeof data.managed_lost_message_v1!=='boolean')
     throw Error('网关丢失信息能力必须为布尔值');
+  if(Object.hasOwn(data,'managed_pixel_companion_v1')&&typeof data.managed_pixel_companion_v1!=='boolean')
+    throw Error('Pixel伴随组件能力必须为布尔值');
   if(data.managed_proxy_tasks===true&&!Object.hasOwn(data,'proxy_runtime'))
     throw Error('网关代理任务能力缺少运行状态');
   if(data.managed_config_tasks===true)throw Error('网关不得声明整套安卓配置能力');
