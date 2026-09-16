@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 48
-        versionName "1.5.0-gateway-alpha41-proxy-core"
+        versionCode 49
+        versionName "1.5.0-gateway-alpha42-proxy-transaction"
 
         // NDK build config
         externalNativeBuild {

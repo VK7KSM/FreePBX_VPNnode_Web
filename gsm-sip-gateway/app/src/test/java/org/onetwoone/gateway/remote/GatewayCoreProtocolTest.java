@@ -17,7 +17,7 @@ public class GatewayCoreProtocolTest {
         assertTrue(GatewayCoreProtocol.allowed(request,KEY));
         assertFalse(GatewayCoreProtocol.allowed(request,""));
         assertFalse(GatewayCoreProtocol.allowed(request,KEY.replace('0','1')));
-        for(String operation:new String[]{"pixel-module-health","mobile-status","proxy-prepare","proxy-status","push-config","push-status","push-ack","push-hint","shutdown"}){
+        for(String operation:new String[]{"pixel-module-health","mobile-status","proxy-prepare","proxy-configure","proxy-start","proxy-stop","proxy-test","proxy-status","push-config","push-status","push-ack","push-hint","shutdown"}){
             request.put("operation",operation);assertTrue(GatewayCoreProtocol.allowed(request,KEY));
         }
         request.put("operation","install");assertFalse(GatewayCoreProtocol.allowed(request,KEY));
