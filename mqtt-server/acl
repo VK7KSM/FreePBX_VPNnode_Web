@@ -1,4 +1,0 @@
-pattern read elfremote/%u/notify
-
-user control-plane
-topic write elfremote/+/notify

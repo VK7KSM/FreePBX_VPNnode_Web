@@ -1,4 +1,0 @@
-secrets.env
-*.token
-*.key
-*.pem

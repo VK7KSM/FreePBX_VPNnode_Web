@@ -1,13 +1,73 @@
+# Node.js 与 Cloudflare 本地构建目录
 node_modules/
 .wrangler/
 .generated-assets/
+dist/
+build/
+coverage/
+
+# 本地凭据与签名材料
 .dev.vars
+.env
+.env.*
 *.token
-.DS_Store
-*.apk
 *.jks
 *.keystore
 keystore.properties
 local.properties
-elfRemote/captures/
-elfRemote/app/build/
+
+# 本地测试、夹具与测试报告
+*.test.mjs
+*.spec.mjs
+test-*.ps1
+test-local-worker.mjs
+test-support.mjs
+test-fixtures/
+.github/workflows/test.yml
+test-results/
+playwright-report/
+.playwright-cli/
+.pytest_cache/
+__pycache__/
+
+# 项目文档、方案、草稿与临时工作区不进入 Web 发布仓库
+*.md
+docs/
+draft/
+scratch/
+staging/
+
+# 非 Cloudflare Worker 子项目
+gsm-sip-gateway/
+mqtt-server/
+sip-server/
+tools/
+elfRemote/*
+!elfRemote/control-plane.js
+scripts/*
+!scripts/collect-cf-usage.mjs
+
+# 设备、固件、日志与本地发布制品
+*.apk
+*.aab
+*.aar
+*.so
+*.jar
+*.img
+*.bin
+*.log
+*.tmp
+captures/
+artifacts/
+releases/
+
+# 旧配置已由 wrangler.jsonc 取代
+wrangler.toml
+
+# 操作系统与编辑器文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

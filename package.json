@@ -6,9 +6,7 @@
     "deploy": "npm run build:assets && wrangler deploy --config wrangler.jsonc",
     "build:assets": "node build-static-assets.mjs",
     "embed:devices-client": "node embed-devices-client.mjs",
-    "embed:check": "node embed-devices-client.mjs --check",
-    "test": "node --test *.test.mjs elfRemote/*.test.mjs tools/*.test.mjs",
-    "test:elfremote": "npm test"
+    "embed:check": "node embed-devices-client.mjs --check"
   },
   "devDependencies": {
     "esbuild": "0.28.1",
@@ -17,7 +15,6 @@
   "dependencies": {
     "@noble/hashes": "1.8.0",
     "@xterm/addon-fit": "0.10.0",
-    "@xterm/xterm": "5.5.0",
-    "ws": "^8.18.3"
+    "@xterm/xterm": "5.5.0"
   }
 }
