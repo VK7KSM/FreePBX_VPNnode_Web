@@ -51,7 +51,13 @@ final class GatewayCorePush implements Closeable {
         if(noticeFile.exists()&&!noticeFile.delete())throw new IOException("notice cleanup failed");
     }
     void hint(){worker.post(()->{String next=networkId();if(!next.equals(activeNetwork)){tunnel.close();dispose();failures=0;mqttDirectFallback=false;ensure();}else if(!connecting&&!connected&&failures==0)ensure();});}
-    void routeChanged(){worker.post(()->{mqttDirectFallback=false;if(!connected&&!connecting){failures=0;ensure();}});}
+    void routeChanged(){worker.post(()->{
+        synchronized(this){mqttDirectFallback=false;if(routeMismatch(connected,connectedViaProxy,GatewayProxyRoute.preferred()))dispose();if(connecting)return;failures=0;}
+        ensure();
+    });}
+    static boolean routeMismatch(boolean connected,boolean connectedViaProxy,boolean proxyPreferred){
+        return connected&&connectedViaProxy!=proxyPreferred;
+    }
     private String networkId(){Network value=network.getActiveNetwork();return value==null?"":value.toString();}
     private void ensure() {
         synchronized(this){if(closed||connected||connecting||state.optString("device_id").isEmpty())return;connecting=true;}

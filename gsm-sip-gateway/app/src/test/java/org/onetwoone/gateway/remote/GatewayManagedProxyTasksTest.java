@@ -1,9 +1,11 @@
 package org.onetwoone.gateway.remote;
 
+import android.content.Context;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import static org.junit.Assert.*;
 
@@ -22,5 +24,13 @@ public class GatewayManagedProxyTasksTest {
             base("configure_proxy").put("params",new JSONObject().put("url","https://v.elfradio.net/api/elfremote/proxy-config/other-task?device_id=device_1&token=0123456789abcdef").put("size",123).put("sha256",HASH)),
             base("start_proxy").put("expires_at",System.currentTimeMillis()+1_900_000L)};
         for(JSONObject task:invalid)try{GatewayManagedProxyTasks.validate(task);fail("accepted "+task);}catch(Exception expected){}
+    }
+    @Test public void persistsLatestProxyStatusForTheNextReport()throws Exception {
+        Context context=RuntimeEnvironment.getApplication();GatewayRemoteStore store=new GatewayRemoteStore(context);
+        JSONObject status=new JSONObject().put("schema_version",2).put("running",true).put("management_via","proxy");
+        store.prefs.edit().putString("proxy_runtime_error","stale").commit();
+        GatewayManagedProxyTasks.persistStatus(store,status);
+        assertEquals(status.toString(),store.prefs.getString("proxy_runtime",""));
+        assertFalse(store.prefs.contains("proxy_runtime_error"));
     }
 }

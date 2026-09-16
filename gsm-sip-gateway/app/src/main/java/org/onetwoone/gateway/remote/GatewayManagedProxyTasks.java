@@ -31,6 +31,7 @@ final class GatewayManagedProxyTasks {
             else if("stop_proxy".equals(type))status=GatewayCoreClient.stopProxy(context);
             else status=GatewayCoreClient.testProxy(context);
             GatewayProxyRoute.setPreferred(status.optBoolean("proxy_reachable")&&status.optBoolean("http_ready"));
+            persistStatus(store,status);
             terminal(id,"success","proxy-task-complete",new JSONObject().put("stage","proxy").put("action",type).put("proxy",status));
         }catch(Exception failure){try{if(!id.isEmpty())terminal(id,"failed",category(failure),null);else clear();}catch(Exception ignored){}}}
     private boolean cancelled(String id){try{JSONObject active=GatewayUpdateProgress.read(activeFile),task=active.getJSONObject("task");return id.equals(task.optString("id"))&&task.optBoolean("cancel_requested");}catch(Exception ignored){return true;}}
@@ -39,6 +40,10 @@ final class GatewayManagedProxyTasks {
         if("configure_proxy".equals(type)){JSONObject params=task.optJSONObject("params");if(params==null||params.length()!=3)throw new IOException("invalid proxy parameters");URL url=GatewayProxyConfigDownload.validateUrl(params.optString("url"));if(!url.getPath().endsWith("/"+id)||params.optLong("size")<2||params.optLong("size")>GatewayProxyPolicy.MAX_CONFIG_BYTES||!params.optString("sha256").matches("[0-9a-f]{64}"))throw new IOException("invalid proxy parameters");}
         else if(task.has("params")&&task.optJSONObject("params")!=null&&task.optJSONObject("params").length()!=0)throw new IOException("unexpected proxy parameters");return task;}
     private static boolean supported(String type){return "configure_proxy".equals(type)||"start_proxy".equals(type)||"stop_proxy".equals(type)||"test_proxy".equals(type);}
+    static void persistStatus(GatewayRemoteStore store,JSONObject status)throws IOException {
+        if(store==null||status==null||!store.prefs.edit().putString("proxy_runtime",status.toString()).remove("proxy_runtime_error").commit())
+            throw new IOException("proxy status persistence failed");
+    }
     private static String category(Exception failure){if(failure instanceof InterruptedIOException)return "proxy-task-cancelled";if(failure instanceof SecurityException)return "proxy-security-rejected";if(failure instanceof java.net.SocketTimeoutException)return "proxy-network-timeout";return "proxy-operation-failed";}
     private void terminal(String id,String state,String detail,JSONObject result)throws Exception{JSONObject body=progress(id,state,detail,result);receipts().save(body);post(body);clear();changed.run();}
     private JSONObject progress(String id,String state,String detail,JSONObject result)throws Exception{JSONObject body=new JSONObject().put("device_id",store.deviceId()).put("task_id",id).put("state",state).put("detail",detail);if(result!=null)body.put("result",result);return body;}
