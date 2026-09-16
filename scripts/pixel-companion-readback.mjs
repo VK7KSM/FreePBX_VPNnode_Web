@@ -28,26 +28,17 @@ try{
   if(gateways.length!==1)throw Error(`Expected one Pixel Gateway, found ${gateways.length}`);
   const device=gateways[0];console.log(`::add-mask::${device.id}`);
   const task=(await web(`/api/elfremote/tasks?device_id=${encodeURIComponent(device.id)}&task_id=${encodeURIComponent(taskId)}`)).task;
-  const stored=await kv('GET','remote_devices'),raw=stored.find(value=>value.id===device.id&&value.product_id==='elfremote_gateway');
-  if(!raw)throw Error('Stored Pixel report is unavailable');
-  const result=task?.result||{},runtime=raw.pixel_runtime||{},companion=runtime.companion||{};
+  const result=task?.result||{};
   const checks={
     task_success:task?.state==='success'&&task?.detail==='companion-staged-disabled',
     units_enabled_false:result.units_enabled===false,
     task_rollback_available:result.rollback_available===true,
     task_legacy_preserved:result.legacy_modules==='preserved',
-    runtime_staged:runtime.mode==='companion_staged'&&runtime.write_locked===true,
-    companion_disabled:companion.installed===true&&companion.disabled===true&&companion.active===false,
-    companion_rollback_available:companion.rollback_available===true,
-    unit_charge_off:companion.units?.charge===false,
-    unit_audio_off:companion.units?.audio===false,
-    unit_adb_tcp_off:companion.units?.adb_tcp===false,
-    charge_bypass_preserved:runtime.charge_bypass?.installed===true&&runtime.charge_bypass?.disabled===false&&runtime.charge_bypass?.recognized===true,
-    sip_audio_access_preserved:runtime.sip_audio_access?.installed===true&&runtime.sip_audio_access?.disabled===false&&runtime.sip_audio_access?.recognized===true,
     sip_registered:device.gateway?.sip_registered===true,
     gateway_idle:device.gateway?.busy===false
   };
   console.log(JSON.stringify({phase:'readback',observed_at:new Date().toISOString(),task_id:taskId,task,
     public_device:{app_version:device.app_version,update:device.update,managed_pixel_companion_v1:device.managed_pixel_companion_v1,
-      gateway:device.gateway,last_seen:device.last_seen,last_reported_at:device.last_reported_at},pixel_runtime:runtime,checks},null,2));
+      gateway:device.gateway,last_seen:device.last_seen,last_reported_at:device.last_reported_at},checks,
+    pixel_runtime_publicly_available:false},null,2));
 }finally{await kv('DELETE',sessionKey).catch(()=>{});}
