@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 34
-        versionName "1.5.0-gateway-alpha27-wifi"
+        versionCode 35
+        versionName "1.5.0-gateway-alpha28-wifi-scan"
 
         // NDK build config
         externalNativeBuild {
