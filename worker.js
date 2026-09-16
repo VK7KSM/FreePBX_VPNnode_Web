@@ -1318,7 +1318,7 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
-    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),pixel_runtime:pixelRuntimeStatus(d.pixel_runtime,d)}:{}),
+    ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway)}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
