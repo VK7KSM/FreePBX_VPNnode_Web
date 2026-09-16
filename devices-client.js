@@ -498,7 +498,7 @@ function gatewayFunctionAvailable(d,key){
   if(key==='model'||key==='locate')return true;
   if(key==='update')return d.can_update===true;
   if(key==='adb')return ['managed_exec_tasks','managed_adb_session','managed_log_tasks','managed_heal_tasks','managed_reboot_tasks','managed_adbd_tasks'].some(function(k){return d[k]===true;});
-  if(key==='wifi')return d.managed_system_settings===true||d.managed_sip_account===true||d.managed_gateway_routing===true;
+  if(key==='wifi')return d.managed_system_settings===true||d.managed_sip_account===true;
   if(key==='files')return d.managed_file_operations===true;
   if(key==='contacts')return d.managed_contacts_page_v1===true;
   return false;
@@ -598,7 +598,7 @@ function setModelPower(id,value){
   .catch(function(e){alert(e.message);renderOps();});
 }
 var MAINTENANCE_RUN={};
-var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',configure_gateway_routing:'managed_gateway_routing',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
+var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
@@ -606,7 +606,7 @@ function maintenanceAvailable(d,type){
   return !(t && ['pending','claimed','running'].includes(t.state) && !(Number.isFinite(expires)&&Date.now()>=expires));
 }
 function pageAdb(dis){
-  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file','configure_sip','configure_zello','configure_gateway_routing'].includes(t.type)?{}:t.result||{};
+  var d=currentDev(),u=uiOf(),t=d&&d.task?d.task:{},r=['root_exec','file_manage','send_file','get_file','configure_sip','configure_zello'].includes(t.type)?{}:t.result||{};
   var ready=!!(d&&d.managed_exec_tasks),blocked=!!(dis||!ready||(u&&u.shell.pending));
   var run= d && MAINTENANCE_RUN[d.id];
   var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
@@ -1388,7 +1388,7 @@ var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
 function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录')readSystemSettings();}
 function pageSystem(dis){
-  var tabs=Object.keys(SYSTEM_GROUPS).filter(function(k){return !gatewayDevice(currentDev())||k!=='账号配置'||currentDev().managed_sip_account===true||currentDev().managed_gateway_routing===true;}),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
+  var tabs=Object.keys(SYSTEM_GROUPS).filter(function(k){return !gatewayDevice(currentDev())||k!=='账号配置'||currentDev().managed_sip_account===true;}),faults=typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
@@ -1473,7 +1473,6 @@ function accountSoftware(d){
   var items=key==='d31'?['Nexui','QUIK']:key==='d22'?['Linphone','Zello']:key==='h13'?['Zello']:[];
   Object.keys(ACCOUNT_TARGETS).forEach(function(name){if((d.sip_targets||[]).some(function(t){return t.target===ACCOUNT_TARGETS[name];})&&!items.includes(name))items.push(name);});
   if(d.managed_zello_account===true&&!items.includes('Zello'))items.push('Zello');
-  if(gatewayDevice(d)&&d.managed_gateway_routing===true&&!items.includes('Gateway'))items.push('Gateway');
   if(d.managed_sip_account===true&&!Array.isArray(d.sip_targets)&&key!=='d31'&&!items.includes('Linphone'))items.unshift('Linphone');
   return items;
 }
@@ -1483,40 +1482,7 @@ function pageAccountSettings(dis){
   if(!items.length)return '<p class="muted">此型号尚未配置账号项目</p>';
   if(!items.includes(u.accountTab))u.accountTab=items[0];
   var h='<div class="account-tabs" role="group" aria-label="账号类型">'+items.map(function(name){return '<button class="btn-gray'+(u.accountTab===name?' active':'')+'" aria-pressed="'+(u.accountTab===name)+'" onclick="selectAccountTab(\''+name+'\')">'+ACCOUNT_LABELS[name]+'</button>';}).join('')+'</div>';
-  return h+(u.accountTab==='Zello'?pageZelloAccount(dis):u.accountTab==='Linphone'?pageSipAccount(dis):u.accountTab==='Gateway'?pageGatewayAccount(dis):pageMultiSipAccount(dis,ACCOUNT_TARGETS[u.accountTab]));
-}
-function gatewayRoutingFeedback(d){
-  var t=d&&d.task,r=d&&d.gateway_routing_result;
-  if(t&&t.type==='configure_gateway_routing')return t.detail||t.label||'等待设备处理';
-  if(r&&!r.report_confirmed)return '配置任务已完成，等待设备状态确认';
-  if(r&&r.report_confirmed)return '设备已确认 · '+sydney(r.reported_at);
-  return d&&d.managed_gateway_routing?'尚未提交路由配置':'请更新客户端后使用';
-}
-function pageGatewayRouting(dis){
-  var d=currentDev(),saved=d&&d.gateway_routing||{},blocked=dis||(!d||!maintenanceAvailable(d,'configure_gateway_routing')?' disabled':'');
-  var h='<div class="system-setting-section"><h4>SIP Gateway 路由</h4><form id="gatewayRoutingForm" class="account-fields" onsubmit="configureGatewayRouting(event)">';
-  h+='<label>SIM1目标分机<input id="gatewaySim1Destination" class="inp" required inputmode="numeric" pattern="[0-9]{1,15}" maxlength="15" autocomplete="off" value="'+esc(saved.sim1_destination||'')+'"'+blocked+'></label>';
-  h+='<label>SIM2目标分机（可空）<input id="gatewaySim2Destination" class="inp" inputmode="numeric" pattern="[0-9]{0,15}" maxlength="15" autocomplete="off" value="'+esc(saved.sim2_destination||'')+'"'+blocked+'></label>';
-  h+='<label>入局模式<select id="gatewayIncomingMode" class="inp"'+blocked+'><option value="sip_first"'+((saved.incoming_mode||'sip_first')==='sip_first'?' selected':'')+'>SIP优先：先呼叫目标分机</option><option value="answer_first"'+(saved.incoming_mode==='answer_first'?' selected':'')+'>GSM优先：先接听GSM来电</option></select></label>';
-  h+='<p class="muted" style="grid-column:1/-1">目标分机同时接收对应SIM的来电和短信，并获得通过该SIM呼叫及发送短信的权限。SIP优先会先呼叫目标分机；GSM优先会先接听移动网络来电。</p>';
-  h+='<div class="ops-actions" style="grid-column:1/-1"><button type="submit" class="btn-green"'+blocked+'>保存路由</button><span id="gatewayRoutingFeedback" role="status">'+esc(gatewayRoutingFeedback(d))+'</span></div></form></div>';
-  return h;
-}
-function pageGatewayAccount(dis){
-  var d=currentDev(),h=pageGatewayRouting(dis);
-  if(d&&(d.managed_sip_account===true||(d.sip_targets||[]).some(function(t){return t.target==='gateway';})))
-    h+='<div class="function-extra"><h4>SIP账号</h4>'+pageMultiSipAccount(dis,'gateway')+'</div>';
-  return h;
-}
-async function configureGatewayRouting(event){
-  event.preventDefault();var d=currentDev();if(!d||!maintenanceAvailable(d,'configure_gateway_routing'))return;
-  var params={target:'gateway_routing',sim1_destination:$('gatewaySim1Destination').value.trim(),sim2_destination:$('gatewaySim2Destination').value.trim(),incoming_mode:$('gatewayIncomingMode').value};
-  var feedback=$('gatewayRoutingFeedback');
-  if(!/^\d{1,15}$/.test(params.sim1_destination)||!/^\d{0,15}$/.test(params.sim2_destination)||params.sim2_destination&&params.sim1_destination===params.sim2_destination){feedback.textContent='请检查目标分机，两个非空分机不能相同';return;}
-  var button=$('gatewayRoutingForm').querySelector('button[type=submit]');button.disabled=true;
-  try{await fileApi('/api/elfremote/task',{device_id:d.id,type:'configure_gateway_routing',id:'gateway-routing-'+crypto.randomUUID(),params:params});feedback.textContent='已发送，等待设备应用并回报';loadDevices();}
-  catch(e){feedback.textContent=e.message;}
-  finally{if(button.isConnected)button.disabled=false;}
+  return h+(u.accountTab==='Zello'?pageZelloAccount(dis):u.accountTab==='Linphone'?pageSipAccount(dis):pageMultiSipAccount(dis,ACCOUNT_TARGETS[u.accountTab]));
 }
 function pageZelloAccount(dis){
   var d=currentDev(),saved=d&&d.zello_account||{},t=d&&d.task||{},blocked=dis||(!d||!d.managed_zello_account||!maintenanceAvailable(d,'configure_zello')?' disabled':'');
