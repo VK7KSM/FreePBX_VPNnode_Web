@@ -225,7 +225,9 @@ export function makeRepairTask(input, nowMs) {
   const type = String(src.type || "");
   if (!isAllowedRepairType(type)) return null;
   const id = String(src.id || "").trim() || ("t" + crypto.randomUUID().replaceAll("-", ""));
-  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello",...PROXY_TASK_TYPES].includes(type) && !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error("任务编号无效");
+  const typedIdMax=PROXY_TASK_TYPES.includes(type)?96:64;
+  if(["system_config","root_exec","send_file","get_file","file_manage","configure_sip","configure_zello",...PROXY_TASK_TYPES].includes(type)
+      && !(new RegExp('^[a-zA-Z0-9-]{1,'+typedIdMax+'}$')).test(id)) throw new Error("任务编号无效");
   const key = String(src.idempotency_key || "").trim() || id;
   let exp = Number(src.expires_at);
   if (!Number.isFinite(exp) || exp <= 0) exp = nowMs + 60 * 60 * 1000;
@@ -234,7 +236,7 @@ export function makeRepairTask(input, nowMs) {
     id,
     type,
     params,
-    ...(type==='configure_proxy'?{proxy_config_sha256:params.config_sha256}:{}),
+    ...(type==='configure_proxy'?{proxy_config_sha256:params.sha256}:{}),
     expires_at: exp,
     idempotency_key: key,
     state: "pending",
@@ -248,67 +250,55 @@ export function proxyTaskParams(type,value={}){
     if(Object.keys(value).length)throw Error('代理控制任务不接受参数');
     return {};
   }
-  const fields=['config_version','config_sha256','config_size','download_url','rollback_required','validation_required'];
+  const fields=['url','size','sha256'];
   if(Object.keys(value).length!==fields.length||Object.keys(value).some(key=>!fields.includes(key)))throw Error('代理配置任务字段无效');
-  if(typeof value.config_version!=='string'||!value.config_version.length||value.config_version.length>64||/[\x00-\x1f\x7f]/.test(value.config_version))throw Error('代理配置版本无效');
-  if(!/^[a-f0-9]{64}$/.test(value.config_sha256||''))throw Error('代理配置校验值无效');
-  if(!Number.isInteger(value.config_size)||value.config_size<1||value.config_size>65536)throw Error('代理配置大小无效');
-  if(typeof value.download_url!=='string'||value.download_url.length>512||!/^\/api\/elfremote\/proxy-config\/download\?/.test(value.download_url))throw Error('代理配置下载地址无效');
-  if(value.rollback_required!==true||value.validation_required!==true)throw Error('代理配置必须启用验证和回滚');
+  if(typeof value.url!=='string'||value.url.length>4096
+      ||!/^https:\/\/v\.elfradio\.net\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}(?:\?[^#]*)?$/.test(value.url))throw Error('代理配置下载地址无效');
+  if(!Number.isInteger(value.size)||value.size<2||value.size>2*1024*1024)throw Error('代理配置大小无效');
+  if(!/^[a-f0-9]{64}$/.test(value.sha256||''))throw Error('代理配置校验值无效');
   return Object.fromEntries(fields.map(key=>[key,value[key]]));
 }
 
-const PROXY_RESULT_FIELDS=['schema_version','action','config_sha256','syntax_valid','backup_created','atomic_replaced',
-  'running','http_listener_ready','socks_listener_ready','proxy_node_reachable','management_https_via_proxy',
-  'management_mqtt_via_proxy','adb_wss_via_proxy_ready','file_download_via_proxy_ready','rollback_performed',
-  'rollback_verified','error_category'];
-const PROXY_RESULT_ERRORS=new Set(['none','not_configured','core_missing','core_verification_failed','config_invalid',
-  'config_read_failed','config_hash_mismatch','process_start_failed','process_stop_failed','process_not_running',
-  'listener_unavailable','proxy_unreachable','https_test_failed','mqtt_test_failed','adb_wss_test_failed',
-  'file_download_test_failed','rollback_failed','cancelled','expired','unknown']);
-const PROXY_ACTIONS={configure_proxy:new Set(['configured','rolled_back','failed','rejected']),
-  start_proxy:new Set(['started','failed','rejected']),stop_proxy:new Set(['stopped','failed','rejected']),
-  test_proxy:new Set(['tested','failed','rejected'])};
-
-export function proxyTaskResult(type,state,value,expectedSha){
-  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务终态回执无效');
+const PROXY_STATUS_FIELDS=['schema_version','bundled','version','abi','asset_verified','core_verified','configured','running',
+  'http_ready','socks_ready','proxy_reachable','management_via','write_locked','http_port','socks_port','checked_at_ms'];
+function proxyTaskStatus(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务状态无效');
   const keys=Object.keys(value);
-  if(keys.length!==PROXY_RESULT_FIELDS.length||keys.some(key=>!PROXY_RESULT_FIELDS.includes(key)))throw Error('代理任务终态字段无效');
-  if(value.schema_version!==1||!PROXY_ACTIONS[type]?.has(value.action))throw Error('代理任务动作无效');
-  if(value.config_sha256!==null&&!/^[a-f0-9]{64}$/.test(value.config_sha256||''))throw Error('代理配置校验值无效');
-  for(const key of PROXY_RESULT_FIELDS.slice(3,16))if(typeof value[key]!=='boolean')throw Error('代理任务状态必须为布尔值');
-  if(!PROXY_RESULT_ERRORS.has(value.error_category))throw Error('代理任务错误类别无效');
-  const successful={configure_proxy:'configured',start_proxy:'started',stop_proxy:'stopped',test_proxy:'tested'}[type];
+  if(keys.length!==PROXY_STATUS_FIELDS.length||keys.some(key=>!PROXY_STATUS_FIELDS.includes(key)))throw Error('代理任务状态字段无效');
+  if(value.schema_version!==2||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
+    throw Error('代理任务状态版本无效');
+  if(typeof value.version!=='string'||value.version.length<1||value.version.length>32)throw Error('代理核心版本无效');
+  for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
+    if(typeof value[key]!=='boolean')throw Error('代理任务状态必须为布尔值');
+  if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
+      ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理任务状态边界无效');
+  return Object.fromEntries(PROXY_STATUS_FIELDS.map(key=>[key,value[key]]));
+}
+
+export function proxyTaskResult(type,state,value){
+  if(!['success','failed','rejected'].includes(state))throw Error('代理任务终态无效');
+  if(value==null){
+    if(state==='success')throw Error('代理任务成功回执缺失');
+    return {stage:'proxy',action:type,proxy:null};
+  }
+  if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==3
+      ||Object.keys(value).some(key=>!['stage','action','proxy'].includes(key))||value.stage!=='proxy'||value.action!==type)
+    throw Error('代理任务终态回执无效');
+  const proxy=proxyTaskStatus(value.proxy);
   if(state==='success'){
-    if(value.action!==successful||value.error_category!=='none'||value.rollback_performed||value.rollback_verified)
-      throw Error('代理任务成功回执不一致');
-    if(type==='configure_proxy'){
-      if(value.config_sha256!==expectedSha||!value.syntax_valid||!value.backup_created||!value.atomic_replaced)
-        throw Error('代理配置缺少验证或原子替换证据');
-    }
+    if(!proxy.asset_verified||!proxy.core_verified||!proxy.configured)throw Error('代理任务成功状态不完整');
     if(type==='stop_proxy'){
-      if(value.running||value.http_listener_ready||value.socks_listener_ready||value.proxy_node_reachable
-        ||value.management_https_via_proxy||value.management_mqtt_via_proxy||value.adb_wss_via_proxy_ready
-        ||value.file_download_via_proxy_ready)throw Error('代理停止回执仍显示活动路径');
-    }else if(!value.running||!value.http_listener_ready||!value.socks_listener_ready||!value.proxy_node_reachable
-      ||!value.management_https_via_proxy||!value.management_mqtt_via_proxy||!value.adb_wss_via_proxy_ready
-      ||!value.file_download_via_proxy_ready)throw Error('代理任务缺少完整路径验证');
-  }else if(state==='failed'){
-    if(!['failed','rolled_back'].includes(value.action)||value.error_category==='none')throw Error('代理任务失败回执不一致');
-    if(value.action==='rolled_back'&&(!value.rollback_performed||!value.rollback_verified))throw Error('代理配置缺少回滚证明');
-    if(type==='configure_proxy'&&value.atomic_replaced&&value.action!=='rolled_back'&&value.error_category!=='rollback_failed')
-      throw Error('代理配置替换失败后必须回滚');
-  }else if(state==='rejected'){
-    if(value.action!=='rejected'||value.error_category==='none')throw Error('代理任务拒绝回执不一致');
-  }else throw Error('代理任务终态无效');
-  return Object.fromEntries(PROXY_RESULT_FIELDS.map(key=>[key,value[key]]));
+      if(proxy.running||proxy.http_ready||proxy.socks_ready||proxy.proxy_reachable)throw Error('代理停止回执仍显示活动进程');
+    }else if(type!=='configure_proxy'&&(!proxy.running||!proxy.http_ready||!proxy.socks_ready||!proxy.proxy_reachable))
+      throw Error('代理启动或检测回执不完整');
+  }
+  return {stage:'proxy',action:type,proxy};
 }
 
 function proxyTaskDetail(type,state,result){
   if(state==='claimed')return '设备已领取代理任务';
   if(state==='running')return '设备正在执行代理任务';
   if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过'}[type];
-  if(state==='failed'&&result?.action==='rolled_back')return '代理配置失败，已恢复原配置';
   if(state==='failed')return '代理任务执行失败';
   if(state==='rejected')return '设备拒绝代理任务';
   return '';
@@ -597,20 +587,20 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     const task=device.task;
     if(!canAdvanceRepair(task.state,state))throw Error('代理任务状态不匹配');
     if(state==='expired'){
-      task.updated_at=new Date(nowMs).toISOString();task.completed_at=task.updated_at;task.state='expired';task.detail='代理任务已过期';task.params={};
+      task.updated_at=new Date(nowMs).toISOString();task.completed_at=task.updated_at;task.state='expired';task.detail='代理任务已过期';task.params={};delete task.proxy_download_token_sha256;
       return device;
     }
     const terminal=['success','failed','rejected'].includes(state);
     if(!terminal&&result!=null)throw Error('代理任务进度不能携带终态回执');
-    const normalized=terminal?proxyTaskResult(task.type,state,result,task.proxy_config_sha256):null;
+    const normalized=terminal?proxyTaskResult(task.type,state,result):null;
     if(['success','failed','rejected','expired'].includes(task.state)){
-      if(task.state!==state||JSON.stringify(task.result?.proxy)!==JSON.stringify(normalized))throw Error('代理任务重复回执不一致');
+      if(task.state!==state||JSON.stringify(task.result)!==JSON.stringify(normalized))throw Error('代理任务重复回执不一致');
       return device;
     }
     task.updated_at=new Date(nowMs).toISOString();
     if(state==='claimed')task.claimed_at=task.updated_at;
     if(state==='running'&&!task.started_at)task.started_at=task.updated_at;
-    if(terminal){task.completed_at=task.updated_at;task.result={proxy:normalized};task.params={};}
+    if(terminal){task.completed_at=task.updated_at;task.result=normalized;task.params={};delete task.proxy_download_token_sha256;}
     task.state=state;task.detail=proxyTaskDetail(task.type,state,normalized);
     return device;
   }
@@ -840,7 +830,7 @@ export function publicRepair(task) {
       reason: r.reason || ""
       ,...(r.network_transaction?{network_transaction:r.network_transaction}:{})
       ,...(r.contacts_page?{contacts_page:r.contacts_page}:{})
-      ,...(r.proxy?{proxy:r.proxy}:{})
+      ,...(Object.hasOwn(r,'proxy')?{proxy:r.proxy}:{})
     } : null
   };
 }

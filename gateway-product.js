@@ -153,6 +153,7 @@ const PROXY_RUNTIME_FIELDS=['schema_version','bundled','version','abi','asset_ve
   'adb_wss_via_proxy_ready','file_download_via_proxy_ready','error_category'];
 const PROXY_RUNTIME_REQUIRED=['schema_version','bundled','version','abi','asset_verified','core_verified','configured',
   'running','http_ready','socks_ready','proxy_reachable','management_via','write_locked'];
+const PROXY_RUNTIME_V2_FIELDS=[...PROXY_RUNTIME_REQUIRED,'http_port','socks_port','checked_at_ms'];
 export const PROXY_ERROR_CATEGORIES=Object.freeze(['none','not_configured','core_missing','core_verification_failed',
   'config_invalid','config_read_failed','config_hash_mismatch','process_start_failed','process_stop_failed','process_not_running','listener_unavailable',
   'proxy_unreachable','https_test_failed','mqtt_test_failed','adb_wss_test_failed','file_download_test_failed',
@@ -168,6 +169,18 @@ export function proxyRuntimeStatus(value,device,managed){
   if(value===undefined)return null;
   if(!record(value))throw Error('代理运行状态格式无效');
   if(new TextEncoder().encode(JSON.stringify(value)).length>4096)throw Error('代理运行状态内容过长');
+  if(value.schema_version===2){
+    exactFields(value,PROXY_RUNTIME_V2_FIELDS,PROXY_RUNTIME_V2_FIELDS,'代理运行状态字段无效');
+    if(value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)throw Error('代理运行状态版本或只读标记无效');
+    const version=boundedString(value.version,32,'代理核心版本无效');
+    if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
+    const result={schema_version:2,bundled:true,version,abi:'arm64-v8a'};
+    for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
+      result[key]=requiredBoolean(value,key,'代理运行状态必须为布尔值');
+    if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
+        ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理运行状态边界无效');
+    return {...result,management_via:value.management_via,write_locked:true,http_port:17890,socks_port:17891,checked_at_ms:value.checked_at_ms};
+  }
   exactFields(value,PROXY_RUNTIME_FIELDS,PROXY_RUNTIME_REQUIRED,'代理运行状态字段无效');
   if(value.schema_version!==1||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
     throw Error('代理运行状态版本或只读标记无效');
@@ -199,13 +212,7 @@ export function proxyRuntimeStatus(value,device,managed){
     category=value.error==='unavailable'?'unknown':category??'unknown';
   }
   if(category!==undefined){if(!proxyErrorCategories.has(category))throw Error('代理错误类别无效');result.error_category=category;}
-  if(managed===true){
-    for(const key of ['checked_at_ms','config_version','config_sha256','management_https_via_proxy','management_mqtt_via_proxy',
-      'adb_wss_via_proxy_ready','file_download_via_proxy_ready','error_category'])
-      if(!Object.hasOwn(result,key))throw Error('代理受管状态字段不完整');
-    if(result.configured){
-      if(result.config_version===null||result.config_sha256===null)throw Error('代理配置身份缺失');
-    }else if(result.config_version!==null||result.config_sha256!==null)throw Error('未配置状态不能携带配置身份');
-  }
+  if(result.configured&&Object.hasOwn(result,'config_sha256')&&result.config_sha256===null)throw Error('代理配置身份缺失');
+  if(!result.configured&&(result.config_version!=null||result.config_sha256!=null))throw Error('未配置状态不能携带配置身份');
   return result;
 }

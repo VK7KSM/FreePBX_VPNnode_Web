@@ -578,7 +578,7 @@ const app = {
       return stub?fileHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
     }
     if(!env.__storage&&((pathname==='/api/elfremote/proxy-config'&&method==='POST')
-      ||(pathname==='/api/elfremote/proxy-config/download'&&method==='GET'))){
+      ||(method==='GET'&&/^\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}$/.test(pathname)))){
       const stub=elfDoStub(env);return stub?proxyConfigHttp(env,request,stub):json({ok:false,msg:'设备存储不可用'},503);
     }
     if(!env.__storage&&pathname==='/api/elfremote/releases/upload'&&method==='PUT'){
@@ -2348,15 +2348,17 @@ async function handleElfEnqueueTask(env, request) {
     }
     if(found.task && repairExpired(found.task,Date.now()) && ["pending","claimed","running"].includes(found.task.state)&&!holdNetworkTask(found.task)){
       found.task.state="expired";
-      if(PROXY_TASK_TYPES.includes(found.task.type)){found.task.params={};found.task.detail='代理任务已过期';found.task.completed_at=new Date().toISOString();}
+      if(PROXY_TASK_TYPES.includes(found.task.type)){found.task.params={};delete found.task.proxy_download_token_sha256;found.task.detail='代理任务已过期';found.task.completed_at=new Date().toISOString();}
     }
-    let params = data.params;
+    let params = data.params,proxyDownloadTokenSha256=null;
     if(PROXY_TASK_TYPES.includes(data.type)){
       if(!isGateway(found)||found.managed_proxy_tasks!==true)return json({ok:false,msg:'客户端尚未支持代理管理'},409);
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
-      params=proxyConfigureParams(found,params||{},data.id);
+      const existing=await findRepairTask(env.__storage,found,data.id);
+      const prepared=await proxyConfigureParams(found,params||{},data.id,existing);
+      params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
     }
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
@@ -2401,7 +2403,10 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="restart_adbd") found.task.managed_adbd_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="scan_wifi") found.task.managed_wifi_scan_v1=true;
     if(!queued.duplicate && found.status_only && isGateway(found) && data.type==="connect_wifi") found.task.managed_wifi_config_v1=true;
-    if(!queued.duplicate && found.status_only && isGateway(found) && PROXY_TASK_TYPES.includes(data.type)) found.task.managed_proxy_v1=true;
+    if(!queued.duplicate && found.status_only && isGateway(found) && PROXY_TASK_TYPES.includes(data.type)){
+      found.task.managed_proxy_v1=true;
+      if(data.type==='configure_proxy')found.task.proxy_download_token_sha256=proxyDownloadTokenSha256;
+    }
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;
