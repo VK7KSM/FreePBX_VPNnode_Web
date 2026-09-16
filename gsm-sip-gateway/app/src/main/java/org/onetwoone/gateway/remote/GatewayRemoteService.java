@@ -29,6 +29,7 @@ public final class GatewayRemoteService extends Service {
     private GatewayManagedExecTasks execTasks;
     private GatewayLocationSampler location;
     private GatewayManagedLostTasks lostTasks;
+    private GatewayLostDisplay lostDisplay;
     private GatewayManagedProxyTasks proxyTasks;
     private boolean proxyAssetsChecked;
     private volatile boolean stopped;
@@ -64,6 +65,7 @@ public final class GatewayRemoteService extends Service {
         execTasks = new GatewayManagedExecTasks(this,store,this::scheduleImmediateReport);
         location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
         lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),this::scheduleImmediateReport);
+        lostDisplay = new GatewayLostDisplay(this);
         proxyTasks = new GatewayManagedProxyTasks(this,store,this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
@@ -125,6 +127,7 @@ public final class GatewayRemoteService extends Service {
         sipTasks.tick();
         transferTasks.tick();
         proxyTasks.tick();
+        PjsipSipService service=PjsipSipService.getInstance();lostDisplay.ensureVisible(service==null?null:service.remoteBusy());
     }
     private void tickCore(){
         if(stopped)return;
@@ -240,6 +243,7 @@ public final class GatewayRemoteService extends Service {
                 store.prefs.getString("pixel_module_error","")));
         body.put("mobile_network",GatewayMobileStatus.stored(store.prefs.getString("mobile_status","")));
         body.put("alarm",lostTasks.alarmSnapshot());
+        body.put("lost_display",lostDisplay.snapshot());
         body.put("proxy_runtime",proxyRuntimeStatus());
         return body;
     }

@@ -62,6 +62,14 @@
         </activity>
 
         <activity android:name=".remote.GatewayRemoteActivity" android:exported="false" />
+        <activity
+            android:name=".remote.GatewayLostModeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:theme="@style/LostModeTheme"
+            android:turnScreenOn="true" />
         <service android:name=".remote.GatewayRemoteService" android:exported="false" />
 
         <!-- InCallService - handles GSM calls -->
