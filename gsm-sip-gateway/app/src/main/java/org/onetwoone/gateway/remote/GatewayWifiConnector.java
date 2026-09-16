@@ -10,14 +10,15 @@ import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.SystemClock;
 import java.io.File;
-import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.json.JSONObject;
 
 /** Root-assisted Wi-Fi transaction with independent timeout rollback. */
@@ -84,26 +85,27 @@ final class GatewayWifiConnector {
         new File(dir,"request.json").delete();Done callback=done;done=null;if(callback!=null)callback.finish(ok,detail,result);
     }
     private JSONObject runRoot(String operation,File dir,long timeout)throws Exception {
-        String command="export CLASSPATH="+quote(context.getApplicationInfo().sourceDir)+"; exec /system/bin/app_process /system/bin org.onetwoone.gateway.remote.GatewayWifiRootMain "
-                +operation+" "+quote(dir.getCanonicalPath());
-        Process process=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();
-        if(!process.waitFor(timeout,TimeUnit.SECONDS)){process.destroy();throw new IOException("wifi helper timeout");}
-        String output=readOutput(process.getInputStream());
-        if(process.exitValue()!=0)throw new IOException("wifi helper failed");
-        return parseRootOutput(output);
+        long deadline=SystemClock.elapsedRealtime()+TimeUnit.SECONDS.toMillis(timeout);String token=randomToken();Process process=null;
+        try(ServerSocket server=new ServerSocket(0,1,InetAddress.getByName("127.0.0.1"))){
+            server.setSoTimeout((int)TimeUnit.SECONDS.toMillis(timeout));
+            String command="export CLASSPATH="+quote(context.getApplicationInfo().sourceDir)+"; exec /system/bin/app_process /system/bin org.onetwoone.gateway.remote.GatewayWifiRootMain "
+                    +operation+" "+quote(dir.getCanonicalPath())+" "+server.getLocalPort()+" "+token+" </dev/null >/dev/null 2>&1";
+            process=new ProcessBuilder("su","-c",command).start();JSONObject result;
+            try(Socket socket=server.accept()){socket.setSoTimeout((int)Math.max(1,deadline-SystemClock.elapsedRealtime()));
+                result=readRootResult(new DataInputStream(socket.getInputStream()),token);}
+            long remaining=deadline-SystemClock.elapsedRealtime();
+            if(remaining<=0||!process.waitFor(remaining,TimeUnit.MILLISECONDS)){process.destroy();throw new IOException("wifi helper timeout");}
+            if(process.exitValue()!=0)throw new IOException("wifi helper failed");return result;
+        } finally {if(process!=null&&process.isAlive())process.destroy();}
     }
-    static JSONObject parseRootOutput(String output)throws Exception {
-        Matcher match=Pattern.compile("(?m)^WIFI_RESULT_HEX=([0-9a-f]+)\\r?$").matcher(output==null?"":output);
-        if(!match.find())throw new IOException("wifi helper result missing");
-        String value=match.group(1);if((value.length()&1)!=0||value.length()>32768)throw new IOException("wifi helper result invalid");
-        byte[] decoded=new byte[value.length()/2];
-        for(int i=0;i<decoded.length;i++)decoded[i]=(byte)Integer.parseInt(value.substring(i*2,i*2+2),16);
-        return new JSONObject(new String(decoded,StandardCharsets.UTF_8));
+    static JSONObject readRootResult(DataInputStream input,String expectedToken)throws Exception {
+        if(!expectedToken.equals(input.readUTF()))throw new IOException("wifi helper token mismatch");
+        int length=input.readInt();if(length<2||length>16384)throw new IOException("wifi helper result invalid");
+        byte[] value=new byte[length];input.readFully(value);return new JSONObject(new String(value,StandardCharsets.UTF_8));
     }
-    private static String readOutput(InputStream input)throws Exception {
-        ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buffer=new byte[1024];int count;
-        while((count=input.read(buffer))>=0){if(count>0)out.write(buffer,0,count);if(out.size()>16384)throw new IOException("wifi helper output too large");}
-        return new String(out.toByteArray(),StandardCharsets.UTF_8);
+    static String randomToken() {
+        byte[] value=new byte[32];new SecureRandom().nextBytes(value);StringBuilder token=new StringBuilder(64);
+        for(byte item:value)token.append(String.format(java.util.Locale.ROOT,"%02x",item&0xff));return token.toString();
     }
     private static void write(File file,JSONObject value)throws Exception{GatewayUpdateProgress.write(file,value);}
     static String quote(String value){if(value==null||value.indexOf('\0')>=0||value.indexOf('\n')>=0||value.indexOf('\r')>=0)throw new IllegalArgumentException("invalid path");return "'"+value.replace("'","'\"'\"'")+"'";}

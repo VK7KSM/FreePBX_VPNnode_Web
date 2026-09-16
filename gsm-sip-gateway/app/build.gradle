@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 39
-        versionName "1.5.0-gateway-alpha32-wifi-root-receipt"
+        versionCode 40
+        versionName "1.5.0-gateway-alpha33-wifi-loopback-receipt"
 
         // NDK build config
         externalNativeBuild {

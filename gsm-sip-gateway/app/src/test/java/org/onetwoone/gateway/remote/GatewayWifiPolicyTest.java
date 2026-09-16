@@ -6,6 +6,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -42,12 +47,14 @@ public class GatewayWifiPolicyTest {
         assertTrue(command.contains("ACCESS_FINE_LOCATION"));
         assertTrue(command.contains("ACCESS_BACKGROUND_LOCATION"));
     }
-    @Test public void rootReceiptRoundTripsWithoutRawSsidLines() throws Exception {
+    @Test public void rootReceiptRequiresMatchingOneTimeToken() throws Exception {
         JSONObject expected=new JSONObject().put("ok",true).put("ssid","Line1\nLine2");
-        String output="WIFI_RESULT_HEX="+GatewayWifiRootMain.encodeResult(expected)+"\nWIFI_OPERATION_OK\n";
-        JSONObject actual=GatewayWifiConnector.parseRootOutput(output);
+        String token=GatewayWifiConnector.randomToken();assertTrue(token.matches("[0-9a-f]{64}"));byte[] body=expected.toString().getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();try(DataOutputStream output=new DataOutputStream(bytes)){
+            output.writeUTF(token);output.writeInt(body.length);output.write(body);}
+        JSONObject actual=GatewayWifiConnector.readRootResult(new DataInputStream(new ByteArrayInputStream(bytes.toByteArray())),token);
         assertTrue(actual.getBoolean("ok"));assertEquals("Line1\nLine2",actual.getString("ssid"));
-        try {GatewayWifiConnector.parseRootOutput("WIFI_OPERATION_OK\n");fail();}catch(Exception expectedFailure){}
+        try {GatewayWifiConnector.readRootResult(new DataInputStream(new ByteArrayInputStream(bytes.toByteArray())),GatewayWifiConnector.randomToken());fail();}catch(Exception expectedFailure){}
     }
     private static void expectInvalid(JSONObject value)throws Exception{try{GatewayWifiPolicy.connectParams(value);fail();}catch(Exception expected){}}
 }

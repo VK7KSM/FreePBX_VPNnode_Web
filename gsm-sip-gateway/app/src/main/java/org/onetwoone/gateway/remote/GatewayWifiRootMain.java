@@ -7,6 +7,9 @@ import android.net.wifi.WifiManager;
 import android.os.Looper;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.DataOutputStream;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.json.JSONArray;
@@ -18,14 +21,14 @@ public final class GatewayWifiRootMain {
         try {
             if(android.os.Process.myUid()!=0)throw new SecurityException("root required");
             if(args.length==1&&"check".equals(args[0])){wifi().getConfiguredNetworks();System.out.println("WIFI_API_READY");return;}
-            if(args.length!=2||!java.util.Arrays.asList("prepare","apply","restore","commit").contains(args[0]))
+            if((args.length!=2&&args.length!=4)||!java.util.Arrays.asList("prepare","apply","restore","commit").contains(args[0]))
                 throw new IllegalArgumentException("invalid operation");
             File dir=directory(args[1]);JSONObject result;
             if("prepare".equals(args[0]))result=prepare(dir);
             else if("apply".equals(args[0]))result=apply(dir);
             else if("restore".equals(args[0]))result=restore(dir);
             else result=commit(dir);
-            System.out.println("WIFI_RESULT_HEX="+encodeResult(result));System.out.println("WIFI_OPERATION_OK");
+            if(args.length==4)sendResult(args[2],args[3],result);System.out.println("WIFI_OPERATION_OK");
         } catch(Throwable error) {System.err.println("WIFI_OPERATION_FAILED");System.exit(1);}
     }
 
@@ -101,10 +104,11 @@ public final class GatewayWifiRootMain {
         byte[] bytes=new byte[(int)file.length()];try(FileInputStream in=new FileInputStream(file)){int at=0,n;while(at<bytes.length&&(n=in.read(bytes,at,bytes.length-at))>0)at+=n;if(at!=bytes.length)throw new IllegalArgumentException("short read");}
         return new JSONObject(new String(bytes,StandardCharsets.UTF_8));
     }
-    static String encodeResult(JSONObject value) {
-        byte[] bytes=value.toString().getBytes(StandardCharsets.UTF_8);StringBuilder encoded=new StringBuilder(bytes.length*2);
-        for(byte item:bytes)encoded.append(String.format(java.util.Locale.ROOT,"%02x",item&0xff));
-        return encoded.toString();
+    private static void sendResult(String portValue,String token,JSONObject value)throws Exception {
+        int port=Integer.parseInt(portValue);if(port<1024||port>65535||!token.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("invalid reply channel");
+        byte[] body=value.toString().getBytes(StandardCharsets.UTF_8);if(body.length<2||body.length>16384)throw new IllegalArgumentException("result too large");
+        try(Socket socket=new Socket(InetAddress.getByName("127.0.0.1"),port);DataOutputStream output=new DataOutputStream(socket.getOutputStream())){
+            output.writeUTF(token);output.writeInt(body.length);output.write(body);output.flush();}
     }
     private GatewayWifiRootMain() {}
 }
