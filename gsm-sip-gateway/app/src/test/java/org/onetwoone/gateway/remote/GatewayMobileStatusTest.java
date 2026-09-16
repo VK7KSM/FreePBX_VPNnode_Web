@@ -58,6 +58,13 @@ public class GatewayMobileStatusTest {
         assertEquals("unknown",GatewayMobileStatusCollector.networkType(9999));
     }
 
+    @Test public void exposesOnlyFixedInternalErrorCategories() {
+        assertEquals("permission_denied",GatewayMobileStatusCollector.errorCategory(new SecurityException("private")));
+        assertEquals("api_unavailable",GatewayMobileStatusCollector.errorCategory(new NoSuchMethodException("private")));
+        assertEquals("service_unavailable",GatewayMobileStatusCollector.errorCategory(new IllegalStateException("private")));
+        assertEquals("read_failed",GatewayMobileStatusCollector.errorCategory(new java.io.IOException("private")));
+    }
+
     private static JSONObject valid() throws Exception {
         return new JSONObject().put("available",true).put("active_subscription_count",1).put("sim_ready",true)
                 .put("default_data_subscription_valid",true).put("data_switch_readable",true)

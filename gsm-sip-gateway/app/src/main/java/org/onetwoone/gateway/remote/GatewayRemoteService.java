@@ -77,8 +77,11 @@ public final class GatewayRemoteService extends Service {
                         .putString("pixel_module_error",unavailable.getClass().getSimpleName()).apply();
             }
             try {
-                JSONObject mobile=GatewayCoreClient.mobileStatus(this);
-                store.prefs.edit().putString("mobile_status",mobile.toString()).remove("mobile_status_error").apply();
+                JSONObject mobile=GatewayCoreClient.mobileStatus(this),status=mobile.getJSONObject("mobile_status");
+                android.content.SharedPreferences.Editor edit=store.prefs.edit().putString("mobile_status",status.toString());
+                String category=mobile.optString("mobile_error","");
+                if(category.isEmpty())edit.remove("mobile_status_error");else edit.putString("mobile_status_error",category);
+                edit.apply();
             } catch(Exception unavailable) {
                 store.prefs.edit().remove("mobile_status").putString("mobile_status_error",unavailable.getClass().getSimpleName()).apply();
             }

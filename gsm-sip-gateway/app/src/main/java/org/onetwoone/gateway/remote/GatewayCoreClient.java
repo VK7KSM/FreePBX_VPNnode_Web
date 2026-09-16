@@ -32,7 +32,7 @@ final class GatewayCoreClient {
         return request(context,new JSONObject().put("operation","pixel-module-health")).getJSONObject("pixel_modules");
     }
     static JSONObject mobileStatus(Context context) throws Exception {
-        return request(context,new JSONObject().put("operation","mobile-status")).getJSONObject("mobile_status");
+        return request(context,new JSONObject().put("operation","mobile-status"));
     }
     private static JSONObject request(Context context,JSONObject body) throws Exception {
         try(LocalSocket socket=new LocalSocket()) {

@@ -102,5 +102,12 @@ final class GatewayMobileStatusCollector {
         }
     }
 
+    static String errorCategory(Throwable failure) {
+        if(failure instanceof SecurityException)return "permission_denied";
+        if(failure instanceof NoSuchMethodException)return "api_unavailable";
+        if(failure instanceof IllegalStateException)return "service_unavailable";
+        return "read_failed";
+    }
+
     private GatewayMobileStatusCollector() {}
 }

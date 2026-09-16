@@ -37,8 +37,12 @@ public final class GatewayCoreMain {
                                     .put("uptime_ms",SystemClock.elapsedRealtime()-started).put("update_ready",true)
                                     .put("independent_push",push!=null).put("push_connected",push!=null&&push.status().optBoolean("connected"));
                         else if("pixel-module-health".equals(operation))response.put("pixel_modules",GatewayPixelLegacyHealth.snapshot());
-                        else if("mobile-status".equals(operation))response.put("mobile_status",context==null
-                                ?GatewayMobileStatus.unavailable():GatewayMobileStatusCollector.collect(context));
+                        else if("mobile-status".equals(operation)){
+                            try {response.put("mobile_status",context==null
+                                    ?GatewayMobileStatus.unavailable():GatewayMobileStatusCollector.collect(context));}
+                            catch(Exception failure){response.put("mobile_status",GatewayMobileStatus.unavailable())
+                                    .put("mobile_error",GatewayMobileStatusCollector.errorCategory(failure));}
+                        }
                         else if("push-config".equals(operation)&&push!=null)response.put("push",push.configure(request));
                         else if("push-status".equals(operation)&&push!=null)response.put("push",push.status());
                         else if("push-tick".equals(operation)&&push!=null){push.tick();response.put("ticked",true);}
@@ -48,7 +52,7 @@ public final class GatewayCoreMain {
                         else response=new JSONObject().put("ok",false);
                     }
                     client.getOutputStream().write((response.toString()+"\n").getBytes(StandardCharsets.UTF_8));
-                } catch (IOException | org.json.JSONException invalid) {
+                } catch (Exception invalid) {
                     // Malformed or unauthenticated peers never stop the listener.
                 }
             }
