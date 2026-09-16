@@ -11,14 +11,16 @@ import static org.junit.Assert.*;
 @Config(manifest=Config.NONE,sdk=28)
 public class GatewayUpdateTransactionTest {
     static class Device implements GatewayUpdateTransaction.Platform {
-        JSONObject disk;String installed="old";boolean idle=true,health=true,interrupt;
-        int installs,restores,backups;
+        JSONObject disk;String installed="old";boolean idle=true,recoveryIdle=true,health=true,interrupt;
+        int installs,restores,backups,starts;
         public JSONObject read() throws Exception{return disk==null?null:new JSONObject(disk.toString());}
         public void write(JSONObject value) throws Exception{disk=new JSONObject(value.toString());}
         public boolean idle(){return idle;}
+        public boolean recoveryIdle(){return recoveryIdle;}
         public void backup(){backups++;}
         public void installTarget() throws Exception{installs++;installed="new";if(interrupt)throw new java.io.IOException("lost result");}
         public void installBackup(){restores++;installed="old";}
+        public void startInstalled(){starts++;}
         public String installedHash(){return installed;}
         public boolean healthy(String hash){return "old".equals(hash)||health;}
         public boolean operationSettled(){return true;}
@@ -31,7 +33,7 @@ public class GatewayUpdateTransactionTest {
     }
     @Test public void unhealthyTargetRestoresOriginal() throws Exception {
         Device d=new Device();d.health=false;
-        assertEquals("recovered",GatewayUpdateTransaction.run(d,"task","new"));assertEquals("old",d.installed);assertEquals(1,d.restores);
+        assertEquals("recovered",GatewayUpdateTransaction.run(d,"task","new"));assertEquals("old",d.installed);assertEquals(1,d.restores);assertEquals(2,d.starts);
     }
     @Test public void lostInstallReplyResumesWithoutReinstall() throws Exception {
         Device d=new Device();d.interrupt=true;
@@ -52,7 +54,11 @@ public class GatewayUpdateTransactionTest {
         assertEquals(1,d.installs);assertEquals(0,d.restores);
     }
     @Test public void newCallDefersRollback() throws Exception {
-        Device d=new Device(){@Override public boolean healthy(String hash){idle=false;return false;}};
+        Device d=new Device(){@Override public boolean healthy(String hash){recoveryIdle=false;return false;}};
         assertEquals("recovery_deferred",GatewayUpdateTransaction.run(d,"task","new"));assertEquals(0,d.restores);
+    }
+    @Test public void missingApplicationHealthDoesNotBlockRecovery() throws Exception {
+        Device d=new Device();d.idle=false;d.disk=new JSONObject().put("task","task").put("target","new").put("original","old").put("state","rollback");d.installed="new";
+        assertEquals("recovered",GatewayUpdateTransaction.run(d,"task","new"));assertEquals(1,d.restores);assertEquals(1,d.starts);
     }
 }

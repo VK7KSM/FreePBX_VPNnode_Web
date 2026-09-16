@@ -8,9 +8,11 @@ final class GatewayUpdateTransaction {
         JSONObject read() throws Exception;
         void write(JSONObject journal) throws Exception;
         boolean idle() throws Exception;
+        boolean recoveryIdle() throws Exception;
         void backup() throws Exception;
         void installTarget() throws Exception;
         void installBackup() throws Exception;
+        void startInstalled() throws Exception;
         String installedHash() throws Exception;
         boolean healthy(String hash) throws Exception;
         boolean operationSettled() throws Exception;
@@ -43,8 +45,9 @@ final class GatewayUpdateTransaction {
         if("installing".equals(state)) {
             if(!platform.operationSettled())return "install_pending";
             String installed=platform.installedHash();
-            if(targetHash.equals(installed)) {set(platform,journal,"wait_health");state="wait_health";}
+            if(targetHash.equals(installed)) {platform.startInstalled();set(platform,journal,"wait_health");state="wait_health";}
             else if(journal.getString("original").equals(installed)) {
+                platform.startInstalled();
                 if(!platform.healthy(installed))return "rollback_pending";
                 set(platform,journal,"rollback");
                 set(platform,journal,"recovered");return "recovered";
@@ -53,19 +56,21 @@ final class GatewayUpdateTransaction {
         }
         if("wait_health".equals(state)) {
             if(platform.healthy(targetHash)) {set(platform,journal,"success");return "success";}
-            if(!platform.idle())return "recovery_deferred";
+            if(!platform.recoveryIdle())return "recovery_deferred";
             set(platform,journal,"rollback");state="rollback";
         }
         if("rollback".equals(state)) {
             if(!platform.operationSettled())return "rollback_pending";
-            if(!platform.idle())return "recovery_deferred";
+            if(!platform.recoveryIdle())return "recovery_deferred";
             String original=journal.getString("original");
             String installed=platform.installedHash();
             if(!original.equals(installed)) {
                 if(!targetHash.equals(installed))throw new SecurityException("rollback artifact conflict");
                 try {platform.installBackup();}catch(Exception uncertain){return "rollback_pending";}
             }
-            if(!original.equals(platform.installedHash())||!platform.healthy(original))return "rollback_pending";
+            if(!platform.operationSettled()||!original.equals(platform.installedHash()))return "rollback_pending";
+            platform.startInstalled();
+            if(!platform.healthy(original))return "rollback_pending";
             set(platform,journal,"recovered");return "recovered";
         }
         throw new SecurityException("unknown transaction state");

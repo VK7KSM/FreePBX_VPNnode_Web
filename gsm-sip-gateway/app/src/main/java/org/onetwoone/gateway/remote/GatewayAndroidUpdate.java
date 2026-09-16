@@ -44,6 +44,10 @@ final class GatewayAndroidUpdate implements GatewayUpdateTransaction.Platform {
             return telecom!=null&&!telecom.isInCall()&&GatewayInstallGate.liveIdle(health,identity,code,SystemClock.elapsedRealtime());
         } catch(IOException unavailable){return false;}
     }
+    @Override public boolean recoveryIdle() {
+        try {TelecomManager telecom=context.getSystemService(TelecomManager.class);return telecom!=null&&!telecom.isInCall();}
+        catch(Exception unavailable){return false;}
+    }
     @Override public void backup() throws Exception {
         File source=installed();String hash=GatewayApkVerifier.sha256(source);
         try(InputStream input=new FileInputStream(source)) {
@@ -53,15 +57,15 @@ final class GatewayAndroidUpdate implements GatewayUpdateTransaction.Platform {
     }
     @Override public void installTarget() throws Exception {
         if(!targetHash.equals(GatewayApkVerifier.sha256(target)))throw new SecurityException("target changed");
-        install(target,false);
+        install(target,false,false);
     }
     @Override public void installBackup() throws Exception {
         JSONObject journal=read();
         if(journal==null||!journal.getString("original").equals(GatewayApkVerifier.sha256(backup)))throw new SecurityException("backup changed");
-        GatewayApkVerifier.inspect(context.getPackageManager(),backup);install(backup,true);
+        GatewayApkVerifier.inspect(context.getPackageManager(),backup);install(backup,true,true);
     }
-    private void install(File apk,boolean downgrade) throws Exception {
-        if(!idle())throw new IOException("call state no longer idle");
+    private void install(File apk,boolean downgrade,boolean recovery) throws Exception {
+        if(!(recovery?recoveryIdle():idle()))throw new IOException("call state no longer idle");
         AtomicFile start=new AtomicFile(file("operation-start.txt"));FileOutputStream startOut=start.startWrite();
         try{startOut.write(Long.toString(System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8));start.finishWrite(startOut);}
         catch(Exception error){start.failWrite(startOut);throw error;}
@@ -69,6 +73,16 @@ final class GatewayAndroidUpdate implements GatewayUpdateTransaction.Platform {
         Process process=new ProcessBuilder("sh","-c",script).redirectErrorStream(true).redirectOutput(file("package-result-"+System.currentTimeMillis()+".txt")).start();
         if(!process.waitFor(90,TimeUnit.SECONDS))throw new IOException("package operation pending");
         if(process.exitValue()!=0)throw new IOException("package operation failed");
+    }
+    @Override public void startInstalled() throws Exception {
+        startService(".PjsipSipService","sip");
+        startService(".remote.GatewayRemoteService","management");
+    }
+    private void startService(String component,String label) throws Exception {
+        Process process=new ProcessBuilder("/system/bin/am","start-foreground-service","--user","0","-n",GatewayRemotePolicy.PACKAGE+"/"+component)
+                .redirectErrorStream(true).redirectOutput(file("service-start-"+label+".txt")).start();
+        if(!process.waitFor(15,TimeUnit.SECONDS)){process.destroyForcibly();throw new IOException("service start timeout");}
+        if(process.exitValue()!=0)throw new IOException("service start failed");
     }
     @Override public boolean operationSettled() throws Exception {
         if(!file("package.pid").isFile())return true;
