@@ -31,6 +31,7 @@ public final class GatewayRemoteService extends Service {
     private GatewayManagedLostTasks lostTasks;
     private GatewayLostDisplay lostDisplay;
     private GatewayManagedProxyTasks proxyTasks;
+    private GatewayManagedCompanionTasks companionTasks;
     private boolean proxyAssetsChecked;
     private volatile boolean stopped;
     private int failures;
@@ -67,12 +68,14 @@ public final class GatewayRemoteService extends Service {
         location = new GatewayLocationSampler(this,worker,this::scheduleImmediateReport);
         lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),lostDisplay,this::scheduleImmediateReport);
         proxyTasks = new GatewayManagedProxyTasks(this,store,this::scheduleImmediateReport);
+        companionTasks = new GatewayManagedCompanionTasks(this,store,this::scheduleImmediateReport);
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
         worker.post(transferTasks::tick);
         worker.post(execTasks::tick);
         worker.post(lostTasks::tick);
         worker.post(proxyTasks::tick);
+        worker.post(companionTasks::tick);
         location.begin();
         coreThread=new HandlerThread("gateway-core-monitor");coreThread.start();
         coreWorker=new Handler(coreThread.getLooper());coreAlarms=getSystemService(AlarmManager.class);
@@ -129,6 +132,7 @@ public final class GatewayRemoteService extends Service {
         sipTasks.tick();
         transferTasks.tick();
         proxyTasks.tick();
+        companionTasks.tick();
         PjsipSipService service=PjsipSipService.getInstance();lostDisplay.ensureVisible(service==null?null:service.remoteBusy());
     }
     private void tickCore(){
@@ -154,7 +158,7 @@ public final class GatewayRemoteService extends Service {
     private void consumePush() {
         try {
             JSONObject status=GatewayCoreClient.pushStatus(this),pending=status.optJSONObject("pending");if(pending==null)return;
-            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);
+            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
             JSONObject request=reply.optJSONObject("status_request");
             if(request!=null&&request.optString("request_id").matches("[A-Za-z0-9-]{1,96}"))
                 if(!store.prefs.edit().putString("status_request_id",request.getString("request_id")).commit())
@@ -191,7 +195,7 @@ public final class GatewayRemoteService extends Service {
             JSONObject reply=GatewayRemoteHttp.request("/api/devices/report",pendingReport);
             if(!pendingReport.getString("report_id").equals(reply.optString("report_id")))
                 throw new java.io.IOException("report acknowledgement mismatch");
-            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);
+            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
             if (!store.prefs.edit().remove("pending_report").commit()) {
                 throw new java.io.IOException("report acknowledgement persistence failed");
             }

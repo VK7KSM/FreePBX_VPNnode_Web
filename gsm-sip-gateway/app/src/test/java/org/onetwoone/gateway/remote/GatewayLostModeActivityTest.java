@@ -1,6 +1,7 @@
 package org.onetwoone.gateway.remote;
 
 import android.content.Context;
+import android.app.NotificationManager;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -10,6 +11,7 @@ import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import static org.junit.Assert.*;
@@ -25,4 +27,8 @@ public class GatewayLostModeActivityTest {
         assertEquals("请联系管理员",((TextView)root.getChildAt(1)).getText().toString());
         assertFalse(activity.isFinishing());activity.onBackPressed();assertFalse(activity.isFinishing());
         GatewayLostModeActivity.closeOpenInstance();assertTrue(activity.isFinishing());controller.destroy();}
+    @Test public void fullScreenNotificationPersistsUntilRemoteClear(){Context context=RuntimeEnvironment.getApplication();GatewayLostModeActivity.open(context);
+        NotificationManager manager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+        assertEquals(1,Shadows.shadowOf(manager).getAllNotifications().size());
+        GatewayLostModeActivity.close(context);assertEquals(0,Shadows.shadowOf(manager).getAllNotifications().size());}
 }

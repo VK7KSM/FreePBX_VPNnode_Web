@@ -6,7 +6,7 @@ import org.json.JSONObject;
 
 /** Persistent, reversible local state for the Pixel lost-device message. */
 final class GatewayLostDisplay {
-    interface Launcher { void open(); void close(); }
+    interface Launcher { void open(); void close(); boolean visible(); }
     private static final String PREFS="gateway-lost-display";
     private final SharedPreferences state;private final Launcher launcher;
 
@@ -17,7 +17,8 @@ final class GatewayLostDisplay {
         String normalized=normalize(message);boolean same=state.getBoolean("active",false)&&normalized.equals(state.getString("message",""));
         if(!same&&!state.edit().putBoolean("active",true).putString("message",normalized)
                 .putLong("changed_at_ms",System.currentTimeMillis()).commit())throw new java.io.IOException("lost-display-state-unavailable");
-        launcher.open();return snapshot();
+        launcher.open();if(!awaitVisible(launcher,10_000L))throw new java.io.IOException("lost-display-not-visible");
+        return snapshot();
     }
     synchronized JSONObject clear()throws Exception {
         if(!state.edit().putBoolean("active",false).remove("message").putLong("changed_at_ms",System.currentTimeMillis()).commit())
@@ -35,9 +36,16 @@ final class GatewayLostDisplay {
         return text.replace("\r\n","\n").replace('\r','\n');
     }
 
+    static boolean awaitVisible(Launcher launcher,long timeout)throws InterruptedException {
+        long deadline=System.currentTimeMillis()+Math.max(0,timeout);
+        while(!launcher.visible()&&System.currentTimeMillis()<deadline)Thread.sleep(50L);
+        return launcher.visible();
+    }
+
     private static final class AndroidLauncher implements Launcher {
         private final Context context;AndroidLauncher(Context context){this.context=context.getApplicationContext();}
         public void open(){GatewayLostModeActivity.open(context);}
-        public void close(){GatewayLostModeActivity.closeOpenInstance();}
+        public void close(){GatewayLostModeActivity.close(context);}
+        public boolean visible(){return GatewayLostModeActivity.isVisible();}
     }
 }
