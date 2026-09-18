@@ -549,7 +549,7 @@ function renderOps(){
   h += "</div>";
   h += '<div class="fn-page">'+fnPageHtml()+"</div>";
   disposeAdbView();box.innerHTML = h;
-  terminalBind();bindAdbView();
+  terminalBind();bindAdbView();if(typeof ElfDesktop!=='undefined')ElfDesktop.mount(currentDev());
 }
 
 function fnPageHtml(){
@@ -595,6 +595,7 @@ function pageAdb(dis){
   var run= d && MAINTENANCE_RUN[d.id];
   var st=run?(run.pending?'下发中':run.error?'下发失败':run.id===t.id?(t.label||t.state||''):''):'';
   var h = '<span class="terminal-actions">';
+  h += typeof ElfDesktop!=='undefined'?ElfDesktop.button(d):'<button class="btn-gray" disabled>远程桌面</button>';
   h += '<button class="'+(maintenanceAvailable(d,'pull_logs')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'pull_logs\')"'+(maintenanceAvailable(d,'pull_logs')?'':' disabled')+'>拉取日志</button>';
   h += '<button class="'+(maintenanceAvailable(d,'heal_network')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'heal_network\')"'+(maintenanceAvailable(d,'heal_network')?'':' disabled')+'>强制自愈</button>';
   h += '<button class="'+(maintenanceAvailable(d,'reboot')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'reboot\')"'+(maintenanceAvailable(d,'reboot')?'':' disabled')+'>受控重启</button>';

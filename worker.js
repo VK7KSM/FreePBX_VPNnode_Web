@@ -39,6 +39,7 @@ import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRun
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
+import desktopClientSource from './desktop-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
@@ -108,6 +109,7 @@ import {evidenceClientSource} from './evidence-client.js';
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 import {MediaRelay} from './media-relay.js';
+import {DesktopRelay,desktopAllowed} from './desktop-relay.js';
 import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
@@ -241,6 +243,7 @@ export class ElfStore {
     this.env = env;
     this.adb = new AdbRelay();
     this.adbTunnel = new AdbTunnelRelay();
+    this.desktop = new DesktopRelay();
     this.media = new MediaRelay(env,{authorizePhoto:async(deviceId,reportId)=>{
       const key='manual-photo/'+deviceId+'/'+reportId,expires=Date.now()+86400000;
       await this.ctx.storage.put({[key]:{received_at:new Date().toISOString(),expires_at:expires},['manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+reportId]:key});
@@ -271,6 +274,33 @@ export class ElfStore {
       if(typeof data.deviceId!=='string'||data.deviceId.length>100)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(async()=>json(await googleLocation(
         {...this.env,__storage:this.ctx.storage,__googleLocal:true},data.deviceId,{radio:data.radio})));
+    }
+    if(url.pathname.startsWith('/api/elfremote/desktop/')) {
+      try {
+        if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='DELETE'){
+          const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
+          const {session_id}=JSON.parse(raw);const session=this.desktop.sessions.get(session_id);
+          if(session)this.desktop.close(session,'远程桌面已取消');return json({ok:true});
+        }
+        if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='GET') {
+          const deviceId=url.searchParams.get('device_id');
+          if(!deviceId||!/^[A-Za-z0-9_-]{1,96}$/.test(deviceId))return json({ok:false,msg:'设备编号无效'},400);
+          return json({ok:true,...this.desktop.status(deviceId)});
+        }
+        if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='POST') {
+          const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
+          const data=JSON.parse(raw);
+          if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'远程桌面请求无效'},400);
+          const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
+          if(!d)return json({ok:false,msg:'未找到设备'},404);
+          try{return json(this.desktop.create(d,data.quality||'wifi'));}catch(error){return json({ok:false,msg:error.message},400);}
+        }
+        const role=url.pathname==='/api/elfremote/desktop/browser'?'browser':url.pathname==='/api/elfremote/desktop/device'?'device':null;
+        if(!role||request.method!=='GET')return json({ok:false},404);
+        if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false},426);
+        const s=this.desktop.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        const pair=new WebSocketPair();this.desktop.attach(s,role,pair[1]);return new Response(null,{status:101,webSocket:pair[0]});
+      }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/media/')) {
       try {
@@ -503,6 +533,7 @@ export class ElfStore {
               ?this.adb.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
             body.adb_tunnel=device?.enabled!==false&&device?.managed_adb_tunnel_v1===true
               ?this.adbTunnel.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
+            body.desktop_session=desktopAllowed(device)?this.desktop.offer(data.device_id,'https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host):null;
             if(isGateway(device))addManagedTaskOffer(body,device,device,Date.now());
             return json(body,result.status);
           }
@@ -524,7 +555,7 @@ export class ElfStore {
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
               __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,
-              __adbTunnel:this.adbTunnel,__media:this.media });
+              __adbTunnel:this.adbTunnel,__media:this.media,__desktop:this.desktop });
             if (!response.ok) throw response;
             return response;
           });
@@ -709,7 +740,7 @@ const app = {
         return response;
       }
       if (method === "POST" && ["/api/elfremote/task","/api/elfremote/assign","/api/elfremote/adb/session",
-          "/api/elfremote/adb-tunnel/session","/api/elfremote/media/session"].includes(pathname)) {
+          "/api/elfremote/adb-tunnel/session","/api/elfremote/media/session","/api/elfremote/desktop/session"].includes(pathname)) {
         const payload = await request.clone().json().catch(() => null);
         const saved = await stub.fetch(request);
         if (!saved.ok || !payload?.device_id) return saved;
@@ -720,7 +751,8 @@ const app = {
             method:"POST", headers:request.headers, body:JSON.stringify({device_id:payload.device_id})
           }), stub, {wakeKey:result.session_id?(pathname==='/api/elfremote/media/session'?'media:'+result.session_id
             :pathname==='/api/elfremote/adb/session'?'adb:'+result.session_id
-            :pathname==='/api/elfremote/adb-tunnel/session'?'adb_tunnel:'+result.session_id:undefined):undefined});
+            :pathname==='/api/elfremote/adb-tunnel/session'?'adb_tunnel:'+result.session_id
+            :pathname==='/api/elfremote/desktop/session'?'desktop:'+result.session_id:undefined):undefined});
           const notice = await notified.json();
           result.notification = notice.request || null;
         } catch { result.notification = null; }
@@ -1038,6 +1070,7 @@ const app = {
     }
     if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/evidence-client.js")return new Response(evidenceDataSource+'\n'+evidenceClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/desktop-client.js")return new Response(desktopClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/media-client.js")return new Response(mediaCapabilitiesSource+"\n"+mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if (pathname === "/devices-client.js") {
       return new Response(devicesClientSource, {
@@ -1484,6 +1517,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_adbd_tasks: d.managed_adbd_tasks === true,
     managed_adb_session: d.managed_adb_session === true,
     managed_adb_tunnel_v1: d.managed_adb_tunnel_v1 === true,
+    managed_desktop_v1: d.managed_desktop_v1 === true,
     managed_wifi_scan_tasks:d.managed_wifi_scan_tasks===true,
     managed_wifi_config_tasks:d.managed_wifi_config_tasks===true,
     managed_alarm_tasks:d.managed_alarm_tasks===true,
@@ -2005,9 +2039,11 @@ async function handleDeviceReport(env, request) {
       list[i].managed_adbd_tasks = data.managed_adbd_tasks === true;
       list[i].managed_adb_session = data.managed_adb_session === true;
       list[i].managed_adb_tunnel_v1 = data.managed_adb_tunnel_v1 === true;
+      list[i].managed_desktop_v1 = data.managed_desktop_v1 === true;
       list[i].managed_media = data.managed_media === true;
       applyMediaCapabilities(list[i],data);
       env.__media?.updateCapabilities(list[i]);
+      env.__desktop?.updateCapabilities(list[i]);
       list[i].media_cameras = Math.min(4,Math.max(0,Number(data.media_cameras)||0));
       list[i].managed_wifi_scan_tasks = data.managed_wifi_scan_tasks === true;
       if(isGateway(list[i])){
@@ -2087,6 +2123,7 @@ async function handleDeviceReport(env, request) {
     if(found.enabled!==false&&mediaModes(found).length>0)body.media_session=env.__media?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_session===true)body.adb_session=env.__adb?.offer(found.id,new URL(request.url).origin)||null;
     if(found.enabled!==false&&data.managed_adb_tunnel_v1===true)body.adb_tunnel=env.__adbTunnel?.offer(found.id,new URL(request.url).origin)||null;
+    if(found.enabled!==false&&data.managed_desktop_v1===true)body.desktop_session=env.__desktop?.offer(found.id,new URL(request.url).origin)||null;
     if (data.status_only === true) body.status_request = statusNotification(await pendingStatus(env.__storage, deviceId));
     addManagedTaskOffer(body, found, data, now);
     if (!data.status_only && shouldOfferUpdate(found, now) && found.update) {
@@ -3394,6 +3431,7 @@ function renderDevicesHtml() {
     '.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.monitor{min-width:0;display:flex;flex-direction:column;border:1px solid #334155;border-radius:9px;overflow:hidden;background:#111c2c}.monitor h4{font-size:12px;font-weight:400;line-height:20px;margin:0;padding:10px 12px;border-bottom:1px solid #29364a;color:#b9c8da}.monitor>.ops-actions{box-sizing:border-box;min-height:76px;margin:0!important;padding:10px 12px;align-content:center;gap:6px}.monitor .ops-actions button,.monitor .adb-row button{font-size:12px;font-weight:400;padding:5px 9px;min-height:30px}.monitor .ops-actions .muted{font-size:11px}.monitor .adb-box{display:contents}.monitor .adb-term{height:340px;min-height:340px;max-height:340px;flex-shrink:0;box-sizing:border-box;background:#080f1c;color:#cbd5e1;font-size:12px;line-height:1.8;padding:12px;border-top:1px solid #29364a}.monitor .adb-row,.monitor-footer{margin:0;min-height:46px;box-sizing:border-box;background:#111c2c;border-top:1px solid #29364a;padding:6px 12px;display:flex;align-items:center;gap:8px}.monitor-footer a{font-size:12px;color:#93c5fd}.monitor .adb-prompt{font-size:12px;color:#93c5fd}.monitor input.adb-cmd{font-size:12px;line-height:1.8;height:30px}.monitor .adb-row button{flex-shrink:0}@media(max-width:900px){.monitor-grid{grid-template-columns:1fr}}',
     '.monitor h4{box-sizing:border-box;height:48px;display:flex;align-items:center}.monitor .monitor-heading{justify-content:space-between;gap:8px}.monitor-heading button{font-size:12px;font-weight:400;padding:4px 9px;min-height:28px}.monitor-footer{flex-wrap:wrap;min-height:50px}.monitor-footer .ops-actions{margin:0!important;gap:6px}.monitor-footer button{font-size:12px;font-weight:400;min-height:30px;padding:4px 9px}.monitor-footer .muted{font-size:11px}.monitor .adb-row{min-height:50px}',
     '.monitor-footer button:disabled{background:#334155;color:#e2e8f0;opacity:1;cursor:default}.maintenance-status{font-size:11px;color:#94a3b8;margin-left:4px}.maintenance-status.maintenance-success{color:#34d399}',
+    '.desktop-view{display:flex;flex-direction:column;height:340px;min-height:340px;max-height:340px;background:#000;border-top:1px solid #29364a}.desktop-stage{position:relative;flex:1;min-height:0}.desktop-screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;outline:none;touch-action:none;user-select:none;cursor:crosshair}.desktop-canvas{max-width:100%;max-height:100%;width:auto;height:auto;display:block}.desktop-tools{position:absolute;left:0;top:0;bottom:0;width:34px;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 4px;box-sizing:border-box;background:rgba(15,23,42,.82);border-right:1px solid #29364a}.desktop-tools button{width:26px;height:26px;min-height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#1e293b;color:#cbd5e1;border:0;border-radius:5px;cursor:pointer}.desktop-tools button:hover,.desktop-tools button:focus-visible{background:#334155;color:#fff}.desktop-unfold{position:absolute;left:0;top:0;bottom:0;width:8px;padding:0;border:0;background:rgba(51,65,85,.7);cursor:pointer}.desktop-foot{display:flex;justify-content:space-between;gap:8px;min-height:24px;padding:3px 10px;font-size:11px;color:#aebcce;background:#111c2c;border-top:1px solid #29364a}.desktop-foot span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.terminal-title{white-space:nowrap;flex-shrink:0}.terminal-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;margin-left:auto}.terminal-actions button{white-space:nowrap;font-size:11px;padding:4px 7px;min-height:28px}.terminal-actions button:disabled{background:#334155;color:#aebcce;opacity:1}.monitor-heading{overflow-x:auto}.file-send-wrap{display:none;position:fixed;inset:0;z-index:2200;background:rgba(2,6,23,.72);align-items:center;justify-content:center;padding:20px}.file-send-dialog{box-sizing:border-box;width:530px;max-width:100%;background:#111c2c;border:1px solid #334155;border-radius:10px;padding:20px;color:#d4deec;font-size:12px;line-height:1.8}.file-send-dialog h3{font-size:15px;font-weight:400;margin:0}.file-send-fields{display:grid;gap:14px;margin-top:18px}.file-send-fields>label{display:grid;gap:6px}.file-send-fields input.inp{font-size:12px;height:34px;width:100%}.file-options{display:flex;gap:14px;flex-wrap:wrap}.file-options label{display:flex;align-items:center;gap:5px}.file-send-fields button{font-size:12px;font-weight:400;padding:5px 12px}.file-send-fields p{margin:0;color:#aebcce;overflow-wrap:anywhere}',
     '.monitor .adb-term,.monitor .adb-term .xterm-viewport{scrollbar-width:none;-ms-overflow-style:none}.monitor .adb-term::-webkit-scrollbar,.monitor .adb-term .xterm-viewport::-webkit-scrollbar{display:none;width:0;height:0}.monitor .adb-term,.monitor .adb-term .xterm,.monitor .adb-term .xterm-viewport{background:#080f1a}.monitor .monitor-heading .adb-connecting:disabled{background:#059669;color:#fff;opacity:1}.monitor-footer a.log-download{display:inline;padding:0;border:0;border-radius:0;background:none;color:#93c5fd;font-size:12px;text-decoration:none}.monitor-footer a.log-download:hover{text-decoration:underline}',
     '.terminal-status{display:flex;align-items:center;gap:10px;padding-top:6px;font-size:11px;line-height:18px}.terminal-status .log-download{font-size:11px;color:#93c5fd;text-decoration:none}.terminal-status .log-download:hover{text-decoration:underline}',
@@ -3499,6 +3537,7 @@ function renderDevicesHtml() {
     '<script src="/admin-session.js"><\/script>',
     '<script src="/panel-events.js"><\/script>',
     '<script src="/media-client.js"><\/script>',
+    '<script src="/desktop-client.js"><\/script>',
     '<script src="/fault-client.js"><\/script>',
     '<script src="/evidence-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
