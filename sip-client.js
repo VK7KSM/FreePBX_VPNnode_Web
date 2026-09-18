@@ -37,8 +37,30 @@ function applySipStatus(d, full){
     if(d.gateways) W = d.gateways;
     if(d.geo) GEO = d.geo;
   }
-  if(d.status) ST = d.status;
+  var prevCalls = (ST && ST.active_calls) || 0;
+  if(d.status){
+    if(!d.status.cdr && ST && ST.cdr) d.status.cdr = ST.cdr;
+    if(!d.status.history && ST && ST.history){
+      d.status.history = ST.history;
+      var s = d.status;
+      d.status.history.push({
+        t: s.received_at,
+        cpu: s.cpu_pct,
+        mem: s.mem_pct,
+        disk: s.disk_pct,
+        rx: s.rx_bps,
+        tx: s.tx_bps,
+        online: s.online_count,
+        calls: s.active_calls
+      });
+      if(d.status.history.length > 120) d.status.history.shift();
+    }
+    ST = d.status;
+  }
   STALE = !!d.stale || !d.status;
+  if(!full && prevCalls > 0 && d.status && d.status.active_calls === 0){
+    readSip(true);
+  }
   if(d.sync){
     SYNC = SYNC || {};
     if(d.sync.config_rev != null) SYNC.config_rev = d.sync.config_rev;
@@ -54,11 +76,12 @@ function applySipStatus(d, full){
 var sipLoading=null,sipPollFailures=0,sipPollAt=0,sipFullAt=0,sipRetryAt=0;
 function readSip(full){
   if(sipLoading)return sipLoading;
+  sipPollAt=Date.now();
   sipLoading=fetch(full?'/api/sip':'/api/sip/live').then(function(r){
     if(!r.ok){var retry=r.headers&&r.headers.get('Retry-After'),seconds=Number(retry);if(retry&&!Number.isFinite(seconds))seconds=(Date.parse(retry)-Date.now())/1000;if(seconds>0)sipRetryAt=Date.now()+Math.min(seconds,2147483)*1000;throw Error('读取失败');}return r.json();
   }).then(function(d){if(!d.ok)throw Error('读取失败');applySipStatus(d,full);sipPollFailures=0;sipRetryAt=0;if(full)sipFullAt=Date.now();})
     .catch(function(){sipPollFailures++;STALE=true;renderStatus();})
-    .finally(function(){sipPollAt=Date.now();sipLoading=null;});
+    .finally(function(){sipLoading=null;});
   return sipLoading;
 }
 function loadSip(){return readSip(true);}
@@ -66,7 +89,7 @@ function loadSipLive(){return readSip(false);}
 function sipPollDelay(){
   if(sipRetryAt>Date.now())return Math.max(0,sipRetryAt-sipPollAt);
   if(sipPollFailures)return Math.min(300000,15000*Math.pow(2,Math.min(5,sipPollFailures-1)));
-  return ST&&Number(ST.active_calls)>0?2000:10000;
+  return 2000;
 }
 function saveAll(done){
   window._sipSaved = true;
@@ -454,15 +477,26 @@ function sipBanInfo(ext){
   var s=ST&&ST.bans, record=s&&s.endpoints&&s.endpoints[String(ext)];
   var fresh=!!(s&&s.available&&!STALE&&Date.now()/1000-s.checked_at<45);
   var ip=record&&record.ip||"";
-  return {available:fresh,ip:ip,banned:!!(fresh&&ip&&(s.banned_ips||[]).indexOf(ip)>=0),
+  var source=record&&record.source||"";
+  var ipBanned=!!(fresh&&ip&&(s.banned_ips||[]).indexOf(ip)>=0);
+  var banned=ipBanned && source!=="register_failure";
+  return {available:fresh,ip:ip,source:source,ipBanned:ipBanned,banned:banned,
     affected:ip?E.filter(function(x){var r=s.endpoints[String(x.ext)];return r&&r.ip===ip;}).map(function(x){return x.ext;}):[]};
 }
 function renderBanEditor(){
   var box=$("eBanBox"); if(!box)return;
   box.style.display=editingExt?"block":"none"; if(!editingExt)return;
   var b=sipBanInfo(editingExt), select=$("eBanAction");
-  $("eBanInfo").textContent=!b.available?"暂无法读取封禁状态":!b.ip?"暂无出口 IP":"IP："+b.ip+" · 同出口分机："+b.affected.join("、")+" · 立即生效";
-  if(!sipBanBusy)select.value=!b.available||!b.ip?"unknown":b.banned?"ban":"unban";
+  if(!b.available){
+    $("eBanInfo").textContent="暂无法读取封禁状态";
+  } else if(!b.ip){
+    $("eBanInfo").textContent="暂无出口 IP";
+  } else if(b.source==="register_failure"){
+    $("eBanInfo").textContent="外部试探 IP："+b.ip+(b.ipBanned?"（已被防火墙拦截）":"（未拦截）")+" · 分机未成功注册";
+  } else {
+    $("eBanInfo").textContent="IP："+b.ip+" · 同出口分机："+b.affected.join("、")+" · 立即生效";
+  }
+  if(!sipBanBusy)select.value=!b.available||!b.ip?"unknown":b.ipBanned?"ban":"unban";
   select.disabled=sipBanBusy||!b.available||!b.ip;
 }
 async function changeSipBan(){
@@ -471,7 +505,7 @@ async function changeSipBan(){
   if(!b.available||!b.ip)return;
   var action=$("eBanAction").value;
   if(action!=="ban"&&action!=="unban")return;
-  if((action==="ban")===b.banned)return;
+  if((action==="ban")===b.ipBanned)return;
   sipBanBusy=true;renderBanEditor();$("eBanResult").textContent="处理中…";
   try{
     var r=await fetch('/api/sip/ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ext:ext,ip:b.ip,action:action})});
@@ -632,7 +666,7 @@ function drawCdr(){
 }
 document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none") doLogin(); });
 setInterval(function(){
-  if(adminSession.authenticated&&!document.hidden&&Date.now()-sipPollAt>=sipPollDelay())readSip(Date.now()-sipFullAt>=60000);
+  if(adminSession.authenticated&&!document.hidden&&Date.now()-sipPollAt>=sipPollDelay()-500)readSip(false);
 },2000);
-document.addEventListener('visibilitychange',function(){if(!document.hidden&&adminSession.authenticated&&Date.now()-sipPollAt>=sipPollDelay())loadSip();});
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&adminSession.authenticated&&Date.now()-sipPollAt>=sipPollDelay()-500)loadSipLive();});
 checkAuth();

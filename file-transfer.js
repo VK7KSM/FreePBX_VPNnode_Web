@@ -1,4 +1,6 @@
 import {authJson as json} from './admin-auth.js';
+import {initEvidence,indexEvidence,listEvidence,retainedEvidence,EVIDENCE_MAX} from './evidence-files.js';
+import {parseEvidenceJson,resolveEvidencePointer,readEvidenceBytes} from './evidence-data.js';
 
 export const FILE_CHUNK = 8 * 1024 * 1024;
 export const FILE_MAX = 4 * 1024 * 1024 * 1024;
@@ -20,9 +22,10 @@ export function fileParams(p = {}) {
 export async function fileMetadata(storage, request, loadDevices, now = Date.now()) {
   try {
     const data = await request.json();
+    if(data.action==='evidence_list')return json({ok:true,files:await listEvidence(storage,loadDevices,data)});
     if (data.action === 'cleanup') {
       const entries = await storage.list({prefix:'file-transfer/'}), removed=[];
-      for (const [k,m] of entries) if ((m.expires_at <= now || (m.state==='delivered'&&!m.purged)) && removed.length < 4) {
+      for (const [k,m] of entries) if (!retainedEvidence(m)&&(m.expires_at <= now || (m.state==='delivered'&&!m.purged)) && removed.length < 4) {
         removed.push(m);
       }
       return json({ok:true,removed});
@@ -31,31 +34,37 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
       if (!Number.isSafeInteger(data.size) || data.size < 0 || data.size > FILE_MAX) throw Error('文件最大支持4 GB');
       if (typeof data.name !== 'string' || !data.name || data.name.length > 255) throw Error('文件名无效');
       const device=(await loadDevices()).find(d=>d.id===data.device_id);
-      if (!device || device.enabled===false || !device.managed_file_tasks) return json({ok:false,msg:'客户端尚未支持文件接收'},409);
+      if(data.purpose!==undefined&&!['transfer','evidence'].includes(data.purpose))throw Error('文件用途无效');
+      if (!device || data.purpose!=='evidence'&&(device.enabled===false || !device.managed_file_tasks)) return json({ok:false,msg:'客户端尚未支持文件接收'},409);
+      const evidence=data.purpose==='evidence'?await initEvidence(storage,device,data,now):null;
       const id=crypto.randomUUID().replaceAll('-','');
       const m={id,device_id:device.id,name:data.name,size:data.size,chunk_size:FILE_CHUNK,parts:{},state:'uploading',expires_at:now+TTL};
-      await storage.put(key(id),m);return json({ok:true,file:m});
+      if(evidence)Object.assign(m,{purpose:'evidence',...evidence});
+      await storage.put(key(id),m);if(evidence)await indexEvidence(storage,m);return json({ok:true,file:m});
     }
     if (!validId(data.id)) throw Error('文件编号无效');
     const m=await storage.get(key(data.id));
     if(data.action==='discard'){
+      if(retainedEvidence(m)&&!(data.evidence_delete===true&&data.sha256===m.sha256))return json({ok:false,msg:'证据已封存，不能按传输暂存文件删除'},409);
       if((await loadDevices()).some(d=>d.task?.type==='send_file'&&d.task.params?.transfer_id===data.id&&['pending','claimed','running'].includes(d.task.state)))return json({ok:false,msg:'文件仍在传输，不能清理暂存'},409);
       if(m){m.state='discarded';m.expires_at=now;await storage.put(key(data.id),m);}return json({ok:true});
     }
     if(data.action==='cleanup_done') {
+      if(retainedEvidence(m))return json({ok:true});
       if(m && m.expires_at<=now)await storage.delete(key(data.id));
       else if(m?.state==='delivered'){m.purged=true;m.parts={};await storage.put(key(data.id),m);}
       return json({ok:true});
     }
     if(data.action==='delivered'){
+      if(m?.purpose==='evidence')return json({ok:false,msg:'证据附件不能下发到设备'},409);
       if(m){m.state='delivered';m.delivered_at=now;await storage.put(key(data.id),m);}return json({ok:true,file:m});
     }
-    if (!m || m.expires_at<=now) return json({ok:false,msg:'文件已过期，请重新上传'},404);
+    if (!m || !retainedEvidence(m)&&m.expires_at<=now) return json({ok:false,msg:'文件已过期，请重新上传'},404);
     if (data.action==='authorize') {
       const d=(await loadDevices()).find(d=>d.id===data.device_id);
       const tokenSha=hex(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(data.token||'')));
       if (!d || !d.token_sha256 || d.token_sha256!==tokenSha) return json({ok:false,msg:'设备凭证无效'},401);
-      if (d.enabled===false || d.id!==m.device_id || m.state!=='ready' || d.task?.id!==data.task_id
+      if (m.purpose==='evidence'||d.enabled===false || d.id!==m.device_id || m.state!=='ready' || d.task?.id!==data.task_id
           || d.task?.type!=='send_file' || d.task.params.transfer_id!==m.id || d.task.cancel_requested
           || !['pending','claimed','running'].includes(d.task.state) || Number(d.task.expires_at)<=now) return json({ok:false,msg:'文件任务已停止或不匹配'},409);
     } else if (data.action==='part') {
@@ -70,7 +79,8 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
       if (m.state==='ready' && m.sha256!==data.sha256) return json({ok:false,msg:'文件已封存'},409);
       const count=Math.ceil(m.size/FILE_CHUNK);
       for(let i=0;i<count;i++) if(!m.parts[i]) throw Error('文件尚未上传完整');
-      m.sha256=data.sha256;m.state='ready';await storage.put(key(m.id),m);
+      if(m.purpose==='evidence'&&(m.parts[0]?.sha256!==data.sha256||m.evidence.source_sha256&&m.evidence.source_sha256!==data.sha256))throw Error('证据原字节摘要与上传或取回记录不匹配');
+      m.sha256=data.sha256;m.state='ready';if(m.purpose==='evidence'){m.expires_at=null;m.sealed_at??=now;}await storage.put(key(m.id),m);
     } else if (data.action!=='get') throw Error('文件操作无效');
     return json({ok:true,file:m});
   } catch(error) {return json({ok:false,msg:error.message},400);}
@@ -78,7 +88,7 @@ export async function fileMetadata(storage, request, loadDevices, now = Date.now
 
 export async function validateFileTask(storage, deviceId, params,completedRetry=false) {
   const p=fileParams(params), m=await storage.get(key(p.transfer_id));
-  if(!m || !(m.state==='ready'||(completedRetry&&m.state==='delivered')) || m.device_id!==deviceId || m.expires_at<=Date.now()) throw Error('文件尚未上传完整或已过期');
+  if(!m || m.purpose==='evidence'||!(m.state==='ready'||(completedRetry&&m.state==='delivered')) || m.device_id!==deviceId || m.expires_at<=Date.now()) throw Error('文件尚未上传完整或已过期');
   return {...p,size:m.size,sha256:m.sha256,chunk_size:m.chunk_size};
 }
 
@@ -116,11 +126,26 @@ export async function fileHttp(env, request, stub) {
       return new Response(object.body,{status:range?206:200,headers:{'Content-Type':'application/octet-stream','Cache-Control':'no-store','Accept-Ranges':'bytes','Content-Length':String(part.bytes-offset),...(range?{'Content-Range':`bytes ${offset}-${part.bytes-1}/${part.bytes}`}:{})}});
     }
     if(path==='/api/elfremote/files' && method==='POST')return rpc(stub,{...await request.json(),action:'init'});
-    const match=/^\/api\/elfremote\/files\/([a-f0-9]{32})(?:\/(complete|parts\/(\d+)))?$/.exec(path);
+    if(path==='/api/elfremote/files'&&method==='GET'&&u.searchParams.get('purpose')==='evidence')return rpc(stub,{action:'evidence_list',device_id:u.searchParams.get('device_id'),task_id:u.searchParams.get('task_id')});
+    const match=/^\/api\/elfremote\/files\/([a-f0-9]{32})(?:\/(complete|content|parts\/(\d+)))?$/.exec(path);
     if(!match)return json({ok:false,msg:'文件接口不存在'},404);
     const id=match[1];
+    if(match[2]==='content'&&method==='GET'){
+      const found=await rpc(stub,{action:'get',id});if(!found.ok)return found;const {file:m}=await found.json();
+      if(!retainedEvidence(m)||m.size>EVIDENCE_MAX)return json({ok:false,msg:'证据未封存'},409);
+      if(u.searchParams.get('device_id')!==m.device_id||u.searchParams.get('task_id')!==m.evidence.task_id)return json({ok:false,msg:'证据与当前设备任务不匹配'},409);
+      const expected=u.searchParams.get('sha256');if(!validSha(expected)||expected!==m.sha256)return json({ok:false,msg:'证据引用摘要不匹配'},409);
+      const object=await env.ELF_ARTIFACTS.get(chunkKey(m,0,m.parts[0].sha256));if(!object)return json({ok:false,msg:'证据原件缺失'},404);
+      let bytes;try{bytes=await readEvidenceBytes(object.body,m.size);}catch{return json({ok:false,msg:'证据原件长度校验失败'},409);}
+      if(bytes.byteLength!==m.size||hex(await crypto.subtle.digest('SHA-256',bytes))!==m.sha256)return json({ok:false,msg:'证据原件校验失败'},409);
+      if(u.searchParams.has('pointer')){
+        const pointer=u.searchParams.get('pointer'),root=parseEvidenceJson(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+        return json({ok:true,file_id:id,sha256:m.sha256,bytes:m.size,pointer,value:resolveEvidencePointer(root,pointer)});
+      }
+      return new Response(bytes,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="evidence.json"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Content-SHA256':m.sha256}});
+    }
     if(!match[2]&&method==='DELETE'){
-      const r=await rpc(stub,{action:'discard',id});if(!r.ok)return r;
+      const r=await rpc(stub,{action:'discard',id,evidence_delete:u.searchParams.get('purpose')==='evidence',sha256:u.searchParams.get('sha256')});if(!r.ok)return r;
       try{await cleanupFileParts(env,stub,id);return json({ok:true,purged:true});}catch{return json({ok:true,cleanup_pending:true});}
     }
     if(!match[2] && method==='GET')return rpc(stub,{action:'get',id});
@@ -134,7 +159,8 @@ export async function fileHttp(env, request, stub) {
       if(m.state!=='uploading')return json({ok:false,msg:'文件已封存'},409);
       if(Number(request.headers.get('Content-Length'))!==expected)throw Error('分块长度不匹配');
       // 每次最多8 MB，R2本身核对SHA-256；地址含哈希，迟到请求不能改写封存内容。
-      await env.ELF_ARTIFACTS.put(chunkKey(m,index,sha),request.body,{sha256:sha});
+      const body=m.purpose==='evidence'?await readEvidenceBytes(request.body,expected):request.body;
+      await env.ELF_ARTIFACTS.put(chunkKey(m,index,sha),body,{sha256:sha});
       return rpc(stub,{action:'part',id,index,bytes:expected,sha256:sha});
     }
     return json({ok:false,msg:'方法不支持'},405);

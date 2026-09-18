@@ -103,6 +103,8 @@ import { saveReleaseApk, streamReleaseApk } from "./update-artifacts.js";
 import { pushState, pushHttp, isPushHttp, acknowledgeStatus, pendingStatus, statusNotification } from "./push-control.js";
 import { recoveryContact, prepareRecovery, runRecovery } from "./report-recovery.js";
 import { fileMetadata, fileHttp, validateFileTask, cleanupFiles, cleanupDeliveredFile } from "./file-transfer.js";
+import {evidenceDataSource} from './evidence-data.js';
+import {evidenceClientSource} from './evidence-client.js';
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 import {MediaRelay} from './media-relay.js';
@@ -112,6 +114,7 @@ import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordi
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
 import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig} from './proxy-config.js';
 import {acknowledgeStaleGatewayRollbackReport} from './gateway-stale-report.js';
+import {summarizeStore,planLegacyMerge,applyLegacyMerge,currentStoreSnapshot} from './legacy-import.js';
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -427,6 +430,37 @@ export class ElfStore {
       return this.ctx.blockConcurrencyWhile(async () => handleAdminAuth(this.ctx.storage,
         await this.ctx.storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env,request));
     }
+    if(url.pathname==='/__dump'&&request.method==='GET'){
+      // 仅供同一 Worker 内的数据找回调用：整份存储转储。
+      return json(await currentStoreSnapshot(this.ctx.storage));
+    }
+    if(url.pathname==='/__legacy_store'){
+      // 旧 Worker 的 ElfStore 数据找回：GET 只读汇总，POST 合并（默认试运行）。
+      if(url.searchParams.get('mode')==='current'){
+        if(request.method!=='GET')return json({ok:false},405);
+        return json({ok:true,source:'current',...summarizeStore(await currentStoreSnapshot(this.ctx.storage))});
+      }
+      const legacy=this.env.ELF_DO_LEGACY;
+      if(!legacy)return json({ok:false,msg:'旧存储未绑定'},503);
+      let dump;
+      try{
+        const res=await legacy.get(legacy.idFromName('main')).fetch('https://legacy-store/__dump');
+        if(!res.ok)throw Error('HTTP '+res.status);
+        dump=await res.json();
+        if(!dump||typeof dump!=='object'||Array.isArray(dump))throw Error('转储格式无效');
+      }catch(error){return json({ok:false,msg:'读取旧存储失败：'+error.message},502);}
+      if(request.method==='GET')return json({ok:true,source:'legacy',...summarizeStore(dump)});
+      if(request.method!=='POST')return json({ok:false},405);
+      const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
+      const opts=raw?JSON.parse(raw):{};
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
+        const keys=[...(await storage.list()).keys()];
+        const plan=planLegacyMerge(dump,await storage.get('remote_devices'),await storage.get('remote_enrolls'),keys);
+        if(opts.dry_run!==false)return json({ok:true,dry_run:true,...plan.summary});
+        const result=await applyLegacyMerge(storage,dump,plan);
+        return json({ok:true,dry_run:false,...result,...plan.summary});
+      }));
+    }
     if(url.pathname==='/__panel_migrate'&&request.method==='POST'){
       return this.ctx.blockConcurrencyWhile(async()=>{
         const storage=this.ctx.storage,existing=await storage.get('panel_kv_authority');
@@ -519,6 +553,15 @@ function storeAuthenticates(path,method){
   return method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models'].includes(path);
 }
 
+// 数据找回期间的临时机器凭证：仅对旧存储找回接口生效，删除 MIGRATION_TOKEN 密钥后即失效。
+async function migrationTokenOk(env,request,pathname){
+  if(pathname!=='/api/admin/legacy-store')return false;
+  const expected=String(env.MIGRATION_TOKEN||''),given=String(request.headers.get('X-Migration-Token')||'');
+  if(expected.length<32||expected.length!==given.length)return false;
+  const enc=new TextEncoder();
+  return crypto.subtle.timingSafeEqual(enc.encode(expected),enc.encode(given));
+}
+
 const quotaCooldown=new WeakMap();
 function isQuotaError(error){return /Exceeded allowed volume of requests in Durable Objects free tier/i.test(error?.message||'');}
 function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
@@ -567,10 +610,15 @@ const app = {
         if (method !== (action === "session" ? "GET" : "POST")) return authJson({ ok: false }, 405);
         return adminRpc(env, request, action);
       }
-      if(!storeAuthenticates(pathname,method)){
+      if(!storeAuthenticates(pathname,method)&&!(await migrationTokenOk(env,request,pathname))){
         const session = await adminRpc(env, request, "session");
         if (!session.ok) return session;
       }
+    }
+    if(pathname==='/api/admin/legacy-store'){
+      if(method!=='GET'&&method!=='POST')return authJson({ok:false},405);
+      const stub=elfDoStub(env);if(!stub)return authJson({ok:false,msg:'设备存储不可用'},503);
+      return stub.fetch('https://elf-store/__legacy_store'+url.search,{method,body:method==='POST'?await request.text():undefined});
     }
     if(pathname==='/api/cf-usage')return method==='GET'?cfUsageResponse(env):authJson({ok:false},405);
     if(pathname==='/api/admin/prepare-kv'&&method==='POST')return elfDoStub(env).fetch('https://elf-store/__panel_migrate',{method:'POST'});
@@ -710,7 +758,16 @@ const app = {
     if (pathname === "/api/sip" && method === "GET") {
       const bundle = await loadSipBundle(env);
       const osaka = await fetchOsakaStatus(env);
-      const status = osaka.status;
+      let status = osaka.status;
+      if (status && status.bans && status.bans.endpoints) {
+        status = Object.assign({}, status);
+        const valid = new Set([...bundle.extensions.map(x => String(x.ext)), ...bundle.gateways.map(g => String(g.ext))]);
+        const filtered = {};
+        for (const [k, v] of Object.entries(status.bans.endpoints)) {
+          if (valid.has(k)) filtered[k] = v;
+        }
+        status.bans = Object.assign({}, status.bans, { endpoints: filtered });
+      }
       const geo = await geoForStatus(env, status);
       const config_rev = (await getStore(env, "sip_config_rev")) || 0;
       const applied_rev = (status && status.applied_rev) || 0;
@@ -728,7 +785,7 @@ const app = {
           pending: Number(config_rev) !== Number(applied_rev),
           error: (status && status.apply_error) || osaka.err || ""
         }
-      });
+      }, 200, { "Cache-Control": "no-store" });
     }
 
     if (pathname === "/api/sip/ban" && method === "POST") {
@@ -752,8 +809,22 @@ const app = {
     }
 
     if (pathname === "/api/sip/live" && method === "GET") {
-      const osaka = await fetchOsakaStatus(env);
-      const status = osaka.status;
+      const osaka = await fetchOsakaStatus(env, true);
+      let status = osaka.status;
+      if (status) {
+        status = Object.assign({}, status);
+        delete status.cdr;
+        delete status.history;
+        if (status.bans && status.bans.endpoints) {
+          const bundle = await loadSipBundle(env);
+          const valid = new Set([...bundle.extensions.map(x => String(x.ext)), ...bundle.gateways.map(g => String(g.ext))]);
+          const filtered = {};
+          for (const [k, v] of Object.entries(status.bans.endpoints)) {
+            if (valid.has(k)) filtered[k] = v;
+          }
+          status.bans = Object.assign({}, status.bans, { endpoints: filtered });
+        }
+      }
       return json({
         ok: true,
         status,
@@ -762,7 +833,7 @@ const app = {
           applied_rev: (status && status.applied_rev) || 0,
           error: (status && status.apply_error) || osaka.err || ""
         }
-      });
+      }, 200, { "Cache-Control": "no-store" });
     }
 
     if (pathname === "/api/sip/pull" && method === "GET") {
@@ -863,13 +934,19 @@ const app = {
     if (pathname === "/api/devices" && method === "GET") {
       const models=await loadDeviceModels(env),registered=await loadDevices(env);
       const devices = await loadDevicesHydrated(env,models,registered);
-      const unpaired = Object.entries(await loadEnrolls(env))
-        .filter(([, row]) => row && !row.paired && !registered.some(d => d.token_sha256 === row.token_sha256))
+      const enrollRows = Object.entries(purgeEnrolls(await loadEnrolls(env), Date.now()))
+        .filter(([, row]) => row && !row.paired && !registered.some(d => d.token_sha256 === row.token_sha256));
+      const unpaired = [];
+      for (const [code, row] of enrollRows) {
+        if (await enrollTokenRetired(env, row)) continue;
+        unpaired.push([code, row]);
+      }
+      const unpairedList = unpaired
         .map(([code, row]) => ({ name: row.device_name || row.model_hint || "未命名设备",
           pairable: Date.parse(row.expires_at) > Date.now(),
           app_version: row.app_version, last_seen: row.last_seen || row.created_at,
           model_hint: row.model_hint, expires_at: row.expires_at }));
-      return json({ ok: true, devices, unpaired, models, refresh_after_ms:panelRefreshDelay(registered,unpaired) });
+      return json({ ok: true, devices, unpaired: unpairedList, models, refresh_after_ms:panelRefreshDelay(registered,unpairedList) });
     }
     if (pathname === "/api/devices" && method === "POST") {
       return handleDeviceCreate(env, request);
@@ -932,6 +1009,7 @@ const app = {
       return handleDevicePair(env, request);
     }
     if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/evidence-client.js")return new Response(evidenceDataSource+'\n'+evidenceClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/media-client.js")return new Response(mediaCapabilitiesSource+"\n"+mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if (pathname === "/devices-client.js") {
       return new Response(devicesClientSource, {
@@ -958,6 +1036,9 @@ const app = {
     });
   }
 };
+// 从被封禁的旧 Worker 转移过来的 ElfStore 命名空间，只用于数据找回，代码与 ElfStore 相同。
+export class ElfStoreLegacy extends ElfStore {}
+
 export default {
   ...app,
   async fetch(request,env,ctx){
@@ -1146,15 +1227,17 @@ function withPasswords(list, secrets) {
   });
 }
 
-async function fetchOsakaStatus(env) {
+async function fetchOsakaStatus(env, isLive = false) {
   const token = await heartbeatToken(env);
   try {
-    const r = await fetch("https://api.elfradio.net/status", {
-      headers: {
-        "X-Heartbeat-Token": token,
-        "User-Agent": "sip-panel/1.0"
-      }
-    });
+    const url = isLive ? "https://api.elfradio.net/status?live=1" : "https://api.elfradio.net/status";
+    const headers = {
+      "X-Heartbeat-Token": token,
+      "User-Agent": "sip-panel/1.0",
+      "Accept-Encoding": "gzip"
+    };
+    if (isLive) headers["X-Live"] = "1";
+    const r = await fetch(url, { headers });
     if (!r.ok) return { status: null, err: "大阪接口 HTTP " + r.status };
     const txt = await r.text();
     const safe = txt.replace(/:\s*-?Infinity\b/g, ":null").replace(/:\s*NaN\b/g, ":null");
@@ -1600,9 +1683,16 @@ function purgeEnrolls(map, now) {
   for (let i = 0; i < keys.length; i++) {
     const row = map[keys[i]];
     if (!row || !row.expires_at) continue;
-    if (!row.paired || Date.parse(row.expires_at) > now) out[keys[i]] = row;
+    const live = Date.parse(row.expires_at) > now;
+    // 未配对行只在仍可配对、已关联设备或属于解除配对占位时保留；过期且无设备的登记是残留。
+    if (live || (!row.paired && (row.device_id || keys[i].startsWith("unpaired_")))) out[keys[i]] = row;
   }
   return out;
+}
+
+async function enrollTokenRetired(env, row) {
+  if (!env.__storage || !row?.token_sha256) return false;
+  return !!(await env.__storage.get("retired-device-token/" + row.token_sha256));
 }
 
 async function handleDeviceEnroll(env, request) {
@@ -2554,10 +2644,10 @@ async function handleElfApk(env, pathname) {
   });
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" }
+    headers: { "Content-Type": "application/json; charset=utf-8", ...headers }
   });
 }
 
@@ -3375,6 +3465,7 @@ function renderDevicesHtml() {
     '<script src="/panel-events.js"><\/script>',
     '<script src="/media-client.js"><\/script>',
     '<script src="/fault-client.js"><\/script>',
+    '<script src="/evidence-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
     '<\/body><\/html>'
   ].join("\n");

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
 import worker from './worker.js';
 import {createHash} from 'node:crypto';
-export const STATIC_ROUTES={'/':'index.html','/devices':'devices.html','/sip':'sip.html','/panel-events.js':'panel-events.js','/panel-lifecycle.js':'panel-lifecycle.js','/cf-usage.js':'cf-usage.js','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/fault-client.js':'fault-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
+export const STATIC_ROUTES={'/':'index.html','/devices':'devices.html','/sip':'sip.html','/panel-events.js':'panel-events.js','/panel-lifecycle.js':'panel-lifecycle.js','/cf-usage.js':'cf-usage.js','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/fault-client.js':'fault-client.js','/evidence-client.js':'evidence-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
 export async function buildAssets(directory='.generated-assets'){
  await fs.mkdir(directory,{recursive:true});const files=[];
  for(const [route,file] of Object.entries(STATIC_ROUTES)){

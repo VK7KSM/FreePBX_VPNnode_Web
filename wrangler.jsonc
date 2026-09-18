@@ -1,5 +1,5 @@
 {
-  "name": "freepbx-vpnnode-web",
+  "name": "elfremote",
   "main": "worker.js",
   "compatibility_date": "2024-09-23",
   "workers_dev": true,
@@ -23,10 +23,12 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "ELF_DO", "class_name": "ElfStore" }
+      { "name": "ELF_DO", "class_name": "ElfStore" },
+      { "name": "ELF_DO_LEGACY", "class_name": "ElfStoreLegacy" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ElfStore"] }
+    { "tag": "v1", "new_sqlite_classes": ["ElfStore"] },
+    { "tag": "v2", "transferred_classes": [ { "from": "ElfStore", "from_script": "freepbx-vpnnode-web", "to": "ElfStoreLegacy" } ] }
   ]
 }
