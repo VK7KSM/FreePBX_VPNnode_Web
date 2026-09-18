@@ -19,7 +19,7 @@ D31 座机 / D22 对讲机 / 手机 Linphone / Pixel3 网关
 
 ## 一键部署
 
-目标系统：Ubuntu 24.04，公网 IPv4，安全组放行 TCP 22、TCP/UDP 5060、TCP 5061、UDP 10000–20000。
+目标系统：Ubuntu 24.04，公网 IPv4，安全组放行 TCP 22、TCP 5061、UDP 10000–20000。2026-09-17 起明文 5060 不再对公网放行，全部终端走 TLS 5061。
 
 ```bash
 git clone git@github.com:VK7KSM/FreePBX_VPNnode_Web.git
@@ -49,7 +49,8 @@ sudo bash install.sh
 - 只改通话组、外呼开关、呼入转发时，只改 Asterisk 路由库，**不执行 `pjsip reload`**，不会把 101 和网关 300 一起踢下线。
 - 只有加/删分机、改密码、改 SIP 账号文件时才重载 PJSIP。
 - 网关 300 不跑 OPTIONS；面板按是否有注册联系人判断网关在线。
-- Fail2Ban 看守 5060/5061；`IGNOREIP` 里的地址永不封。封禁状态由 `sip_bans.py` 汇总给面板，面板可手动解封，细节见 `封禁管理交接.md`。
+- 只放行 TCP 22、TLS 5061 与 RTP 10000–20000；明文 5060 不对公网开放（Asterisk 仍监听，但被防火墙挡住）。
+- Fail2Ban 看守 5060/5061 的连接尝试；`IGNOREIP` 里的地址永不封。封禁状态由 `sip_bans.py` 汇总给面板，面板可手动解封，细节见 `封禁管理交接.md`。
 - 短信在目标分机离线时写入本机 SQLite 队列（`sms-queue.py`），目标上线后自动补投。
 - Asterisk 使用 `openssl-compat.cnf`（允许 TLS 1.0），D31 才能注册。
 - 拨号：内网分机互打看通话组；公网外呼看「组有出口 + 分机允许外呼」。网关呼入电话走 `SIP/gwin`，入站短信走 `SIP/gwsms`，两者必须指向同一通话组。
@@ -81,7 +82,7 @@ sudo bash install.sh
 | `files/usr/local/sbin/sms-queue.py` | 离线短信队列（SQLite），上线后补投 |
 | `files/etc/asterisk/` | PJSIP、拨号方案、RTP、日志、CDR 配置 |
 | `files/etc/asterisk/pjsip.auth.conf` | 仅占位密码 `CHANGE_ME`，以面板同步为准 |
-| `files/etc/fail2ban/`、`files/etc/iptables/` | 防护规则 |
+| `files/etc/fail2ban/`、`files/etc/iptables/` | 防护规则。`rules.v4` 是按生产机同步的基线，已去掉 fail2ban 的自建链、跳转规则和历史封禁条目，这些由 fail2ban 启动时自行重建，不应带到新机 |
 | `files/etc/sysctl.d/99-bbr.conf` | 开启 BBR |
 | `files/etc/systemd/system/` | `sip-statusd`、`sip-heartbeat` 服务与定时器 |
 | `test_sip_bans.py`、`test_sms_queue.py` | 封禁汇总与短信队列的单元测试 |
