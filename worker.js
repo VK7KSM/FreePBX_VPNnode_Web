@@ -1201,7 +1201,7 @@ const app = {
         const {link,duplicate}=await shareCreateLink(env.__storage,{deviceId,ttlMs:ttlFromInput(undefined),source:'device',requestId});
         const origin='https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host;
         return json({ok:true,duplicate,token:link.token,url:shareUrl(origin,link.token),expires_at:link.expires_at,qr_text:shareUrl(origin,link.token).toUpperCase()});
-      }catch(error){return json({ok:false,msg:'链接生成失败'},400);}
+      }catch(error){return isQuotaError(error)?json({ok:false,msg:'云端额度已用尽，请稍后再试'},503):json({ok:false,msg:'链接生成失败'},400);}
     }
     if(pathname==='/api/elfremote/releases/prune'&&method==='POST'){
       try{const data=await request.json(),read=k=>getStore(env,k),devices=await loadDevices(env);
