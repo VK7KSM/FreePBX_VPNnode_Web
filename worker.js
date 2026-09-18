@@ -417,6 +417,15 @@ export class ElfStore {
             catch(error){return json({ok:false,msg:error.message},400);}
           });
         }
+        if(url.pathname==='/api/elfremote/adb/observer'&&request.method==='GET'){
+          // 管理员只读旁观：按设备找当前会话；分享用户不能旁观。
+          if(ctx.kind!=='admin')return json({ok:false,msg:'仅总后台可旁观'},403);
+          if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:true,...this.adb.observeStatus(url.searchParams.get('device_id')||'')});
+          const target=this.adb.byDevice(url.searchParams.get('device_id')||'');
+          if(!target)return json({ok:false,msg:'用户尚未打开 ADB'},404);
+          const pair=new WebSocketPair();this.adb.attachObserver(target,pair[1]);
+          return new Response(null,{status:101,webSocket:pair[0]});
+        }
         const role=url.pathname==='/api/elfremote/adb/browser'?'browser':url.pathname==='/api/elfremote/adb/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);
         if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false,msg:'需要WebSocket连接'},426);
@@ -677,7 +686,7 @@ ElfStore.prototype.decorateDeviceList=async function(storage,ctx,response){
   if(ctx.kind==='share'){
     body.devices=(body.devices||[]).filter(d=>d.id===ctx.device_id);body.unpaired=[];body.share=true;
     for(const d of body.devices)d.share_locked=false;
-  }else for(const d of body.devices||[])d.share_locked=await shareObserverLocked(storage,d.id);
+  }else for(const d of body.devices||[]){d.share_locked=await shareObserverLocked(storage,d.id);if(d.share_locked)d.adb_observable=this.adb.observeStatus(d.id).active;}
   return json(body);
 };
 ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){

@@ -1,5 +1,8 @@
 // 仅在管理员打开终端期间中继；设备与浏览器均向Worker发起连接。
 export const ADB_IDLE_LIMIT_MS=20*60*1000;
+// 旁观：管理员按需订阅设备输出的只读副本；不新建设备连接、不转发任何上行；内存里只留最近一小段输出。
+export const ADB_OBSERVER_LIMIT=4;
+export const ADB_HISTORY_BYTES=65536;
 export class AdbRelay {
   constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id)}={}) {
     this.now=now;this.schedule=schedule;this.cancel=cancel;this.sessions=new Map();
@@ -11,7 +14,7 @@ export class AdbRelay {
     if(this.sessions.size>=16)throw Error('当前终端会话过多');
     const id=crypto.randomUUID(),at=this.now();
     const token=Array.from(crypto.getRandomValues(new Uint8Array(32)),v=>v.toString(16).padStart(2,'0')).join('');
-    const session={id,deviceId:device.id,token,created:at,activity:at,ready:false,browser:null,device:null,buffer:[],bufferSize:0};
+    const session={id,deviceId:device.id,token,created:at,activity:at,ready:false,browser:null,device:null,buffer:[],bufferSize:0,observers:new Set(),history:[],historySize:0,size:null};
     this.sessions.set(id,session);this.arm(session);
     return {ok:true,session_id:id,expires_at:at+60000};
   }
@@ -65,6 +68,7 @@ export class AdbRelay {
           if(data.data.length)session.activity=this.now();
         }else if(data.type==='resize') {
           if(!Number.isInteger(data.rows)||!Number.isInteger(data.columns)||data.rows<1||data.rows>500||data.columns<1||data.columns>500)throw Error('终端尺寸无效');
+          session.size={rows:data.rows,columns:data.columns};this.fanout(session,JSON.stringify({type:'size',rows:data.rows,columns:data.columns}));
         }else throw Error('不支持的终端操作');
         session.device.send(raw);
       }else {
@@ -73,6 +77,8 @@ export class AdbRelay {
           if(!session.ready||typeof data.data!=='string'||data.data.length>87384||!base64(data.data))throw Error('ADB输出无效');
         }else if(data.type==='closed'){this.close(session,typeof data.message==='string'?data.message.slice(0,120):'ADB 已断开',data.exit);return;}
         else throw Error('ADB返回未知消息');
+        if(data.type==='output'){this.remember(session,raw);this.fanout(session,raw);}
+        if(data.type==='ready')this.fanout(session,JSON.stringify({type:'ready'}));
         if(session.browser)session.browser.send(raw);
         else if(data.type==='output') {
           if(session.bufferSize+raw.length>65536)throw Error('浏览器尚未连接');
@@ -84,11 +90,31 @@ export class AdbRelay {
   close(session,message,exit=null) {
     if(!this.sessions.delete(session.id))return;
     this.cancel(session.timer);session.token='';
-    for(const socket of [session.browser,session.device])if(socket) {
+    for(const socket of [session.browser,session.device,...session.observers])if(socket) {
       try{socket.send(JSON.stringify({type:'closed',message,exit:Number.isInteger(exit)?exit:null}));}catch{}
       try{socket.close(1000,'ADB session closed');}catch{}
     }
-    session.buffer=[];
+    session.buffer=[];session.history=[];session.historySize=0;session.observers.clear();
+  }
+  byDevice(deviceId){this.sweep();return Array.from(this.sessions.values()).find(s=>s.deviceId===deviceId)||null;}
+  observeStatus(deviceId){const s=this.byDevice(deviceId);return {active:!!s,ready:!!s&&s.ready,observers:s?s.observers.size:0};}
+  remember(session,raw){
+    session.history.push(raw);session.historySize+=raw.length;
+    while(session.historySize>ADB_HISTORY_BYTES&&session.history.length>1){session.historySize-=session.history.shift().length;}
+  }
+  fanout(session,raw){
+    for(const socket of session.observers){try{socket.send(raw);}catch{session.observers.delete(socket);try{socket.close(1011,'observer failed');}catch{}}}
+  }
+  /** 只读订阅：只发 size/ready/output/closed，上行一律忽略；关闭只移除自己，不影响主会话。 */
+  attachObserver(session,socket){
+    if(!this.sessions.has(session.id))throw Error('ADB会话已结束');
+    if(session.observers.size>=ADB_OBSERVER_LIMIT)throw Error('旁观连接过多');
+    socket.accept();session.observers.add(socket);
+    socket.addEventListener('message',()=>{});
+    socket.addEventListener('close',()=>session.observers.delete(socket));
+    socket.addEventListener('error',()=>session.observers.delete(socket));
+    socket.send(JSON.stringify({type:'observing',ready:session.ready,rows:session.size?.rows||null,columns:session.size?.columns||null,history:session.history.length}));
+    for(const raw of session.history)socket.send(raw);
   }
 }
 function equal(a,b){let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0;}
