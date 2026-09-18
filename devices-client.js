@@ -168,7 +168,7 @@ async function readServiceJson(r){
 }
 function loadDevices(){
   if(deviceLoad) return deviceLoad;
-  function read(url){return fetch(url).then(readServiceJson).catch(function(e){if(e.retryAfter)devicePollRetryAt=Date.now()+e.retryAfter;throw e;});}
+  function read(url){return fetch(url).then(function(r){var ro=r.headers&&r.headers.get('X-Elf-Read-Only');return readServiceJson(r).then(function(d){if(ro&&d&&typeof d==='object')d.__readOnly=ro;return d;});}).catch(function(e){if(e.retryAfter)devicePollRetryAt=Date.now()+e.retryAfter;throw e;});}
   deviceLoad = read("/api/devices").then(function(snapshot){
     var arr=[snapshot,snapshot];
     if(!Array.isArray(arr[0].devices) || !Array.isArray(arr[1].models)) throw new Error('刷新返回无效');
@@ -195,7 +195,7 @@ function loadDevices(){
     }
     if(editing){renderRemoteConsole();if(selFn==='update'&&$('updateProgressLive'))$('updateProgressLive').innerHTML=kv("安装进展",installationProgress(currentDev().update||{}))+'<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(currentDev().update||{})+'</div></div>';}
 
-    setServiceError('devices',null);
+    setServiceError('devices',snapshot.__readOnly?Object.assign(Error('CF 额度已用尽，当前显示 '+(snapshot.snapshot_at?new Date(snapshot.snapshot_at).toLocaleTimeString():'最近')+' 的只读快照，UTC 零点后自动恢复'),{code:'storage_quota_exceeded'}):null);
     devicePollFailures=0;devicePollRetryAt=0;lastPollAt=Date.now();
     deviceRefreshAt=lastPollAt+Math.min(300000,Math.max(1000,Number(snapshot.refresh_after_ms)||300000));
     if(panelEvents)panelEvents.tick();return true;

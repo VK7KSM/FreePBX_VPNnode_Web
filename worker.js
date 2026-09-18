@@ -139,12 +139,14 @@ function elfDoStub(env) {
   return env.ELF_DO.get(env.ELF_DO.idFromName("main"));
 }
 
+// 只读路径不写存储：KV 里也没有的键只在内存里记一次，避免读取请求在额度耗尽时被写入拒绝。
+const legacyChecked = new Set();
 async function getStore(env, key) {
   if(panelEnabled(env)&&(panelGroup(key)||key.startsWith('geo_')))return panelRead(env,key);
   if (env.__storage) {
     const value = await env.__storage.get(key);
     if (value !== undefined && value !== null) return value;
-    if (!await env.__storage.get("legacy_done:" + key)) {
+    if (!legacyChecked.has(key) && !await env.__storage.get("legacy_done:" + key)) {
       const raw = await env.SUB_STORE_KV?.get(key);
       if (raw != null) {
         const parsed = parseStoreVal(raw);
@@ -152,7 +154,7 @@ async function getStore(env, key) {
         await env.__storage.put("legacy_done:" + key, true);
         return parsed;
       }
-      await env.__storage.put("legacy_done:" + key, true);
+      legacyChecked.add(key);
     }
     return storeDefaults(key);
   }
@@ -434,6 +436,13 @@ export class ElfStore {
       // 仅供同一 Worker 内的数据找回调用：整份存储转储。
       return json(await currentStoreSnapshot(this.ctx.storage));
     }
+    if(url.pathname==='/__snapshot'&&request.method==='GET'){
+      // 设备列表快照：由定时任务写入 KV，额度耗尽时外层用它应答只读的设备列表。
+      const response=await app.fetch(new Request('https://elf-store/api/devices'),{...this.env,__storage:this.ctx.storage});
+      if(!response.ok)return response;
+      const data=await response.json();
+      return json({snapshot_at:Date.now(),devices:data.devices,unpaired:data.unpaired,models:data.models});
+    }
     if(url.pathname==='/__legacy_store'){
       // 旧 Worker 的 ElfStore 数据找回：GET 只读汇总，POST 合并（默认试运行）。
       if(url.searchParams.get('mode')==='current'){
@@ -520,7 +529,10 @@ export class ElfStore {
             return response;
           });
         } catch (error) {
-          return error instanceof Response ? error : json({ ok: false, msg: "设备数据保存失败" }, 503);
+          if (error instanceof Response) return error;
+          console.error("store_request_failed", request.method, url.pathname, error?.message);
+          if (isQuotaError(error)) return quotaUnavailable();
+          return json({ ok: false, msg: "设备数据保存失败" }, 503);
         }
       });
     }
@@ -565,6 +577,22 @@ async function migrationTokenOk(env,request,pathname){
 const quotaCooldown=new WeakMap();
 function isQuotaError(error){return /Exceeded allowed (volume of requests|rows (written|read)|storage)[^.]*Durable Objects free tier/i.test(error?.message||'');}
 function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
+const DEVICES_SNAPSHOT_KEY='panel/cache/devices-snapshot';
+// 每 5 分钟把设备列表写入 KV；DO 额度耗尽时列表仍可只读查看。
+async function refreshDevicesSnapshot(env,stub){
+  if(!stub||!env.SUB_STORE_KV?.put)return;
+  const response=await stub.fetch('https://elf-store/__snapshot');
+  if(!response.ok)throw Error('snapshot '+response.status);
+  await env.SUB_STORE_KV.put(DEVICES_SNAPSHOT_KEY,await response.text());
+}
+async function devicesSnapshotResponse(env,request){
+  if(!trustedOrigin(request))return null;
+  const session=await adminRpc(env,request,'session');
+  if(!session.ok)return session;
+  const raw=await env.SUB_STORE_KV?.get(DEVICES_SNAPSHOT_KEY);
+  if(!raw)return null;
+  return new Response(raw,{status:200,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Elf-Read-Only':'quota'}});
+}
 function quotaUnavailable(){
   const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;
   return authJson({ok:false,code:'storage_quota_exceeded',msg:'服务器额度暂时用尽，正在等待恢复',retry_at:reset},503,{'Retry-After':String(Math.max(1,Math.min(900,Math.ceil((reset-now)/1000))))});
@@ -577,7 +605,7 @@ const app = {
     try {
       const stub=elfDoStub(env);
       const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
-      const jobs=[runRecovery,cleanupFiles,...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
+      const jobs=[runRecovery,cleanupFiles,...(minute%5===0?[refreshDevicesSnapshot]:[]),...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
       for(const work of jobs) {
         try { await work(env,stub); } catch(error) {
           console.error('scheduled_task_failed',work.name);
@@ -1044,9 +1072,16 @@ export default {
   async fetch(request,env,ctx){
     const path=new URL(request.url).pathname;
     const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
-    if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
-    try{return await app.fetch(request,env,ctx);}
-    catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);return quotaUnavailable();}
+    const snapshotRead=path==='/api/devices'&&request.method==='GET';
+    if(path.startsWith('/api/')&&!independent&&!snapshotRead&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
+    let response;
+    try{response=await app.fetch(request,env,ctx);}
+    catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);response=quotaUnavailable();}
+    if(snapshotRead&&response.status===503){
+      try{const fallback=await devicesSnapshotResponse(env,request);if(fallback)return fallback;}
+      catch(error){console.error('devices_snapshot_failed',error?.message);}
+    }
+    return response;
   }
 };
 
