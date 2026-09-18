@@ -4,22 +4,37 @@ export const DESKTOP_PREPARE_TIMEOUT_MS=30000;
 export const DESKTOP_BROWSER_SILENCE_MS=90000;
 export const DESKTOP_SESSION_LIMIT_MS=20*60*1000;
 const SIGNAL_LIMIT=64000;
+export const TURN_TTL_SECONDS=1800;
+const DEFAULT_ICE=[{urls:'stun:stun.cloudflare.com:3478'}];
+// Cloudflare TURN 短期凭据：密钥只留服务端，每个会话生成一份，有效期覆盖 20 分钟会话上限。
+export function turnFetcher(env,fetcher=(url,init)=>fetch(url,init)){
+  return async()=>{
+    if(!env?.ELF_TURN)return DEFAULT_ICE;
+    const config=JSON.parse(env.ELF_TURN);
+    const r=await fetcher('https://rtc.live.cloudflare.com/v1/turn/keys/'+encodeURIComponent(config.keyId)+'/credentials/generate-ice-servers',{method:'POST',headers:{Authorization:'Bearer '+config.token,'Content-Type':'application/json'},body:JSON.stringify({ttl:TURN_TTL_SECONDS}),signal:AbortSignal.timeout(8000)});
+    if(!r.ok)throw Error('TURN 凭据生成失败');
+    const x=await r.json();if(!Array.isArray(x.iceServers)||!x.iceServers.length)throw Error('TURN 凭据无效');
+    return x.iceServers;
+  };
+}
 export function desktopAllowed(device){return !!device&&device.enabled!==false&&device.managed_desktop_v1===true;}
 export class DesktopRelay {
-  constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id),iceServers=()=>[{urls:'stun:stun.cloudflare.com:3478'}]}={}){
+  constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id),iceServers=async()=>DEFAULT_ICE}={}){
     this.now=now;this.schedule=schedule;this.cancel=cancel;this.iceServers=iceServers;this.sessions=new Map();
   }
-  create(device,quality='wifi'){
+  async create(device,quality='wifi'){
     if(!desktopAllowed(device))throw Error('设备尚不支持远程桌面');
     if(!['wifi','cellular'].includes(quality))throw Error('画质档位无效');
     for(const s of this.sessions.values())this.expire(s);
     const existing=[...this.sessions.values()].find(s=>s.deviceId===device.id);
-    if(existing)return {ok:true,session_id:existing.id,existing:true,ice_servers:this.iceServers()};
+    if(existing)return {ok:true,session_id:existing.id,existing:true};
     if(this.sessions.size>=8)throw Error('当前远程桌面会话过多');
+    // TURN 凭据失败不阻止会话：退回 STUN 直连，状态里说明。
+    let ice=DEFAULT_ICE,turn=true;try{ice=await this.iceServers();}catch{turn=false;}
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
-    const s={id,token,deviceId:device.id,quality,created,started:0,lastBrowser:created,roles:{},closed:false,generation:1,phase:'preparing',lastInput:created};
+    const s={id,token,deviceId:device.id,quality,created,started:0,lastBrowser:created,roles:{},closed:false,generation:1,phase:'preparing',lastInput:created,iceServers:ice,turn};
     this.sessions.set(id,s);this.arm(s);
-    return {ok:true,session_id:id,ice_servers:this.iceServers()};
+    return {ok:true,session_id:id,turn};
   }
   expire(s){
     if(!s.closed&&this.now()-s.created>=DESKTOP_SESSION_LIMIT_MS)this.close(s,'远程桌面已满20分钟，已自动关闭');
@@ -40,7 +55,7 @@ export class DesktopRelay {
   }
   offer(deviceId,origin){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.roles.device);
-    return s&&!this.expire(s)?{session_id:s.id,token:s.token,quality:s.quality,generation:s.generation,ice_servers:this.iceServers(),expires_at:s.created+DESKTOP_PREPARE_TIMEOUT_MS,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/desktop/device?session_id='+s.id}:null;
+    return s&&!this.expire(s)?{session_id:s.id,token:s.token,quality:s.quality,generation:s.generation,ice_servers:s.iceServers,expires_at:s.created+DESKTOP_PREPARE_TIMEOUT_MS,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/desktop/device?session_id='+s.id}:null;
   }
   status(deviceId){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.closed);
@@ -59,7 +74,7 @@ export class DesktopRelay {
     ws.addEventListener('error',()=>this.close(s,'连接中断'));
     this.send(s,role,{type:'waiting',generation:s.generation});
     if(s.roles.browser&&s.roles.device){
-      const hello={type:'hello',quality:s.quality,generation:s.generation,ice_servers:this.iceServers()};
+      const hello={type:'hello',quality:s.quality,generation:s.generation,ice_servers:s.iceServers,turn:s.turn};
       this.send(s,'browser',hello);this.send(s,'device',hello);
     }
   }

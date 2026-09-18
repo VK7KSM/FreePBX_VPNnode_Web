@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DesktopRelay, desktopAllowed } from './desktop-relay.js';
+import { DesktopRelay, desktopAllowed, turnFetcher } from './desktop-relay.js';
 
 function fakeSocket(){
   const s={sent:[],listeners:{},closed:null};
@@ -22,10 +22,19 @@ test('desktopAllowed 只认显式能力字段', () => {
   assert.equal(desktopAllowed({...device,enabled:false}),false);
 });
 
-test('创建、领取与双端 hello；重复创建返回原会话', () => {
+test('turnFetcher 用密钥生成短期凭据，缺配置时退回 STUN', async () => {
+  assert.deepEqual(await turnFetcher({})(),[{urls:'stun:stun.cloudflare.com:3478'}]);
+  let seen;const f=turnFetcher({ELF_TURN:JSON.stringify({keyId:'k1',token:'t1'})},async(url,init)=>{seen={url,init};return {ok:true,json:async()=>({iceServers:[{urls:['turn:x']},{urls:['turn:y'],username:'u',credential:'c'}]})};});
+  const ice=await f();
+  assert.match(seen.url,/\/turn\/keys\/k1\/credentials\/generate-ice-servers$/);
+  assert.equal(seen.init.headers.Authorization,'Bearer t1');assert.equal(JSON.parse(seen.init.body).ttl,1800);
+  assert.equal(ice[1].credential,'c');
+});
+
+test('创建、领取与双端 hello；重复创建返回原会话', async () => {
   const {r}=relay();
-  const created=r.create(device);
-  assert.equal(r.create(device).session_id,created.session_id);
+  const created=await r.create(device);
+  assert.equal((await r.create(device)).session_id,created.session_id);
   const offer=r.offer('dev1','https://v.example');
   assert.match(offer.url,/^wss:\/\/v.example\/api\/elfremote\/desktop\/device\?session_id=/);
   assert.equal(offer.generation,1);
@@ -37,9 +46,9 @@ test('创建、领取与双端 hello；重复创建返回原会话', () => {
   assert.equal(r.offer('dev1','https://v.example'),null);
 });
 
-test('信令按代次与角色转发，ready 记录开始时间', () => {
+test('信令按代次与角色转发，ready 记录开始时间', async () => {
   const {r}=relay();
-  const {session_id}=r.create(device);const s=r.sessions.get(session_id);
+  const {session_id}=await r.create(device);const s=r.sessions.get(session_id);
   const b=fakeSocket(),d=fakeSocket();
   r.attach(s,'browser',b);r.attach(s,'device',d);
   d.emit('message',JSON.stringify({type:'signal',kind:'offer',payload:'v=0',generation:1}));
@@ -52,9 +61,9 @@ test('信令按代次与角色转发，ready 记录开始时间', () => {
   assert.equal(s.closed,true);
 });
 
-test('浏览器可请求重启协商，代次递增并通知双方', () => {
+test('浏览器可请求重启协商，代次递增并通知双方', async () => {
   const {r}=relay();
-  const {session_id}=r.create(device);const s=r.sessions.get(session_id);
+  const {session_id}=await r.create(device);const s=r.sessions.get(session_id);
   const b=fakeSocket(),d=fakeSocket();r.attach(s,'browser',b);r.attach(s,'device',d);
   b.emit('message',JSON.stringify({type:'restart'}));
   assert.equal(s.generation,2);assert.equal(d.sent.at(-1).generation,2);assert.equal(b.sent.at(-1).type,'restart');
@@ -62,9 +71,9 @@ test('浏览器可请求重启协商，代次递增并通知双方', () => {
   assert.equal(b.sent.at(-1).type,'ready');assert.equal(b.sent.at(-1).width,240);assert.equal(s.phase,'active');
 });
 
-test('准备超时与网页静默会关闭会话并通知', () => {
+test('准备超时与网页静默会关闭会话并通知', async () => {
   const {r,tick}=relay();
-  const {session_id}=r.create(device);const s=r.sessions.get(session_id);
+  const {session_id}=await r.create(device);const s=r.sessions.get(session_id);
   const d=fakeSocket();r.attach(s,'device',d);
   tick(30000);
   assert.equal(s.closed,true);assert.equal(d.sent.at(-1).type,'closed');assert.equal(d.closed.code,1000);

@@ -109,7 +109,7 @@ import {evidenceClientSource} from './evidence-client.js';
 import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 import {MediaRelay} from './media-relay.js';
-import {DesktopRelay,desktopAllowed} from './desktop-relay.js';
+import {DesktopRelay,desktopAllowed,turnFetcher} from './desktop-relay.js';
 import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
@@ -243,7 +243,7 @@ export class ElfStore {
     this.env = env;
     this.adb = new AdbRelay();
     this.adbTunnel = new AdbTunnelRelay();
-    this.desktop = new DesktopRelay();
+    this.desktop = new DesktopRelay({iceServers:turnFetcher(env)});
     this.media = new MediaRelay(env,{authorizePhoto:async(deviceId,reportId)=>{
       const key='manual-photo/'+deviceId+'/'+reportId,expires=Date.now()+86400000;
       await this.ctx.storage.put({[key]:{received_at:new Date().toISOString(),expires_at:expires},['manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+reportId]:key});
@@ -293,7 +293,7 @@ export class ElfStore {
           if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'远程桌面请求无效'},400);
           const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
           if(!d)return json({ok:false,msg:'未找到设备'},404);
-          try{return json(this.desktop.create(d,data.quality||'wifi'));}catch(error){return json({ok:false,msg:error.message},400);}
+          try{return json(await this.desktop.create(d,data.quality||'wifi'));}catch(error){return json({ok:false,msg:error.message},400);}
         }
         const role=url.pathname==='/api/elfremote/desktop/browser'?'browser':url.pathname==='/api/elfremote/desktop/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);
