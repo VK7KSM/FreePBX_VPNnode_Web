@@ -9,6 +9,7 @@
     <string name="paired">已配对，本机在线</string>
     <string name="report_now">立即上报</string>
     <string name="renew_code">重新获取配对码</string>
+    <string name="share_link">生成管理链接</string>
     <string name="grant_perms">允许后台运行</string>
     <string name="perm_ok">电池优化已忽略</string>
     <string name="perm_need">可稍后允许后台运行</string>

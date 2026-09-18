@@ -17,6 +17,7 @@ public final class MainActivity extends Activity {
     private Button permButton;
     private Button renewButton;
     private Button reportButton;
+    private Button shareButton;
     private TextView fileStatusView;
     private final Handler handler = new Handler();
     private final Runnable refresh = new Runnable() {
@@ -40,6 +41,8 @@ public final class MainActivity extends Activity {
         permButton = findViewById(R.id.permButton);
         renewButton = findViewById(R.id.renewButton);
         reportButton = findViewById(R.id.reportButton);
+        shareButton = findViewById(R.id.shareButton);
+        shareButton.setOnClickListener(v -> ShareLink.generate(this, store));
         fileStatusView=findViewById(R.id.fileStatusView);
         reportButton.setOnClickListener(v -> ServiceStarter.startNow(this));
         renewButton.setOnClickListener(v -> ServiceStarter.renew(this));
@@ -75,6 +78,7 @@ public final class MainActivity extends Activity {
             permView.setText("");
             renewButton.setVisibility(View.GONE);
             reportButton.setVisibility(View.VISIBLE);
+            shareButton.setVisibility(View.VISIBLE);
             return;
         }
         titleView.setText(R.string.title_pair);
@@ -84,6 +88,7 @@ public final class MainActivity extends Activity {
         permView.setText(Protocol.remainingHint(store.expiresAt(), System.currentTimeMillis()));
         renewButton.setVisibility(View.VISIBLE);
         reportButton.setVisibility(View.GONE);
+        shareButton.setVisibility(View.GONE);
     }
 
     private void renderFiles(){
