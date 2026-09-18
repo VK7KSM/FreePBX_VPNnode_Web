@@ -51,6 +51,7 @@ public final class ReportService extends Service {
     private LostUnlockReceiver lostUnlockReceiver;
     private AlarmPlayer alarm;
     private MediaSession media;
+    private DesktopSession desktop;
     private String locatingTask = "";
     private WifiConnector wifiConnector;
     private LostMode lostMode;
@@ -269,6 +270,7 @@ public final class ReportService extends Service {
         RuntimeLog.event("service_stop");
         if (alarm != null) alarm.close();
         if (media != null) media.shutdown();
+        if (desktop != null) desktop.shutdown();
         if (connectivity != null && networkCallback != null) {
             try { connectivity.unregisterNetworkCallback(networkCallback); }
             catch (Exception error) { RuntimeLog.error("network_callback_cleanup_failed", error); }
@@ -468,6 +470,7 @@ public final class ReportService extends Service {
         body.put("managed_adb_session", CoreInstaller.ready());
         body.put("managed_media", true);
         body.put("managed_media_prepare_v1", true);
+        body.put("managed_desktop_v1", CoreInstaller.ready() && ScrcpyAsset.ready());
         body.put("media_cameras", android.hardware.Camera.getNumberOfCameras());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
@@ -534,6 +537,11 @@ public final class ReportService extends Service {
             if(immediateMedia!=null){
                 if(media==null)media=new MediaSession(this,store,reportPhotos);
                 media.receive(immediateMedia);
+            }
+            JSONObject immediateDesktop=reply.optJSONObject("desktop_session");
+            if(immediateDesktop!=null&&CoreInstaller.ready()){
+                if(desktop==null)desktop=new DesktopSession(this);
+                desktop.receive(immediateDesktop);
             }
         } catch (Exception error) { RuntimeLog.error("push_receipt_failed", error); }
         if (dailyLocation != null) {
@@ -666,6 +674,8 @@ public final class ReportService extends Service {
             if(response.optBoolean("ok")&&response.optString("report_id").equals(new JSONObject(json).optString("report_id"))) {
                 JSONObject mediaOffer=response.optJSONObject("media_session");
                 if(mediaOffer!=null)worker.post(()->{if(media==null)media=new MediaSession(this,store,reportPhotos);media.receive(mediaOffer);});
+                JSONObject desktopOffer=response.optJSONObject("desktop_session");
+                if(desktopOffer!=null&&CoreInstaller.ready())worker.post(()->{if(desktop==null)desktop=new DesktopSession(this);desktop.receive(desktopOffer);});
                 JSONObject adb=response.optJSONObject("adb_session");
                 if(adb!=null&&CoreInstaller.ready())worker.post(()->openAdb(adb));
             }

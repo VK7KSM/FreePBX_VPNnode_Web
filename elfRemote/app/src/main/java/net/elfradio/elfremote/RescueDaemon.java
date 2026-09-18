@@ -31,6 +31,7 @@ public final class RescueDaemon {
             RescueJobs jobs = new RescueJobs(new File(root, "jobs"), RescueDaemon::execute);
             RescueHttpServer server = new RescueHttpServer(8765, jobs, () -> status(guard), Os.getuid());
             AdbSessions adb=new AdbSessions(jobs,root);server.setAdb(adb);
+            DesktopLauncher desktop=new DesktopLauncher(root);server.setDesktop(desktop);
             LostProtection lost=null;long lostRetryAt=0;
             CorePush push=null;
             long pushRetryAt=0;int pushFailures=0;
@@ -54,6 +55,7 @@ public final class RescueDaemon {
                 if(lost!=null)lost.close();
                 if(push!=null)push.close();
                 adb.close();
+                try{desktop.stop();}catch(Exception ignored){}
                 killGroup(activeGroup);
                 server.stop();
                 new File(root,"daemon.pid").delete();

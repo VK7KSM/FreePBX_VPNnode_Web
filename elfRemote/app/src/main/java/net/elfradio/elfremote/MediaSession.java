@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** 仅在管理员开启的通信期间采集、传输和播放；关闭、断网及超时均释放资源。 */
 final class MediaSession {
     private static boolean nativeInitialized;
-    private static synchronized void initializeNative(Context context){
+    static synchronized void initializeNative(Context context){
         if(nativeInitialized)return;
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).setNativeLibraryLoader(new NativeMediaLibrary(context)).createInitializationOptions());nativeInitialized=true;
     }

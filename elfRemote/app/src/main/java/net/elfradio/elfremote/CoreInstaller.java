@@ -34,7 +34,14 @@ final class CoreInstaller {
                 ready = checked.optInt("version_code") == BuildConfig.VERSION_CODE && checked.optBoolean("independent_push");
                 if (ready) CoreClient.request("/resume", new JSONObject());
                 if(ready)failures=0;
-                retryAt = SystemClock.elapsedRealtime() + (ready ? 60000 : 15000);
+                boolean scrcpyOk = false;
+                if (ready) {
+                    // scrcpy 服务端随本 APK 分发；每次就绪复检哈希，缺失或损坏就重新释放，直到成功。
+                    try { su(stage, ScrcpyAsset.installScript(ScrcpyAsset.stage(app))); scrcpyOk = true; }
+                    catch (Exception scrcpyError) { RuntimeLog.error("scrcpy_install_failed", scrcpyError); }
+                    ScrcpyAsset.setReady(scrcpyOk);
+                }
+                retryAt = SystemClock.elapsedRealtime() + (ready ? (scrcpyOk ? 60000 : 15000) : 15000);
             } catch (Exception error) {
                 ready = false; retryAt = SystemClock.elapsedRealtime() + Math.min(900000L,15000L << Math.min(6,failures++));
                 try {
