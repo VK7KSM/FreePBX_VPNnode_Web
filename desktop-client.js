@@ -76,7 +76,7 @@ async function action(s, act) {
 }
 
 async function negotiate(s, hello) {
-  s.generation = hello.generation;
+  s.generation = hello.generation; if (hello.ice_servers) s.iceServers = hello.ice_servers; if (hello.turn === false) log(s, 'TURN 凭据不可用，仅尝试直连');
   if (s.pc) { try { s.pc.close(); } catch {} }
   const pc = new RTCPeerConnection({ iceServers: hello.ice_servers || [{ urls: 'stun:stun.cloudflare.com:3478' }] });
   s.pc = pc; s.pendingCandidates = [];
