@@ -65,7 +65,7 @@ async function open() {
   try { await reload(); } catch (e) { state.error = e.message; } render();
 }
 function close() { const w = document.getElementById('shareWrap'); if (w) w.style.display = 'none'; state = null; }
-async function guard(fn) { if (!state) return; state.error = ''; try { await fn(); await reload(); } catch (e) { state.error = e.message || String(e); } render(); }
+async function guard(fn) { if (!state) return; state.error = ''; try { await fn(); await reload(); } catch (e) { if (state) state.error = e.message || String(e); } render(); }
 const ElfShare = {
   isShare, open, close,
   select(token) { if (!state) return; state.selected = token || null; render(); },
