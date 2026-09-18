@@ -42,9 +42,11 @@ staging/
 !gsm-sip-gateway/docs/
 !gsm-sip-gateway/docs/**
 
+# 大阪 SIP 服务器备份是可部署源码，允许维护其文档
+!sip-server/**/*.md
+
 # 非 Cloudflare Worker 子项目
 mqtt-server/
-sip-server/
 tools/
 elfRemote/*
 !elfRemote/control-plane.js

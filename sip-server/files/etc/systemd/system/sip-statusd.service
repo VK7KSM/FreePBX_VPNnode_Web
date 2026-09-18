@@ -1,0 +1,16 @@
+[Unit]
+Description=SIP local SQLite status daemon
+After=network-online.target asterisk.service
+Wants=network-online.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/sip-statusd.py
+Restart=always
+RestartSec=3
+Nice=10
+CPUQuota=20%
+MemoryMax=80M
+TasksMax=32
+NoNewPrivileges=yes
+[Install]
+WantedBy=multi-user.target
