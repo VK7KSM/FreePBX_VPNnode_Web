@@ -103,7 +103,7 @@ function deviceReady(){
   var d = currentDev();
   return !!(d && d.enabled !== false);
 }
-function disAttr(){ return deviceReady() ? "" : " disabled"; }
+function disAttr(){ var d=currentDev(); if(d&&typeof ElfShare!=='undefined'&&ElfShare.locked(d))return " disabled"; return deviceReady() ? "" : " disabled"; }
 function nowIso(){ return new Date().toISOString(); }
 function uiOf(device){
   var d = device || currentDev();
@@ -271,6 +271,7 @@ function reportFeedback(d){
 }
 function updateReportFeedback(){var el=$('reportFeedback');if(el)el.textContent=reportFeedback(currentDev());}
 async function requestDeviceStatus(id){
+  var lockedDevice=DEV.find(function(x){return x.id===id;});if(lockedDevice&&typeof ElfShare!=='undefined'&&ElfShare.locked(lockedDevice)){STATUS[id]='';renderList();return false;}
   if(["拉取中","等待设备领取","等待完整上报"].includes(STATUS[id])) return false;
   var device=DEV.find(function(d){return d.id===id;});
   STATUS_SEEN[id]=device && device.last_seen;
@@ -605,10 +606,12 @@ function pageAdb(dis){
   h += '<button class="'+(maintenanceAvailable(d,'restart_adbd')?'btn-green':'btn-gray')+'" onclick="enqueueRepair(\'restart_adbd\')"'+(maintenanceAvailable(d,'restart_adbd')?'':' disabled')+'>重启adbd</button>';
   h += '</span>';
 
-  var lines=u?u.shell.lines:[], output=esc(r.text||'');
+  var observingShell=d&&typeof ElfShare!=='undefined'&&ElfShare.locked(d);
+  var lines=observingShell?observedShellLines(d):(u?u.shell.lines:[]), output=observingShell?'':esc(r.text||'');
+  if(observingShell)blocked=true;
   for(var i=0;i<lines.length;i++) output+='<span class="adb-'+esc(lines[i].k)+'">'+esc(lines[i].t)+'\n</span>';
   if(!output)output='<span class="adb-sys">'+(ready?'等待输入命令':'客户端维护核心未就绪')+'</span>';
-  var left='<section class="monitor"><h4 class="monitor-heading"><span class="terminal-title">通用终端</span>'+h+'</h4><pre class="adb-term task-result" id="taskOut">'+output+'</pre>';
+  var left='<section class="monitor"><h4 class="monitor-heading"><span class="terminal-title">通用终端'+(observingShell?'（旁观）':'')+'</span>'+h+'</h4><pre class="adb-term task-result" id="taskOut">'+output+'</pre>';
   left+='<div class="adb-row"><span class="adb-prompt">shell&gt;</span><input id="shellCmd" class="inp adb-cmd" autocomplete="off" spellcheck="false" placeholder="pm list packages"'+(blocked?' disabled':'')+'>';
   left+='<button class="btn-green" onclick="shellSend()"'+(blocked?' disabled':'')+'>发送</button>';
   if(u&&u.shell.pending)left+='<button class="btn-gray" onclick="cancelCommand()"'+(u.shell.cancelRequested?' disabled':'')+'>'+(u.shell.cancelRequested?'停止中':'停止')+'</button>';
@@ -618,8 +621,10 @@ function pageAdb(dis){
   if(t.type==='send_file')foot+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
   if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
-  var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
-  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session||d.share_locked===true))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
+  var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected,observing=!!adb.observing;
+  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端'+(observing?'（旁观）':'')+'</span>';
+  if(d&&d.share_locked===true&&typeof ElfShare!=='undefined'&&ElfShare.locked(d))right+='<button class="'+(observing?'btn-red':'btn-green')+'" onclick="'+(observing?'adbObserveStop()':'adbObserve()')+'"'+(!observing&&!d.adb_observable?' disabled':'')+'>'+(observing?'停止旁观':d.adb_observable?'旁观':'用户未开ADB')+'</button></h4>';
+  else right+='<button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session||d.share_locked===true))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
   right+='<div class="adb-box"><div class="adb-term" id="adbTerm" style="padding:8px;overflow:hidden">'+(on?'ADB 已连接':'ADB 未连接')+'</div>';
   right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="'+(on?'btn-red':'btn-gray')+'" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>中断</button></div></div></section>';
   return '<div class="monitor-grid">'+left+right+'</div>'+(foot?'<div class="terminal-status">'+foot+'</div>':'');
@@ -685,7 +690,7 @@ function fileManagerPermissions(e){
   return text+' ('+e.mode.toString(8)+')';
 }
 function fileManagerTime(ms){return ms>0?new Intl.DateTimeFormat('sv-SE',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(ms)):'—';}
-function loadFileManagerOnEntry(){var s=fileManagerState(),d=currentDev();if(s&&d.managed_file_operations&&!s.busy&&!s.loaded)fileManagerLoad(s.path,0);}
+function loadFileManagerOnEntry(){var s=fileManagerState(),d=currentDev();if(s&&typeof ElfShare!=='undefined'&&ElfShare.locked(d)){if(!s.loaded){s.message='旁观中：只显示已返回的目录数据，不向设备发任务';renderFileManager(s);}return;}if(s&&d.managed_file_operations&&!s.busy&&!s.loaded)fileManagerLoad(s.path,0);}
 function pageFiles(){var s=fileManagerState();return s?'<div id="fileManagerPanel" class="file-manager-page">'+fileManagerHtml(s)+'</div>':'<p class="muted">请先选择设备</p>';}
 function fileManagerRows(s){
   return s.entries.map(function(e,i){var selected=Array.isArray(s.selected)&&s.selected.includes(e.name);
@@ -693,7 +698,7 @@ function fileManagerRows(s){
   }).join('');
 }
 function fileManagerHtml(s){
-  var d=fileManagerDevice(s),disabled=s.busy||!d||!d.managed_file_operations||d.enabled===false?' disabled':'',picked=fileManagerSelected(s),selection=disabled||(!picked.length?' disabled':'');
+  var d=fileManagerDevice(s),disabled=s.busy||!d||!d.managed_file_operations||d.enabled===false||(typeof ElfShare!=='undefined'&&ElfShare.locked(d))?' disabled':'',picked=fileManagerSelected(s),selection=disabled||(!picked.length?' disabled':'');
   var h='<div class="file-manager-toolbar"><button class="btn-green" onclick="fileManagerSend()"'+(s.busy||!maintenanceAvailable(d,'send_file')?' disabled':'')+'>发送文件</button><button class="btn-green" onclick="fileManagerTake()"'+(selection||!d.managed_file_return?' disabled':'')+'>取回文件</button><span class="file-toolbar-divider"></span>';
   [['mkdir','新建文件夹'],['copy','复制'],['move','移动'],['rename','改名'],['delete','删除']].forEach(function(a){var off=a[0]==='mkdir'?disabled:selection;if(a[0]==='rename'&&picked.length!==1)off=' disabled';if(a[0]==='delete'&&!d.managed_file_delete)off=' disabled';h+='<button class="'+(a[0]==='delete'?'file-delete':'file-tool')+'" onclick="fileManagerAction(\''+a[0]+'\')"'+off+'>'+a[1]+'</button>';});
   h+='<span class="file-manager-count">共 '+s.total+' 项'+(picked.length?' · 已选 '+picked.length+' 项':'')+'</span></div>';
@@ -744,6 +749,7 @@ async function fileManagerRefresh(s,path,offset){
   s.path=r.path;s.pathDraft='';s.loaded=true;s.entries=r.entries;s.total=r.total;s.next=r.next;s.offset=offset;s.selected=[];
 }
 async function fileManagerLoad(path,offset){
+  var lockedFm=fileManagerState();if(lockedFm&&typeof ElfShare!=='undefined'&&ElfShare.locked(fileManagerDevice(lockedFm))){lockedFm.message='旁观中：不向设备发任务';renderFileManager(lockedFm);return;}
   var s=fileManagerState();if(!s||s.busy)return;
   path=typeof path==='string'?path:$('fileManagerPath').value.trim();offset=Number.isInteger(offset)&&offset>=0?offset:0;
   s.busy=true;s.cancelled=false;s.error=false;s.done=false;fileManagerStatus(s,'正在读取目录');
@@ -1761,7 +1767,8 @@ function bindAdbView(){
   el.textContent='';terminal.loadAddon(fit);terminal.open(el);fit.fit();
   terminal.write(adb.output||((adb.connecting?'ADB 连接中':'ADB 未连接')+'\r\n'));
   terminal.onData(function(data){adbWrite(u,data);});
-  var resize=new ResizeObserver(function(){fit.fit();if(adb.connected&&adb.socket&&adb.socket.readyState===1)adb.socket.send(JSON.stringify({type:'resize',rows:terminal.rows,columns:terminal.cols}));});resize.observe(el);
+  var resize=new ResizeObserver(function(){if(adb.observing){if(adb.observeSize)terminal.resize(adb.observeSize.columns,adb.observeSize.rows);return;}fit.fit();if(adb.connected&&adb.socket&&adb.socket.readyState===1)adb.socket.send(JSON.stringify({type:'resize',rows:terminal.rows,columns:terminal.cols}));});resize.observe(el);
+  if(adb.observing&&adb.observeSize)terminal.resize(adb.observeSize.columns,adb.observeSize.rows);
   ADB_VIEW={u:u,terminal:terminal,resize:resize};
   var input=$('adbCmd');if(input)input.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();adbSendCommand();}if(e.ctrlKey&&e.key.toLowerCase()==='c'){e.preventDefault();adbWrite(u,'\x03');}};
 }
@@ -1792,6 +1799,35 @@ async function adbConnect(){
   }catch(error){a.connected=false;a.connecting=false;adbAppend(u,error.message+'\r\n');if(selDev===d.id)renderOps();}
 }
 function adbDisconnect(){var u=uiOf();if(!u)return;var a=u.adb;if(a.socket)a.socket.close();a.connected=false;a.connecting=false;adbAppend(u,'\r\nADB 已断开\r\n');renderOps();}
+// 总后台只读旁观：订阅服务器上独立用户 ADB 会话的输出副本；不建设备连接、不发输入与尺寸；关闭只断自己。
+function adbObserve(){
+  var u=uiOf(),d=currentDev();if(!u||!d||u.adb.observing||u.adb.connected||u.adb.connecting)return;
+  var a=u.adb;a.observing=true;a.observeSize=null;a.output='旁观连接中\r\n';renderOps();
+  var socket=new WebSocket(location.origin.replace(/^http/,'ws')+'/api/elfremote/adb/observer?device_id='+encodeURIComponent(d.id)),decoder=new TextDecoder();a.observeSocket=socket;
+  socket.onmessage=function(event){if(a.observeSocket!==socket)return;try{
+    var m=JSON.parse(event.data);
+    if(m.type==='observing'){if(m.rows&&m.columns)a.observeSize={rows:m.rows,columns:m.columns};adbAppend(u,'已开始旁观用户的 ADB 终端（只读，从'+(m.history?'最近一段':'现在')+'开始）\r\n');if(ADB_VIEW&&ADB_VIEW.u===u&&a.observeSize)ADB_VIEW.terminal.resize(a.observeSize.columns,a.observeSize.rows);}
+    else if(m.type==='size'){a.observeSize={rows:m.rows,columns:m.columns};if(ADB_VIEW&&ADB_VIEW.u===u)ADB_VIEW.terminal.resize(m.columns,m.rows);}
+    else if(m.type==='output'){var raw=atob(m.data),bytes=Uint8Array.from(raw,function(c){return c.charCodeAt(0);});adbAppend(u,decoder.decode(bytes,{stream:true}));}
+    else if(m.type==='closed'){adbAppend(u,'\r\n用户的 ADB 会话已结束\r\n');socket.close();}
+  }catch(e){socket.close();}};
+  socket.onclose=function(){if(a.observeSocket!==socket)return;a.observing=false;a.observeSocket=null;if(selDev===d.id)renderOps();};
+  socket.onerror=function(){socket.close();};
+}
+function adbObserveStop(){var u=uiOf();if(!u)return;var a=u.adb;if(a.observeSocket)a.observeSocket.close();a.observing=false;a.observeSocket=null;adbAppend(u,'\r\n已停止旁观\r\n');renderOps();}
+// 通用终端只读：从服务器任务记录重建用户执行过的命令与结果，不逐字符实时，不发任务。
+var OBSERVED_SHELL={};
+function observedShellLines(d){
+  var o=OBSERVED_SHELL[d.id];
+  if(!o||Date.now()-o.at>5000){OBSERVED_SHELL[d.id]=o={at:Date.now(),lines:o?o.lines:[],loading:true};
+    fetch('/api/elfremote/tasks?device_id='+encodeURIComponent(d.id)).then(function(r){return r.json();}).then(function(x){
+      if(!x.ok)return;var lines=[],tasks=(x.tasks||[]).filter(function(t){return ['root_exec','pull_logs','heal_network','reboot','restart_adbd'].includes(t.type);}).slice(0,30).reverse();
+      tasks.forEach(function(t){var r=t.result||{};lines.push({k:'in',t:t.type==='root_exec'?(t.params&&t.params.command||'(命令)'):(t.type_label||t.type)});if(r.text)lines.push({k:'out',t:r.text});lines.push({k:'sys',t:(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.exit_code!=null?' · 退出码 '+r.exit_code:'')+(t.completed_at?' · '+sydney(t.completed_at):'')});});
+      var cur=OBSERVED_SHELL[d.id];if(cur){cur.lines=lines;cur.loading=false;}if(selDev===d.id)renderOps();
+    }).catch(function(){var cur=OBSERVED_SHELL[d.id];if(cur)cur.loading=false;});
+  }
+  return o.lines.length?o.lines:[{k:'sys',t:o.loading?'正在读取用户的命令记录…':'用户尚未执行命令'}];
+}
 async function shellSend(){
   var u=uiOf(),d=currentDev(),inp=$('shellCmd');if(!u||!d)return;
   var raw=shellNorm(inp?inp.value:'');if(!raw||d.enabled===false||u.shell.pending||!d.managed_exec_tasks)return;
@@ -1875,6 +1911,7 @@ function assignUpdate(versionCode){
 function enqueueRepair(type,params){
   var d = currentDev();
   if(!d) return;
+  if(typeof ElfShare!=='undefined'&&ElfShare.locked(d)&&!/^(lost_|safety_|cancel_lost|lost)/.test(type)){alert('独立用户使用中，总后台只读');return Promise.resolve();}
   var run=null;
   if(MAINTENANCE_CAPS[type]){
     if(!maintenanceAvailable(d,type))return Promise.resolve();
@@ -1934,7 +1971,7 @@ function wifiConnect(){
   return enqueueRepair('connect_wifi',{ssid:ssid,password:password});
 }
 function unavailableAction(name){alert(name+'尚未接通，未发送到设备');}
-function contactRefresh(){if(contactsUsePages(currentDev()))return contactPageAction('open');return enqueueRepair('contacts_read');}
+function contactRefresh(){var lockedDev=currentDev();if(lockedDev&&typeof ElfShare!=='undefined'&&ElfShare.locked(lockedDev)){alert('独立用户使用中，总后台只读已返回的通讯录');return;}if(contactsUsePages(currentDev()))return contactPageAction('open');return enqueueRepair('contacts_read');}
 function contactAdd(){
   if(contactsUsePages(currentDev()))return;
   return enqueueRepair('contact_add',{name:$('cName').value,phone:$('cPhone').value});

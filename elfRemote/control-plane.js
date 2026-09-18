@@ -915,6 +915,7 @@ export function publicRepair(task) {
     detail: task.detail || "",
     ...(task.network?{network:publicNetwork(task)}:{}),
     ...(task.sip_destination?{sip_destination:task.sip_destination}:{}),
+    ...(task.type==='root_exec'&&task.params&&typeof task.params.command==='string'?{params:{command:task.params.command.slice(0,2000)}}:{}),
     ...(['send_file','get_file'].includes(task.type)&&task.params?{params:{path:task.params.path,allow_cellular:task.params.allow_cellular,...(task.type==='send_file'?{transfer_id:task.params.transfer_id,overwrite:task.params.overwrite}:{})}}:{}),
     expires_at: task.expires_at || 0,
     created_at: task.created_at || null,
