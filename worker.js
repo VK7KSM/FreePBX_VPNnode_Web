@@ -40,6 +40,7 @@ import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, f
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
 import desktopClientSource from './desktop-client-source.js';
+import {shareSessionSource} from './share-session.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
@@ -110,6 +111,8 @@ import fileHashSource from './file-hash-source.js';
 import {photoMetadata,photoHttp,cleanupPhotos} from './report-photo.js';
 import {MediaRelay} from './media-relay.js';
 import {DesktopRelay,desktopAllowed,turnFetcher} from './desktop-relay.js';
+import {shareCookieToken,shareCookie,validate as shareValidate,login as shareLogin,logout as shareLogout,createLink as shareCreateLink,listLinks as shareListLinks,updateLink as shareUpdateLink,revokeLink as shareRevokeLink,revokeDevice as shareRevokeDevice,observerLocked as shareObserverLocked,shareUrl,ttlFromInput,normalizeToken} from './device-share.js';
+import {shareVerdict,observerVerdict,requestDeviceId,sanitizeDeviceUpdate,sameOwner,ownerOf} from './share-scope.js';
 import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
@@ -258,14 +261,26 @@ export class ElfStore {
     if(url.pathname==='/api/devices/events') {
       if(request.method!=='GET')return authJson({ok:false},405);
       if(!trustedOrigin(request))return authJson({ok:false,msg:'请求来源不匹配'},403);
-      const auth=await this.ctx.blockConcurrencyWhile(async()=>{
-        const authEnv=await this.ctx.storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
-        return handleAdminAuth(this.ctx.storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
-      });
-      if(!auth.ok)return auth;
+      const share=await this.ctx.blockConcurrencyWhile(()=>shareValidate(this.ctx.storage,shareCookieToken(request)));
+      if(!share){
+        const auth=await this.ctx.blockConcurrencyWhile(async()=>{
+          const authEnv=await this.ctx.storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
+          return handleAdminAuth(this.ctx.storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
+        });
+        if(!auth.ok)return auth;
+      }
       if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return authJson({ok:false,msg:'需要WebSocket连接'},426);
-      const pair=new WebSocketPair();this.events.accept(pair[1]);
+      const pair=new WebSocketPair();this.events.accept(pair[1],share);
       return new Response(null,{status:101,webSocket:pair[0]});
+    }
+    // 外层 Worker 自己处理的路由（文件、照片、录音等）用这两个内部接口取分享上下文与旁观锁。
+    if(url.pathname==='/__share/session'&&request.method==='GET'){
+      const share=await this.ctx.blockConcurrencyWhile(()=>shareValidate(this.ctx.storage,shareCookieToken(request)));
+      return json({ok:!!share,context:share||null});
+    }
+    if(url.pathname==='/__share/locked'&&request.method==='GET'){
+      const deviceId=url.searchParams.get('device_id')||'';
+      return json({ok:true,locked:!!deviceId&&await this.ctx.blockConcurrencyWhile(()=>shareObserverLocked(this.ctx.storage,deviceId))});
     }
     if(url.pathname==='/__geolocation' && request.method==='POST') {
       const raw=await request.text();
@@ -276,6 +291,7 @@ export class ElfStore {
         {...this.env,__storage:this.ctx.storage,__googleLocal:true},data.deviceId,{radio:data.radio})));
     }
     if(url.pathname.startsWith('/api/elfremote/desktop/')) {
+      const gate=await this.panelGate(request,url);if(gate instanceof Response)return gate;const ctx=gate;
       try {
         if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='DELETE'){
           const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
@@ -293,16 +309,18 @@ export class ElfStore {
           if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'远程桌面请求无效'},400);
           const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
           if(!d)return json({ok:false,msg:'未找到设备'},404);
-          try{return json(await this.desktop.create(d,data.quality||'wifi'));}catch(error){return json({ok:false,msg:error.message},400);}
+          try{const created=await this.desktop.create(d,data.quality||'wifi');const s=this.desktop.sessions.get(created.session_id);if(s&&!s.owner)s.owner=ownerOf(ctx);if(s&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'该设备的远程桌面正由其他登录使用'},409);return json(created);}catch(error){return json({ok:false,msg:error.message},400);}
         }
         const role=url.pathname==='/api/elfremote/desktop/browser'?'browser':url.pathname==='/api/elfremote/desktop/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);
         if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false},426);
         const s=this.desktop.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        if(role==='browser'&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
         const pair=new WebSocketPair();this.desktop.attach(s,role,pair[1]);return new Response(null,{status:101,webSocket:pair[0]});
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/media/')) {
+      const gate=await this.panelGate(request,url);if(gate instanceof Response)return gate;const ctx=gate;
       try {
         if(url.pathname==='/api/elfremote/media/session'&&request.method==='DELETE'){
           const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
@@ -325,7 +343,7 @@ export class ElfStore {
             // 拒绝必须在并发回调内转为响应；异常逃出会让生产DO重置。
             try {
               const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
-              phase='create';const result=this.media.create(d,data.mode,data.camera);created=result.session_id;phase='save';
+              phase='create';const result=this.media.create(d,data.mode,data.camera);created=result.session_id;{const s=this.media.sessions.get(created);if(s)s.owner=ownerOf(ctx);}phase='save';
               if(data.mode==='photo'){
                 const key='manual-photo/'+d.id+'/'+result.session_id,expires=Date.now()+86400000;
                 writtenKeys.push(key,'manual-photo-expiry/'+String(expires).padStart(13,'0')+'/'+result.session_id);
@@ -344,10 +362,12 @@ export class ElfStore {
         if(!role||request.method!=='GET')return json({ok:false},404);
         if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false},426);
         const s=this.media.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        if(role==='browser'&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
         const pair=new WebSocketPair();this.media.attach(s,role,pair[1]);return new Response(null,{status:101,webSocket:pair[0]});
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/adb-tunnel/')) {
+      const gate=await this.panelGate(request,url);if(gate instanceof Response)return gate;const ctx=gate;
       try {
         if(url.pathname==='/api/elfremote/adb-tunnel/session') {
           if(request.method==='GET') {
@@ -362,7 +382,7 @@ export class ElfStore {
               try{
                 const device=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(value=>value.id===data.device_id);
                 const origin=new URL(this.env.ELF_BASE_URL||request.url).origin;
-                return json(this.adbTunnel.create(device,origin));
+                const created=this.adbTunnel.create(device,origin);{const s=this.adbTunnel.sessions.get(created.session_id);if(s)s.owner=ownerOf(ctx);}return json(created);
               }catch(error){return json({ok:false,msg:error.message},400);}
             });
           }
@@ -386,12 +406,13 @@ export class ElfStore {
       }catch(error){return json({ok:false,msg:error.message},400);}
     }
     if(url.pathname.startsWith('/api/elfremote/adb/')) {
+      const gate=await this.panelGate(request,url);if(gate instanceof Response)return gate;const ctx=gate;
       try {
         if(url.pathname==='/api/elfremote/adb/session'&&request.method==='POST') {
           const raw=await request.text();if(raw.length>4096)return json({ok:false,msg:'请求过大'},400);
           const data=JSON.parse(raw);
           return await this.ctx.blockConcurrencyWhile(async()=>{
-            try{return json(this.adb.create((await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id)));}
+            try{const created=this.adb.create((await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id));{const s=this.adb.sessions.get(created.session_id);if(s)s.owner=ownerOf(ctx);}return json(created);}
             catch(error){return json({ok:false,msg:error.message},400);}
           });
         }
@@ -399,6 +420,7 @@ export class ElfStore {
         if(!role||request.method!=='GET')return json({ok:false},404);
         if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({ok:false,msg:'需要WebSocket连接'},426);
         const session=this.adb.get(url.searchParams.get('session_id'),role,(request.headers.get('Authorization')||'').replace(/^Bearer /,''));
+        if(role==='browser'&&!sameOwner(session.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
         const pair=new WebSocketPair();this.adb.attach(session,role,pair[1]);
         return new Response(null,{status:101,webSocket:pair[0]});
       }catch(error){return json({ok:false,msg:error.message},400);}
@@ -546,17 +568,25 @@ export class ElfStore {
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
           return await this.events.transaction(async storage => {
+            let ctx={kind:'admin'};
+            if(url.pathname==='/api/share/login'&&request.method==='POST'){
+              if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
+              return await this.shareApi(storage,null,url,request,raw);
+            }
             if(!isMachineRoute(url.pathname,request.method)) {
               if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
-              const authEnv=await storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
-              const auth=await handleAdminAuth(storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
-              if(!auth.ok)throw auth;
+              ctx=await this.resolveContext(storage,request);
+              if(ctx instanceof Response)throw ctx;
+              const denied=await this.applyVerdicts(storage,ctx,url,request.method,raw);
+              if(denied)throw denied;
             }
+            if(url.pathname.startsWith('/api/share/'))return await this.shareApi(storage,ctx,url,request,raw);
             const replay = new Request(request.url, { method: request.method, headers: request.headers, body: raw });
             const response = await app.fetch(replay, { ...this.env, __storage: storage,
               __requestCf: request.cf, __requestIp: request.headers.get("CF-Connecting-IP") || "", __adb:this.adb,
-              __adbTunnel:this.adbTunnel,__media:this.media,__desktop:this.desktop });
+              __adbTunnel:this.adbTunnel,__media:this.media,__desktop:this.desktop,__ctx:ctx });
             if (!response.ok) throw response;
+            if(url.pathname==='/api/devices'&&request.method==='GET')return await this.decorateDeviceList(storage,ctx,response);
             return response;
           });
         } catch (error) {
@@ -568,6 +598,15 @@ export class ElfStore {
       });
     }
     const key = decodeURIComponent(url.pathname.slice(1));
+    if (request.method === "GET") {
+      const v = await this.ctx.storage.get(key);
+      return new Response(JSON.stringify(v === undefined ? null : v), {
+        headers: { "Content-Type": "application/json; charset=utf-8" }
+      });
+    }
+    return this.rawStore(request,key);
+  }
+  async rawStore(request,key){
     if (request.method === "GET") {
       const v = await this.ctx.storage.get(key);
       return new Response(JSON.stringify(v === undefined ? null : v), {
@@ -587,13 +626,116 @@ export class ElfStore {
   }
 }
 
+// ---------- 单设备分享：上下文、范围裁决与分享接口（挂到 ElfStore 原型，避免改动类体） ----------
+ElfStore.prototype.resolveContext=async function(storage,request){
+  const share=await shareValidate(storage,shareCookieToken(request));
+  if(share)return share;
+  const authEnv=await storage.get('panel_kv_authority')?{...this.env,PANEL_KV_ENABLED:'1'}:this.env;
+  const auth=await handleAdminAuth(storage,authEnv,new Request('https://elf-store/__auth/session',{headers:request.headers}));
+  return auth.ok?{kind:'admin'}:auth;
+};
+ElfStore.prototype.applyVerdicts=async function(storage,ctx,url,method,raw){
+  const verdict=shareVerdict(ctx,url.pathname,method,url,raw);
+  if(verdict)return authJson({ok:false,msg:verdict.msg},verdict.status);
+  if(ctx.kind==='admin'){
+    const targetId=requestDeviceId(url.pathname,method,url,raw);
+    if(targetId&&await shareObserverLocked(storage,targetId)){
+      const denied=observerVerdict(url.pathname,method,raw);
+      if(denied)return authJson({ok:false,msg:denied.msg,share_locked:true},denied.status);
+      if(url.pathname==='/api/devices/update'){let body=null;try{body=JSON.parse(raw||'{}');}catch{}const check=sanitizeDeviceUpdate(body);if(!check||check.error)return authJson({ok:false,msg:check?.error||'请求无效'},400);}
+    }
+  }
+  return null;
+};
+// 实时会话路由在事务外处理：单独过门（阻塞式串行读取分享会话）。
+ElfStore.prototype.panelGate=async function(request,url){
+  if(isMachineRoute(url.pathname,request.method))return {kind:'machine'};
+  if(!trustedOrigin(request))return authJson({ok:false,msg:'请求来源不匹配'},403);
+  const raw=request.method==='GET'?undefined:await request.clone().text();
+  return this.ctx.blockConcurrencyWhile(async()=>{
+    const ctx=await this.resolveContext(this.ctx.storage,request);
+    if(ctx instanceof Response)return ctx;
+    const denied=await this.applyVerdicts(this.ctx.storage,ctx,url,request.method,raw);
+    return denied||ctx;
+  });
+};
+// 新独立登录/会话结束时按归属关闭该设备上其他登录建立的实时会话。
+ElfStore.prototype.closeOwned=function(deviceId,keep){
+  for(const s of this.media.sessions.values())if(s.deviceId===deviceId&&!sameOwner(s.owner,keep))this.media.close(s,'设备已由其他登录接管');
+  for(const s of this.adb.sessions.values())if(s.deviceId===deviceId&&!sameOwner(s.owner,keep))this.adb.close(s,'设备已由其他登录接管');
+  for(const s of this.adbTunnel.sessions.values())if((s.deviceId||s.device?.id)===deviceId&&!sameOwner(s.owner,keep))this.adbTunnel.close(s,'admin_closed',1000);
+  for(const s of this.desktop.sessions.values())if(s.deviceId===deviceId&&!sameOwner(s.owner,keep))this.desktop.close(s,'设备已由其他登录接管');
+};
+ElfStore.prototype.decorateDeviceList=async function(storage,ctx,response){
+  const body=await response.json();
+  if(ctx.kind==='share'){
+    body.devices=(body.devices||[]).filter(d=>d.id===ctx.device_id);body.unpaired=[];body.share=true;
+    for(const d of body.devices)d.share_locked=false;
+  }else for(const d of body.devices||[])d.share_locked=await shareObserverLocked(storage,d.id);
+  return json(body);
+};
+ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
+  const origin='https://'+new URL(this.env.ELF_BASE_URL||'https://v.elfradio.net').host;
+  const method=request.method;let body={};if(raw){if(raw.length>8192)return json({ok:false,msg:'请求过大'},400);try{body=JSON.parse(raw);}catch{return json({ok:false,msg:'请求格式错误'},400);}}
+  const withUrl=l=>({...l,url:shareUrl(origin,l.token)});
+  try{
+    if(url.pathname==='/api/share/login'&&method==='POST'){
+      const peer=request.headers.get('CF-Connecting-IP')||'local';
+      const result=await shareLogin(storage,{token:body.token,password:body.password,peer});
+      if(!result.ok)return json({ok:false,msg:result.msg,needs_password:!!result.needs_password},result.status);
+      const me={kind:'share',session_id:result.session_id,generation:result.generation};
+      this.closeOwned(result.device_id,me);
+      if(result.kicked)this.events.revoke(result.device_id,result.kicked.session_id);else this.events.changed();
+      const device=(await loadDevices({...this.env,__storage:storage})).find(d=>d.id===result.device_id);
+      return json({ok:true,device_id:result.device_id,device_name:device?.name||'',session_id:result.session_id},200,{'Set-Cookie':shareCookie(result.cookie,30*86400)});
+    }
+    if(url.pathname==='/api/share/logout'&&method==='POST'){
+      if(ctx?.kind==='share'){await shareLogout(storage,shareCookieToken(request));this.closeOwned(ctx.device_id,{kind:'admin'});this.events.revoke(ctx.device_id,ctx.session_id);}
+      return json({ok:true},200,{'Set-Cookie':shareCookie('',0)});
+    }
+    if(url.pathname==='/api/share/session'&&method==='GET'){
+      if(ctx?.kind!=='share')return json({ok:true,kind:ctx?.kind||'none'});
+      const device=(await loadDevices({...this.env,__storage:storage})).find(d=>d.id===ctx.device_id);
+      return json({ok:true,kind:'share',device_id:ctx.device_id,device_name:device?.name||'',login_at:ctx.login_at,link_token:ctx.link_token});
+    }
+    const deviceId=method==='GET'?url.searchParams.get('device_id'):body.device_id;
+    if(url.pathname==='/api/share/links'&&method==='GET'){
+      if(!deviceId)return json({ok:false,msg:'设备编号无效'},400);
+      const list=await shareListLinks(storage,deviceId);
+      return json({ok:true,links:list.links.map(withUrl),session:list.session,current_session_id:ctx?.kind==='share'?ctx.session_id:null,server_time:Date.now()});
+    }
+    if(url.pathname==='/api/share/links'&&method==='POST'){
+      const device=(await loadDevices({...this.env,__storage:storage})).find(d=>d.id===deviceId);
+      if(!device)return json({ok:false,msg:'未找到设备'},404);
+      const ttlMs=ttlFromInput(body.ttl);
+      const {link}=await shareCreateLink(storage,{deviceId,ttlMs,password:body.password||null,source:ctx?.kind==='share'?'share':'admin'});
+      this.events.changed();
+      return json({ok:true,link:withUrl({token:link.token,created_at:link.created_at,expires_at:link.expires_at,has_password:!!link.password,source:link.source})});
+    }
+    if(url.pathname==='/api/share/links/update'&&method==='POST'){
+      const link=await shareUpdateLink(storage,{token:body.token,password:body.password,ttl:body.ttl},ctx);
+      this.events.changed();
+      return json({ok:true,link:withUrl(link)});
+    }
+    if(url.pathname==='/api/share/links/delete'&&method==='POST'){
+      const token=normalizeToken(body.token);if(!token)return json({ok:false,msg:'链接无效'},400);
+      const link=await storage.get('share/link/'+token);
+      const result=await shareRevokeLink(storage,token,ctx);
+      if(result.kicked&&link){this.closeOwned(link.device_id,{kind:'admin'});this.events.revoke(link.device_id,result.kicked.session_id);}else this.events.changed();
+      return json({ok:true,kicked:!!result.kicked});
+    }
+    return json({ok:false,msg:'接口不存在'},404);
+  }catch(error){return json({ok:false,msg:error.message},400);}
+};
+
 // 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
+function outerDeviceRoute(path){return path==='/api/elfremote/files'||path.startsWith('/api/elfremote/files/')||path==='/api/elfremote/file-return'||path==='/api/elfremote/file-return/received'||path==='/api/elfremote/proxy-config';}
 function singleStoreRead(path,method) {
   return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
 }
 // 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
 function storeAuthenticates(path,method){
-  return method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models'].includes(path);
+  return method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'].includes(path);
 }
 
 // 数据找回期间的临时机器凭证：仅对旧存储找回接口生效，删除 MIGRATION_TOKEN 密钥后即失效。
@@ -671,7 +813,20 @@ const app = {
       }
       if(!storeAuthenticates(pathname,method)&&!(await migrationTokenOk(env,request,pathname))){
         const session = await adminRpc(env, request, "session");
-        if (!session.ok) return session;
+        if (!session.ok) {
+          if(!shareCookieToken(request))return session;
+          // 分享会话由 DO 裁决；外层自处理的路由先取上下文。
+          const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/session',{headers:request.headers})).json().catch(()=>null):null;
+          if(!probe?.ok)return session;
+          env.__ctx=probe.context;
+          const verdict=shareVerdict(probe.context,pathname,method,url,method==='GET'?undefined:await request.clone().text());
+          if(verdict)return authJson({ok:false,msg:verdict.msg},verdict.status);
+        }else if(method!=='GET'&&outerDeviceRoute(pathname)){
+          const bodyText=await request.clone().text();const targetId=requestDeviceId(pathname,method,url,bodyText);
+          const stub=targetId?elfDoStub(env):null;
+          const locked=stub?await (await stub.fetch('https://elf-store/__share/locked?device_id='+encodeURIComponent(targetId))).json().catch(()=>({locked:false})):{locked:false};
+          if(locked.locked){const denied=observerVerdict(pathname,method,bodyText);if(denied)return authJson({ok:false,msg:denied.msg,share_locked:true},denied.status);}
+        }
       }
     }
     if(pathname==='/api/admin/legacy-store'){
@@ -728,7 +883,7 @@ const app = {
       }), () => loadDevices(env));
     }
     if (!env.__storage && (pathname.startsWith("/api/devices") || pathname === "/api/device-models"
-        || pathname.startsWith("/api/elfremote/"))) {
+        || pathname.startsWith("/api/elfremote/") || pathname.startsWith("/api/share/"))) {
       const stub = elfDoStub(env);
       if (!stub) return json({ ok: false, msg: "设备存储不可用" }, 503);
       if(method==='POST'&&pathname==='/api/elfremote/task-progress'){
@@ -1026,6 +1181,21 @@ const app = {
     if (pathname === "/api/devices/report" && method === "POST") {
       return handleDeviceReport(env, request);
     }
+    if (pathname === "/api/devices/share-link" && method === "POST") {
+      try{
+        const data=await request.json();
+        const deviceId=String(data.device_id||'').trim(),token=String(data.token||'');
+        if(!deviceId||!token)return json({ok:false,msg:'缺少设备凭证'},400);
+        const matched=(await loadDevices(env)).find(d=>d.id===deviceId);
+        if(!matched)return json({ok:false,pairing_required:true,msg:'设备已解除配对'},404);
+        if(!matched.token_sha256||matched.token_sha256!==await sha256Hex(token))return json({ok:false,msg:'设备凭证无效'},401);
+        if(matched.enabled===false)return json({ok:false,msg:'设备已停用'},403);
+        const requestId=typeof data.request_id==='string'&&/^[A-Za-z0-9_.:-]{1,96}$/.test(data.request_id)?data.request_id:null;
+        const {link,duplicate}=await shareCreateLink(env.__storage,{deviceId,ttlMs:ttlFromInput(undefined),source:'device',requestId});
+        const origin='https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host;
+        return json({ok:true,duplicate,token:link.token,url:shareUrl(origin,link.token),expires_at:link.expires_at,qr_text:shareUrl(origin,link.token).toUpperCase()});
+      }catch(error){return json({ok:false,msg:'链接生成失败'},400);}
+    }
     if(pathname==='/api/elfremote/releases/prune'&&method==='POST'){
       try{const data=await request.json(),read=k=>getStore(env,k),devices=await loadDevices(env);
         if(data.action==='retry')return json({ok:true,applied:true});
@@ -1070,6 +1240,7 @@ const app = {
     }
     if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/evidence-client.js")return new Response(evidenceDataSource+'\n'+evidenceClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/share-session.js")return new Response(shareSessionSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/desktop-client.js")return new Response(desktopClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/media-client.js")return new Response(mediaCapabilitiesSource+"\n"+mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if (pathname === "/devices-client.js") {
@@ -1088,6 +1259,12 @@ const app = {
       return new Response(renderDevicesHtml(), {
         headers: { "Content-Type": "text/html; charset=utf-8" }
       });
+    }
+    if (/^\/m\/[A-Za-z0-9]{12}$/.test(pathname)) {
+      // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
+      const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
+      const html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
+      return new Response(html,{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"no-referrer"}});
     }
 
     if (pathname.startsWith("/api/")) return json({ ok: false, msg: "接口不存在" }, 404);
@@ -1695,6 +1872,7 @@ async function handleDeviceUpdate(env, request) {
 
 async function handleDeviceDelete(env, request) {
   try {
+    try{const peek=await request.clone().json();if(typeof peek?.id==='string'&&env.__storage)await shareRevokeDevice(env.__storage,peek.id);}catch{}
     const data = await request.json();
     if (data.confirm !== true) return json({ ok: false, msg: "删除需要确认" }, 400);
     const id = String(data.id || "").trim();

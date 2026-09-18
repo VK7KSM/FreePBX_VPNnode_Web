@@ -13,10 +13,19 @@ export class PanelEvents {
     if(ctx.setWebSocketAutoResponse && typeof WebSocketRequestResponsePair!=='undefined')
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('panel:ping','panel:pong'));
   }
-  accept(socket) {
+  accept(socket,share=null) {
     this.ctx.acceptWebSocket(socket,[TAG]);
-    socket.serializeAttachment({kind:TAG});
+    socket.serializeAttachment({kind:TAG,...(share?{share:{device_id:share.device_id,session_id:share.session_id,generation:share.generation}}:{})});
     socket.send('{"type":"ready"}');
+  }
+  // 独立会话失效（被踢/退出/删除链接/到期）：通知该会话的页面并关闭；管理员页面收到 changed 刷新灰化状态。
+  revoke(deviceId,sessionId=null) {
+    for(const socket of this.ctx.getWebSockets?.(TAG)||[]) {
+      const share=socket.deserializeAttachment()?.share;
+      if(!share||share.device_id!==deviceId||(sessionId&&share.session_id!==sessionId))continue;
+      try { socket.send('{"type":"revoked"}'); socket.close(1000,'会话已结束'); } catch {}
+    }
+    this.changed();
   }
   changed() {
     for(const socket of this.ctx.getWebSockets?.(TAG)||[]) {
