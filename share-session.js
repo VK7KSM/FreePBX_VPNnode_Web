@@ -2,6 +2,8 @@
 export const shareSessionSource = String.raw`(function installShareSession(){
   var meta=document.querySelector('meta[name="elf-share"]');if(!meta||!window.adminSession)return;
   var token=meta.content,state=window.adminSession,nativeFetch=window.fetch;
+  document.documentElement.classList.add('share-mode');
+  function setName(name){document.title=(name||'设备')+' · elfRemote Manager';var el=document.getElementById('shareDeviceName');if(el)el.textContent=name||'设备';}
   var kickedKey='elf-share-stop:'+token;
   function stopped(){try{return sessionStorage.getItem(kickedKey)||'';}catch(e){return '';}}
   function setStopped(reason){try{if(reason)sessionStorage.setItem(kickedKey,reason);else sessionStorage.removeItem(kickedKey);}catch(e){}}
@@ -16,21 +18,25 @@ export const shareSessionSource = String.raw`(function installShareSession(){
   function hideLogin(){var wrap=document.getElementById('loginWrap');if(wrap)wrap.style.display='none';}
   window.shareLogin=function(password){
     return nativeFetch('/api/share/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token,password:password||''})}).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});}).then(function(x){
-      if(x.data.ok){setStopped('');state.accept();hideLogin();document.title=(x.data.device_name||'设备')+' · elfRemote Manager';if(typeof window.load==='function')window.load();return true;}
+      if(x.data.ok){setStopped('');try{sessionStorage.setItem(seenKey,'1');}catch(e){}state.accept();hideLogin();setName(x.data.device_name);if(window.panelEvents&&window.panelEvents.reset)setTimeout(function(){window.panelEvents.reset();},50);if(typeof window.loadDevices==='function')window.loadDevices();return true;}
       showLogin(x.data.msg||'登录失败',!!x.data.needs_password);return false;
     }).catch(function(){showLogin('服务器暂不可用，请稍后重试',false);return false;});
   };
+  var seenKey='elf-share-seen:'+token;
+  function seen(){try{return !!sessionStorage.getItem(seenKey);}catch(e){return false;}}
   state.check=function(ready){
     var reason=stopped();
     if(reason){showLogin(reason==='kicked'?'已在其他页面登录，如需继续请重新登录':'已退出',false);return Promise.resolve();}
     return nativeFetch('/api/share/session',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-      if(d&&d.kind==='share'){state.accept();hideLogin();document.title=(d.device_name||'设备')+' · elfRemote Manager';if(typeof ready==='function')ready();return;}
+      if(d&&d.kind==='share'){try{sessionStorage.setItem(seenKey,'1');}catch(e){}state.accept();hideLogin();setName(d.device_name);if(typeof ready==='function')ready();return;}
+      // 本标签页曾登录成功而服务器已无会话：是被踢或到期，不自动抢回，等用户点“重新登录”。
+      if(seen()){setStopped('kicked');showLogin('已在其他页面登录或会话已结束，如需继续请重新登录',false);return;}
       return window.shareLogin('').then(function(ok){if(ok&&typeof ready==='function')ready();});
     }).catch(function(){showLogin('服务器暂不可用，请稍后重试',false);});
   };
   state.expire=function(){if(!stopped())setStopped('kicked');showLogin('已在其他页面登录，如需继续请重新登录',false);};
   state.logout=function(){
-    return nativeFetch('/api/share/logout',{method:'POST'}).then(function(){setStopped('logout');location.reload();}).catch(function(){alert('退出未完成，请重试');});
+    return nativeFetch('/api/share/logout',{method:'POST'}).then(function(){setStopped('logout');try{sessionStorage.removeItem(seenKey);}catch(e){}location.reload();}).catch(function(){alert('退出未完成，请重试');});
   };
   // 登录表单：复用原页面的 doLogin 入口，改为提交链接密码。
   window.shareSubmitLogin=function(){var pass=document.getElementById('lp');return window.shareLogin(pass?pass.value:'');};
