@@ -25,6 +25,12 @@ final class GatewayRemoteStore {
         try { return java.time.Instant.parse(value).toEpochMilli() <= System.currentTimeMillis(); }
         catch (Exception error) { return true; }
     }
+    /** Drop the server-issued identity but keep the device token so the server can match the same device again. */
+    void forgetRegistration() throws Exception {
+        SharedPreferences.Editor edit = prefs.edit();
+        for (String key : new String[]{"device_id", "paired", "code", "enroll_id", "expires_at", "pending_report"}) edit.remove(key);
+        if (!edit.commit()) throw new java.io.IOException("registration reset failed");
+    }
     JSONObject identity() throws Exception { return new JSONObject().put("device_id", deviceId()).put("token", token()); }
     void registered(JSONObject response) throws Exception {
         if (response.optString("device_id").isEmpty()) throw new java.io.IOException("registration incomplete");

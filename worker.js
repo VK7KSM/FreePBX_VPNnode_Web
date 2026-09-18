@@ -563,7 +563,7 @@ async function migrationTokenOk(env,request,pathname){
 }
 
 const quotaCooldown=new WeakMap();
-function isQuotaError(error){return /Exceeded allowed volume of requests in Durable Objects free tier/i.test(error?.message||'');}
+function isQuotaError(error){return /Exceeded allowed (volume of requests|rows (written|read)|storage)[^.]*Durable Objects free tier/i.test(error?.message||'');}
 function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
 function quotaUnavailable(){
   const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;

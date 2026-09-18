@@ -208,6 +208,11 @@ public final class GatewayRemoteService extends Service {
         } catch (Exception error) {
             delay = GatewayRemotePolicy.retryDelay(++failures);
             if (error instanceof GatewayRemoteHttp.RetryLater) delay = Math.max(delay,((GatewayRemoteHttp.RetryLater)error).delayMs);
+            if (error instanceof GatewayRemoteHttp.PairingRequired) {
+                // Backend no longer knows our device id: forget it and re-enrol next tick with the same token.
+                try { store.forgetRegistration(); pendingReport = null; failures = 0; delay = 5_000L; }
+                catch (Exception reset) { error = reset; }
+            }
             // Never persist server response bodies or credentials in diagnostics.
             store.prefs.edit().putString("last_error", error instanceof java.io.IOException ? error.getMessage() : error.getClass().getSimpleName()).apply();
         } finally {

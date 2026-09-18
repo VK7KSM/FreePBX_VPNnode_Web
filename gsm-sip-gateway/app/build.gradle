@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 68
-        versionName "1.5.0-gateway-alpha61-file-cancel"
+        versionCode 69
+        versionName "1.5.0-gateway-alpha62-pairing-recovery"
 
         // NDK build config
         externalNativeBuild {

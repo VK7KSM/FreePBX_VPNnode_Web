@@ -10,10 +10,21 @@ import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 final class GatewayRemoteHttp {
-    private static final class HttpRejected extends java.io.IOException {HttpRejected(int code){super("HTTP "+code);}}
+    private static class HttpRejected extends java.io.IOException {HttpRejected(int code){super("HTTP "+code);}}
     static final class RetryLater extends java.io.IOException {
         final long delayMs;
         RetryLater(int code,long delay) { super("HTTP "+code); delayMs=delay; }
+    }
+    /** Server no longer knows this device id (for example after a backend migration); re-enrol with the same token. */
+    static final class PairingRequired extends HttpRejected {
+        PairingRequired() { super(404); }
+    }
+    static boolean pairingRequired(HttpURLConnection connection) {
+        try (InputStream in = connection.getErrorStream()) {
+            if (in == null) return false;
+            byte[] buffer = new byte[4096]; int count = in.read(buffer);
+            return count > 0 && new JSONObject(new String(buffer, 0, count, StandardCharsets.UTF_8)).optBoolean("pairing_required");
+        } catch (Exception ignored) { return false; }
     }
     static JSONObject request(String path, JSONObject body) throws Exception {
         if (!path.startsWith("/api/devices/") && !"/api/elfremote/update-progress".equals(path)
@@ -48,6 +59,7 @@ final class GatewayRemoteHttp {
                 }
                 throw new RetryLater(code,delay);
             }
+            if (code == 404 && pairingRequired(connection)) throw new PairingRequired();
             if (code != 200) throw new HttpRejected(code);
             try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[4096]; int count;
