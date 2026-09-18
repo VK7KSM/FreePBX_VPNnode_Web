@@ -247,10 +247,11 @@ window.ElfMedia=(function(){
     updateTime(s);
   }
   function preview(d,fallback){if(active&&(!d||active.device.id!==d.id)){stop('已切换设备，通信结束',true);return fallback;}if(active&&active.mode!=='prepare')return '<div class="remote-preview media-live"></div>';if(d&&ElfMediaCapabilities.allows(d,'photo')&&d.media_cameras>1){var at=fallback.lastIndexOf('</div>');fallback=fallback.slice(0,at)+'<button type="button" class="media-camera-switch" aria-label="切换摄像头并拍照" onclick="ElfMedia.switchPhoto()">⇄</button>'+fallback.slice(at);}return fallback;}
-  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','警报']];return rows.map(function(row){var selected=active&&active.device.id===d?.id&&active.mode===row[0],disabled=!d||!ElfMediaCapabilities.allows(d,row[0])||d.managed_media_prepare_v1===true&&(!active||active.device.id!==d.id||!active.transportReady)||active&&active.mode!=='prepare'&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
+  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','警报']];return rows.map(function(row){var selected=active&&active.device.id===d?.id&&active.mode===row[0],disabled=!d||d.share_locked===true||!ElfMediaCapabilities.allows(d,row[0])||d.managed_media_prepare_v1===true&&(!active||active.device.id!==d.id||!active.transportReady)||active&&active.mode!=='prepare'&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
   function feedback(d){var text=active?active.message:d&&lastDevice===d.id?lastMessage:'';return text?'<span class="media-feedback" role="status">'+esc(text)+'</span>':'';}
   function connectionControl(d){
     if(!d||!ElfMediaCapabilities.allows(d,'prepare'))return '';
+    if(d.share_locked===true)return '<button type="button" class="device-action btn-gray media-connect" disabled>连接</button>';
     var connected=active?.device.id===d.id,ready=connected&&active.transportReady;
     return '<button type="button" class="device-action '+(connected?'action-unpair':'btn-green')+' media-connect" aria-label="'+(connected?'断开媒体连接':'连接媒体')+'" aria-pressed="'+!!ready+'" onclick="ElfMedia.toggleConnection()">'+(connected?'断开':'连接')+'</button>';
   }

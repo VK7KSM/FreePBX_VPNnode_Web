@@ -20,7 +20,8 @@ export class PanelEvents {
   }
   // 独立会话失效（被踢/退出/删除链接/到期）：通知该会话的页面并关闭；管理员页面收到 changed 刷新灰化状态。
   revoke(deviceId,sessionId=null) {
-    for(const socket of this.ctx.getWebSockets?.(TAG)||[]) {
+    const sockets=this.ctx.getWebSockets?.(TAG)||[];
+    for(const socket of sockets) {
       const share=socket.deserializeAttachment()?.share;
       if(!share||share.device_id!==deviceId||(sessionId&&share.session_id!==sessionId))continue;
       try { socket.send('{"type":"revoked"}'); socket.close(1000,'会话已结束'); } catch {}

@@ -161,7 +161,7 @@ async function stop(text) {
 // 供设备页调用：按钮状态、把保留的桌面节点挂回终端区域。
 function isActive(d) { return !!active && (!d || active.device.id === d.id); }
 function button(d) {
-  const on = isActive(d), can = !!d && d.managed_desktop_v1 === true && d.enabled !== false;
+  const on = isActive(d), can = !!d && d.managed_desktop_v1 === true && d.enabled !== false && d.share_locked !== true;
   return '<button type="button" class="' + (on ? 'btn-red' : can ? 'btn-green' : 'btn-gray') + '" onclick="ElfDesktop.' + (on ? 'stop()' : 'start()') + '"' + (on || can ? '' : ' disabled') + '>' + (on ? '关闭桌面' : '远程桌面') + '</button>';
 }
 function mount(d) {

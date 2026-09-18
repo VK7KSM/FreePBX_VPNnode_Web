@@ -523,12 +523,14 @@ function renderOps(){
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';
+  if(typeof ElfShare!=='undefined')h += ElfShare.button(d);
   h += '<button class="device-action action-edit" onclick="openEdit()"'+dis+'>编辑</button>';
   if(d && d.enabled===false) h += '<button class="device-action action-enable" onclick="setEnabled(true)">启用</button>';
   else h += '<button class="device-action action-disable" onclick="setEnabled(false)"'+dis+'>停用</button>';
   if(d && d.paired===false) h += '<button class="device-action action-pair" onclick="openPairSelected()">立即配对</button>';
   else h += '<button class="device-action action-unpair" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
+  if(typeof ElfShare!=='undefined')h += ElfShare.lockedNotice(d);
   h += '<div class="ops-grid">';
   h += kv(d && d.battery_present===false ? "供电" : "电量", bat);
   h += kv("网络", net);
@@ -585,6 +587,7 @@ var MAINTENANCE_RUN={};
 var MAINTENANCE_CAPS={configure_zello:'managed_zello_account',configure_sip:'managed_sip_account',get_file:'managed_file_return',send_file:'managed_file_tasks',pull_logs:'managed_log_tasks',heal_network:'managed_heal_tasks',reboot:'managed_reboot_tasks',restart_adbd:'managed_adbd_tasks',configure_proxy:'managed_proxy_tasks',start_proxy:'managed_proxy_tasks',stop_proxy:'managed_proxy_tasks',test_proxy:'managed_proxy_tasks'};
 function maintenanceAvailable(d,type){
   if(!d || d.enabled===false || (MAINTENANCE_RUN[d.id] && MAINTENANCE_RUN[d.id].pending))return false;
+  if(typeof ElfShare!=='undefined'&&ElfShare.locked(d))return false;
   if(d.status_only && d[MAINTENANCE_CAPS[type]]!==true)return false;
   var t=d.task,expires=t && (Number(t.expires_at)||Date.parse(t.expires_at));
   return !(t && ['pending','claimed','running'].includes(t.state) && !(Number.isFinite(expires)&&Date.now()>=expires));
@@ -616,7 +619,7 @@ function pageAdb(dis){
   if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected;
-  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
+  var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端</span><button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session||d.share_locked===true))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
   right+='<div class="adb-box"><div class="adb-term" id="adbTerm" style="padding:8px;overflow:hidden">'+(on?'ADB 已连接':'ADB 未连接')+'</div>';
   right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="'+(on?'btn-red':'btn-gray')+'" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>中断</button></div></div></section>';
   return '<div class="monitor-grid">'+left+right+'</div>'+(foot?'<div class="terminal-status">'+foot+'</div>':'');

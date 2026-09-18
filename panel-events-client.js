@@ -49,6 +49,8 @@ export const panelEventsSource=String.raw`(function(){
         current.onclose=current.onerror=function(){if(socket===current)broken();};
       }catch(e){broken();}
     }
-    return {tick:tick,stop:stop,connected:function(){return ready&&!!socket&&socket.readyState===1;}};
+    // 登录状态变化后立即重连：清掉登录前 401 累积的退避。
+    function reset(){stop();failures=0;retryAt=0;tick();}
+    return {tick:tick,stop:stop,reset:reset,connected:function(){return ready&&!!socket&&socket.readyState===1;}};
   };
 })();`;

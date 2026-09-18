@@ -41,6 +41,7 @@ import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './rele
 import mediaClientSource from './media-client-source.js';
 import desktopClientSource from './desktop-client-source.js';
 import {shareSessionSource} from './share-session.js';
+import shareClientSource from './share-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
@@ -573,6 +574,11 @@ export class ElfStore {
               if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
               return await this.shareApi(storage,null,url,request,raw);
             }
+            if(url.pathname==='/api/share/session'&&request.method==='GET'){
+              // 未登录也返回 200，页面据此决定是否提交免密登录；不暴露任何设备信息。
+              const probe=await this.resolveContext(storage,request);
+              return await this.shareApi(storage,probe instanceof Response?null:probe,url,request,raw);
+            }
             if(!isMachineRoute(url.pathname,request.method)) {
               if(!trustedOrigin(request))throw authJson({ok:false,msg:'请求来源不匹配'},403);
               ctx=await this.resolveContext(storage,request);
@@ -682,7 +688,8 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
     if(url.pathname==='/api/share/login'&&method==='POST'){
       const peer=request.headers.get('CF-Connecting-IP')||'local';
       const result=await shareLogin(storage,{token:body.token,password:body.password,peer});
-      if(!result.ok)return json({ok:false,msg:result.msg,needs_password:!!result.needs_password},result.status);
+      // 需要密码/密码错误用 200 返回，避免页面的 401 拦截把它当成会话失效。
+      if(!result.ok)return json({ok:false,msg:result.msg,needs_password:!!result.needs_password},result.status===401?200:result.status);
       const me={kind:'share',session_id:result.session_id,generation:result.generation};
       this.closeOwned(result.device_id,me);
       if(result.kicked)this.events.revoke(result.device_id,result.kicked.session_id);else this.events.changed();
@@ -735,7 +742,7 @@ function singleStoreRead(path,method) {
 }
 // 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
 function storeAuthenticates(path,method){
-  return method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'].includes(path);
+  return (method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'].includes(path))||(method==='GET'&&path==='/api/share/session');
 }
 
 // 数据找回期间的临时机器凭证：仅对旧存储找回接口生效，删除 MIGRATION_TOKEN 密钥后即失效。
@@ -1240,6 +1247,7 @@ const app = {
     }
     if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/evidence-client.js")return new Response(evidenceDataSource+'\n'+evidenceClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    if(pathname==="/share-client.js")return new Response(shareClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/share-session.js")return new Response(shareSessionSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/desktop-client.js")return new Response(desktopClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/media-client.js")return new Response(mediaCapabilitiesSource+"\n"+mediaClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
@@ -1263,7 +1271,11 @@ const app = {
     if (/^\/m\/[A-Za-z0-9]{12}$/.test(pathname)) {
       // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
       const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
-      const html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
+      let html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
+      html=html.replace(/<a href="\/" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
+        .replace(/<div style="display:flex;align-items:center;gap:12px">[^]*?<button class="btn-gray" style="color:#f87171" onclick="logout\(\)">退出<\/button><\/div>/,'<div style="display:flex;align-items:center;gap:12px"><button class="btn-gray" onclick="ElfShare.open()">设置</button><button class="btn-gray" style="color:#f87171" onclick="logout()">退出</button></div>')
+        .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRadio SIP\/VPN Manage<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>')
+        .replace('<title>elfRadio SIP/VPN Manage</title>','<title>elfRemote Manager</title>');
       return new Response(html,{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"no-referrer"}});
     }
 
@@ -3610,6 +3622,7 @@ function renderDevicesHtml() {
     '.monitor h4{box-sizing:border-box;height:48px;display:flex;align-items:center}.monitor .monitor-heading{justify-content:space-between;gap:8px}.monitor-heading button{font-size:12px;font-weight:400;padding:4px 9px;min-height:28px}.monitor-footer{flex-wrap:wrap;min-height:50px}.monitor-footer .ops-actions{margin:0!important;gap:6px}.monitor-footer button{font-size:12px;font-weight:400;min-height:30px;padding:4px 9px}.monitor-footer .muted{font-size:11px}.monitor .adb-row{min-height:50px}',
     '.monitor-footer button:disabled{background:#334155;color:#e2e8f0;opacity:1;cursor:default}.maintenance-status{font-size:11px;color:#94a3b8;margin-left:4px}.maintenance-status.maintenance-success{color:#34d399}',
     '.desktop-view{display:flex;flex-direction:column;height:340px;min-height:340px;max-height:340px;background:#000;border-top:1px solid #29364a}.desktop-stage{position:relative;flex:1;min-height:0}.desktop-screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;outline:none;touch-action:none;user-select:none;cursor:crosshair}.desktop-canvas{max-width:100%;max-height:100%;width:auto;height:auto;display:block}.desktop-tools{position:absolute;left:0;top:0;bottom:0;width:34px;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 4px;box-sizing:border-box;background:rgba(15,23,42,.82);border-right:1px solid #29364a}.desktop-tools button{width:26px;height:26px;min-height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#1e293b;color:#cbd5e1;border:0;border-radius:5px;cursor:pointer}.desktop-tools button:hover,.desktop-tools button:focus-visible{background:#334155;color:#fff}.desktop-unfold{position:absolute;left:0;top:0;bottom:0;width:8px;padding:0;border:0;background:rgba(51,65,85,.7);cursor:pointer}.desktop-foot{display:flex;justify-content:space-between;gap:8px;min-height:24px;padding:3px 10px;font-size:11px;color:#aebcce;background:#111c2c;border-top:1px solid #29364a}.desktop-foot span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.share-mode .btn-add,.share-mode .action-disable,.share-mode .action-enable,.share-mode .action-unpair,.share-mode .action-pair,.share-mode .fn-btn[data-fn=model],.share-mode .admin-only{display:none!important}.share-mode #shareDeviceName{font-weight:700;font-size:1.05rem;white-space:nowrap}.share-mode .share-brand-sub{color:#93c5fd;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.4rem}.share-dialog{width:720px;max-height:calc(100vh - 40px);overflow:auto}.share-pick{word-break:break-all}.share-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px}.share-table th,.share-table td{padding:6px 8px;text-align:left;border-bottom:1px solid #29364a;vertical-align:middle;overflow-wrap:anywhere}.share-table tr.on td{background:#1e293b}.share-table tr.current td:first-child{color:#93c5fd}.share-pick{background:none;border:0;padding:0;color:#cbd5e1;font:inherit;cursor:pointer;text-align:left}.share-pick:hover{text-decoration:underline}.share-row-actions{white-space:nowrap}.share-row-actions button{margin-left:4px;padding:3px 8px;min-height:26px;font-size:12px}.share-qr{display:flex;align-items:center;gap:14px;margin-top:12px}.share-qr svg{width:180px;height:180px;background:#fff;border-radius:6px}.share-edit{border:1px solid #29364a;border-radius:8px;padding:10px 12px;margin-top:12px;display:grid;gap:10px}.share-edit legend{color:#94a3b8;padding:0 6px}.share-edit label{display:flex;align-items:center;gap:8px}.share-edit input.inp,.share-edit select.inp{flex:1;min-width:0;height:32px}.share-inline{color:#f87171}.share-error{margin:8px 0 0;color:#fbbf24}.share-current{margin-top:6px}.share-locked-notice{margin:8px 0;padding:6px 10px;border-radius:6px;background:#3b2f0b;color:#fbbf24;font-size:12px}',
     '.terminal-title{white-space:nowrap;flex-shrink:0}.terminal-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;margin-left:auto}.terminal-actions button{white-space:nowrap;font-size:11px;padding:4px 7px;min-height:28px}.terminal-actions button:disabled{background:#334155;color:#aebcce;opacity:1}.monitor-heading{overflow-x:auto}.file-send-wrap{display:none;position:fixed;inset:0;z-index:2200;background:rgba(2,6,23,.72);align-items:center;justify-content:center;padding:20px}.file-send-dialog{box-sizing:border-box;width:530px;max-width:100%;background:#111c2c;border:1px solid #334155;border-radius:10px;padding:20px;color:#d4deec;font-size:12px;line-height:1.8}.file-send-dialog h3{font-size:15px;font-weight:400;margin:0}.file-send-fields{display:grid;gap:14px;margin-top:18px}.file-send-fields>label{display:grid;gap:6px}.file-send-fields input.inp{font-size:12px;height:34px;width:100%}.file-options{display:flex;gap:14px;flex-wrap:wrap}.file-options label{display:flex;align-items:center;gap:5px}.file-send-fields button{font-size:12px;font-weight:400;padding:5px 12px}.file-send-fields p{margin:0;color:#aebcce;overflow-wrap:anywhere}',
     '.monitor .adb-term,.monitor .adb-term .xterm-viewport{scrollbar-width:none;-ms-overflow-style:none}.monitor .adb-term::-webkit-scrollbar,.monitor .adb-term .xterm-viewport::-webkit-scrollbar{display:none;width:0;height:0}.monitor .adb-term,.monitor .adb-term .xterm,.monitor .adb-term .xterm-viewport{background:#080f1a}.monitor .monitor-heading .adb-connecting:disabled{background:#059669;color:#fff;opacity:1}.monitor-footer a.log-download{display:inline;padding:0;border:0;border-radius:0;background:none;color:#93c5fd;font-size:12px;text-decoration:none}.monitor-footer a.log-download:hover{text-decoration:underline}',
     '.terminal-status{display:flex;align-items:center;gap:10px;padding-top:6px;font-size:11px;line-height:18px}.terminal-status .log-download{font-size:11px;color:#93c5fd;text-decoration:none}.terminal-status .log-download:hover{text-decoration:underline}',
@@ -3716,6 +3729,7 @@ function renderDevicesHtml() {
     '<script src="/panel-events.js"><\/script>',
     '<script src="/media-client.js"><\/script>',
     '<script src="/desktop-client.js"><\/script>',
+    '<script src="/share-client.js"><\/script>',
     '<script src="/fault-client.js"><\/script>',
     '<script src="/evidence-client.js"><\/script>',
     '<script src="/devices-client.js"><\/script>',
