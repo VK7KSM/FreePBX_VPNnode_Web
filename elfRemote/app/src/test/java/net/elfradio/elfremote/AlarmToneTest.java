@@ -9,6 +9,8 @@ public class AlarmToneTest {
             int loops=AlarmTone.loopCount(durationMs);
             assertTrue("循环次数必须有限，不得为 -1，时长 "+durationMs,loops>=0);
             assertTrue("时长 "+durationMs+" 被截断",(long)(loops+1)*AlarmTone.SEGMENT_MS>=durationMs);
+            // 兜底只允许多出不到一个片段的余量，多了说明取整或语义算错了（这条来自 D31 的同类测试）
+            assertTrue("时长 "+durationMs+" 的余量超过一个片段",(long)loops*AlarmTone.SEGMENT_MS<durationMs);
         }
         // 与网关 toneLoopCount 同语义：返回的是再重复几遍，总遍数为该值加一。
         // 默认 10 秒向上取整到 8 遍共 11.2 秒，兜底不早于上层定时器停止。
