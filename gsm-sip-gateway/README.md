@@ -8,12 +8,20 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha65-desktop-share |
-| versionCode | 72 |
-| 当前生产机已安装版本 | 1.5.0-gateway-alpha63-alarm-audible，versionCode 70；alpha64 与 alpha65 待远程下发 |
+| 源码候选版本 | 1.5.0-gateway-alpha67-desktop-adaptive-quality |
+| versionCode | 74 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha66-desktop-proxy-fix，versionCode 73；74 待远程下发 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**alpha67 候选变更（2026-09-19）：** 远程桌面画质改为按浏览器实际显示尺寸推导。
+
+码率不再用固定值，按「长边 × 短边 × 帧率 × 0.12 比特」算，短边按屏幕真实纵横比推，长边取 8 的倍数。WiFi 帧率由 30 降到 15（远程管理够用）。面板在会话创建时把浏览器显示区域的长边随 `max_size` 下发，设备端按它编码；面板没报时退回 1280（移动档 720），**不退回上限**，否则盲发就按最贵的档走。尺寸上限与面板的夹逼范围对齐到 1920（移动档 960），两边不一致会让浏览器报的大尺寸被设备端悄悄压回去，表现是大窗画面偏软却查不出原因。
+
+`bound()` 里把缺失、0 与越小的 `max_size` 一律抬到 1280：**scrcpy 把 `max_size=0` 解释成「不限制」**，会按整块 1440×2960 编码，像素是 1280 档的四倍，和「没指定就省着来」正好相反。
+
+**alpha66 候选变更（2026-09-19）：** 修复远程桌面连不上。两层原因叠加：一是 Android 的 libcore 里 `new Socket(Proxy)` 只认 SOCKS 与 NO_PROXY，给 HTTP 型会抛 `IllegalArgumentException: Invalid Proxy`（桌面 JDK 有 HTTP 分支不抛，本机复现不出来），而 Java-WebSocket 正是用这个构造器建连；二是 `GatewayProxyWebSocket` 本就是「先试代理、失败再直连」，代理那次失败必然先回调一次 `onError`，`GatewayDesktopSession` 当时没有 `GatewayAdbSessions` 那道建连阶段的闸，于是会话被当场判死，随后直连成功的 `onOpen` 成了空响。WebSocket 改走 SOCKS，并补上建连阶段的闸。
 
 **alpha65 候选变更（2026-09-19）：** 加入设备自助管理链接与远程桌面两项。
 
@@ -42,6 +50,14 @@ scrcpy 以 `su 2000` 拉起。它对系统服务自称 `com.android.shell`，剪
 - **短信：** 入站以面板 `SIP/gwsms` 为准。出站正文由大阪改写成 `SMS <号码>: <内容>`。1.4.2 起网关按该正文发 GSM，不再核对 From 是否为 SIM 目的分机。
 
 不要在网关里再维护一份分机外呼名单。
+
+## 远程桌面排查
+
+- **码率异常偏高、画面看着却没动**：先怀疑动态壁纸。2026-09-19 这台机的壁纸是 `SoundVizWallpaperV2`，整屏渐变一直在缓慢流动，屏幕从来没有真正静止过，静置时仍有 2183 kbps。用 `dumpsys wallpaper | grep mWallpaperComponent` 看是不是 `com.android.systemui/.ImageWallpaper`（静态图），不是就说明在跑动态壁纸。同类现象在别的机型上也会出现，而且极难往壁纸上想。
+- **想知道参数有没有生效**：看应用侧 `files/desktop/log/runtime-*.log` 里的 `DESKTOP_ENCODING`，它记录本次实际用的尺寸、帧率、码率和面板请求值。网页上的实时码率与它一对，就能分清是持续重绘还是参数没落地。
+- **压帧率或压码率没用**：实测过，单独把帧率压到 10 或把码率压到 600k 都只省 16%，改 VBR 反而更高。**长边尺寸是唯一有效的杠杆**，1280→960 省 36%，→800 省 46%，→640 省 67%，→480 省 83%。
+- **画面糊但带宽没跑满**：多半是显示区域太小而不是编码不够。面板小窗约 340 像素高，而编码长边可能是 1280，多出来的像素在显示时被缩掉了。点面板上的占满窗口，清晰度是白捡的，不多传一个字节；按新尺寸重新编码要下次连接才生效。
+- **会话连上了却什么都不发生**：看 `DESKTOP_CONNECT_ATTEMPT_FAILED`，它表示代理那次尝试失败、直连兜底还在跑，是预期内的；如果它后面没有 `DESKTOP_CONNECTED`，才是真的连不上。
 
 ## 运行要求
 
