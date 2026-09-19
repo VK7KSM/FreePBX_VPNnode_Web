@@ -616,7 +616,7 @@ function pageAdb(dis){
   left+='<button class="btn-green" onclick="shellSend()"'+(blocked?' disabled':'')+'>发送</button>';
   if(u&&u.shell.pending)left+='<button class="btn-gray" onclick="cancelCommand()"'+(u.shell.cancelRequested?' disabled':'')+'>'+(u.shell.cancelRequested?'停止中':'停止')+'</button>';
   left+='</div></section>';
-  var foot=d?'<button type="button" class="traffic-link" onclick="ElfEvidence.open()">任务记录</button>':'';
+  var foot='';
   if(st)foot+='<span class="maintenance-status'+(run.id===t.id && t.state==='success'?' maintenance-success':'')+'" role="status">'+esc(st)+'</span>';
   if(t.type==='send_file')foot+='<a class="log-download" href="#" onclick="openSendFile();return false">'+esc(t.detail||'等待设备接收文件')+'</a>';
   if(t.type==='get_file')foot+='<a class="log-download" href="#" onclick="openReturnFile();return false">'+esc(t.state==='success'?'下载文件':t.detail||'等待设备取回文件')+'</a>';
