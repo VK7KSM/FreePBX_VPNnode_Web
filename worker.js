@@ -1314,10 +1314,28 @@ const app = {
 // 从被封禁的旧 Worker 转移过来的 ElfStore 命名空间，只用于数据找回，代码与 ElfStore 相同。
 export class ElfStoreLegacy extends ElfStore {}
 
+// 代理面板单独部署在 s.elfradio.net，与管理面板共用同一份代码，靠 PANEL_ROLE 区分角色。
+// 订阅接口必须对全网开放，是天然的公开面；设备管理与 SIP 管理是纯后台，不该跟着一起暴露。
+// 2026-09-17 与 09-19 两次封禁都是公开地址被刷所致，把两者放在同一个 Worker 里，
+// 一次举报就会连带打掉后台。proxy 角色只放行代理面板自己用到的路径，其余一律 404。
+// 用冻结数组而不是 Set：Object.freeze 对 Set 无效，它冻不住 Set 的内容，
+// add() 照样能往里塞路径，那是一层看着有、实际没有的防护。
+export const PROXY_ROLE_PATHS = Object.freeze([
+  '/', '/index.html', '/favicon.ico', '/logo.png',
+  '/admin-session.js', '/cf-usage.js', '/panel-lifecycle.js',
+  '/api/login', '/api/logout', '/api/session', '/api/data', '/api/save', '/api/cf-usage',
+]);
+export function proxyRoleBlocked(env, pathname) {
+  if (env?.PANEL_ROLE !== 'proxy') return false;
+  return !pathname.startsWith('/sub') && !PROXY_ROLE_PATHS.includes(pathname);
+}
+
 export default {
   ...app,
   async fetch(request,env,ctx){
     const path=new URL(request.url).pathname;
+    // 角色闸门要放在最前面：被挡掉的路径连存储都不该碰。
+    if(proxyRoleBlocked(env,path))return new Response('Not Found',{status:404});
     const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
     const snapshotRead=path==='/api/devices'&&request.method==='GET';
     // 冷却期内一律不再触碰 DO：设备列表改用 KV 快照只读应答，其余直接 503，避免额度耗尽后继续消耗。

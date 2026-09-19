@@ -6,7 +6,9 @@
     "deploy": "npm run build:assets && wrangler deploy --config wrangler.jsonc",
     "build:assets": "node build-static-assets.mjs",
     "embed:devices-client": "node embed-devices-client.mjs",
-    "embed:check": "node embed-devices-client.mjs --check"
+    "embed:check": "node embed-devices-client.mjs --check",
+    "build:assets:proxy": "node build-static-assets.mjs && node build-proxy-assets.mjs",
+    "deploy:proxy": "npm run build:assets:proxy && wrangler deploy --config wrangler.s.jsonc"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

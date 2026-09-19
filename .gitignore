@@ -2,6 +2,7 @@
 node_modules/
 .wrangler/
 .generated-assets/
+.generated-assets-proxy/
 dist/
 build/
 coverage/

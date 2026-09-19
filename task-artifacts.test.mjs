@@ -7,7 +7,8 @@ import {fixture,login,request} from './test-support.mjs';
 import {GATEWAY_PRODUCT} from './gateway-product.js';
 
 test('生产显式部署配置绑定私有日志桶',()=>{
-  const config=JSON.parse(readFileSync(new URL('./wrangler.jsonc',import.meta.url),'utf8'));
+  // 同上：JSONC 允许注释，只剥行首那种。
+  const config=JSON.parse(readFileSync(new URL('./wrangler.jsonc',import.meta.url),'utf8').replace(/^[ 	]*\/\/.*$/gm,''));
   assert.deepEqual(config.r2_buckets,[{binding:'ELF_ARTIFACTS',bucket_name:'elfremote-private'}]);
   assert.match(readFileSync(new URL('./.github/workflows/deploy.yml',import.meta.url),'utf8'),/command: deploy --config wrangler\.jsonc/);
 });
