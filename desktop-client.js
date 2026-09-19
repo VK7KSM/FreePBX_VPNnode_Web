@@ -79,8 +79,11 @@ function buildNode(s) {
   screen.addEventListener('pointerdown', e => {
     if (e.button === 2) { e.preventDefault(); key(s, AndroidKeyCode.AndroidBack); return; }
     if (e.button === 1) { e.preventDefault(); key(s, AndroidKeyCode.AndroidHome); return; }
-    if (e.button !== 0) return; const p = pos(e); if (!p) return; down = true; screen.setPointerCapture(e.pointerId); captureKeyboard(); touch(AndroidMotionEventAction.Down, p, 1);
+    if (e.button !== 0) return; const p = pos(e); if (!p) return; down = true; screen.setPointerCapture(e.pointerId); touch(AndroidMotionEventAction.Down, p, 1);
   });
+  // 阻止鼠标按下的默认焦点切换，否则刚给隐藏输入框的焦点会被浏览器移回 body，键盘就收不到。
+  screen.addEventListener('mousedown', e => { e.preventDefault(); captureKeyboard(); });
+  screen.addEventListener('click', () => captureKeyboard());
   screen.addEventListener('pointermove', e => { if (!down) return; const now = performance.now(); if (now - lastMove < 16) return; lastMove = now; const p = pos(e); if (p) touch(AndroidMotionEventAction.Move, p, 1); });
   screen.addEventListener('pointerup', e => { if (!down) return; down = false; touch(AndroidMotionEventAction.Up, pos(e) || { x: 0, y: 0 }, 0); });
   screen.addEventListener('pointercancel', releaseTouch);
