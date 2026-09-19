@@ -520,7 +520,7 @@ function renderOps(){
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "已连接" : "未连接");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
-  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>";
+  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>"+(typeof ElfShare!=='undefined'?ElfShare.lockedNotice(d):'');
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';
@@ -531,7 +531,6 @@ function renderOps(){
   if(d && d.paired===false) h += '<button class="device-action action-pair" onclick="openPairSelected()">立即配对</button>';
   else h += '<button class="device-action action-unpair" onclick="delDev()"'+dis+'>解除配对</button>';
   h += "</div></div>";
-  if(typeof ElfShare!=='undefined')h += ElfShare.lockedNotice(d);
   h += '<div class="ops-grid">';
   h += kv(d && d.battery_present===false ? "供电" : "电量", bat);
   h += kv("网络", net);
@@ -552,7 +551,7 @@ function renderOps(){
   h += "</div>";
   h += '<div class="fn-page">'+fnPageHtml()+"</div>";
   disposeAdbView();box.innerHTML = h;
-  terminalBind();bindAdbView();if(typeof ElfDesktop!=='undefined')ElfDesktop.mount(currentDev());
+  terminalBind();bindAdbView();if(typeof ElfDesktop!=='undefined')ElfDesktop.mount(currentDev());adbAutoObserve();
 }
 
 function fnPageHtml(){
@@ -623,7 +622,7 @@ function pageAdb(dis){
   if(d&&r.artifact)foot+='<a class="log-download" href="/api/elfremote/task-log?device_id='+encodeURIComponent(d.id)+'&amp;task_id='+encodeURIComponent(t.id)+'">下载日志 · '+(r.artifact.bytes/1000).toFixed(1)+' KB</a>';
   var adb=u?u.adb:{connected:false,lines:[]},on=adb.connected,observing=!!adb.observing;
   var right='<section class="monitor"><h4 class="monitor-heading"><span>ADB终端'+(observing?'（旁观）':'')+'</span>';
-  if(d&&d.share_locked===true&&typeof ElfShare!=='undefined'&&ElfShare.locked(d))right+='<button class="'+(observing?'btn-red':'btn-green')+'" onclick="'+(observing?'adbObserveStop()':'adbObserve()')+'"'+(!observing&&!d.adb_observable?' disabled':'')+'>'+(observing?'停止旁观':d.adb_observable?'旁观':'用户未开ADB')+'</button></h4>';
+  if(d&&d.share_locked===true&&typeof ElfShare!=='undefined'&&ElfShare.locked(d))right+='<button class="btn-gray" disabled>'+(observing?'旁观中':d.adb_observable?'连接中':'用户未开ADB')+'</button></h4>';
   else right+='<button class="'+(on?'btn-red':'btn-green')+(adb.connecting?' adb-connecting':'')+'" onclick="'+(on?'adbDisconnect()':'adbConnect()')+'"'+(!d||adb.connecting||(!on&&(d.enabled===false||!d.managed_adb_session||d.share_locked===true))?' disabled':'')+'>'+(on?'断开ADB':adb.connecting?'连接中':'连接ADB')+'</button></h4>';
   right+='<div class="adb-box"><div class="adb-term" id="adbTerm" style="padding:8px;overflow:hidden">'+(on?'ADB 已连接':'ADB 未连接')+'</div>';
   right+='<div class="adb-row"><span class="adb-prompt">adb&gt;</span><input id="adbCmd" class="inp adb-cmd" placeholder="输入命令，例如 pwd"'+(!on?' disabled':'')+'><button class="'+(on?'btn-green':'btn-gray')+'" onclick="adbSendCommand()"'+(!on?' disabled':'')+'>发送</button><button class="'+(on?'btn-red':'btn-gray')+'" onclick="adbInterrupt()"'+(!on?' disabled':'')+'>中断</button></div></div></section>';
@@ -1814,6 +1813,13 @@ function adbObserve(){
   socket.onclose=function(){if(a.observeSocket!==socket)return;a.observing=false;a.observeSocket=null;if(selDev===d.id)renderOps();};
   socket.onerror=function(){socket.close();};
 }
+// 总后台锁定时自动进入只读旁观；用户开/关 ADB 会话时自动跟随，不需要点击。
+function adbAutoObserve(){
+  var u=uiOf(),d=currentDev();if(!u||!d||typeof ElfShare==='undefined')return;
+  var locked=ElfShare.locked(d);
+  if(locked&&d.adb_observable&&!u.adb.observing&&!u.adb.connected&&!u.adb.connecting&&!u.adb.observePending){u.adb.observePending=true;setTimeout(function(){u.adb.observePending=false;if(selDev===d.id&&!u.adb.observing)adbObserve();},300);}
+  if(!locked&&u.adb.observing)adbObserveStop();
+}
 function adbObserveStop(){var u=uiOf();if(!u)return;var a=u.adb;if(a.observeSocket)a.observeSocket.close();a.observing=false;a.observeSocket=null;adbAppend(u,'\r\n已停止旁观\r\n');renderOps();}
 // 通用终端只读：从服务器任务记录重建用户执行过的命令与结果，不逐字符实时，不发任务。
 var OBSERVED_SHELL={};
@@ -1923,9 +1929,19 @@ function enqueueRepair(type,params){
       if(!x.ok){if(run)run.error=true;alert(x.msg||'下发失败');return;}
       if(run)run.id=x.task && x.task.id;
       loadDevices();
+      if(x.task&&x.task.id)watchMaintenanceTask(d.id,x.task.id);
       return x;
     }).catch(function(){if(run)run.error=true;alert('下发失败，请检查连接');})
     .finally(function(){if(run){run.pending=false;if(selDev===d.id)renderOps();}});
+}
+async function watchMaintenanceTask(deviceId,taskId){
+  var owner={};
+  for(var i=0;i<45;i++){
+    await new Promise(function(r){setTimeout(r,2000);});
+    try{var x=await readResultJson(owner,deviceId+'/'+taskId,'/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:taskId}));
+      if(x&&x.task&&['success','failed','rejected','expired'].includes(x.task.state)){loadDevices();return;}
+    }catch(e){if(e.stopPolling)return;}
+  }
 }
 function enqueueProxyTask(type){
   var d=currentDev();if(!d||!gatewayDevice(d)||d.managed_proxy_tasks!==true)return Promise.resolve();
