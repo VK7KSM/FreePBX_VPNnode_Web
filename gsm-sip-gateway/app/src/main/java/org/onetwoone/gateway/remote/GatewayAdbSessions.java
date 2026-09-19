@@ -68,7 +68,13 @@ final class GatewayAdbSessions implements Closeable {
             if(websocket.getConnection() instanceof org.java_websocket.WebSocketImpl){long pending=0;for(java.nio.ByteBuffer b:((org.java_websocket.WebSocketImpl)websocket.getConnection()).outQueue)pending+=b.remaining();if(pending>262144)throw new IOException("output backlog");}
             websocket.send(data.toString());}
         void holdAwake(){PowerManager manager=context.getSystemService(PowerManager.class);if(manager==null)throw new IllegalStateException("power service unavailable");wake=manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"elfRemote:gateway-adb");wake.acquire(1800000);}
-        synchronized void finish(String reason){if(ended)return;ended=true;deadline.cancel();if(shell!=null)shell.close();if(wake!=null&&wake.isHeld())wake.release();
+        /**
+         * 关 WebSocket 必须在锁外：读线程在 onClose 里持有 WebSocketImpl 的锁再进来调本方法，
+         * 若本方法握着自己的锁去 close()，两边锁顺序相反就抱死。
+         * 远程桌面 2026-09-19 就是这么把整台设备的上报拖死的，这里是同一形态，一并改掉。
+         */
+        void finish(String reason){
+            synchronized(this){if(ended)return;ended=true;deadline.cancel();if(shell!=null)shell.close();if(wake!=null&&wake.isHeld())wake.release();}
             boolean open=websocket.isOpen();try{if(open)websocket.send(new JSONObject().put("type","closed").put("exit",JSONObject.NULL).put("message",reason).toString());}catch(Exception ignored){}websocket.close();
             log.write(System.currentTimeMillis()+" ADB_CLOSED reason="+reason);synchronized(GatewayAdbSessions.this){if(current==this)current=null;}}
     }

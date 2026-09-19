@@ -13,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.RejectedExecutionException;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLPeerUnverifiedException;
@@ -71,9 +72,22 @@ final class GatewayDesktopSession implements Closeable {
     }
 
     /** 上报回复里的 desktop_session；同一会话重复下发直接忽略，已有会话在跑时也不打断。 */
-    synchronized void accept(JSONObject reply){
+    /**
+     * 这个方法跑在上报线程上，**绝不能加锁、绝不能阻塞**。
+     * 2026-09-19 事故：它原先是 synchronized 的，桌面会话一旦死锁，
+     * 上报线程跟着卡死，整台设备在面板上变成「报告超时」、所有按钮变灰。
+     * 一个远程桌面的缺陷因此升级成设备失联。现在只读 volatile 字段做便宜的过滤，
+     * 真正的处理交给会话自己的线程，桌面这边再怎么出问题都波及不到上报。
+     */
+    void accept(JSONObject reply){
         JSONObject offer=reply==null?null:reply.optJSONObject("desktop_session");
         if(destroyed||offer==null||offer.optString("session_id").equals(id)||!closed)return;
+        try{executor.execute(()->begin(offer));}
+        catch(RejectedExecutionException stopping){/* 服务正在停止，忽略 */}
+    }
+
+    private synchronized void begin(JSONObject offer){
+        if(destroyed||offer.optString("session_id").equals(id)||!closed)return;
         final URI uri;
         try{uri=GatewayDesktopPolicy.validate(offer,System.currentTimeMillis());}
         catch(Exception rejected){log.write(System.currentTimeMillis()+" DESKTOP_OFFER_REJECTED "+rejected.getClass().getSimpleName());return;}
@@ -84,7 +98,8 @@ final class GatewayDesktopSession implements Closeable {
         iceServers=offer.optJSONArray("ice_servers")==null?new JSONArray():offer.optJSONArray("ice_servers");
         receivedAt=SystemClock.elapsedRealtime();lastInputAt=receivedAt;
         final String owner=id,quality=offer.optString("quality","wifi"),token=offer.optString("token");
-        executor.execute(()->{try{connect(uri,token,owner,quality);}catch(Exception error){fail(error);}});
+        // 已经在会话线程上了，直接接着做，不再往队列里塞一层。
+        try{connect(uri,token,owner,quality);}catch(Exception error){fail(error);}
     }
 
     private void connect(URI uri,String token,String owner,String quality)throws Exception {
@@ -345,12 +360,23 @@ final class GatewayDesktopSession implements Closeable {
         if(peer!=null){try{peer.close();peer.dispose();}catch(Exception ignored){}peer=null;}
     }
 
-    synchronized void finish(String reason){
-        if(closed)return;closed=true;
-        worker.removeCallbacks(prepareTimeout);worker.removeCallbacks(idleCheck);
-        log.write(System.currentTimeMillis()+" DESKTOP_STOPPED reason="+reason);
-        WebSocketClient active=socket;socket=null;if(active!=null)try{active.close();}catch(Exception ignored){}
-        executor.execute(()->{
+    /**
+     * 关闭 WebSocket 这一步必须在锁外做。
+     * 2026-09-19 事故的直接原因：它原先在 synchronized 块里调 close()，
+     * 而 WebSocket 的读线程在 onClose 回调里也会进来调 finish()，
+     * 那时它持有 WebSocketImpl 的锁、等本对象的锁，我们持有本对象的锁、等它的锁，
+     * 两边锁顺序相反，抱死。真机线程栈里两条线程各自 Blocked、互指对方，一目了然。
+     */
+    void finish(String reason){
+        WebSocketClient active;
+        synchronized(this){
+            if(closed)return;closed=true;
+            worker.removeCallbacks(prepareTimeout);worker.removeCallbacks(idleCheck);
+            log.write(System.currentTimeMillis()+" DESKTOP_STOPPED reason="+reason);
+            active=socket;socket=null;
+        }
+        if(active!=null)try{active.close();}catch(Exception ignored){}
+        try{executor.execute(()->{
             closePeer();
             for(LocalSocket open:new LocalSocket[]{videoSocket,controlSocket})if(open!=null)try{open.close();}catch(IOException ignored){}
             videoSocket=controlSocket=null;
@@ -358,11 +384,12 @@ final class GatewayDesktopSession implements Closeable {
             for(PowerManager.WakeLock lock:new PowerManager.WakeLock[]{screen,awake})if(lock!=null)try{if(lock.isHeld())lock.release();}catch(Exception ignored){}
             screen=awake=null;
             if(factory!=null){try{factory.dispose();}catch(Exception ignored){}factory=null;}
-        });
+        });}catch(RejectedExecutionException stopping){/* 服务正在停止，清理随进程一起结束 */}
     }
 
-    public synchronized void close(){
-        if(destroyed)return;destroyed=true;
+    /** 同样不能在锁里调 finish：它内部要关 WebSocket，握着锁关就会和读线程抱死。 */
+    public void close(){
+        synchronized(this){if(destroyed)return;destroyed=true;}
         finish("网关服务停止");
         executor.shutdown();thread.quitSafely();
     }
