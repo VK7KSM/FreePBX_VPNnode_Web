@@ -698,6 +698,10 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     task.state=state;task.detail=nextDetail;
     return device;
   }
+  // 不在 REPAIR_ADVANCE 里的迁移在这里被静默丢弃，这是有意为之：任务状态原地不动，
+  // 路由照样回 200 与 ok:true，只是回体里的 task 仍是旧状态。所以设备侧不能拿 ok:true
+  // 当作回执被采纳，必须按回读的 task.state 判定，不一致就补发缺的那一步。
+  // 既有客户端没被咬到是因为它们本来就读回状态校验，不是因为服务端会拒。
   if (!canAdvanceRepair(device.task.state, state)) return device;
   if(device.task.type==='connect_wifi'&&device.task.managed_wifi_config_v1===true){
     if(state==='success'&&(!result||result.stage!=='wifi'||!['connected','unchanged'].includes(result.action)||result.verified!==true))
