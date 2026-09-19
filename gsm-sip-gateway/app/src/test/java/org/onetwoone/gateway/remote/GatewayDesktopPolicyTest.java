@@ -1,6 +1,7 @@
 package org.onetwoone.gateway.remote;
 
 import java.security.SecureRandom;
+import java.util.UUID;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -11,8 +12,10 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest=Config.NONE,sdk=28)
 public class GatewayDesktopPolicyTest {
-    private static final String ID="0123abcd-4567-89ef-0123-456789abcdef";
-    private static final String TOKEN="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    // 会话号与令牌一律照抄服务端 desktop-relay.js:34 的真实产物，不再手搓一个「看起来像」的常量：
+    // crypto.randomUUID() 和 crypto.randomUUID()+crypto.randomUUID()，后者 72 字符、带 8 个短横。
+    private static final String ID=UUID.randomUUID().toString();
+    private static final String TOKEN=UUID.randomUUID().toString()+UUID.randomUUID();
     private static final long NOW=1_700_000_000_000L;
 
     private static JSONObject offer(String url) throws Exception {
@@ -40,7 +43,29 @@ public class GatewayDesktopPolicyTest {
         try{GatewayDesktopPolicy.validate(offer(good()).put("expires_at",NOW),NOW);fail("应拒绝已过期");}catch(Exception expected){}
         try{GatewayDesktopPolicy.validate(offer(good()).put("expires_at",NOW+3_600_000L),NOW);fail("应拒绝过长有效期");}catch(Exception expected){}
         try{GatewayDesktopPolicy.validate(offer(good()).put("session_id","短"),NOW);fail("应拒绝会话号格式");}catch(Exception expected){}
-        try{GatewayDesktopPolicy.validate(offer(good()).put("token","XYZ"),NOW);fail("应拒绝令牌格式");}catch(Exception expected){}
+        try{GatewayDesktopPolicy.validate(offer(good()).put("token","XYZ"),NOW);fail("应拒绝过短令牌");}catch(Exception expected){}
+    }
+
+    /**
+     * 服务端 desktop-relay.js:34 签发的令牌是两个 UUID 拼接，72 字符、带短横。
+     * 曾经这里写死成 64 位纯十六进制（那是 ADB 中继 adb-relay.js:16 的格式），
+     * 结果每个 offer 都在第一步就被拒，面板上点远程桌面只会一直转圈。
+     */
+    @Test public void validateAcceptsTheTokenShapeTheServerActuallyIssues() throws Exception {
+        String real=UUID.randomUUID().toString()+UUID.randomUUID();
+        assertEquals(72,real.length());
+        assertFalse("这正是当初写错的那条正则",real.matches("[a-f0-9]{64}"));
+        assertEquals("v.elfradio.net",GatewayDesktopPolicy.validate(offer(good()).put("token",real),NOW).getHost());
+    }
+
+    /** 令牌会原样放进 Authorization 头，所以换行、控制字符和空格必须挡住。 */
+    @Test public void validateRejectsHeaderUnsafeTokens() throws Exception {
+        String base=UUID.randomUUID().toString()+UUID.randomUUID();
+        String[] bad={"","short",base+"\r\nX-Injected: 1",base+"\n",base+" extra",base+((char)0),
+                base+base+base+base};   // 最后一条超过 256 字符
+        for(String value:bad)
+            try{GatewayDesktopPolicy.validate(offer(good()).put("token",value),NOW);fail("应拒绝长度 "+value.length()+" 的令牌");}
+            catch(Exception expected){}
     }
 
     @Test public void encodingDropsRatesOnCellular() throws Exception {

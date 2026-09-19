@@ -14,10 +14,21 @@ final class GatewayDesktopPolicy {
     static final long BACKPRESSURE_BYTES=2L*1024*1024;
     static final String PATH="/api/elfremote/desktop/device";
 
+    /**
+     * 会话号与令牌只做健壮性检查，不锁形状。
+     * 令牌是服务端签发、服务端校验的持有者凭据，设备端验它长什么样拿不到任何安全收益，
+     * 只会把自己绑死在服务端的实现细节上：它现在是两个 UUID 拼接（72 字符、带短横），
+     * 一旦服务端换成别的长度，写死的正则会让网关静悄悄地再也开不出桌面。
+     * 真正要挡的是它会被放进 Authorization 头，所以限字符集与长度，杜绝换行与控制字符注入。
+     * 会话号同理，它还要按字面拼进查询串比对，所以只收 URL 未保留字符。
+     */
+    static final String TOKEN="[A-Za-z0-9._~+/=-]{16,256}";
+    static final String SESSION_ID="[A-Za-z0-9._~-]{8,64}";
+
     /** 只接受面板同源的 wss 中继地址，且查询串恰好是本次会话号，避免被引到别处。 */
     static URI validate(JSONObject offer,long now)throws Exception {
         String id=offer.getString("session_id"),token=offer.getString("token");
-        if(!id.matches("[a-f0-9-]{36}")||!token.matches("[a-f0-9]{64}"))throw new IOException("invalid session identity");
+        if(!id.matches(SESSION_ID)||!token.matches(TOKEN))throw new IOException("invalid session identity");
         long expires=offer.getLong("expires_at");
         if(expires<=now||expires>now+PREPARE_TIMEOUT_MS+120_000L)throw new IOException("session expired");
         URI uri=new URI(offer.getString("url")),control=new URI(GatewayRemotePolicy.BASE_URL);
