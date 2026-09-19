@@ -82,7 +82,7 @@ function buildNode(s) {
     try { localStorage.setItem('elf-desktop-expanded', expanded ? '1' : '0'); } catch {}
   };
   applyExpand();
-  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'expand') { expanded = !expanded; applyExpand(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
+  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'expand') { expanded = !expanded; applyExpand(); if (active === s && s.id && !s.closed) resize(s); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
   keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); key(s, Number(b.dataset.key)); });
   unfold.onclick = () => { folded = false; applyFold(); };
   // 鼠标→触摸：按实际画面矩形换算，黑边不发；右键=返回，中键=桌面；失焦/离开/断线释放触点。
@@ -289,6 +289,22 @@ async function message(s, p) {
   else if (p.type === 'status') { if (p.stage === 'failed') log(s, '设备报告失败：' + (p.message || '')); else if (p.stage === 'starting') log(s, '设备正在启动屏幕服务…'); else if (p.stage === 'ice_failed') log(s, '设备侧网络连接失败'); }
   else if (p.type === 'closed') { s.closeMessage = p.message; stop(p.message || '远程桌面已结束'); }
 }
+// 切换占满窗口之后自动重连一次。
+// 分辨率在建会话时就定死了，scrcpy 改不了运行中的分辨率，所以不重连的话点全屏只会把
+// 原有画面拉大、反而更糊，正好和点它的目的相反。所有者此前是靠手动刷新页面才拿到清晰画面的，
+// 等于这件事他已经在做，只是方式很别扭。
+// 代价很低：实测首帧 1484 毫秒、ICE 一秒内 CONNECTED，是一次约一秒半的闪断，
+// 换来分辨率按新窗口重算（实测 336 变 936）。
+// 不做会话内改分辨率：那要重启 scrcpy 服务端、产生新的 SPS/PPS、解码器重来一遍，
+// 中断时长和重连同一量级，却要两边都加协商，而 restart 还限了 4 次，不划算。
+// 拖动窗口不触发这条：拖动过程中反复重连会很烦，只在这种离散切换上重连。
+async function resize(s) {
+  const d = s.device;
+  log(s, '正在按新的窗口大小重连…');
+  await stop('切换显示大小');
+  await start(d);
+}
+
 async function stop(text) {
   const s = active; if (!s) return; active = null; s.closed = true; lastMessage = text || '';
   clearInterval(s.timer); try { s.release?.(); } catch {}
