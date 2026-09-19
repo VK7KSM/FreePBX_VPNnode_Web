@@ -2,8 +2,11 @@ package org.onetwoone.gateway.remote;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
+import android.media.AudioFormat;
 import android.media.AudioManager;
-import android.media.ToneGenerator;
+import android.media.AudioTrack;
 import android.os.Handler;
 import java.io.IOException;
 import org.json.JSONObject;
@@ -25,7 +28,8 @@ final class GatewayAlarmPlayer {
 
     GatewayAlarmPlayer(Context context,Handler handler,Runnable changed){
         this(context.getSharedPreferences("gateway-alarm-state",Context.MODE_PRIVATE),handler,changed,
-                new AndroidVolume((AudioManager)context.getSystemService(Context.AUDIO_SERVICE)),AndroidTone::new);
+                new AndroidVolume((AudioManager)context.getSystemService(Context.AUDIO_SERVICE)),
+                toneFactory((AudioManager)context.getSystemService(Context.AUDIO_SERVICE)));
     }
     GatewayAlarmPlayer(SharedPreferences state,Handler handler,Runnable changed,Volume volume,ToneFactory tones){
         this.state=state;this.handler=handler;this.changed=changed;this.volume=volume;this.tones=tones;
@@ -59,9 +63,49 @@ final class GatewayAlarmPlayer {
         public int maximum(){return audio==null?0:audio.getStreamMaxVolume(AudioManager.STREAM_ALARM);}
         public void set(int value){if(audio!=null)audio.setStreamVolume(AudioManager.STREAM_ALARM,value,0);}
     }
+    static ToneFactory toneFactory(AudioManager audio){return ()->new AndroidTone(audio);}
+
+    /**
+     * 双音警报。原实现用 ToneGenerator 的 TONE_CDMA_ALERT_CALL_GUARD，该提示音极短且音量低，
+     * startTone 返回成功但现场听不见（2026-09-19 生产机实测：任务回执 success 而设备无声）。
+     * 改为与 D22 已验证的 MediaAlarm 相同的做法：自行合成 880/1320Hz 交替方波并用 AudioTrack
+     * 无限循环播放，显式指定内置扬声器，并校验播放状态，播不出时返回 false 让上层报失败。
+     */
     private static final class AndroidTone implements Tone {
-        private final ToneGenerator value=new ToneGenerator(AudioManager.STREAM_ALARM,100);
-        public boolean start(int durationMs){return value.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD,durationMs);}
-        public void stop(){value.stopTone();value.release();}
+        private static final int RATE=16000;
+        private static final int HALF=RATE*35/100;   // 每个音持续 350 毫秒
+        private static final int COUNT=HALF*4;       // 一个 1.4 秒的可无缝循环片段
+        private final AudioManager audio;private AudioTrack track;
+        AndroidTone(AudioManager audio){this.audio=audio;}
+        public boolean start(int durationMs){
+            short[] samples=new short[COUNT];
+            for(int i=0;i<COUNT;i++){
+                double frequency=(i/HALF)%2==0?880:1320;
+                int local=i%HALF;
+                // 每段首尾淡入淡出，避免切换与循环接缝处的爆音
+                double fade=Math.min(1,Math.min(local,HALF-1-local)/160.0);
+                samples[i]=(short)(Math.sin(2*Math.PI*frequency*i/RATE)*22000*Math.max(0,fade));
+            }
+            AudioTrack built=new AudioTrack.Builder()
+                    .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                    .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(RATE).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                    .setBufferSizeInBytes(COUNT*2).setTransferMode(AudioTrack.MODE_STATIC).build();
+            track=built;
+            if(built.getState()!=AudioTrack.STATE_NO_STATIC_DATA)return false;
+            if(built.write(samples,0,COUNT)!=COUNT)return false;
+            if(built.setLoopPoints(0,COUNT,-1)!=AudioTrack.SUCCESS)return false;
+            if(audio!=null)for(AudioDeviceInfo device:audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
+                if(device.getType()==AudioDeviceInfo.TYPE_BUILTIN_SPEAKER){built.setPreferredDevice(device);break;}
+            built.play();
+            return built.getPlayState()==AudioTrack.PLAYSTATE_PLAYING;
+        }
+        public void stop(){
+            AudioTrack current=track;track=null;
+            if(current==null)return;
+            try{current.stop();}catch(Exception ignored){}
+            current.release();
+        }
     }
 }

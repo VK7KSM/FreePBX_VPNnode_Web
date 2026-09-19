@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 69
-        versionName "1.5.0-gateway-alpha62-pairing-recovery"
+        versionCode 70
+        versionName "1.5.0-gateway-alpha63-alarm-audible"
 
         // NDK build config
         externalNativeBuild {

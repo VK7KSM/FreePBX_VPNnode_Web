@@ -8,9 +8,9 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha26-pixel-runtime-report |
-| versionCode | 33 |
-| 当前生产机已安装版本 | 1.5.0-gateway-alpha26-pixel-runtime-report，versionCode 33 |
+| 源码候选版本 | 1.5.0-gateway-alpha63-alarm-audible |
+| versionCode | 70 |
+| 当前生产机已安装版本 | 待远程下发 alpha63；下发前为 1.5.0-gateway-alpha62-pairing-recovery，versionCode 69 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
