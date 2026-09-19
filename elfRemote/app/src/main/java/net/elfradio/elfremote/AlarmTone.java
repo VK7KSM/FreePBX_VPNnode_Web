@@ -28,18 +28,20 @@ final class AlarmTone {
         return out;
     }
 
+    /** 一个循环片段的毫秒数，1400 毫秒。 */
+    static final int SEGMENT_MS = COUNT * 1000 / RATE;
+    static final int MAX_PLAYS = 1000;   // 防御异常时长，1000 个片段约 23 分钟
+
     /**
-     * 原生层兜底用的循环次数，传给 AudioTrack.setLoopPoints 的第三个参数。
-     * 该参数是「再重复几遍」，实际播放片段数是返回值加一，所以这里向上取整即可保证
-     * 播放时长不早于请求时长结束，宁可多响一个片段也不能被截断。
+     * 原生层兜底用的循环次数，直接传给 AudioTrack.setLoopPoints 的第三个参数。
+     * 该参数是「再重复几遍」，实际播放片段数是返回值加一，语义与网关的 toneLoopCount 一致。
+     * 片段数向上取整，保证播放不早于请求时长结束，宁可多响一个片段也不能被截断。
      * 定时器正常时仍由上层按请求时长停止，这个次数只在定时器失效时起作用。
      */
     static int loopCount(int durationMs) {
-        if (durationMs <= 0) return 0;
-        long frames = (long) durationMs * RATE / 1000;
-        long loops = (frames + COUNT - 1) / COUNT;
-        if (loops < 1) loops = 1;
-        if (loops > 1000) loops = 1000;   // 防御异常时长，1000 个片段约 23 分钟
-        return (int) loops;
+        long plays = durationMs <= 0 ? 1 : ((long) durationMs + SEGMENT_MS - 1) / SEGMENT_MS;
+        if (plays < 1) plays = 1;
+        if (plays > MAX_PLAYS) plays = MAX_PLAYS;
+        return (int) plays - 1;
     }
 }
