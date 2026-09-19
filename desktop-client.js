@@ -98,11 +98,14 @@ function buildNode(s) {
   ime.addEventListener('keydown', e => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.ctrlKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); action(s, 'paste'); return; }
+    // D22 固件会吞掉 KEYCODE_3/KEYCODE_4（adb 注入同样丢失），这两个键位的字符改走剪贴板粘贴。
+    if (!e.ctrlKey && !e.altKey && (e.code === 'Digit3' || e.code === 'Digit4' || e.code === 'Numpad3' || e.code === 'Numpad4') && typeof e.key === 'string' && e.key.length === 1) { e.preventDefault(); if (!e.repeat) pasteChar(s, e.key); return; }
     const code = KEYMAP[e.code]; if (code === undefined) return;
     e.preventDefault(); if (e.repeat) { sendKey(AndroidKeyEventAction.Down, code, metaOf(e)); return; }
     held.add(code); sendKey(AndroidKeyEventAction.Down, code, metaOf(e));
   });
   ime.addEventListener('keyup', e => { if (e.isComposing) return; const code = KEYMAP[e.code]; if (code === undefined) return; e.preventDefault(); held.delete(code); sendKey(AndroidKeyEventAction.Up, code, metaOf(e)); });
+  const pasteChar = async ch => { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); try { await s.controller.setClipboard({ sequence: 0n, content: ch, paste: true }); } catch (e) { log(s, '文本输入失败：' + (e.message || e)); } };
   const flushText = async () => {
     const text = ime.value; ime.value = ''; if (!text || !s.controller || !s.inputReady) return;
     s.lastInput = Date.now(); send(s, { type: 'activity' });
