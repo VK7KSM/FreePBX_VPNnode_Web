@@ -8,12 +8,24 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha63-alarm-audible |
-| versionCode | 70 |
-| 当前生产机已安装版本 | 待远程下发 alpha63；下发前为 1.5.0-gateway-alpha62-pairing-recovery，versionCode 69 |
+| 源码候选版本 | 1.5.0-gateway-alpha65-desktop-share |
+| versionCode | 72 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha63-alarm-audible，versionCode 70；alpha64 与 alpha65 待远程下发 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**alpha65 候选变更（2026-09-19）：** 加入设备自助管理链接与远程桌面两项。
+
+*自助管理链接*：远程管理页的「生成管理链接」向面板 `/api/devices/share-link` 申请一条短链接，本地生成二维码显示。屏幕上只有网址，没有密码；默认免密一小时，改密码与有效期在网页里做。二维码库是 Nayuki 的 qrcodegen（MIT），许可原文随 APK 放在 `assets/licenses/`。
+
+*远程桌面*：官方 scrcpy 3.3.3 服务端随 APK 原样分发（Apache-2.0，`assets/scrcpy-server`，SHA-256 `7e70323b…5354be0`）。核心（root）校验哈希后把它放到 `/data/local/elfremote-gateway/desktop`，目录 `0711`、文件 `0644`，只让 uid 2000 读得到；核心目录 `/data/local/elfremote-gateway/core` 里存着核心认证口令，仍是 `0700` 不放宽，父目录只从 `0700` 改到 `0711`，给「可穿越」不给「可列目录」。
+
+scrcpy 以 `su 2000` 拉起。它对系统服务自称 `com.android.shell`，剪贴板等服务会校验调用方 uid，所以不能用 root 跑。Magisk 的 su 只降 uid、不改 SELinux 域，子进程仍在 `u:r:magisk:s0`；策略里有 `allow untrusted_app_all magisk unix_stream_socket { getopt connectto }`，而网关应用跑在 `untrusted_app_27`（带 `untrusted_app_all` 属性），因此应用进程能直连 scrcpy 的抽象套接字，核心一个字节都不转发。既有的 `@elfremote_gateway_core_v1` 也是靠这条规则工作的。
+
+视频与控制各走一条有序 DataChannel，与浏览器经 STUN/TURN 直连，面板只转发信令。**只建数据通道，不建音频轨、不建摄像头轨、不抢音频焦点**，GSM 与 SIP 通话链路不受影响。20 分钟无操作自动关闭。只有核心里确实装好了 scrcpy 才上报 `managed_desktop_v1`，否则面板不会给这台设备放行远程桌面。
+
+一个和 D22 不同的坑：Android 12 的 `ps` 不显示完整参数，`pkill -f scid=<n>` 匹配不到，按 scid 结束改成直接读 `/proc/<pid>/cmdline` 匹配，连 su 与 app_process 两层一起收掉，并轮询到确认消失。
 
 **alpha26 候选变更：** 在 alpha25 的Pixel生产Magisk模块只读识别基础上，增加严格白名单的`pixel_runtime`状态报告。报告只包含资源核验、模式、识别、启用、写锁及两个既有模块的只读状态，不上传路径、哈希或异常原文，不开放模块写操作。该候选已通过95项单元测试、APK静态核验和当前生产Pixel 3 XL的Web远程覆盖更新验收；管理端严格合同已接受完整schema 1状态，网关、SIP、MQTT、供电、音频权限、模块和业务配置基线均未回退。
 
@@ -65,6 +77,8 @@ java -classpath gradle\wrapper\gradle-wrapper.jar org.gradle.wrapper.GradleWrapp
 |---|---|
 | `app/src/main/java` | 网关应用与 PJSIP 绑定 |
 | `app/src/main/jniLibs` | `libpjsua2.so` 等 arm64 库 |
+| `app/src/main/assets/scrcpy-server` | 官方 scrcpy 3.3.3 服务端，原样分发，供远程桌面使用 |
+| `app/src/main/assets/licenses` | 随 APK 分发的第三方许可原文（qrcodegen、scrcpy、WebRTC） |
 | `app/src/test` | 单元测试 |
 | `pjsip-build` | 从源码重编 PJSIP 的脚本和补丁 |
 | `asterisk-config` | 历史示例拨号，**不是** 当前大阪生产配置 |
