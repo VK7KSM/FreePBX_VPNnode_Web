@@ -1971,9 +1971,9 @@ function purgeEnrolls(map, now) {
   for (let i = 0; i < keys.length; i++) {
     const row = map[keys[i]];
     if (!row || !row.expires_at) continue;
-    const live = Date.parse(row.expires_at) > now;
-    // 未配对行只在仍可配对、已关联设备或属于解除配对占位时保留；过期且无设备的登记是残留。
-    if (live || (!row.paired && (row.device_id || keys[i].startsWith("unpaired_")))) out[keys[i]] = row;
+    // 未配对登记一律保留：过期后仍要显示在待配对列表里（只是不能再配对），
+    // 旧快照水合进来的残留由 enrollTokenRetired 按已退休令牌过滤，不能靠丢弃过期行来清理。
+    if (!row.paired || Date.parse(row.expires_at) > now) out[keys[i]] = row;
   }
   return out;
 }
