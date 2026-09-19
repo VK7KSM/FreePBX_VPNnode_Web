@@ -65,6 +65,23 @@ final class GatewayAlarmPlayer {
     }
     static ToneFactory toneFactory(AudioManager audio){return ()->new AndroidTone(audio);}
 
+    static final int TONE_RATE=16000;
+    static final int TONE_HALF=TONE_RATE*35/100;   // 每个音持续 350 毫秒
+    static final int TONE_COUNT=TONE_HALF*4;       // 一个 1.4 秒的可无缝循环片段
+    static final int TONE_MAX_LOOPS=1000;          // 上限约 23 分钟，防御异常时长
+
+    /**
+     * 音轨自身的停止兜底：把无限循环改成刚好覆盖请求时长的有限次循环。
+     * 正常情况由上层 handler 在 DURATION_MS 时停止；万一该回调被移除或 Looper 长时间阻塞，
+     * 音轨也会在原生层自行播完停止，不会一直响。向上取整，保证不早于请求时长结束。
+     * 返回值是 AudioTrack.setLoopPoints 的 loopCount，总播放遍数为该值加一。
+     */
+    static int toneLoopCount(int durationMs){
+        long segmentMs=TONE_COUNT*1000L/TONE_RATE;
+        long plays=durationMs<=0?1:(durationMs+segmentMs-1)/segmentMs;
+        return (int)Math.min(Math.max(plays,1),TONE_MAX_LOOPS)-1;
+    }
+
     /**
      * 双音警报。原实现用 ToneGenerator 的 TONE_CDMA_ALERT_CALL_GUARD，该提示音极短且音量低，
      * startTone 返回成功但现场听不见（2026-09-19 生产机实测：任务回执 success 而设备无声）。
@@ -72,9 +89,9 @@ final class GatewayAlarmPlayer {
      * 无限循环播放，显式指定内置扬声器，并校验播放状态，播不出时返回 false 让上层报失败。
      */
     private static final class AndroidTone implements Tone {
-        private static final int RATE=16000;
-        private static final int HALF=RATE*35/100;   // 每个音持续 350 毫秒
-        private static final int COUNT=HALF*4;       // 一个 1.4 秒的可无缝循环片段
+        private static final int RATE=TONE_RATE;
+        private static final int HALF=TONE_HALF;
+        private static final int COUNT=TONE_COUNT;
         private final AudioManager audio;private AudioTrack track;
         AndroidTone(AudioManager audio){this.audio=audio;}
         public boolean start(int durationMs){
@@ -95,7 +112,7 @@ final class GatewayAlarmPlayer {
             track=built;
             if(built.getState()!=AudioTrack.STATE_NO_STATIC_DATA)return false;
             if(built.write(samples,0,COUNT)!=COUNT)return false;
-            if(built.setLoopPoints(0,COUNT,-1)!=AudioTrack.SUCCESS)return false;
+            if(built.setLoopPoints(0,COUNT,toneLoopCount(durationMs))!=AudioTrack.SUCCESS)return false;
             if(audio!=null)for(AudioDeviceInfo device:audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
                 if(device.getType()==AudioDeviceInfo.TYPE_BUILTIN_SPEAKER){built.setPreferredDevice(device);break;}
             built.play();

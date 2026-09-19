@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 70
-        versionName "1.5.0-gateway-alpha63-alarm-audible"
+        versionCode 71
+        versionName "1.5.0-gateway-alpha64-alarm-bounded-loop"
 
         // NDK build config
         externalNativeBuild {

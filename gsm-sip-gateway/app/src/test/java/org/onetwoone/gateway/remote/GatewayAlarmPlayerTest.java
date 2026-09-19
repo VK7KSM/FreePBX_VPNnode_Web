@@ -28,6 +28,25 @@ public class GatewayAlarmPlayerTest {
     @Test public void refusesAlarmWhenGatewayStateIsUnknown()throws Exception {try{alarm.play("one",null);fail();}catch(Exception expected){assertEquals("gateway-busy",expected.getMessage());}assertEquals(0,tone.starts);}
     @Test public void constructionRecoversInterruptedVolume()throws Exception{state.edit().putString("state","playing").putBoolean("volume_saved",true).putInt("saved_volume",3).commit();volume.value=7;
         alarm=new GatewayAlarmPlayer(state,new Handler(),()->{},volume,()->tone);assertEquals(3,volume.value);assertEquals("interrupted",alarm.snapshot().optString("state"));}
+    @Test public void toneLoopCountCoversRequestedDurationWithoutTruncating(){
+        int segment=GatewayAlarmPlayer.TONE_COUNT*1000/GatewayAlarmPlayer.TONE_RATE;
+        assertEquals(1400,segment);
+        // 默认 10 秒：向上取整到 8 遍（11.2 秒），保证兜底不早于上层定时器停止
+        assertEquals(7,GatewayAlarmPlayer.toneLoopCount(GatewayAlarmPlayer.DURATION_MS));
+        assertTrue((GatewayAlarmPlayer.toneLoopCount(GatewayAlarmPlayer.DURATION_MS)+1)*segment>=GatewayAlarmPlayer.DURATION_MS);
+        for(int duration=1;duration<=60000;duration+=137)
+            assertTrue("时长 "+duration+" 被截断",(GatewayAlarmPlayer.toneLoopCount(duration)+1)*segment>=duration);
+    }
+    @Test public void toneLoopCountIsAlwaysAFiniteBoundedLoop(){
+        for(int duration:new int[]{Integer.MIN_VALUE,-1,0,1,1399,1400,1401,Integer.MAX_VALUE}){
+            int loops=GatewayAlarmPlayer.toneLoopCount(duration);
+            assertTrue("必须有限循环，不得为 -1",loops>=0);
+            assertTrue("不得超过上限",loops<=GatewayAlarmPlayer.TONE_MAX_LOOPS-1);
+        }
+        assertEquals(0,GatewayAlarmPlayer.toneLoopCount(0));
+        assertEquals(0,GatewayAlarmPlayer.toneLoopCount(1400));
+        assertEquals(1,GatewayAlarmPlayer.toneLoopCount(1401));
+    }
     private static final class FakeVolume implements GatewayAlarmPlayer.Volume {int value;final int max;FakeVolume(int value,int max){this.value=value;this.max=max;}public int current(){return value;}public int maximum(){return max;}public void set(int value){this.value=value;}}
     private static final class FakeTone implements GatewayAlarmPlayer.Tone {int starts;boolean stopped;public boolean start(int duration){starts++;return true;}public void stop(){stopped=true;}}
 }
