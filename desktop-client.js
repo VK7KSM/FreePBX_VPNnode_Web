@@ -167,18 +167,14 @@ async function action(s, act) {
     else if (act === 'home') await key(s, AndroidKeyCode.AndroidHome);
     else if (act === 'back') await key(s, AndroidKeyCode.AndroidBack);
     else if (act === 'copy') {
-      // 「复制」应当是「把设备上选中的文字取过来」。原来它只是读设备上一次复制过的内容，
-      // 所以在设备上选中文字再点它没有任何反应，必须先用安卓自带的复制菜单，这不符合按钮的名字。
-      // 现在先在设备上触发一次 Ctrl+C，等设备把剪贴板推上来再读。
-      s.lastInput = Date.now(); send(s, { type: 'activity' });
-      const before = s.deviceClipboard;
-      try { await chord(s, 31); } catch {}   // KEYCODE_C
-      await new Promise(r => setTimeout(r, 400));
+      // 这里不要注入 Ctrl+C。原实现就是「取回设备剪贴板」，设备侧的剪贴板变化会由 scrcpy
+      // 自动同步上来，这条路本来是好用的。2026-09-19 我改成先注入 Ctrl+C 再取回，结果更差：
+      // 设备上没有选中文字时，TextView 的快捷键分发不消费这个组合键，事件继续走普通按键处理，
+      // 于是在输入框里打出一个 c。粘贴要注入按键是因为没有别的触发方式，复制没有这个必要。
       const text = s.deviceClipboard;
-      if (text === undefined) { log(s, '设备剪贴板为空；请先在设备画面中选中文字'); return; }
+      if (text === undefined) { log(s, '设备尚未复制过文本；请先在设备画面中选择文字并用安卓的复制'); return; }
       await navigator.clipboard.writeText(text);
-      log(s, text === before ? ('已取回设备剪贴板 ' + text.length + ' 字，内容未变；如果刚选中了文字却没复制到，请用设备上的复制菜单')
-        : ('已复制设备上选中的 ' + text.length + ' 字'));
+      log(s, '已取回设备剪贴板 ' + text.length + ' 字');
     }
     else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并触发粘贴 ' + text.length + ' 字；若没粘上，可在设备输入框长按选粘贴')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
