@@ -71,7 +71,12 @@ final class GatewayDesktopPolicy {
         if(message==null)return "";
         String cleaned=message.replace((char)10,' ').replace((char)13,' ').replace((char)9,' ')
                 .replaceAll("[a-zA-Z][a-zA-Z0-9+.-]*://[^ ]*","<地址已隐去>").trim();
-        return cleaned.length()<=MESSAGE_LIMIT?cleaned:cleaned.substring(0,MESSAGE_LIMIT);
+        if(cleaned.length()<=MESSAGE_LIMIT)return cleaned;
+        // 按 UTF-16 码元截断会把增补平面字符（如 emoji）切成半个孤立代理项，
+        // 那样序列化成 JSON 可能不合法。正好切在代理对中间就退一格。
+        int end=MESSAGE_LIMIT;
+        if(Character.isHighSurrogate(cleaned.charAt(end-1)))end--;
+        return cleaned.substring(0,end);
     }
 
     /**

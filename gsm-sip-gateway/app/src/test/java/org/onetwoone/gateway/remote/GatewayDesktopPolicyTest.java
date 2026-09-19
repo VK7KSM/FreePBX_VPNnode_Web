@@ -131,6 +131,21 @@ public class GatewayDesktopPolicyTest {
         assertEquals(GatewayDesktopPolicy.MESSAGE_LIMIT,GatewayDesktopPolicy.redact(longer.toString()).length());
     }
 
+    /** 截断不能把增补平面字符切成半个孤立代理项，否则序列化成 JSON 可能不合法。 */
+    @Test public void redactNeverLeavesALoneSurrogate() throws Exception {
+        String emoji=new String(Character.toChars(0x1F600));   // 一个增补平面字符占两个码元
+        for(int prefix=0;prefix<8;prefix++){
+            StringBuilder text=new StringBuilder();
+            for(int i=0;i<GatewayDesktopPolicy.MESSAGE_LIMIT-prefix;i++)text.append('x');
+            for(int i=0;i<20;i++)text.append(emoji);
+            String cleaned=GatewayDesktopPolicy.redact(text.toString());
+            assertTrue("超长应被截断",cleaned.length()<=GatewayDesktopPolicy.MESSAGE_LIMIT);
+            assertFalse("末尾不能留半个代理对",cleaned.length()>0&&Character.isHighSurrogate(cleaned.charAt(cleaned.length()-1)));
+            // 能原样转成 JSON 再读回来，说明没有非法码元。
+            assertEquals(cleaned,new JSONObject().put("m",cleaned).getString("m"));
+        }
+    }
+
     @Test public void connectPhaseErrorsMustNotKillTheSession() {
         // 建连中（还没 open）：代理那次的失败与关闭都要忽略，留给直连兜底。
         assertFalse("建连阶段的 onError 不该判死会话",GatewayDesktopPolicy.failOnError(false,true));
