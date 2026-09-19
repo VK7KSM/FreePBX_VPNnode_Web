@@ -44,7 +44,7 @@ export const panelEventsSource=String.raw`(function(){
           var data;try{data=JSON.parse(event.data);}catch(e){broken();return;}
           if(data.type==='ready'){ready=true;failures=0;lastPing=lastMessage;changed();}
           else if(data.type==='changed')changed();
-          else if(data.type==='revoked'){stop();retryAt=Date.now()+3153600000000;try{window.dispatchEvent(new Event('elf-share-revoked'));}catch(e){}}
+          else if(data.type==='revoked'){stop();retryAt=Date.now()+3153600000000;try{window.dispatchEvent(new CustomEvent('elf-share-revoked',{detail:{reason:data.reason||'kicked'}}));}catch(e){}}
         };
         current.onclose=current.onerror=function(){if(socket===current)broken();};
       }catch(e){broken();}
