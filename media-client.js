@@ -100,7 +100,8 @@ window.ElfMedia=(function(){
   async function start(mode,requestedCamera){
     var d=currentDev();if(!d||!ElfMediaCapabilities.allows(d,mode))return;
     // 新协议只能由标题栏连接入口建立；旧客户端在升级前保留原协议。
-    if(d.managed_media_prepare_v1===true&&mode!=='prepare'&&(!active||active.device.id!==d.id||!active.transportReady))return;
+    // 警报是紧急功能且不使用实时流（服务端与设备端都支持独立会话），不要求先建立通信连接。
+    if(d.managed_media_prepare_v1===true&&mode!=='prepare'&&mode!=='alarm'&&(!active||active.device.id!==d.id||!active.transportReady))return;
     if(active&&active.prepared&&active.device.id===d.id&&active.mode==='prepare'&&mode!=='prepare'){
       if(!active.transportReady)return;
       await activatePrepared(active,mode,requestedCamera);return;
@@ -247,7 +248,7 @@ window.ElfMedia=(function(){
     updateTime(s);
   }
   function preview(d,fallback){if(active&&(!d||active.device.id!==d.id)){stop('已切换设备，通信结束',true);return fallback;}if(active&&active.mode!=='prepare')return '<div class="remote-preview media-live"></div>';if(d&&ElfMediaCapabilities.allows(d,'photo')&&d.media_cameras>1){var at=fallback.lastIndexOf('</div>');fallback=fallback.slice(0,at)+'<button type="button" class="media-camera-switch" aria-label="切换摄像头并拍照" onclick="ElfMedia.switchPhoto()">⇄</button>'+fallback.slice(at);}return fallback;}
-  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','警报']];return rows.map(function(row){var selected=active&&active.device.id===d?.id&&active.mode===row[0],disabled=!d||d.share_locked===true||!ElfMediaCapabilities.allows(d,row[0])||d.managed_media_prepare_v1===true&&(!active||active.device.id!==d.id||!active.transportReady)||active&&active.mode!=='prepare'&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
+  function controls(d){var rows=[['ptt','PTT'],['call','电话'],['microphone','麦克风'],['photo','拍照'],['video','录像'],['alarm','警报']];return rows.map(function(row){var selected=active&&active.device.id===d?.id&&active.mode===row[0],needsLink=row[0]!=='alarm',disabled=!d||d.share_locked===true||!ElfMediaCapabilities.allows(d,row[0])||needsLink&&d.managed_media_prepare_v1===true&&(!active||active.device.id!==d.id||!active.transportReady)||active&&active.mode!=='prepare'&&!selected;return '<button type="button" class="'+(selected?'active':'')+'" aria-pressed="'+!!selected+'" onclick="ElfMedia.start(\''+row[0]+'\')"'+(disabled?' disabled':'')+'>'+row[1]+'</button>';}).join('');}
   function feedback(d){var text=active?active.message:d&&lastDevice===d.id?lastMessage:'';return text?'<span class="media-feedback" role="status">'+esc(text)+'</span>':'';}
   function connectionControl(d){
     if(!d||!ElfMediaCapabilities.allows(d,'prepare'))return '';
