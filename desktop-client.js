@@ -82,7 +82,7 @@ async function negotiate(s, hello) {
   s.pc = pc; s.pendingCandidates = [];
   pc.onicecandidate = e => { if (e.candidate && active === s) send(s, { type: 'signal', kind: 'candidate', payload: JSON.stringify(e.candidate.toJSON()), generation: s.generation }); };
   pc.onconnectionstatechange = () => { if (active !== s) return; if (pc.connectionState === 'failed') { if (s.generation < 4 && !s.ready) send(s, { type: 'restart' }); else stop('远程桌面网络连接失败'); } if (pc.connectionState === 'disconnected') log(s, '连接中断，正在等待恢复…'); };
-  pc.ondatachannel = e => { if (active !== s) return; if (e.channel.label === 'video') s.videoDc = e.channel; else if (e.channel.label === 'control') s.controlDc = e.channel; if (s.videoDc && s.controlDc) attach(s).catch(err => { if (active === s) stop(err.message || '远程桌面初始化失败'); }); };
+  pc.ondatachannel = e => { if (active !== s) return; if (e.channel.label === 'video') s.videoDc = e.channel; else if (e.channel.label === 'control') s.controlDc = e.channel; if (s.videoDc && s.controlDc) attach(s).catch(err => { console.error('desktop attach failed', err); if (active === s) stop('远程桌面初始化失败：' + (err && err.message || err)); }); };
 }
 async function signal(s, p) {
   if (p.generation !== s.generation || !s.pc) return;
@@ -97,7 +97,11 @@ async function attach(s) {
   await Promise.all([waitOpen(s.videoDc), waitOpen(s.controlDc)]);
   const options = new ScrcpyOptions3_3_3({ audio: false, control: true, videoCodec: 'h264', sendDummyByte: false, sendDeviceMeta: true, sendCodecMeta: true, sendFrameMeta: true });
   const { metadata, stream } = await options.parseVideoStreamMetadata(channelReadable(s.videoDc, s));
-  const renderer = (window.WebGLRenderingContext ? new WebGLVideoFrameRenderer() : new BitmapVideoFrameRenderer());
+  if (!WebCodecsVideoDecoder.isSupported) throw Error('此浏览器不支持 WebCodecs 视频解码，请用最新版 Chrome/Edge');
+  // WebGL 在部分环境（远程桌面、禁用 GPU、隐私设置）不可用：真正尝试创建，失败退回位图渲染。
+  let renderer;
+  try { renderer = new WebGLVideoFrameRenderer(); if (!(renderer.canvas || renderer.element)) throw Error('no canvas'); }
+  catch (e) { console.warn('desktop webgl renderer unavailable, fallback to bitmap', e); renderer = new BitmapVideoFrameRenderer(); }
   s.canvas = renderer.canvas || renderer.element; s.canvas.className = 'desktop-canvas';
   s.node.querySelector('.desktop-screen').replaceChildren(s.canvas);
   s.decoder = new WebCodecsVideoDecoder({ codec: metadata.codec, renderer });
@@ -136,7 +140,7 @@ async function start(d) {
     if (active !== s) { await json('/api/elfremote/desktop/session', { session_id: result.session_id }, 'DELETE').catch(() => {}); return; }
     s.id = result.session_id;
     s.ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/elfremote/desktop/browser?session_id=' + s.id);
-    s.ws.onmessage = e => { if (active !== s) return; let p; try { p = JSON.parse(e.data); } catch { return; } message(s, p).catch(err => { if (active === s) stop(err.message || '远程桌面失败'); }); };
+    s.ws.onmessage = e => { if (active !== s) return; let p; try { p = JSON.parse(e.data); } catch { return; } message(s, p).catch(err => { console.error('desktop message failed', err); if (active === s) stop('远程桌面失败：' + (err && err.message || err)); }); };
     s.ws.onclose = () => { if (active === s && !s.closed) stop(s.closeMessage || '远程桌面连接已断开'); };
     s.ws.onerror = () => { if (active === s) stop('远程桌面连接失败'); };
     s.timer = setInterval(() => tick(s), 1000);
