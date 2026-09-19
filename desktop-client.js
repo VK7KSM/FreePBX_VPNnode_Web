@@ -17,7 +17,7 @@ const ICONS = [
 let active = null, lastMessage = '';
 
 function icon(path) { return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>'; }
-function render() { if (typeof window.renderRemoteConsole === 'function') window.renderRemoteConsole(); if (typeof window.render === 'function') window.render(); }
+function render() { if (typeof window.renderOps === 'function') window.renderOps(); else if (typeof window.render === 'function') window.render(); }
 function log(s, text) { s.message = text; const el = s.node?.querySelector('.desktop-status'); if (el) el.textContent = text; }
 async function json(url, body, method) {
   const r = await fetch(url, { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });

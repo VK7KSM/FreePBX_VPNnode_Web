@@ -43,6 +43,8 @@ export function shareVerdict(ctx,pathname,method,url,bodyText){
   if(p.startsWith('/api/share/'))return null;
   if(SHARE_GLOBAL_READ.has(p)&&(method==='GET'||p.startsWith('/api/share/')||p==='/api/logout'))return null;
   if(/^\/api\/elfremote\/(media|adb|adb-tunnel|desktop)\/(browser|observer)$/.test(p))return null;
+  // 关闭/查询自己的实时会话：请求体只有 session_id，归属由 DO 按会话 owner 核对。
+  if(/^\/api\/elfremote\/(media|adb-tunnel|desktop)\/session$/.test(p)&&(method==='DELETE'||method==='GET'))return null;
   if(p==='/api/devices/update'||p==='/api/devices/delete')return {status:403,msg:'只能操作本设备'};
   return {status:403,msg:'此操作不属于本设备管理页'};
 }
