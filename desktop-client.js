@@ -155,7 +155,7 @@ async function attach(s) {
   s.node.querySelector('.desktop-screen').replaceChildren(s.canvas);
   s.decoder = new WebCodecsVideoDecoder({ codec: metadata.codec, renderer });
   s.decoder.sizeChanged(({ width, height }) => { if (width === s.videoW && height === s.videoH) return; s.videoW = width; s.videoH = height; s.geometryEpoch++; });
-  const counted = new TransformStream({ transform(p, c) { if (p.type === 'data') { s.frames++; if (!s.firstFrameAt) { s.firstFrameAt = performance.now(); } s.frameEpoch = s.geometryEpoch; } c.enqueue(p); } });
+  const counted = new TransformStream({ transform(p, c) { if (p.type === 'data') { s.frames++; if (!s.firstFrameAt) { s.firstFrameAt = performance.now(); setTimeout(() => updateReady(s), 0); } s.frameEpoch = s.geometryEpoch; } c.enqueue(p); } });
   stream.pipeThrough(options.createMediaStreamTransformer()).pipeThrough(counted).pipeTo(s.decoder.writable).catch(e => { if (active === s && !s.closed) log(s, '视频流结束：' + (e?.message || e)); });
   s.controller = new ScrcpyControlMessageWriter(channelWritable(s.controlDc).getWriter(), options);
   (async () => { const b = new BufferedReadableStream(channelReadable(s.controlDc, s)); try { while (true) { const id = (await b.readExactly(1))[0]; await options.deviceMessageParsers.parse(id, b); } } catch {} })();
