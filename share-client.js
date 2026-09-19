@@ -2,7 +2,7 @@
 // 当前连接、改密码/有效期、删除、新建；二维码本地生成，只含网址。由 build-share-client.mjs 打包。
 import qrcode from 'qrcode-generator';
 
-const TTL_OPTIONS = [['1h', '一小时'], ['6h', '六小时'], ['1d', '一天'], ['7d', '七天'], ['30d', '三十天'], ['permanent', '永久']];
+const TTL_OPTIONS = [['1h', '1 小时'], ['6h', '6 小时'], ['1d', '1 天'], ['7d', '7 天'], ['30d', '30 天'], ['permanent', '永久']];
 let state = null, clockOffset = 0;
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -34,7 +34,12 @@ function render() {
   const s = state, sel = s.links.find(l => l.token === s.selected);
   let h = '';
   if (s.error) h += '<p class="share-error" role="alert">' + esc(s.error) + '</p>';
-  h += '<div class="share-current muted">当前连接：' + (s.session ? (s.session.link_token ? '通过链接 ' + esc(s.session.link_token) + ' 于 ' + esc(fmt(s.session.login_at)) + ' 登录' + (s.session.online ? '，在线' : '，离线') : '总后台入口') : (isShare() ? '本页面' : '无独立页面在线')) + '</div>';
+  h += '<fieldset class="share-edit"><legend>' + (sel ? '修改选中链接 ' + esc(sel.token) : '新建链接') + '</legend>';
+  h += '<div class="share-form-row"><label>密码 <input id="sharePw" class="inp" type="password" autocomplete="new-password" placeholder="' + (sel && sel.has_password ? '留空保持原密码' : '留空则免密') + '"></label>';
+  h += '<label>有效期 <select id="shareTtl" class="inp"><option value="">' + (sel ? '不修改' : '默认 1 小时') + '</option>' + TTL_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select></label>';
+  if (sel && sel.has_password) h += '<label class="share-inline"><input id="shareClearPw" type="checkbox"> 取消密码</label>';
+  h += (sel ? '<button type="button" class="btn-green" onclick="ElfShare.save()">保存修改</button><button type="button" class="btn-gray" onclick="ElfShare.select(null)">取消选中</button>' : '<button type="button" class="btn-green" onclick="ElfShare.create()">生成新地址</button>') + '</div></fieldset>';
+  h += '<div class="share-current">当前连接：' + (s.session ? (s.session.link_token ? '通过链接 ' + esc(s.session.link_token) + ' 于 ' + esc(fmt(s.session.login_at)) + ' 登录' + (s.session.online ? '，在线' : '，离线') : '总后台入口') : (isShare() ? '本页面' : '无独立页面在线')) + '</div>';
   h += '<table class="share-table"><thead><tr><th>链接</th><th>创建</th><th>剩余</th><th>密码</th><th></th></tr></thead><tbody>';
   if (!s.links.length) h += '<tr><td colspan="5" class="muted">暂无有效链接</td></tr>';
   for (const l of s.links) {
@@ -44,12 +49,7 @@ function render() {
       + '<td class="share-row-actions"><button type="button" class="btn-gray" onclick="ElfShare.copy(\'' + esc(l.url) + '\')">复制</button><button type="button" class="btn-gray" onclick="ElfShare.qr(\'' + esc(l.token) + '\')">二维码</button><button type="button" class="btn-red" onclick="ElfShare.remove(\'' + esc(l.token) + '\')">删除</button></td></tr>';
   }
   h += '</tbody></table>';
-  if (s.qrToken) { const l = s.links.find(x => x.token === s.qrToken); if (l) h += '<div class="share-qr">' + qrSvg(l.url) + '<div class="muted">' + esc(l.url) + '</div></div>'; }
-  h += '<fieldset class="share-edit"><legend>' + (sel ? '修改选中链接 ' + esc(sel.token) : '新建链接') + '</legend>';
-  h += '<label>密码 <input id="sharePw" class="inp" type="password" autocomplete="new-password" placeholder="' + (sel && sel.has_password ? '留空则保持原密码' : '留空则免密') + '"></label>';
-  if (sel && sel.has_password) h += '<label class="share-inline"><input id="shareClearPw" type="checkbox"> 取消密码</label>';
-  h += '<label>有效期 <select id="shareTtl" class="inp"><option value="">' + (sel ? '不修改' : '默认一小时') + '</option>' + TTL_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select></label>';
-  h += '<div class="ops-actions">' + (sel ? '<button type="button" class="btn-green" onclick="ElfShare.save()">保存修改</button><button type="button" class="btn-gray" onclick="ElfShare.select(null)">取消选中</button>' : '<button type="button" class="btn-green" onclick="ElfShare.create()">生成新地址</button>') + '</div></fieldset>';
+  if (s.qrToken) { const l = s.links.find(x => x.token === s.qrToken); if (l) h += '<div class="share-qr">' + qrSvg(l.url) + '<div>' + esc(l.url) + '</div></div>'; }
   body.innerHTML = h;
 }
 async function reload() {

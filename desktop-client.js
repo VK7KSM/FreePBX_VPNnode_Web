@@ -12,13 +12,16 @@ const ICONS = [
   ['back', '返回', 'M15 18l-6-6 6-6'],
   ['copy', '复制', 'M8 8h12v12H8zM4 16V4h12'],
   ['paste', '粘贴', 'M9 4h6v3H9zM6 6h12v14H6zM9 12h6M9 16h6'],
+  ['info', '连接信息', 'M12 8h.01M11 12h1v4h1M12 3a9 9 0 110 18 9 9 0 010-18z'],
   ['fold', '折叠', 'M15 6l-6 6 6 6'],
 ];
 let active = null, lastMessage = '';
 
-function icon(path) { return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>'; }
+function icon(path) { return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>'; }
 function render() { if (typeof window.renderOps === 'function') window.renderOps(); else if (typeof window.render === 'function') window.render(); }
-function log(s, text) { s.message = text; const el = s.node?.querySelector('.desktop-status'); if (el) el.textContent = text; }
+function log(s, text) { s.message = text; const el = s.node?.querySelector('.desktop-status'); if (el) el.textContent = text; updateInfoPanel(s); }
+// 右上角信息面板：未连接时自动显示状态；已连接后默认关闭，点左侧“连接信息”图标打开。
+function updateInfoPanel(s) { const p = s.node?.querySelector('.desktop-info'); if (!p) return; p.hidden = s.ready ? !s.infoOpen : false; }
 async function json(url, body, method) {
   const r = await fetch(url, { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
   const x = await r.json().catch(() => ({})); if (!r.ok || x.ok === false) throw Error(x.msg || '远程桌面请求失败'); return x;
@@ -40,13 +43,13 @@ function buildNode(s) {
   const node = document.createElement('div'); node.className = 'desktop-view'; node.dataset.deviceId = s.device.id;
   node.innerHTML = '<div class="desktop-stage"><div class="desktop-screen" tabindex="0" aria-label="设备屏幕"></div>'
     + '<div class="desktop-tools" role="toolbar" aria-label="远程桌面工具">' + ICONS.map(i => '<button type="button" data-act="' + i[0] + '" title="' + i[1] + '" aria-label="' + i[1] + '">' + icon(i[2]) + '</button>').join('') + '</div>'
-    + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden></button></div>'
-    + '<div class="desktop-foot"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div>';
+    + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden></button>'
+    + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div></div>';
   const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold');
   let folded = false; try { folded = localStorage.getItem('elf-desktop-folded') === '1'; } catch {}
   const applyFold = () => { tools.hidden = folded; unfold.hidden = !folded; try { localStorage.setItem('elf-desktop-folded', folded ? '1' : '0'); } catch {} };
   applyFold();
-  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } action(s, b.dataset.act); });
+  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } action(s, b.dataset.act); });
   unfold.onclick = () => { folded = false; applyFold(); };
   // 鼠标→触摸：按实际画面矩形换算，黑边不发；失焦/离开/断线释放触点。
   let down = false, lastMove = 0;
@@ -116,14 +119,14 @@ async function attach(s) {
 function updateReady(s) {
   if (s.ready || !s.inputReady || !s.firstFrameAt || !s.deviceReady) return;
   s.ready = true; s.started = Date.now(); s.lastInput = Date.now();
-  log(s, '已连接，' + s.videoW + '×' + s.videoH + '，首帧 ' + Math.round(s.firstFrameAt - s.startedAt) + ' ms'); render();
+  log(s, '已连接 ' + s.videoW + '×' + s.videoH + ' · 首帧 ' + Math.round(s.firstFrameAt - s.startedAt) + ' ms'); render();
 }
 function tick(s) {
   if (active !== s) return;
   const now = performance.now(), dt = (now - (s.lastTick || s.startedAt)) / 1000;
   const kbps = Math.round((s.bytes - s.lastBytes) * 8 / 1000 / dt), fps = ((s.frames - s.lastFrames) / dt).toFixed(0);
   s.lastTick = now; s.lastBytes = s.bytes; s.lastFrames = s.frames;
-  const el = s.node.querySelector('.desktop-stats'); if (el) el.textContent = s.ready ? fps + ' 帧/秒 ' + kbps + ' kbps 本次 ' + (s.bytes / 1048576).toFixed(1) + ' MB' : '';
+  const el = s.node.querySelector('.desktop-stats'); if (el) el.textContent = s.ready ? fps + ' 帧/秒 · ' + kbps + ' kbps · 本次 ' + (s.bytes / 1048576).toFixed(1) + ' MB' : '';
   if (s.ready && Date.now() - s.lastInput >= IDLE_LIMIT_MS) { stop('20分钟无操作，已自动关闭'); return; }
   if (!s.lastPing || Date.now() - s.lastPing >= 15000) { send(s, { type: 'ping' }); s.lastPing = Date.now(); }
   if (Date.now() - s.lastInput < 30000 && Date.now() - (s.lastActivitySent || 0) >= 30000) { send(s, { type: 'activity' }); s.lastActivitySent = Date.now(); }
