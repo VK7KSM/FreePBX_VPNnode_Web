@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DesktopRelay, desktopAllowed, turnFetcher, displayLongEdge} from './desktop-relay.js';
+import { DesktopRelay, desktopAllowed, turnFetcher, displayLongEdge, displayBox} from './desktop-relay.js';
 
 function fakeSocket(){
   const s={sent:[],listeners:{},closed:null};
@@ -80,23 +80,31 @@ test('准备超时与网页静默会关闭会话并通知', async () => {
   assert.equal(r.status('dev1').active,false);
 });
 
-test('显示尺寸：夹到 8 的倍数，量不到时不下发该字段', async () => {
-  assert.equal(displayLongEdge(1280), 1280);
+test('播放区尺寸：宽高两个数都下发，量不到就一个字段都不发', async () => {
+  assert.deepEqual(displayBox(1458, 870), {w: 1458, h: 870});
+  assert.deepEqual(displayBox(100, 5000), {w: 160, h: 4096}, '上下限各自夹紧，不改变哪一边是长边');
+  for (const bad of [[0, 100], [100, 0], [-1, 100], ['x', 1], [NaN, 1], [undefined, undefined]])
+    assert.equal(displayBox(bad[0], bad[1]), null, '不应接受 ' + JSON.stringify(bad));
+
   assert.equal(displayLongEdge(1333), 1328, '取 8 的倍数');
   assert.equal(displayLongEdge(2500), 1920, '上限 1920');
-  assert.equal(displayLongEdge(330), 480, '下限 480，再小就没法看了');
+  assert.equal(displayLongEdge(330), 480, '下限 480');
   // 0 绝不能下发：scrcpy 的 max_size=0 表示不限制，正好和「没量到」相反
   for (const bad of [0, -1, NaN, undefined, null, 'x', {}]) assert.equal(displayLongEdge(bad), 0);
 
-  const device = { id: 'dev1', enabled: true, managed_desktop_v1: true };
-  const relay = new DesktopRelay({ schedule: () => 1, cancel: () => {} });
-  const { session_id } = await relay.create(device, 'wifi', 1333);
+  const device = {id: 'dev1', enabled: true, managed_desktop_v1: true};
+  const relay = new DesktopRelay({schedule: () => 1, cancel: () => {}});
+  const {session_id} = await relay.create(device, 'wifi', {w: 1458, h: 870});
   const offered = relay.offer('dev1', 'https://example.test');
-  assert.equal(offered.max_size, 1328, '会话创建时带上的尺寸要出现在 offer 里');
+  assert.equal(offered.display_w, 1458);
+  assert.equal(offered.display_h, 870);
+  // max_size 由长边推出并继续下发：73 到 75 的客户端只认它
+  assert.equal(offered.max_size, 1456, '1458 取 8 的倍数是 1456');
   relay.close(relay.sessions.get(session_id), '测试结束');
 
-  const relay2 = new DesktopRelay({ schedule: () => 1, cancel: () => {} });
-  await relay2.create({ ...device, id: 'dev2' }, 'wifi');
-  assert.equal(Object.hasOwn(relay2.offer('dev2', 'https://example.test'), 'max_size'), false,
-    '没传尺寸时 offer 里不能出现该字段，否则设备会当成不限制');
+  const relay2 = new DesktopRelay({schedule: () => 1, cancel: () => {}});
+  await relay2.create({...device, id: 'dev2'}, 'wifi');
+  const bare = relay2.offer('dev2', 'https://example.test');
+  for (const field of ['display_w', 'display_h', 'max_size'])
+    assert.equal(Object.hasOwn(bare, field), false, '没量到时 ' + field + ' 不能出现，否则设备会当成不限制');
 });

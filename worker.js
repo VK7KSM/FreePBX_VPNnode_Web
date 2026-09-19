@@ -317,7 +317,7 @@ export class ElfStore {
           if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'远程桌面请求无效'},400);
           const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
           if(!d)return json({ok:false,msg:'未找到设备'},404);
-          try{const created=await this.desktop.create(d,data.quality||'wifi',data.max_size);const s=this.desktop.sessions.get(created.session_id);if(s&&!s.owner)s.owner=ownerOf(ctx);if(s&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'该设备的远程桌面正由其他登录使用'},409);return json(created);}catch(error){return json({ok:false,msg:error.message},400);}
+          try{const created=await this.desktop.create(d,data.quality||'wifi',{w:data.display_w,h:data.display_h});const s=this.desktop.sessions.get(created.session_id);if(s&&!s.owner)s.owner=ownerOf(ctx);if(s&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'该设备的远程桌面正由其他登录使用'},409);return json(created);}catch(error){return json({ok:false,msg:error.message},400);}
         }
         const role=url.pathname==='/api/elfremote/desktop/browser'?'browser':url.pathname==='/api/elfremote/desktop/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);

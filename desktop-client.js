@@ -198,16 +198,19 @@ function tick(s) {
   if (Date.now() - s.lastInput < 30000 && Date.now() - (s.lastActivitySent || 0) >= 30000) { send(s, { type: 'activity' }); s.lastActivitySent = Date.now(); }
 }
 
-// 实际显示区域的长边，换算成设备像素。设备据此决定编多大：
-// 面板里那个小窗只有 340 像素高，而设备默认按长边 1280 编，多出来的四倍像素全被缩掉了。
-// 量不到就回 0，服务端收到 0 不下发该字段，设备走自己的默认值。
-function displayLongEdge(node) {
+// 播放区的物理像素尺寸。把宽高两个数都报上去，由设备和自己的屏幕做 contain 计算：
+// 手机是竖屏，放进横向播放区里上下顶满、左右留黑边，真正约束的是高度；窗口又窄又高时
+// 约束才变成宽度。这个判断要同时知道手机屏幕和播放区，只有设备两边都知道，所以不在这里算。
+// 之前这里只报了播放区长边，等于在横向窗口下把宽度当成了约束边，编出来的画面白白多了一截宽、
+// 高度反而不够，表现就是放大后锯齿明显。量不到就不报，服务端不下发相关字段，设备走自己的默认值。
+function displayBox(node) {
   try {
     const r = node?.querySelector('.desktop-stage')?.getBoundingClientRect();
     const w = r?.width || 0, h = r?.height || 0;
-    if (!w || !h) return 0;
-    return Math.round(Math.max(w, h) * (window.devicePixelRatio || 1));
-  } catch { return 0; }
+    if (!w || !h) return null;
+    const ratio = window.devicePixelRatio || 1;
+    return { w: Math.round(w * ratio), h: Math.round(h * ratio) };
+  } catch { return null; }
 }
 
 async function start(d) {
@@ -217,7 +220,8 @@ async function start(d) {
   const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: '正在连接…' };
   active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, '正在唤醒设备…');
   try {
-    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, max_size: displayLongEdge(s.node), quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
+    const box = displayBox(s.node);
+    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, display_w: box?.w, display_h: box?.h, quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
     if (active !== s) { await json('/api/elfremote/desktop/session', { session_id: result.session_id }, 'DELETE').catch(() => {}); return; }
     s.id = result.session_id;
     s.ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/elfremote/desktop/browser?session_id=' + s.id);
