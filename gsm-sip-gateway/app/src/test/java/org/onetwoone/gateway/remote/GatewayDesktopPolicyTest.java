@@ -91,11 +91,13 @@ public class GatewayDesktopPolicyTest {
         assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",9999,w,h).getInt("max_size"));
         assertEquals(GatewayDesktopPolicy.SIZE_FLOOR,GatewayDesktopPolicy.encoding("wifi",10,w,h).getInt("max_size"));
         // 编码器要求长边是 8 的倍数。
-        for(int requested=321;requested<=1290;requested+=7)
+        for(int requested=321;requested<=1930;requested+=7)
             assertEquals(0,GatewayDesktopPolicy.encoding("wifi",requested,w,h).getInt("max_size")%8);
         // 没报尺寸时退回各档上限，不至于糊。
-        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",0,w,h).getInt("max_size"));
-        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_CELLULAR,GatewayDesktopPolicy.encoding("cellular",0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_WIFI,GatewayDesktopPolicy.encoding("wifi",0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_CELLULAR,GatewayDesktopPolicy.encoding("cellular",0,w,h).getInt("max_size"));
+        // 面板把浏览器请求夹到 [480,1920]，设备端上限必须能收下 1920，否则大窗会被悄悄压回去。
+        assertEquals(1920,GatewayDesktopPolicy.encoding("wifi",1920,w,h).getInt("max_size"));
     }
 
     @Test public void encodingKeepsCellularCheaperThanWifi() throws Exception {
@@ -135,11 +137,28 @@ public class GatewayDesktopPolicyTest {
 
     @Test public void boundClampsEncodingRequests() throws Exception {
         JSONObject low=GatewayDesktopPolicy.bound(new JSONObject().put("max_fps",0).put("bit_rate",1).put("max_size",-5));
-        assertEquals(1,low.getInt("max_fps")); assertEquals(100_000,low.getInt("bit_rate")); assertEquals(0,low.getInt("max_size"));
+        assertEquals(1,low.getInt("max_fps")); assertEquals(100_000,low.getInt("bit_rate"));
         JSONObject high=GatewayDesktopPolicy.bound(new JSONObject().put("max_fps",9999).put("bit_rate",99_000_000).put("max_size",4096));
         assertEquals(60,high.getInt("max_fps")); assertEquals(8_000_000,high.getInt("bit_rate")); assertEquals(1920,high.getInt("max_size"));
         JSONObject missing=GatewayDesktopPolicy.bound(new JSONObject());
-        assertEquals(30,missing.getInt("max_fps")); assertEquals(1_500_000,missing.getInt("bit_rate")); assertEquals(0,missing.getInt("max_size"));
+        assertEquals(30,missing.getInt("max_fps")); assertEquals(1_500_000,missing.getInt("bit_rate"));
+    }
+
+    /**
+     * scrcpy 把 max_size=0 解释成「不限制」，会按整块 1440×2960 编码，
+     * 像素是 1280 档的四倍，和「没指定就省着来」正好相反。
+     * 所以核心侧遇到缺失、0 或越小值，必须抬到安全默认值而不是留空。
+     */
+    @Test public void boundNeverYieldsUnlimitedSize() throws Exception {
+        JSONObject[] risky={new JSONObject(),new JSONObject().put("max_size",0),
+                new JSONObject().put("max_size",-5),new JSONObject().put("max_size",GatewayDesktopPolicy.SIZE_FLOOR-1)};
+        for(JSONObject request:risky){
+            int size=GatewayDesktopPolicy.bound(request).getInt("max_size");
+            assertEquals("必须抬到安全默认值，不能留成不限制",GatewayDesktopPolicy.SIZE_SAFE_DEFAULT,size);
+            assertTrue(size>=GatewayDesktopPolicy.SIZE_FLOOR);
+        }
+        // 正常取值原样保留。
+        assertEquals(640,GatewayDesktopPolicy.bound(new JSONObject().put("max_size",640)).getInt("max_size"));
     }
 
     /**

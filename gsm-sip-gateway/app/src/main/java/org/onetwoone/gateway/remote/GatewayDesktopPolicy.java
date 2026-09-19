@@ -42,7 +42,11 @@ final class GatewayDesktopPolicy {
     //   1280/30帧/1.5M 2183 kbps；只把帧率降到 10 仍有 1840；只把码率降到 600k 仍有 1836；
     //   改成 VBR 反而 2313；960/15帧 1402；800/15帧 1189；640/15帧 711；480/10帧 374。
     //   结论：单独压帧率或码率都没用，长边尺寸才是唯一有效的杠杆，码率必须跟着像素走。
-    static final int SIZE_FLOOR=320,SIZE_CEILING_WIFI=1280,SIZE_CEILING_CELLULAR=720;
+    // 上限与面板下发时的夹逼范围对齐（面板夹到 [480,1920]），两边不一致的话
+    // 浏览器报了大尺寸会被设备端悄悄压回去，大窗时画面偏软却查不出原因。
+    static final int SIZE_FLOOR=320,SIZE_CEILING_WIFI=1920,SIZE_CEILING_CELLULAR=960;
+    // 面板还没报尺寸时用的保守默认值，不能直接用上限，否则盲发就按最贵的档走。
+    static final int SIZE_DEFAULT_WIFI=1280,SIZE_DEFAULT_CELLULAR=720;
     static final int FPS_WIFI=15,FPS_CELLULAR=10;
     static final int BIT_RATE_FLOOR=300_000,BIT_RATE_CEILING=4_000_000;
     /** 屏幕内容每像素每帧约 0.12 比特，实测在这个量级上画面可读且不浪费。 */
@@ -68,7 +72,8 @@ final class GatewayDesktopPolicy {
         boolean cellular="cellular".equals(quality);
         int ceiling=cellular?SIZE_CEILING_CELLULAR:SIZE_CEILING_WIFI;
         int fps=cellular?FPS_CELLULAR:FPS_WIFI;
-        int longEdge=alignedSize(requestedLongEdge>0?requestedLongEdge:ceiling,ceiling);
+        int fallback=cellular?SIZE_DEFAULT_CELLULAR:SIZE_DEFAULT_WIFI;
+        int longEdge=alignedSize(requestedLongEdge>0?requestedLongEdge:fallback,ceiling);
         int screenLong=Math.max(displayWidth,displayHeight),screenShort=Math.min(displayWidth,displayHeight);
         // 按屏幕纵横比推出短边，才能算准像素数；拿不到屏幕尺寸时按 9:19.5 这类窄屏保守估。
         long shortEdge=screenLong>0?Math.max(1,(long)longEdge*screenShort/screenLong):longEdge/2;
@@ -84,12 +89,20 @@ final class GatewayDesktopPolicy {
 
     static boolean validScid(String value){return value!=null&&value.matches("[0-7][0-9a-f]{7}");}
 
-    /** 核心侧对启动参数收敛到可用区间，防止请求里带来越界取值。 */
+    /**
+     * 核心侧对启动参数收敛到可用区间，防止请求里带来越界取值。
+     * max_size 缺失或为 0 时**不能**原样传给 scrcpy：它把 0 解释成「不限制」，
+     * 于是会按整块 1440×2960 编码，像素是 1280 档的四倍，结果和「没指定就省着来」正好相反。
+     * 所以这里把缺失与越小值一律抬到安全默认值，而不是留空。
+     */
+    static final int SIZE_SAFE_DEFAULT=SIZE_DEFAULT_WIFI;
     static JSONObject bound(JSONObject request)throws Exception {
+        int requested=request.optInt("max_size",0);
+        int size=requested<SIZE_FLOOR?SIZE_SAFE_DEFAULT:Math.min(1920,requested);
         return new JSONObject()
                 .put("max_fps",Math.max(1,Math.min(60,request.optInt("max_fps",30))))
                 .put("bit_rate",Math.max(100_000,Math.min(8_000_000,request.optInt("bit_rate",1_500_000))))
-                .put("max_size",Math.max(0,Math.min(1920,request.optInt("max_size",0))));
+                .put("max_size",size);
     }
 
     /**
