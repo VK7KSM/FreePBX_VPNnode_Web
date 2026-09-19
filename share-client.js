@@ -18,13 +18,13 @@ function remaining(link) {
   const m = Math.floor(ms / 60000); if (m < 60) return m + ' 分钟'; const h = Math.floor(m / 60); if (h < 48) return h + ' 小时 ' + (m % 60) + ' 分'; return Math.floor(h / 24) + ' 天 ' + (h % 24) + ' 小时';
 }
 function fmt(ms) { try { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Australia/Sydney', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms)); } catch { return new Date(ms).toLocaleString(); } }
-function qrSvg(text) { const q = qrcode(0, 'M'); q.addData(text.toUpperCase(), 'Alphanumeric'); q.make(); return q.createSvgTag({ cellSize: 4, margin: 4, scalable: true }); }
+function qrSvg(text) { const q = qrcode(0, 'M'); q.addData(text.toUpperCase(), 'Alphanumeric'); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
 
 function ensureNode() {
   let wrap = document.getElementById('shareWrap');
   if (wrap) return wrap;
   wrap = document.createElement('div'); wrap.id = 'shareWrap'; wrap.className = 'file-send-wrap'; wrap.style.display = 'none';
-  wrap.innerHTML = '<div class="file-send-dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="shareTitle"><div class="traffic-header"><h3 id="shareTitle">本设备管理链接</h3><button type="button" class="btn-close" aria-label="关闭" onclick="ElfShare.close()">×</button></div><div id="shareBody"></div></div>';
+  wrap.innerHTML = '<div class="file-send-dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="shareTitle"><div class="traffic-header"><h3 id="shareTitle">本设备管理链接</h3><button type="button" class="btn-close share-close" aria-label="关闭" onclick="ElfShare.close()">&times;</button></div><div id="shareBody"></div></div>';
   wrap.addEventListener('click', e => { if (e.target === wrap) close(); });
   document.body.appendChild(wrap);
   return wrap;
@@ -34,22 +34,23 @@ function render() {
   const s = state, sel = s.links.find(l => l.token === s.selected);
   let h = '';
   if (s.error) h += '<p class="share-error" role="alert">' + esc(s.error) + '</p>';
-  h += '<fieldset class="share-edit"><legend>' + (sel ? '修改选中链接 ' + esc(sel.token) : '新建链接') + '</legend>';
-  h += '<div class="share-form-row"><label>密码 <input id="sharePw" class="inp" type="password" autocomplete="new-password" placeholder="' + (sel && sel.has_password ? '留空保持原密码' : '留空则免密') + '"></label>';
-  h += '<label>有效期 <select id="shareTtl" class="inp"><option value="">' + (sel ? '不修改' : '默认 1 小时') + '</option>' + TTL_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select></label>';
+  // 新建/修改表单：密码、有效期、按钮同一行；默认 1 小时。
+  h += '<fieldset class="share-edit"><legend>' + (sel ? '修改链接 ' + esc(sel.token) : '新建链接') + '</legend><div class="share-form-row">';
+  h += '<label>密码 <input id="sharePw" class="inp" type="password" autocomplete="new-password"></label>';
+  h += '<label>有效期 <select id="shareTtl" class="inp">' + (sel ? '<option value="">不修改</option>' : '') + TTL_OPTIONS.map(o => '<option value="' + o[0] + '"' + (!sel && o[0] === '1h' ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>';
   if (sel && sel.has_password) h += '<label class="share-inline"><input id="shareClearPw" type="checkbox"> 取消密码</label>';
-  h += (sel ? '<button type="button" class="btn-green" onclick="ElfShare.save()">保存修改</button><button type="button" class="btn-gray" onclick="ElfShare.select(null)">取消选中</button>' : '<button type="button" class="btn-green" onclick="ElfShare.create()">生成新地址</button>') + '</div></fieldset>';
-  h += '<div class="share-current">当前连接：' + (s.session ? (s.session.link_token ? '通过链接 ' + esc(s.session.link_token) + ' 于 ' + esc(fmt(s.session.login_at)) + ' 登录' + (s.session.online ? '，在线' : '，离线') : '总后台入口') : (isShare() ? '本页面' : '无独立页面在线')) + '</div>';
+  h += sel ? '<button type="button" class="btn-green" onclick="ElfShare.save()">保存修改</button><button type="button" class="btn-gray" onclick="ElfShare.select(null)">取消</button>' : '<button type="button" class="btn-green" onclick="ElfShare.create()">生成新地址</button>';
+  h += '</div></fieldset>';
+  // 已创建链接：一行一条，鼠标移到链接上显示二维码；点击链接选中后可修改。
   h += '<table class="share-table"><thead><tr><th>链接</th><th>创建</th><th>剩余</th><th>密码</th><th></th></tr></thead><tbody>';
-  if (!s.links.length) h += '<tr><td colspan="5" class="muted">暂无有效链接</td></tr>';
+  if (!s.links.length) h += '<tr><td colspan="5" class="share-empty">暂无有效链接</td></tr>';
   for (const l of s.links) {
-    h += '<tr class="' + (l.token === s.selected ? 'on' : '') + (l.current ? ' current' : '') + '" data-token="' + esc(l.token) + '">'
-      + '<td><button type="button" class="share-pick" onclick="ElfShare.select(\'' + esc(l.token) + '\')">' + esc(l.url) + '</button>' + (l.current ? ' <span class="tag">当前会话</span>' : '') + '</td>'
+    h += '<tr class="' + (l.token === s.selected ? 'on' : '') + '" data-token="' + esc(l.token) + '">'
+      + '<td class="share-link-cell"><span class="share-link" tabindex="0" title="点击选中后可修改密码或有效期" onclick="ElfShare.select(\'' + esc(l.token) + '\')">' + esc(l.url) + '</span>' + (l.current ? '<span class="tag share-tag">当前会话</span>' : '') + '<div class="share-qr-pop" aria-hidden="true">' + qrSvg(l.url) + '</div></td>'
       + '<td>' + esc(fmt(l.created_at)) + '</td><td>' + esc(remaining(l)) + '</td><td>' + (l.has_password ? '已设' : '免密') + '</td>'
-      + '<td class="share-row-actions"><button type="button" class="btn-gray" onclick="ElfShare.copy(\'' + esc(l.url) + '\')">复制</button><button type="button" class="btn-gray" onclick="ElfShare.qr(\'' + esc(l.token) + '\')">二维码</button><button type="button" class="btn-red" onclick="ElfShare.remove(\'' + esc(l.token) + '\')">删除</button></td></tr>';
+      + '<td class="share-row-actions"><button type="button" class="btn-red" onclick="ElfShare.remove(\'' + esc(l.token) + '\')">删除</button></td></tr>';
   }
   h += '</tbody></table>';
-  if (s.qrToken) { const l = s.links.find(x => x.token === s.qrToken); if (l) h += '<div class="share-qr">' + qrSvg(l.url) + '<div>' + esc(l.url) + '</div></div>'; }
   body.innerHTML = h;
 }
 async function reload() {
@@ -69,14 +70,12 @@ async function guard(fn) { if (!state) return; state.error = ''; try { await fn(
 const ElfShare = {
   isShare, open, close,
   select(token) { if (!state) return; state.selected = token || null; render(); },
-  qr(token) { if (!state) return; state.qrToken = state.qrToken === token ? null : token; render(); },
-  copy(url) { navigator.clipboard.writeText(url).then(() => { if (state) { state.error = '已复制链接'; render(); } }).catch(() => { if (state) { state.error = '复制失败，请手动选择地址'; render(); } }); },
-  create() { return guard(async () => { const pw = document.getElementById('sharePw')?.value || '', ttl = document.getElementById('shareTtl')?.value || ''; const x = await api('/api/share/links', { device_id: state.device.id, ttl: ttl || undefined, password: pw || null }); state.qrToken = x.link.token; }); },
+  create() { return guard(async () => { const pw = document.getElementById('sharePw')?.value || '', ttl = document.getElementById('shareTtl')?.value || ''; const x = await api('/api/share/links', { device_id: state.device.id, ttl: ttl || undefined, password: pw || null });  }); },
   save() { return guard(async () => { const pw = document.getElementById('sharePw')?.value || '', clear = document.getElementById('shareClearPw')?.checked, ttl = document.getElementById('shareTtl')?.value || ''; const body = { token: state.selected }; if (clear) body.password = { action: 'clear' }; else if (pw) body.password = { action: 'set', value: pw }; if (ttl) body.ttl = ttl; if (!body.password && !body.ttl) throw Error('没有需要保存的修改'); await api('/api/share/links/update', body); }); },
   remove(token) { const l = state?.links.find(x => x.token === token); if (!l) return; if (!confirm(l.current ? '删除当前会话正在使用的链接，将立即退出该会话。确定删除？' : '确定删除此链接？删除后立即失效。')) return; return guard(async () => { await api('/api/share/links/delete', { token }); }); },
   // 供页面调用：总后台标题栏「分享」/独立页「设置」按钮。
-  button(d) { const can = !!d && d.enabled !== false; return '<button class="device-action action-share" onclick="ElfShare.open()"' + (can ? '' : ' disabled') + '>' + (isShare() ? '设置' : '分享') + '</button>'; },
+  button(d) { if (isShare()) return ''; const can = !!d && d.enabled !== false; return '<button class="device-action action-share" onclick="ElfShare.open()"' + (can ? '' : ' disabled') + '>分享</button>'; },
   locked(d) { return !!d && d.share_locked === true && !isShare(); },
-  lockedNotice(d) { return this.locked(d) ? '<div class="share-locked-notice" role="status">独立用户使用中，总后台只读；分享、编辑、停用、解除配对、丢失模式仍可用。</div>' : ''; },
+  lockedNotice(d) { return this.locked(d) ? '<span class="share-lock-tag" role="status">只读模式，其它用户使用中</span>' : ''; },
 };
 window.ElfShare = ElfShare;
