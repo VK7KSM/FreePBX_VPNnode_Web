@@ -2,6 +2,8 @@ package net.elfradio.elfremote;
 
 import org.json.JSONObject;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.util.regex.Pattern;
 
 /**
@@ -66,9 +68,38 @@ final class DesktopLauncher {
         if (!currentScid.isEmpty()) {
             // 按 scid 精确结束（含 su 与 app_process 两层）；pkill 自身不在匹配范围。
             try { new ProcessBuilder("/system/bin/pkill", "-f", "scid=" + currentScid).start().waitFor(); } catch (Exception ignored) { }
+            // pkill -f 要靠 ps 能看到完整参数，部分机型看不到（SIP-dev 在 Android 12 上实测），
+            // 匹配不到就会留下一个占着抽象套接字的残留进程，下一次会话连不上。再直接扫一遍 /proc 兜底。
+            killByScid(currentScid);
             RuntimeLog.event("desktop_server_stopped scid=" + currentScid);
         }
         if (current != null) { try { current.destroy(); } catch (Exception ignored) { } current = null; }
         currentScid = "";
+    }
+
+    /** 直接读 /proc 的 cmdline 按 scid 匹配，连 su 与 app_process 两层一起收掉，自身进程排除在外。 */
+    private static void killByScid(String scid) {
+        File[] entries = new File("/proc").listFiles();
+        if (entries == null) return;
+        int self = android.os.Process.myPid();
+        String needle = "scid=" + scid;
+        for (File entry : entries) {
+            int pid;
+            try { pid = Integer.parseInt(entry.getName()); } catch (Exception notAPid) { continue; }
+            if (pid == self) continue;
+            String command = readCmdline(new File(entry, "cmdline"));
+            if (command == null || !command.contains(needle)) continue;
+            try { android.os.Process.killProcess(pid); } catch (Exception ignored) { }
+        }
+    }
+
+    /** cmdline 以 NUL 分隔，读成以空格分隔的一行供匹配；进程随时可能消失，读失败即当作不匹配。 */
+    private static String readCmdline(File file) {
+        try (InputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[4096];
+            int n = in.read(buffer);
+            if (n <= 0) return null;
+            return new String(buffer, 0, n, "UTF-8").replace('\0', ' ');
+        } catch (Exception unavailable) { return null; }
     }
 }
