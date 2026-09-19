@@ -8,12 +8,16 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha68-location-state |
-| versionCode | 75 |
-| 当前生产机已安装版本 | 1.5.0-gateway-alpha68-location-state，versionCode 75 |
+| 源码候选版本 | 1.5.0-gateway-alpha70-desktop-deadlock-fix |
+| versionCode | 77 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha69-desktop-contain，versionCode 76；77 待远程下发 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**alpha70 变更（2026-09-19）：** 修远程桌面死锁。它不只让桌面用不了，还会把整台设备的上报一起拖死，面板上表现为「报告超时」、所有按钮变灰，而进程活着、SIP 照常注册、`last_error` 为空。`kill -3` 拿到的线程栈里是一对互指的 Blocked：会话线程在 `finish()` 里持有会话锁、等 `WebSocketImpl` 的锁；WebSocket 读线程在 `onClose` 里持有 `WebSocketImpl` 的锁、等会话锁。两道闸都补上：`finish()` 与 `close()` 不再握着会话锁去关 WebSocket；`accept()` 去掉 `synchronized`，它跑在上报线程上，绝不能阻塞。**第二道比第一道重要**——第一道只防这一个死锁，第二道防以后任何一种会话侧阻塞再拖垮上报。一个功能的缺陷不该有能力让整台设备失联。
+
+**alpha69 变更（2026-09-19）：** 编码尺寸由设备按 contain 计算。面板报播放区的宽高（`display_w` / `display_h`，物理像素），设备拿它和 `realSize()` 求 `scale = min(boxW/screenW, boxH/screenH, 1)`，编码长边取 `max(screenW,screenH) × scale`。这个计算只有设备做得准：只有它同时知道自己的屏幕和面板报来的播放区，转屏后还能立刻取到新的屏幕尺寸。缩放比封顶 1，编得比原生大纯属浪费。
 
 **alpha68 变更（2026-09-19）：** 周期上报新增 `location_state`，面板据此能分清「定位被关了」和「还没定到」，不再一律退回 IP 定位。取值 `{"enabled":bool,"reason":...,"gps":bool,"fused":bool,"network":bool}`，`reason` 为 `ok` / `location_disabled` / `permission_denied` / `provider_unavailable`。只报开关与权限状态，不含坐标，也不改任何定位设置。判定优先级刻意排成「没有定位服务 > 没有权限 > 总开关关闭 > 可用」，写反会把权限被拒报成定位已关闭，把人指去改一个改不好的地方。任一来源可用即算可用，不要求 GPS 开着。
 
@@ -67,6 +71,18 @@ scrcpy 以 `su 2000` 拉起。它对系统服务自称 `com.android.shell`，剪
 - **Android 10 以后没有单独的 GPS 开关**。快捷设置里那个「位置信息」是总开关，一关三个来源一起 `enabled=false`，`settings get secure location_mode` 会是 `0`。所以「我只关了 GPS」实际是把 WiFi 与基站定位一起关了，这一条不查 dumpsys 想不到，查了一目了然。
 - **`enabled` 和 `allowed` 是两回事**。2026-09-19 遇到过总开关打开后 `gps` 与 `fused` 的 `allowed=true` 而 `network` 是 `false`，也就是 WiFi/基站定位单独还不通。要在手机上打开「设置 → 位置信息 → 位置信息服务 → Google 位置信息准确度」，并打开同一页的「WiFi 扫描」。打开后实测从 IP 两公里变成 GPS 62 米。
 - **只开 WiFi 与基站定位是正当配置**，固定设备本来就该这么配，所以 `location_state` 里任一来源可用即算可用，不要求 GPS 开着。
+
+## 重启网关应用：只启动主界面是不够的
+
+`am force-stop` 之后启动 `MainActivity`，起来的只有 `PjsipSipService`，**`GatewayRemoteService` 不会跟着起**，于是 SIP 恢复了、上报仍然是停的，面板上依旧「报告超时」。2026-09-19 事故现场就在这里白花了时间。
+
+```bash
+am force-stop org.onetwoone.gateway
+am start -n org.onetwoone.gateway/.MainActivity
+am start-foreground-service -n org.onetwoone.gateway/.remote.GatewayRemoteService
+```
+
+第三条不能省。用 `dumpsys activity services org.onetwoone.gateway` 确认两个 `ServiceRecord` 都在，再看 `last_report` 是否在 60 秒内更新过。
 
 ## 怎么确认设备到底发了什么
 
