@@ -1,5 +1,5 @@
 {
-  "name": "elfremote",
+  "name": "v-elfradio-net",
   "main": "worker.js",
   "compatibility_date": "2024-09-23",
   // 必须保持 false。workers.dev 是公开地址，任何人都能访问，开着就会被扫描和刷量；
@@ -30,8 +30,18 @@
       { "name": "ELF_DO_LEGACY", "class_name": "ElfStoreLegacy" }
     ]
   },
+  // 2026-09-20：elfremote 被 Cloudflare 以滥用为由停用，服务迁到 v-elfradio-net。
+  // 把两个 Durable Object 命名空间整体转移过来，而不是新建空的：
+  // 设备凭据只存在 DO 里（KV 那份是 09-18 的旧副本），新建空命名空间会让所有设备失去配对，
+  // 而重新配对既要人工点、又会写满当天的免费额度。转移是零数据丢失、零额度消耗的路径，
+  // 09-17 那次从 freepbx-vpnnode-web 迁到 elfremote 用的也是这个办法，源脚本被停用不影响转移。
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ElfStore"] },
-    { "tag": "v2", "transferred_classes": [ { "from": "ElfStore", "from_script": "freepbx-vpnnode-web", "to": "ElfStoreLegacy" } ] }
+    {
+      "tag": "v1",
+      "transferred_classes": [
+        { "from": "ElfStore", "from_script": "elfremote", "to": "ElfStore" },
+        { "from": "ElfStoreLegacy", "from_script": "elfremote", "to": "ElfStoreLegacy" }
+      ]
+    }
   ]
 }
