@@ -246,7 +246,15 @@ function tick(s) {
 function displayBox(node) {
   try {
     const r = node?.querySelector('.desktop-stage')?.getBoundingClientRect();
-    const w = r?.width || 0, h = r?.height || 0;
+    let w = Math.round(r?.width || 0), h = Math.round(r?.height || 0);
+    if (!w || !h) {
+      // 节点还没完成布局时按视口估一个，绝不能一个字段都不发。
+      // 发不出去的后果不是「退回旧行为」而是「设备走自己的保守默认值」，
+      // 于是全屏和小窗编出来一模一样、跟窗口完全无关，正是设备日志里 box=0x0 那次的现象。
+      let expanded = false; try { expanded = localStorage.getItem('elf-desktop-expanded') === '1'; } catch {}
+      w = Math.round(document.documentElement.clientWidth || window.innerWidth || 0);
+      h = expanded ? Math.round(document.documentElement.clientHeight || window.innerHeight || 0) : 340;
+    }
     if (!w || !h) return null;
     const ratio = window.devicePixelRatio || 1;
     return { w: Math.round(w * ratio), h: Math.round(h * ratio) };
@@ -260,6 +268,8 @@ async function start(d) {
   const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: '正在连接…' };
   active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, '正在唤醒设备…');
   try {
+    // 等一帧再量：render() 之后布局未必已经完成，量到 0 就会退回估算，白白损失准确度。
+    await new Promise(resolve => requestAnimationFrame(resolve));
     const box = displayBox(s.node);
     const result = await json('/api/elfremote/desktop/session', { device_id: d.id, display_w: box?.w, display_h: box?.h, quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
     if (active !== s) { await json('/api/elfremote/desktop/session', { session_id: result.session_id }, 'DELETE').catch(() => {}); return; }
