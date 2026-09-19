@@ -59,10 +59,22 @@ final class DesktopSession {
         final String owner = id; final String quality = offer.optString("quality", "wifi");
         executor.execute(() -> { try {
             java.net.URI uri = new java.net.URI(offer.getString("url"));
-            if (!"wss".equals(uri.getScheme()) || !new java.net.URI(Protocol.BASE_URL).getHost().equals(uri.getHost()) || !"/api/elfremote/desktop/device".equals(uri.getPath())) throw new Exception("远程桌面地址无效");
+            // 只接受面板同源的 wss 中继地址，且查询串恰好是本次会话号，避免 offer 被改写把设备引到别处。
+            // 端口、用户信息、片段都要卡死：只比对主机名不够，wss://u@host、host:8443、带片段都能绕过去。
+            java.net.URI control = new java.net.URI(Protocol.BASE_URL);
+            if (!"wss".equals(uri.getScheme()) || !control.getHost().equals(uri.getHost())
+                    || uri.getUserInfo() != null || uri.getFragment() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)
+                    || !"/api/elfremote/desktop/device".equals(uri.getPath())
+                    || !("session_id=" + owner).equals(uri.getRawQuery())) throw new Exception("远程桌面地址无效");
+            // 令牌要放进 Authorization 头，所以只做健壮性检查，不校验形状。它是服务端签发、服务端核验的
+            // 持有者凭据，形状属于服务端实现细节（当前是两个 UUID 拼接），设备端钉死格式只会在服务端换
+            // 格式时把自己弄哑，而且哑得很难查。这里只限制长度与字符集，挡住换行等头注入字符。
+            String bearer = offer.getString("token");
+            if (bearer.isEmpty() || bearer.length() > 256 || !bearer.matches("[A-Za-z0-9._~+/=-]+")) throw new Exception("远程桌面凭据无效");
             if (!CoreInstaller.ready() || !ScrcpyAsset.ready()) throw new Exception("远程桌面组件尚未就绪");
             WakeScheduler.hold(context, "desktop-session", 1830000L);
-            socket = new WebSocketClient(uri, Collections.singletonMap("Authorization", "Bearer " + offer.getString("token"))) {
+            socket = new WebSocketClient(uri, Collections.singletonMap("Authorization", "Bearer " + bearer)) {
                 public void onOpen(ServerHandshake h) { RuntimeLog.event("desktop_connected"); }
                 public void onMessage(String raw) {
                     if (socket != this || closed) return;
