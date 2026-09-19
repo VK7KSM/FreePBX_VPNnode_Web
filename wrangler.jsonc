@@ -2,7 +2,10 @@
   "name": "elfremote",
   "main": "worker.js",
   "compatibility_date": "2024-09-23",
-  "workers_dev": true,
+  // 必须保持 false。workers.dev 是公开地址，任何人都能访问，开着就会被扫描和刷量；
+  // 2026-09-17 与 09-19 两次 Worker 被 Cloudflare 以滥用为由停用都和它有关。
+  // 对外服务只走自定义域 v.elfradio.net，自定义域与这个开关互不影响，关掉不影响正常访问。
+  "workers_dev": false,
   "vars": { "PANEL_KV_ENABLED": "1", "CF_USAGE_ENABLED": "1" },
   "assets": {
     "directory": "./.generated-assets",
