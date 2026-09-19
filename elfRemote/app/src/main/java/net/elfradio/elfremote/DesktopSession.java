@@ -227,12 +227,18 @@ final class DesktopSession {
         } catch (Exception e) { if (!closed && gen == generation) fail(e); }
     }
 
-    private synchronized void checkReady() {
-        if (closed || readySent || !videoFlowing || control == null || control.state() != DataChannel.State.OPEN) return;
-        readySent = true; main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck); main.postDelayed(idleCheck, 30000L);
-        RuntimeLog.event("desktop_ready after_ms=" + (SystemClock.elapsedRealtime() - receivedAt));
-        try { android.view.Display d = ((android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay(); android.graphics.Point p = new android.graphics.Point(); d.getRealSize(p);
-            send(new JSONObject().put("type", "ready").put("width", p.x).put("height", p.y).put("encoder", "hardware")); } catch (Exception e) { fail(e); }
+    private void checkReady() {
+        Exception failure = null;
+        synchronized (this) {
+            if (closed || readySent || !videoFlowing || control == null || control.state() != DataChannel.State.OPEN) return;
+            readySent = true; main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck); main.postDelayed(idleCheck, 30000L);
+            RuntimeLog.event("desktop_ready after_ms=" + (SystemClock.elapsedRealtime() - receivedAt));
+            try { android.view.Display d = ((android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay(); android.graphics.Point p = new android.graphics.Point(); d.getRealSize(p);
+                send(new JSONObject().put("type", "ready").put("width", p.x).put("height", p.y).put("encoder", "hardware")); } catch (Exception e) { failure = e; }
+        }
+        // fail 会走到 stop、stop 要关 WebSocket。必须在锁外调：否则本方法的锁仍被本线程持有，
+        // 等于把 stop 里「关闭放到锁外」的修复整个抵消。D31-dev 在他那边发现同型的 start() 后提醒的。
+        if (failure != null) fail(failure);
     }
 
     private void acquireScreen() {

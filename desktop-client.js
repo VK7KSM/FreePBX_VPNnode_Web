@@ -261,12 +261,12 @@ function displayBox(node) {
   } catch { return null; }
 }
 
-async function start(d) {
+async function start(d, initialMessage) {
   if (!d || d.managed_desktop_v1 !== true || d.enabled === false) return;
   if (active && active.device.id === d.id) return;
   if (active) await stop('已切换设备');
-  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: '正在连接…' };
-  active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, '正在唤醒设备…');
+  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: initialMessage || '正在连接…' };
+  active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, initialMessage || '正在唤醒设备…');
   try {
     // 等一帧再量：render() 之后布局未必已经完成，量到 0 就会退回估算，白白损失准确度。
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -300,9 +300,11 @@ async function message(s, p) {
 // 拖动窗口不触发这条：拖动过程中反复重连会很烦，只在这种离散切换上重连。
 async function resize(s) {
   const d = s.device;
-  log(s, '正在按新的窗口大小重连…');
   await stop('切换显示大小');
-  await start(d);
+  // 点下去立刻给出「重新连接中」，收到 ready 时自然被连接信息取代。
+  // 画面会黑一秒多，没有提示的话分不清是在重连还是卡死了。失败时 start 自己会落到
+  // stop(具体原因)，所以不会一直转——今晚那次「转一会儿然后断开」正是无声失败，不能重演。
+  await start(d, '重新连接中…');
 }
 
 async function stop(text) {
