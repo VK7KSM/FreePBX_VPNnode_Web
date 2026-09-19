@@ -42,4 +42,21 @@ export const shareSessionSource = String.raw`(function installShareSession(){
   window.shareSubmitLogin=function(){var pass=document.getElementById('lp');return window.shareLogin(pass?pass.value:'');};
   window.addEventListener('elf-share-revoked',function(){setStopped('kicked');state.expire();});
   document.addEventListener('DOMContentLoaded',function(){window.doLogin=window.shareSubmitLogin;});
+  // 偶发 401（例如部署瞬间）不应把独立页打回管理员登录框：先向服务器确认会话，仍有效就恢复，确实失效才按被踢处理。
+  var rechecking=null;
+  function recheck(){
+    if(rechecking)return rechecking;
+    rechecking=nativeFetch('/api/share/session',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      if(d&&d.kind==='share'){state.accept();hideLogin();return true;}
+      setStopped('kicked');state.expire();return false;
+    }).catch(function(){return false;}).finally(function(){rechecking=null;});
+    return rechecking;
+  }
+  var wrapped=window.fetch;
+  window.fetch=function(input,options){
+    return wrapped(input,options).catch(function(e){
+      if(e&&e.message==='登录已失效'){recheck();}
+      throw e;
+    });
+  };
 })();`;
