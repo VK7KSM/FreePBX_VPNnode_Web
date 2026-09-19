@@ -279,6 +279,11 @@ export class ElfStore {
       const share=await this.ctx.blockConcurrencyWhile(()=>shareValidate(this.ctx.storage,shareCookieToken(request)));
       return json({ok:!!share,context:share||null});
     }
+    if(url.pathname==='/__share/link'&&request.method==='GET'){
+      const token=normalizeToken(url.searchParams.get('token')||'');
+      const link=token?await this.ctx.blockConcurrencyWhile(()=>this.ctx.storage.get('share/link/'+token)):null;
+      return json({ok:true,active:!!link&&!link.revoked_at&&(link.expires_at===null||link.expires_at>Date.now())});
+    }
     if(url.pathname==='/__share/locked'&&request.method==='GET'){
       const deviceId=url.searchParams.get('device_id')||'';
       return json({ok:true,locked:!!deviceId&&await this.ctx.blockConcurrencyWhile(()=>shareObserverLocked(this.ctx.storage,deviceId))});
@@ -704,12 +709,12 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
       if(!result.ok)return json({ok:false,msg:result.msg,needs_password:!!result.needs_password},result.status===401?200:result.status);
       const me={kind:'share',session_id:result.session_id,generation:result.generation};
       this.closeOwned(result.device_id,me);
-      if(result.kicked)this.events.revoke(result.device_id,result.kicked.session_id);else this.events.changed();
+      if(result.kicked)this.events.revoke(result.device_id,result.kicked.session_id,'kicked');else this.events.changed();
       const device=(await loadDevices({...this.env,__storage:storage})).find(d=>d.id===result.device_id);
       return json({ok:true,device_id:result.device_id,device_name:device?.name||'',session_id:result.session_id},200,{'Set-Cookie':shareCookie(result.cookie,30*86400)});
     }
     if(url.pathname==='/api/share/logout'&&method==='POST'){
-      if(ctx?.kind==='share'){await shareLogout(storage,shareCookieToken(request));this.closeOwned(ctx.device_id,{kind:'admin'});this.events.revoke(ctx.device_id,ctx.session_id);}
+      if(ctx?.kind==='share'){await shareLogout(storage,shareCookieToken(request));this.closeOwned(ctx.device_id,{kind:'admin'});this.events.revoke(ctx.device_id,ctx.session_id,'logout');}
       return json({ok:true},200,{'Set-Cookie':shareCookie('',0)});
     }
     if(url.pathname==='/api/share/session'&&method==='GET'){
@@ -740,7 +745,7 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
       const token=normalizeToken(body.token);if(!token)return json({ok:false,msg:'链接无效'},400);
       const link=await storage.get('share/link/'+token);
       const result=await shareRevokeLink(storage,token,ctx);
-      if(result.kicked&&link){this.closeOwned(link.device_id,{kind:'admin'});this.events.revoke(link.device_id,result.kicked.session_id);}else this.events.changed();
+      if(result.kicked&&link){this.closeOwned(link.device_id,{kind:'admin'});this.events.revoke(link.device_id,result.kicked.session_id,'revoked');}else this.events.changed();
       return json({ok:true,kicked:!!result.kicked});
     }
     return json({ok:false,msg:'接口不存在'},404);
@@ -1280,9 +1285,12 @@ const app = {
         headers: { "Content-Type": "text/html; charset=utf-8" }
       });
     }
+    if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
     if (/^\/m\/[A-Za-z0-9]{12}$/.test(pathname)) {
       // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
       const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
+      // 已删除/到期的链接直接进结束页，不再渲染设备页；探测失败（如额度问题）时照常渲染，由页面登录时再判定。
+      try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
       let html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
       html=html.replace(/<a href="\/" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
         .replace(/<div style="display:flex;align-items:center;gap:12px">[^]*?<button class="btn-gray" style="color:#f87171" onclick="logout\(\)">退出<\/button><\/div>/,'<div style="display:flex;align-items:center;gap:12px"><button class="btn-green" onclick="ElfShare.open()">设置</button><button class="btn-gray" style="color:#f87171" onclick="logout()">退出</button></div>')
@@ -3550,6 +3558,19 @@ function renderSipHtml() {
   ].join('\n');
 }
 
+// 独立页结束页：链接失效/已退出/被踢时整页跳到这里，不再显示设备页；几秒后尝试关闭标签页。
+function renderShareEndedHtml(url){
+  const r=url.searchParams.get('r')||'ended',token=normalizeToken(url.searchParams.get('t')||'');
+  const text={invalid:['链接已失效','此管理链接已被删除或已到期。'],revoked:['链接已失效','管理员已删除此链接，本页面已退出。'],logout:['已退出','你已退出本设备管理页。'],kicked:['已在其他页面登录','此设备的管理页已在另一处打开，本页面已退出。'],ended:['会话已结束','本页面的登录已失效。']}[r]||['会话已结束','本页面的登录已失效。'];
+  const relogin=r==='kicked'&&token?'<a class="btn" href="/m/'+token+'">重新登录</a>':'';
+  const autoClose=r!=='kicked';
+  return ['<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+text[0]+' · elfRemote Manager</title>',
+    '<style>html,body{height:100%;margin:0;background:#0b1220;color:#e2e8f0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}.wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}.card{width:100%;max-width:420px;padding:32px 28px;border-radius:14px;background:#111c30;border:1px solid #223047;text-align:center}.logo{width:56px;height:56px;border-radius:14px;object-fit:cover;margin:0 auto 14px;display:block}h1{font-size:20px;margin:0 0 10px}p{margin:0 0 18px;color:#94a3b8;font-size:14px;line-height:1.7}.btn{display:inline-block;padding:9px 18px;border-radius:8px;background:#059669;color:#fff;text-decoration:none;font-size:14px}.muted{font-size:12px;color:#64748b;margin-top:18px}</style></head>',
+    '<body><div class="wrap"><div class="card"><img class="logo" src="/logo.png" alt=""><h1>'+text[0]+'</h1><p>'+text[1]+'</p>'+relogin+
+    (autoClose?'<div class="muted" id="hint">本页面将在 <b id="n">5</b> 秒后关闭</div>':'')+'</div></div>',
+    autoClose?'<script>(function(){var n=5,el=document.getElementById("n");var t=setInterval(function(){n--;if(el)el.textContent=n;if(n<=0){clearInterval(t);try{window.close();}catch(e){}setTimeout(function(){var h=document.getElementById("hint");if(h)h.textContent="浏览器不允许自动关闭，请手动关闭此页面。";},400);}},1000);})();<\/script>':'',
+    '</body></html>'].join('');
+}
 function renderDevicesHtml() {
   return [
     '<!DOCTYPE html>',
