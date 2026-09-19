@@ -133,29 +133,25 @@ function buildNode(s) {
   window.addEventListener('blur', s.release); document.addEventListener('visibilitychange', () => { if (document.hidden) s.release(); });
   return node;
 }
-// 把文本送进设备。分两条路，因为「设剪贴板 + 由 scrcpy 注入 KEYCODE_PASTE」在老系统上不生效：
-// Android 6 的前台应用不响应那个键，表现是内容确实到了设备剪贴板、却粘不进输入框。
-// D31 实测印证了这一点：设备日志里 Device clipboard set 连出四次全部成功、没有任何注入报错，
-// 而在输入框里手动长按选「粘贴」能粘出来。scrcpy 上游提供 --legacy-paste 正是为了这个。
+// 把文本送进设备。纯 ASCII 走 injectText（键盘打字那条通路，实测可用）；
+// 含非 ASCII 只能过剪贴板，由 scrcpy 服务端自己注入 KEYCODE_PASTE（setClipboard 传 paste:true）。
 //
-// 纯 ASCII 走 injectText，这就是键盘打字用的那条通路，在 D31 上已经实测可用。
-// 含非 ASCII 时只能过剪贴板，但改成自己注入 Ctrl+V：TextView 从 API 11 起就在 onKeyShortcut 里
-// 处理它，支持面比 KEYCODE_PASTE 宽。setClipboard 因此传 paste:false，避免和自己注入的键重复触发。
-// 模拟真实键盘按组合键：先按下 Ctrl 这个键本身，再按字母，最后依次松开。
-// 只在字母事件的 metaState 里标上 Ctrl 是不够的——上一版就是那么发的，D31 上毫无反应。
-// 真实键盘会先产生一个 CTRL_LEFT 按下事件，窗口的快捷键分发依赖这个先后顺序。
-async function chord(s, keyCode) {
-  const CTRL_LEFT = 113;
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: CTRL_LEFT, repeat: 0, metaState: META_CTRL });
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode, repeat: 0, metaState: META_CTRL });
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode, repeat: 0, metaState: META_CTRL });
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: CTRL_LEFT, repeat: 0, metaState: 0 });
-}
-
+// 绝对不要自己注入 Ctrl+V。2026-09-20 实测截图：D31 的 Telegram 输入框里出现了
+// 「c://v.elfradio.net/devicesvvvvvvvvvvv」——每点一次粘贴就多一个字面量 v。
+// 机制和之前「复制」注入 Ctrl+C 打出一个 c 的那次完全一样，我当时写下了原因却没想到
+// 它对 Ctrl+V 同样成立：手机上有输入框获得焦点就必然有软键盘，注入的按键先过输入法，
+// 输入法直接 commitText 一个字符，Ctrl 根本没人看；就算绕过输入法，TextView 的普通按键
+// 处理也排在 onKeyShortcut 前面，消费掉之后快捷键分发压根不会被调到。
+// 所以这条路在这台机器上不是「有时不灵」，是从来就不成立，而且每次都会往用户的
+// 输入框里塞垃圾字符——比不生效更坏。
+//
+// KEYCODE_PASTE(279) 是 API 24 才加的，D31 是 API 23，注入它只是个未定义键码，
+// 不会产生任何字符，安全。D22/Pixel(API>=24) 上它是有效的——数字 3/4 的剪贴板绕行
+// 用的就是 paste:true，在 D22 上实测可用。于是同一份代码：新系统一键粘贴，
+// 老系统内容照样进剪贴板，由用户在输入框里长按选「粘贴」，这是 D31 上唯一真正可行的做法。
 async function sendText(s, text) {
   if (ASCII_ONLY.test(text)) { await s.controller.injectText(text); return 'typed'; }
-  await s.controller.setClipboard({ sequence: 0n, content: text, paste: false });
-  await chord(s, 50);   // KEYCODE_V
+  await s.controller.setClipboard({ sequence: 0n, content: text, paste: true });
   return 'clipboard';
 }
 
@@ -185,7 +181,7 @@ async function action(s, act) {
       await navigator.clipboard.writeText(text);
       log(s, '已取回设备剪贴板 ' + text.length + ' 字');
     }
-    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并按了 Ctrl+V ' + text.length + ' 字；没粘上的话是设备上没有光标停在输入框里（刚重连或回了屏保都会这样），点一下输入框再试')); }
+    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('含中文等非 ASCII，已送进设备剪贴板 ' + text.length + ' 字；安卓 7 以下（含 D31）没法由电脑触发粘贴，请在设备的输入框里长按、选「粘贴」')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
 }
 
@@ -231,7 +227,6 @@ function updateReady(s) {
   if (s.ready || !s.inputReady || !s.firstFrameAt || !s.deviceReady) return;
   s.ready = true; s.started = Date.now(); s.lastInput = Date.now();
   log(s, '已连接 ' + s.videoW + '×' + s.videoH + ' · 首帧 ' + Math.round(s.firstFrameAt - s.startedAt) + ' ms'); render();
-  if (s.refocusHint) { s.refocusHint = false; setTimeout(() => { if (active === s && !s.closed) log(s, '已按新窗口重连；要粘贴的话先点一下设备上的输入框，让光标回到里面'); }, 1500); }
 }
 function tick(s) {
   if (active !== s) return;
@@ -267,11 +262,11 @@ function displayBox(node) {
   } catch { return null; }
 }
 
-async function start(d, initialMessage, refocusHint) {
+async function start(d, initialMessage) {
   if (!d || d.managed_desktop_v1 !== true || d.enabled === false) return;
   if (active && active.device.id === d.id) return;
   if (active) await stop('已切换设备');
-  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, refocusHint: refocusHint === true, message: initialMessage || '正在连接…' };
+  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: initialMessage || '正在连接…' };
   active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, initialMessage || '正在唤醒设备…');
   try {
     // 等一帧再量：render() 之后布局未必已经完成，量到 0 就会退回估算，白白损失准确度。
@@ -307,14 +302,10 @@ async function message(s, p) {
 async function resize(s) {
   const d = s.device;
   await stop('切换显示大小');
-  // 重连会让设备侧重新走一遍会话，设备上原来停在输入框里的光标很可能没了
-  // （这台座机不动就回屏保，屏保一起来焦点就不在可编辑视图上）。
-  // 粘贴靠的是注入 Ctrl+V，没有获得焦点的输入框就一定粘不进去，
-  // 所以重连完要明说一句，不能让人以为粘贴键坏了。
   // 点下去立刻给出「重新连接中」，收到 ready 时自然被连接信息取代。
   // 画面会黑一秒多，没有提示的话分不清是在重连还是卡死了。失败时 start 自己会落到
   // stop(具体原因)，所以不会一直转——今晚那次「转一会儿然后断开」正是无声失败，不能重演。
-  await start(d, '重新连接中…', true);
+  await start(d, '重新连接中…');
 }
 
 async function stop(text) {
