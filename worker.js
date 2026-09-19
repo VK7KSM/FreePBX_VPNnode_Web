@@ -3182,8 +3182,10 @@ function renderHtml() {
     brandHtml(),
     '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
     '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
-    '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">设备管理<\/a>',
+    // 代理面板独立部署在 s.elfradio.net，这两个后台不在那个域名上（那边只放行代理面板与订阅），
+    // 所以用绝对地址指回 v.elfradio.net。同一份 HTML 在 v 上也是这两个链接，同源跳转照常。
+    '<a href="https://v.elfradio.net/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
+    '<a href="https://v.elfradio.net/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;gap:.6rem">',
     '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',

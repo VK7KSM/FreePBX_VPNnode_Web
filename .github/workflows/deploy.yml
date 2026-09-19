@@ -8,6 +8,8 @@ on:
       - "*.mjs"
       - "logo.png"
       - "wrangler.jsonc"
+      - "wrangler.s.jsonc"
+      - "build-proxy-assets.mjs"
       - "package.json"
       - "package-lock.json"
       - "elfRemote/control-plane.js"
@@ -26,9 +28,19 @@ jobs:
       - run: npm run embed:check
       - run: npm ci
       - run: npm run build:assets
+      # 管理面板：SIP 管理与设备管理，域名 v.elfradio.net
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: "4.127.1"
           command: deploy --config wrangler.jsonc
+      # 代理面板：独立 Worker，域名 s.elfradio.net。
+      # 它只带自己用得到的那几个静态资源，管理面板的页面根本不上传到这个域名。
+      - run: node build-proxy-assets.mjs
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.127.1"
+          command: deploy --config wrangler.s.jsonc
