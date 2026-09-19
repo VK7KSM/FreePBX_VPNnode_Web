@@ -159,6 +159,15 @@ async function sendText(s, text) {
   return 'clipboard';
 }
 
+// 设备剪贴板按设备 id 存在模块级，不挂在会话对象上。
+// 2026-09-19 23:30 起，点「占满窗口」会整个断开重连（分辨率只能在建会话时定），
+// 而 start() 每次都新建一个会话对象，挂在旧对象上的剪贴板内容就跟着没了。
+// 结果是：在设备上复制过文字，只要中途切过一次全屏，再点「复制」就永远是
+// 「设备尚未复制过文本」——看着就是复制键失效。所有者当晚正是在反复试全屏。
+const deviceClipboards = new Map();
+function rememberDeviceClipboard(s, text) { if (s?.device?.id) deviceClipboards.set(s.device.id, text); }
+function recallDeviceClipboard(s) { return s?.device?.id ? deviceClipboards.get(s.device.id) : undefined; }
+
 async function key(s, code) { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: code, repeat: 0, metaState: 0 }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: code, repeat: 0, metaState: 0 }); }
 async function action(s, act) {
   try {
@@ -171,8 +180,8 @@ async function action(s, act) {
       // 自动同步上来，这条路本来是好用的。2026-09-19 我改成先注入 Ctrl+C 再取回，结果更差：
       // 设备上没有选中文字时，TextView 的快捷键分发不消费这个组合键，事件继续走普通按键处理，
       // 于是在输入框里打出一个 c。粘贴要注入按键是因为没有别的触发方式，复制没有这个必要。
-      const text = s.deviceClipboard;
-      if (text === undefined) { log(s, '设备尚未复制过文本；请先在设备画面中选择文字并用安卓的复制'); return; }
+      const text = recallDeviceClipboard(s);
+      if (text === undefined) { log(s, '本机还没收到过设备剪贴板内容；请在设备画面中选中文字、用安卓自己的复制菜单复制一次，状态栏出现「设备剪贴板已更新」后再点这里'); return; }
       await navigator.clipboard.writeText(text);
       log(s, '已取回设备剪贴板 ' + text.length + ' 字');
     }
@@ -215,7 +224,7 @@ async function attach(s) {
   stream.pipeThrough(options.createMediaStreamTransformer()).pipeThrough(counted).pipeTo(s.decoder.writable).catch(e => { if (active === s && !s.closed) log(s, '视频流结束：' + (e?.message || e)); });
   s.controller = new ScrcpyControlMessageWriter(channelWritable(s.controlDc).getWriter(), options);
   (async () => { const b = new BufferedReadableStream(channelReadable(s.controlDc, s)); try { while (true) { const id = (await b.readExactly(1))[0]; await options.deviceMessageParsers.parse(id, b); } } catch {} })();
-  options.clipboard?.pipeTo(new WritableStream({ write(text) { s.deviceClipboard = text; log(s, '设备剪贴板已更新（' + text.length + ' 字），点“复制”取回'); } })).catch(() => {});
+  options.clipboard?.pipeTo(new WritableStream({ write(text) { rememberDeviceClipboard(s, text); log(s, '设备剪贴板已更新（' + text.length + ' 字），点“复制”取回'); } })).catch(() => {});
   s.inputReady = true; updateReady(s);
 }
 function updateReady(s) {
