@@ -246,7 +246,7 @@ final class DesktopSession {
     private void signal(String kind, String payload) throws Exception { send(new JSONObject().put("type", "signal").put("kind", kind).put("payload", payload).put("generation", generation)); }
     private void sendStatus(String stage) { try { send(new JSONObject().put("type", "status").put("stage", stage)); } catch (Exception ignored) { } }
     private void send(JSONObject x) { WebSocketClient ws = socket; if (!closed && ws != null && ws.isOpen()) ws.send(x.toString()); }
-    private void fail(Exception e) { RuntimeLog.error("desktop_failed", e); try { send(new JSONObject().put("type", "status").put("stage", "failed").put("message", String.valueOf(e.getMessage()))); } catch (Exception ignored) { } stop("远程桌面失败"); }
+    private void fail(Exception e) { RuntimeLog.error("desktop_failed", e); try { send(new JSONObject().put("type", "status").put("stage", "failed").put("message", DesktopText.redact(e.getMessage()))); } catch (Exception ignored) { } stop("远程桌面失败"); }
 
     private void closePeer() {
         if (video != null) { try { video.unregisterObserver(); video.close(); video.dispose(); } catch (Exception ignored) { } video = null; }
