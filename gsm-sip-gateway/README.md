@@ -8,12 +8,14 @@
 
 | 项 | 值 |
 |---|---|
-| 源码候选版本 | 1.5.0-gateway-alpha67-desktop-adaptive-quality |
-| versionCode | 74 |
-| 当前生产机已安装版本 | 1.5.0-gateway-alpha66-desktop-proxy-fix，versionCode 73；74 待远程下发 |
+| 源码候选版本 | 1.5.0-gateway-alpha68-location-state |
+| versionCode | 75 |
+| 当前生产机已安装版本 | 1.5.0-gateway-alpha68-location-state，versionCode 75 |
 | 包名 | `org.onetwoone.gateway` |
 | 已验证设备 | Pixel 3 XL（`crosshatch`，Android 12） |
 | SIP | TLS `sip.elfradio.net:5061`，账号 300 |
+
+**alpha68 变更（2026-09-19）：** 周期上报新增 `location_state`，面板据此能分清「定位被关了」和「还没定到」，不再一律退回 IP 定位。取值 `{"enabled":bool,"reason":...,"gps":bool,"fused":bool,"network":bool}`，`reason` 为 `ok` / `location_disabled` / `permission_denied` / `provider_unavailable`。只报开关与权限状态，不含坐标，也不改任何定位设置。判定优先级刻意排成「没有定位服务 > 没有权限 > 总开关关闭 > 可用」，写反会把权限被拒报成定位已关闭，把人指去改一个改不好的地方。任一来源可用即算可用，不要求 GPS 开着。
 
 **alpha67 候选变更（2026-09-19）：** 远程桌面画质改为按浏览器实际显示尺寸推导。
 
@@ -58,6 +60,17 @@ scrcpy 以 `su 2000` 拉起。它对系统服务自称 `com.android.shell`，剪
 - **压帧率或压码率没用**：实测过，单独把帧率压到 10 或把码率压到 600k 都只省 16%，改 VBR 反而更高。**长边尺寸是唯一有效的杠杆**，1280→960 省 36%，→800 省 46%，→640 省 67%，→480 省 83%。
 - **画面糊但带宽没跑满**：多半是显示区域太小而不是编码不够。面板小窗约 340 像素高，而编码长边可能是 1280，多出来的像素在显示时被缩掉了。点面板上的占满窗口，清晰度是白捡的，不多传一个字节；按新尺寸重新编码要下次连接才生效。
 - **会话连上了却什么都不发生**：看 `DESKTOP_CONNECT_ATTEMPT_FAILED`，它表示代理那次尝试失败、直连兜底还在跑，是预期内的；如果它后面没有 `DESKTOP_CONNECTED`，才是真的连不上。
+
+## 定位排查
+
+- **面板显示「IP · 2000m」**：设备一个定位来源都没拿到，上报里没有定位字段，面板才退回 IP。`adb shell dumpsys location` 看 `gps` / `fused` / `network` 三段的 `enabled` 与 `allowed`。
+- **Android 10 以后没有单独的 GPS 开关**。快捷设置里那个「位置信息」是总开关，一关三个来源一起 `enabled=false`，`settings get secure location_mode` 会是 `0`。所以「我只关了 GPS」实际是把 WiFi 与基站定位一起关了，这一条不查 dumpsys 想不到，查了一目了然。
+- **`enabled` 和 `allowed` 是两回事**。2026-09-19 遇到过总开关打开后 `gps` 与 `fused` 的 `allowed=true` 而 `network` 是 `false`，也就是 WiFi/基站定位单独还不通。要在手机上打开「设置 → 位置信息 → 位置信息服务 → Google 位置信息准确度」，并打开同一页的「WiFi 扫描」。打开后实测从 IP 两公里变成 GPS 62 米。
+- **只开 WiFi 与基站定位是正当配置**，固定设备本来就该这么配，所以 `location_state` 里任一来源可用即算可用，不要求 GPS 开着。
+
+## 怎么确认设备到底发了什么
+
+**查服务端落库结果，不要在设备上抢瞬时文件。** 上报报文只在发送前短暂写进 `pending_report`，成功后立刻清掉；2026-09-19 按 3 秒一次轮询了 60 秒一次都没抓到，因为每次上报都很快成功。而面板存下来的字段值等于反向证明了设备实际发出去的内容，可靠得多也省事得多。
 
 ## 运行要求
 
