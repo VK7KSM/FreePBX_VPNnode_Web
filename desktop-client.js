@@ -185,7 +185,7 @@ async function action(s, act) {
       await navigator.clipboard.writeText(text);
       log(s, '已取回设备剪贴板 ' + text.length + ' 字');
     }
-    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并触发粘贴 ' + text.length + ' 字；若没粘上，可在设备输入框长按选粘贴')); }
+    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并按了 Ctrl+V ' + text.length + ' 字；没粘上的话是设备上没有光标停在输入框里（刚重连或回了屏保都会这样），点一下输入框再试')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
 }
 
@@ -231,6 +231,7 @@ function updateReady(s) {
   if (s.ready || !s.inputReady || !s.firstFrameAt || !s.deviceReady) return;
   s.ready = true; s.started = Date.now(); s.lastInput = Date.now();
   log(s, '已连接 ' + s.videoW + '×' + s.videoH + ' · 首帧 ' + Math.round(s.firstFrameAt - s.startedAt) + ' ms'); render();
+  if (s.refocusHint) { s.refocusHint = false; setTimeout(() => { if (active === s && !s.closed) log(s, '已按新窗口重连；要粘贴的话先点一下设备上的输入框，让光标回到里面'); }, 1500); }
 }
 function tick(s) {
   if (active !== s) return;
@@ -266,11 +267,11 @@ function displayBox(node) {
   } catch { return null; }
 }
 
-async function start(d, initialMessage) {
+async function start(d, initialMessage, refocusHint) {
   if (!d || d.managed_desktop_v1 !== true || d.enabled === false) return;
   if (active && active.device.id === d.id) return;
   if (active) await stop('已切换设备');
-  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: initialMessage || '正在连接…' };
+  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, refocusHint: refocusHint === true, message: initialMessage || '正在连接…' };
   active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, initialMessage || '正在唤醒设备…');
   try {
     // 等一帧再量：render() 之后布局未必已经完成，量到 0 就会退回估算，白白损失准确度。
@@ -306,10 +307,14 @@ async function message(s, p) {
 async function resize(s) {
   const d = s.device;
   await stop('切换显示大小');
+  // 重连会让设备侧重新走一遍会话，设备上原来停在输入框里的光标很可能没了
+  // （这台座机不动就回屏保，屏保一起来焦点就不在可编辑视图上）。
+  // 粘贴靠的是注入 Ctrl+V，没有获得焦点的输入框就一定粘不进去，
+  // 所以重连完要明说一句，不能让人以为粘贴键坏了。
   // 点下去立刻给出「重新连接中」，收到 ready 时自然被连接信息取代。
   // 画面会黑一秒多，没有提示的话分不清是在重连还是卡死了。失败时 start 自己会落到
   // stop(具体原因)，所以不会一直转——今晚那次「转一会儿然后断开」正是无声失败，不能重演。
-  await start(d, '重新连接中…');
+  await start(d, '重新连接中…', true);
 }
 
 async function stop(text) {
