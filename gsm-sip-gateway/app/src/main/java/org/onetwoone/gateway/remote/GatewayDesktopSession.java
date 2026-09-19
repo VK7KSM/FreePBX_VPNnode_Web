@@ -306,15 +306,16 @@ final class GatewayDesktopSession implements Closeable {
     }
     private void sendStatus(String stage){try{send(new JSONObject().put("type","status").put("stage",stage));}catch(Exception ignored){}}
     private void send(JSONObject data){WebSocketClient active=socket;if(!closed&&active!=null&&active.isOpen())active.send(data.toString());}
-    /** 只记类名会让排查停在「是哪个 IllegalArgumentException」上，消息一并留下，但不带 URL 与令牌。 */
+    /** 只记类名会让排查停在「是哪个 IllegalArgumentException」上；消息一并留下，中继地址由 redact 洗掉。 */
     private static String describe(Throwable error){
-        String message=error.getMessage();
-        return error.getClass().getSimpleName()+(message==null||message.isEmpty()?"":" "+message.replace((char)10,' ').replace((char)13,' ').trim());
+        String message=GatewayDesktopPolicy.redact(error.getMessage());
+        return error.getClass().getSimpleName()+(message.isEmpty()?"":" "+message);
     }
 
     private void fail(Exception error){
         log.write(System.currentTimeMillis()+" DESKTOP_FAILED "+describe(error));
-        try{send(new JSONObject().put("type","status").put("stage","failed").put("message",String.valueOf(error.getMessage())));}catch(Exception ignored){}
+        // 这条会经中继显示在网页上，同样走 redact，且长度已在 MESSAGE_LIMIT 之内。
+        try{send(new JSONObject().put("type","status").put("stage","failed").put("message",describe(error)));}catch(Exception ignored){}
         finish("远程桌面失败");
     }
 

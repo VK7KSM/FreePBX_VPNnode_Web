@@ -61,6 +61,20 @@ final class GatewayDesktopPolicy {
     }
 
     /**
+     * 异常消息要落进设备日志，也会经 fail() 当作 status 发给浏览器显示，所以先洗一遍。
+     * 令牌本来就不会出现在里面（它在 Authorization 请求头，不在 URI 里），
+     * 但 Java-WebSocket 的异常消息是可能带上中继地址的，那样会话号就会落进日志和网页。
+     * 这里把任何 scheme://... 片段整体换掉，并归一换行、限长。
+     */
+    static final int MESSAGE_LIMIT=140;
+    static String redact(String message){
+        if(message==null)return "";
+        String cleaned=message.replace((char)10,' ').replace((char)13,' ').replace((char)9,' ')
+                .replaceAll("[a-zA-Z][a-zA-Z0-9+.-]*://[^ ]*","<地址已隐去>").trim();
+        return cleaned.length()<=MESSAGE_LIMIT?cleaned:cleaned.substring(0,MESSAGE_LIMIT);
+    }
+
+    /**
      * 建连阶段的错误不能直接判会话失败。
      * {@link GatewayProxyWebSocket} 是「先试代理、失败再直连」，代理那次失败必然先回调一次 onError；
      * 如果那时就把会话置为已关闭，随后直连成功的 onOpen 就成了空响，表现是「连上了却什么都不发生」，

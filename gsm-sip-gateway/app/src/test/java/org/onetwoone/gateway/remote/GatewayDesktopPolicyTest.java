@@ -107,6 +107,30 @@ public class GatewayDesktopPolicyTest {
      * 真因：连接走「先代理后直连」，代理那次必然先回调一次 onError，
      * 当时就把会话判死，随后直连成功的 onOpen 成了空响，scrcpy 从没被拉起来。
      */
+    /**
+     * 异常消息既落日志又经中继显示在网页上，不能把中继地址带出去，否则会话号就泄进这两处。
+     * 原先注释承诺了剥离、代码没做，2026-09-19 按 web-dev 评审改成代码兑现承诺。
+     */
+    @Test public void redactStripsRelayAddressesAndNormalises() {
+        String withUri="Invalid handshake for wss://v.elfradio.net/api/elfremote/desktop/device?session_id="+ID;
+        String cleaned=GatewayDesktopPolicy.redact(withUri);
+        assertFalse(cleaned,cleaned.contains(ID));
+        assertFalse(cleaned,cleaned.contains("v.elfradio.net"));
+        assertTrue(cleaned,cleaned.contains("<地址已隐去>"));
+        // http、ws、任意 scheme 都要挡住，不能只挡 wss。
+        for(String scheme:new String[]{"http","https","ws","wss","file"})
+            assertFalse(GatewayDesktopPolicy.redact("x "+scheme+"://v.elfradio.net/a?b="+ID).contains(ID));
+        // 换行、回车、制表都归一成空格，免得一条日志被拆成多行。
+        String multi=GatewayDesktopPolicy.redact("a"+((char)10)+"b"+((char)13)+"c"+((char)9)+"d");
+        assertEquals("a b c d",multi);
+        assertEquals("",GatewayDesktopPolicy.redact(null));
+        assertEquals("",GatewayDesktopPolicy.redact("   "));
+        // 限长，中继对 message 的上限是 140。
+        StringBuilder longer=new StringBuilder();
+        for(int i=0;i<400;i++)longer.append('x');
+        assertEquals(GatewayDesktopPolicy.MESSAGE_LIMIT,GatewayDesktopPolicy.redact(longer.toString()).length());
+    }
+
     @Test public void connectPhaseErrorsMustNotKillTheSession() {
         // 建连中（还没 open）：代理那次的失败与关闭都要忽略，留给直连兜底。
         assertFalse("建连阶段的 onError 不该判死会话",GatewayDesktopPolicy.failOnError(false,true));
