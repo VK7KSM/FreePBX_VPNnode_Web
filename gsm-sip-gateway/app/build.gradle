@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 72
-        versionName "1.5.0-gateway-alpha65-desktop-share"
+        versionCode 73
+        versionName "1.5.0-gateway-alpha66-desktop-proxy-fix"
 
         // NDK build config
         externalNativeBuild {

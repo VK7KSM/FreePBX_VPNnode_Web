@@ -101,6 +101,36 @@ public class GatewayDesktopPolicyTest {
         assertEquals(30,missing.getInt("max_fps")); assertEquals(1_500_000,missing.getInt("bit_rate")); assertEquals(0,missing.getInt("max_size"));
     }
 
+    /**
+     * 2026-09-19 生产故障的回归测试。
+     * 现象：面板点远程桌面，转一会儿断开，日志里 DESKTOP_FAILED 出现在 DESKTOP_CONNECTED 之前。
+     * 真因：连接走「先代理后直连」，代理那次必然先回调一次 onError，
+     * 当时就把会话判死，随后直连成功的 onOpen 成了空响，scrcpy 从没被拉起来。
+     */
+    @Test public void connectPhaseErrorsMustNotKillTheSession() {
+        // 建连中（还没 open）：代理那次的失败与关闭都要忽略，留给直连兜底。
+        assertFalse("建连阶段的 onError 不该判死会话",GatewayDesktopPolicy.failOnError(false,true));
+        assertFalse("建连阶段的 onClose 不该判死会话",GatewayDesktopPolicy.failOnClose(false,true));
+        // 已经连上之后出错，那是真的断了，要收。
+        assertTrue(GatewayDesktopPolicy.failOnError(true,true));
+        assertTrue(GatewayDesktopPolicy.failOnClose(true,true));
+        assertTrue(GatewayDesktopPolicy.failOnError(true,false));
+        // 既没在建连也没连上：兜底尝试已经跑完仍然失败，要收，否则会话会一直挂着。
+        assertTrue(GatewayDesktopPolicy.failOnError(false,false));
+        assertTrue(GatewayDesktopPolicy.failOnClose(false,false));
+    }
+
+    /**
+     * Android 的 libcore 里 new Socket(Proxy) 只认 SOCKS 与 NO_PROXY，
+     * 给 HTTP 型会抛 IllegalArgumentException: Invalid Proxy（Pixel 3 XL / Android 12 实测）。
+     * 桌面 JDK 有 HTTP 分支不抛，所以这个坑只能靠这条断言守住。
+     */
+    @Test public void websocketProxyMustBeSocksBecauseAndroidSocketRejectsHttp() {
+        java.net.Proxy route=GatewayProxyWebSocket.websocketProxy();
+        assertEquals(java.net.Proxy.Type.SOCKS,route.type());
+        assertNotEquals(java.net.Proxy.Type.HTTP,route.type());
+    }
+
     @Test public void safeSourceAcceptsOnlyTheStagedAssetPath() {
         assertTrue(GatewayScrcpyAsset.safeSource("/data/data/org.onetwoone.gateway/files/desktop-core/scrcpy-server-3.3.3"));
         assertTrue(GatewayScrcpyAsset.safeSource("/data/user/0/org.onetwoone.gateway/files/desktop-core/scrcpy-server-3.3.3"));

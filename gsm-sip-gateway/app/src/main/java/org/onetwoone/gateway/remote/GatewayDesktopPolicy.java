@@ -60,5 +60,16 @@ final class GatewayDesktopPolicy {
                 .put("max_size",Math.max(0,Math.min(1920,request.optInt("max_size",0))));
     }
 
+    /**
+     * 建连阶段的错误不能直接判会话失败。
+     * {@link GatewayProxyWebSocket} 是「先试代理、失败再直连」，代理那次失败必然先回调一次 onError；
+     * 如果那时就把会话置为已关闭，随后直连成功的 onOpen 就成了空响，表现是「连上了却什么都不发生」，
+     * 最后被中继按准备超时断开。GatewayAdbSessions 一直有这道闸，本类 2026-09-19 补上。
+     */
+    static boolean failOnError(boolean opened,boolean connecting){return opened||!connecting;}
+
+    /** 同理：建连阶段的关闭是代理那次尝试的收尾，不是会话结束。 */
+    static boolean failOnClose(boolean opened,boolean connecting){return opened||!connecting;}
+
     private GatewayDesktopPolicy(){}
 }

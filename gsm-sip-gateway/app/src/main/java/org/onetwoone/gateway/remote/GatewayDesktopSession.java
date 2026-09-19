@@ -51,6 +51,7 @@ final class GatewayDesktopSession implements Closeable {
     private volatile int generation;
     private volatile long lastInputAt,receivedAt;
     private volatile boolean readySent,videoFlowing;
+    private volatile boolean opened,connecting;
 
     private final Runnable idleCheck=new Runnable(){public void run(){
         if(closed)return;
@@ -72,7 +73,7 @@ final class GatewayDesktopSession implements Closeable {
         final URI uri;
         try{uri=GatewayDesktopPolicy.validate(offer,System.currentTimeMillis());}
         catch(Exception rejected){log.write(System.currentTimeMillis()+" DESKTOP_OFFER_REJECTED "+rejected.getClass().getSimpleName());return;}
-        id=offer.optString("session_id");closed=false;readySent=false;videoFlowing=false;
+        id=offer.optString("session_id");closed=false;readySent=false;videoFlowing=false;opened=false;connecting=false;
         generation=offer.optInt("generation",1);
         iceServers=offer.optJSONArray("ice_servers")==null?new JSONArray():offer.optJSONArray("ice_servers");
         receivedAt=SystemClock.elapsedRealtime();lastInputAt=receivedAt;
@@ -88,18 +89,31 @@ final class GatewayDesktopSession implements Closeable {
             @Override protected void onSetSSLParameters(SSLParameters parameters){try{SSLSocket ssl=(SSLSocket)getSocket();ssl.setSoTimeout(10000);ssl.startHandshake();
                 if(!HttpsURLConnection.getDefaultHostnameVerifier().verify(uri.getHost(),ssl.getSession()))throw new SSLPeerUnverifiedException("relay hostname mismatch");ssl.setSoTimeout(0);
             }catch(IOException error){throw new IllegalStateException("relay TLS validation failed",error);}}
-            public void onOpen(ServerHandshake handshake){log.write(System.currentTimeMillis()+" DESKTOP_CONNECTED");}
+            public void onOpen(ServerHandshake handshake){opened=true;connecting=false;log.write(System.currentTimeMillis()+" DESKTOP_CONNECTED");}
             public void onMessage(String raw){
                 final WebSocketClient self=this;
                 executor.execute(()->{if(socket!=self||closed||!owner.equals(id))return;
                     try{if(raw.length()>96000)throw new IOException("signal too large");message(new JSONObject(raw),quality);}
                     catch(Exception|LinkageError error){fail(new Exception(error));}});
             }
-            public void onClose(int code,String reason,boolean remote){if(socket==this)finish("远程桌面连接已断开");}
-            public void onError(Exception error){if(socket==this)fail(error);}
+            public void onClose(int code,String reason,boolean remote){
+                if(socket!=this||!GatewayDesktopPolicy.failOnClose(opened,connecting))return;
+                finish("远程桌面连接已断开");
+            }
+            public void onError(Exception error){
+                if(socket!=this)return;
+                if(!GatewayDesktopPolicy.failOnError(opened,connecting)){
+                    // 代理那次尝试失败是预期内的，直连兜底还没跑，别把会话判死。
+                    log.write(System.currentTimeMillis()+" DESKTOP_CONNECT_ATTEMPT_FAILED "+describe(error));
+                    return;
+                }
+                fail(error);
+            }
         };
         socket.setTcpNoDelay(true);socket.setConnectionLostTimeout(20);
-        if(!GatewayProxyWebSocket.connect(socket))throw new IOException("relay unavailable");
+        connecting=true;
+        try{if(!GatewayProxyWebSocket.connect(socket))throw new IOException("relay unavailable");}
+        finally{connecting=false;}
         worker.postDelayed(prepareTimeout,GatewayDesktopPolicy.PREPARE_TIMEOUT_MS);
     }
 
@@ -128,9 +142,10 @@ final class GatewayDesktopSession implements Closeable {
         JSONObject encoding=GatewayDesktopPolicy.encoding(quality);
         SecureRandom random=new SecureRandom();
         scid=GatewayDesktopPolicy.scid(random);
+        sendStatus("starting");
         JSONObject started=GatewayCoreClient.startDesktop(context,scid,encoding);
         if(!scid.equals(started.optString("scid")))throw new IOException("core refused desktop start");
-        sendStatus("starting");
+        sendStatus("server_started");
         try{videoSocket=connectLocal("scrcpy_"+scid,8000);}
         catch(Exception first){
             // 服务端偶发起不来（类路径为空、或被上一轮残留抢先结束）：换个 scid 再拉一次，仍失败才报错。
@@ -141,6 +156,7 @@ final class GatewayDesktopSession implements Closeable {
             videoSocket=connectLocal("scrcpy_"+scid,8000);
         }
         controlSocket=connectLocal("scrcpy_"+scid,3000);
+        sendStatus("socket_ready");
         acquireScreen();
         openPeer();
     }
@@ -290,8 +306,14 @@ final class GatewayDesktopSession implements Closeable {
     }
     private void sendStatus(String stage){try{send(new JSONObject().put("type","status").put("stage",stage));}catch(Exception ignored){}}
     private void send(JSONObject data){WebSocketClient active=socket;if(!closed&&active!=null&&active.isOpen())active.send(data.toString());}
+    /** 只记类名会让排查停在「是哪个 IllegalArgumentException」上，消息一并留下，但不带 URL 与令牌。 */
+    private static String describe(Throwable error){
+        String message=error.getMessage();
+        return error.getClass().getSimpleName()+(message==null||message.isEmpty()?"":" "+message.replace((char)10,' ').replace((char)13,' ').trim());
+    }
+
     private void fail(Exception error){
-        log.write(System.currentTimeMillis()+" DESKTOP_FAILED "+error.getClass().getSimpleName());
+        log.write(System.currentTimeMillis()+" DESKTOP_FAILED "+describe(error));
         try{send(new JSONObject().put("type","status").put("stage","failed").put("message",String.valueOf(error.getMessage())));}catch(Exception ignored){}
         finish("远程桌面失败");
     }
