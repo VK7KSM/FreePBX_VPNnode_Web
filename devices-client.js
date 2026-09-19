@@ -75,6 +75,18 @@ function sydney(iso){
     return new Date(iso).toLocaleString("zh-CN", { timeZone: "Australia/Sydney", hour12: false });
   } catch(e){ return String(iso); }
 }
+// 设备报上来的定位不可用原因。面板要能直接说清楚，不然只看到「IP · 2000m」会以为是还没定到。
+var LOCATION_REASON_TEXT = {
+  location_disabled: "设备定位已关闭",
+  permission_denied: "未授予定位权限",
+  provider_unavailable: "定位服务不可用"
+};
+// 三个来源各自的开关状态，放进那一格的悬停提示，排查时不用再连设备。
+function locationStateTip(st){
+  if(!st) return "";
+  var on = function(v){ return v ? "可用" : "不可用"; };
+  return "GPS " + on(st.gps) + " · 融合定位 " + on(st.fused) + " · Wi-Fi 与基站 " + on(st.network);
+}
 function locLabel(src){
   if(src==="gps") return "GPS";
   if(src==="wifi") return "Wi-Fi";
@@ -521,6 +533,11 @@ function renderOps(){
     src = ({ip:"IP",wifi:"Wi-Fi",cell:"Cell",network:"Wi-Fi / Cell"})[d.loc.source] || locLabel(d.loc.source);
     if(Number(d.loc.acc_m)>0) src += " · " + Math.round(Number(d.loc.acc_m)) + "m";
   }
+  // 设备明确报了定位不可用时，显示原因而不是退回 IP 的大致区域：
+  // 后者会让人以为只是还没定到，实际是关了开关或没给权限，两者要做的事完全不同。
+  var locState = d && d.location_state;
+  var locTip = locationStateTip(locState);
+  if(locState && LOCATION_REASON_TEXT[locState.reason]) src = LOCATION_REASON_TEXT[locState.reason];
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "已连接" : "未连接");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
@@ -539,7 +556,7 @@ function renderOps(){
   h += kv(d && d.battery_present===false ? "供电" : "电量", bat);
   h += kv("网络", net);
   h += kv("IP & MAC", (d && d.ip ? d.ip : "—") + " / " + (d && d.mac ? d.mac : "未获取"));
-  h += kv("定位", src);
+  h += kv("定位", src, locTip);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += '<div class="kv"><div class="k">客户端版本</div><div class="v">'+esc(d?managerLabel(d):'—')+(d&&d.update_available===true?'<button type="button" class="traffic-link" style="margin-left:8px" onclick="pickFn(\'update\')">更新</button>':'')+'</div></div>';
   h += kv("最后上报", d ? sydney(reportTime(d)) : "—", d ? '数据时间；服务器接收：'+sydney(d.last_seen) : '');

@@ -43,6 +43,7 @@ import desktopClientSource from './desktop-client-source.js';
 import {shareSessionSource} from './share-session.js';
 import shareClientSource from './share-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
+import {normalizeLocationState} from './location-state.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
 import {isNetworkTask,holdNetworkTask,grantNetworkConfirmation,cancelNetworkTask,networkAcceptanceAllowed} from './network-confirmation.js';
@@ -1769,6 +1770,7 @@ function publicDevice(d, modelName, model = {}) {
     maintenance: d.maintenance || null,
     permissions: d.permissions || null,
     loc: d.loc || null,
+    location_state: d.location_state || null,
     update: publicUpdate(d.update),
     task: publicRepair(d.task)
   };
@@ -2278,6 +2280,8 @@ async function handleDeviceReport(env, request) {
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
       list[i].managed_share_link_tasks = data.managed_share_link_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
+      // 定位可用性是状态不是能力：上报带了才更新，没带就保留上一次的判定。
+      if (Object.hasOwn(data, 'location_state')) list[i].location_state = normalizeLocationState(data.location_state);
       list[i].managed_lost_tasks = data.managed_lost_tasks === true;
       list[i].managed_lost_safety_v1=data.managed_lost_safety_v1===true;
       list[i].managed_lost_v2 = data.managed_lost_v2 === true; list[i].managed_wipe_v1 = data.managed_wipe_v1 === true;
