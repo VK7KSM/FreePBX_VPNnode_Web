@@ -1,0 +1,117 @@
+package net.elfradio.elfremote;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import org.json.JSONObject;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+
+final class LostMode {
+    private final SharedPreferences state;
+    private final File request;
+    private final String apk;
+    private final Context context;
+    LostMode(Context context) {
+        this.context=context;
+        state=context.getSharedPreferences("lost-mode",Context.MODE_PRIVATE);
+        request=new File(context.getFilesDir(),"owner-info-request.json");
+        apk=context.getApplicationInfo().sourceDir;
+    }
+    synchronized JSONObject set(JSONObject input) throws Exception {
+        if(input.optInt("version")==2){
+            JSONObject request=new JSONObject(input.toString()).put("action","set"),result;
+            try{result=admin(request);}catch(IOException failure){
+                // XX清除密码后，厂商锁屏可能仍保留旧状态。仅在已关闭策略的退出路径重试一次。
+                if(input.optBoolean("enabled")||!"lost-dismiss-failed".equals(failure.getMessage()))throw failure;
+                RuntimeLog.event("lost-exit-refresh-retry");result=admin(request);
+            }
+            LostNoticeReceiver.display(context,result.optLong("deadline_at"));LostScreenActivity.refresh(context,result);return result;
+        }
+        JSONObject params=LostModePolicy.params(input);
+        if(params.getBoolean("enabled") && !state.contains("original")) {
+            JSONObject before=owner(null);
+            if(!state.edit().putString("original",before.toString()).commit()) throw new IOException("lost-backup-failed");
+        }
+        if(!state.edit().putBoolean("enabled",params.getBoolean("enabled")).putString("message",params.getString("message"))
+                .putString("state","pending").commit()) throw new IOException("lost-state-failed");
+        reconcile();
+        return snapshot();
+    }
+    synchronized void recover() {
+        try{JSONObject current=CoreClient.request("/lost/status",null);if(current!=null&&current.optBoolean("enabled"))return;}catch(Exception ignored){}
+        if(!state.contains("original")) return;
+        try {reconcile();}catch(Exception error){RuntimeLog.event("lost_recovery_pending");}
+    }
+    private void reconcile() throws Exception {
+        boolean active=state.getBoolean("enabled",false);
+        JSONObject desired=active?new JSONObject().put("enabled",true).put("message",state.getString("message",""))
+                :state.contains("original")?new JSONObject(state.getString("original","")):null;
+        try {
+            if(desired!=null) {
+                JSONObject actual=owner(desired);
+                if(actual.getBoolean("enabled")!=desired.getBoolean("enabled") || !actual.getString("message").equals(desired.getString("message")))
+                    throw new IOException("lost-verify-failed");
+            }
+            SharedPreferences.Editor edit=state.edit().putString("state",active?"enabled":"disabled");
+            if(!active) edit.remove("original");
+            if(!edit.commit()) throw new IOException("lost-state-failed");
+            RuntimeLog.event("lost_mode_state="+(active?"enabled":"disabled"));
+        } catch(Exception error) {state.edit().putString("state","pending").commit();throw error;}
+    }
+    synchronized JSONObject snapshot() throws org.json.JSONException {
+        if(LostProtection.supported()){
+            try{JSONObject live=CoreClient.request("/lost/status",null);if(live!=null){state.edit().putString("last_verified",live.toString()).apply();return live;}}catch(Exception ignored){}
+            JSONObject last=new JSONObject(state.getString("last_verified","{}"));return last.put("version",2).put("state","unknown");
+        }
+        return new JSONObject().put("enabled",state.getBoolean("enabled",false)).put("message",state.getString("message",""))
+                .put("state",state.getString("state","disabled"));
+    }
+    synchronized JSONObject wipe(JSONObject input)throws Exception {return admin(new JSONObject(input.toString()).put("action","wipe"));}
+    void contact(JSONObject reply){
+        if(!LostProtection.supported())return;
+        try{admin(new JSONObject().put("action","contact").put("paired",reply.getBoolean("paired")).put("unpaired_at_ms",reply.optLong("unpaired_at_ms")).put("server_time",reply.optLong("server_time")));}
+        catch(Exception error){RuntimeLog.event("lost-contact-pending");}
+    }
+    boolean localUnlock()throws Exception {
+        JSONObject mode=admin(new JSONObject().put("action","read"));
+        if(mode.optInt("version")!=2||(!mode.optBoolean("enabled")&&!"pending".equals(mode.optString("state")))||mode.optBoolean("locked")||"unknown".equals(mode.optString("state")))return false;
+        JSONObject exit=new JSONObject().put("version",2).put("enabled",false).put("auto_wipe_enabled",false).put("task_id","local-"+java.util.UUID.randomUUID()).put("local_unlocked",true);
+        // 正确系统密码后先取消计时；恢复异常按同一任务继续，不要求联网。
+        for(int attempt=0;;attempt++)try{set(exit);break;}catch(Exception failure){if(attempt>=2)throw failure;Thread.sleep(1000);}
+        return true;
+    }
+    private synchronized JSONObject admin(JSONObject input)throws Exception {
+        String operation="lost-admin-"+java.util.UUID.randomUUID();
+        File file=new File(context.getFilesDir(),operation+"-request.json"),response=new File(context.getFilesDir(),operation+"-response.json");
+        try{
+            try(FileOutputStream out=new FileOutputStream(file)){out.write(input.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
+            String cmd="CLASSPATH="+LostModePolicy.quote(apk)+" app_process /system/bin net.elfradio.elfremote.LostAdminMain "+LostModePolicy.quote(file.getAbsolutePath());
+            Process process=new ProcessBuilder("su","-c",cmd).redirectOutput(response).start();
+            if(!process.waitFor(40,TimeUnit.SECONDS)){process.destroy();throw new IOException("lost-operation-timeout");}
+            JSONObject result=new JSONObject(RescueFiles.read(response,16384));
+            if(process.exitValue()!=0||result.has("error")){RuntimeLog.event("lost-admin-error "+result.optString("diagnostic"));throw new IOException(result.optString("error","lost-operation-failed"));}
+            return result;
+        }finally{file.delete();response.delete();}
+    }
+    private JSONObject owner(JSONObject value) throws Exception {
+        File response=new File(request.getParentFile(),"owner-info-response.json");
+        try {
+            if(value!=null) try(FileOutputStream out=new FileOutputStream(request)) {
+                out.write(value.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();
+            }
+            String cmd="CLASSPATH="+LostModePolicy.quote(apk)+" app_process /system/bin net.elfradio.elfremote.OwnerInfoMain "
+                    +(value==null?"read":"write "+LostModePolicy.quote(request.getAbsolutePath()));
+            Process process=new ProcessBuilder("su","-c",cmd).redirectOutput(response).start();
+            if(!process.waitFor(8,TimeUnit.SECONDS)) {process.destroy();throw new IOException("lost-owner-timeout");}
+            if(process.exitValue()!=0) throw new IOException("lost-owner-unavailable");
+            ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+            byte[] buffer=new byte[2048];int count;
+            try(InputStream in=new FileInputStream(response)) {while((count=in.read(buffer))!=-1) {bytes.write(buffer,0,count);if(bytes.size()>65536) throw new IOException("lost-owner-too-large");}}
+            return new JSONObject(new String(bytes.toByteArray(),StandardCharsets.UTF_8));
+        } finally {
+            if(request.exists()&&!request.delete()) RuntimeLog.event("lost_request_cleanup_pending");
+            if(response.exists()&&!response.delete()) RuntimeLog.event("lost_response_cleanup_pending");
+        }
+    }
+}

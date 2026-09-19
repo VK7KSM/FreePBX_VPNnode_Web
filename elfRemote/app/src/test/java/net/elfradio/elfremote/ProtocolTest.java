@@ -1,0 +1,105 @@
+package net.elfradio.elfremote;
+
+import org.json.JSONObject;
+import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+public class ProtocolTest {
+    @Test
+    public void enrollPathUsesConfiguredHttpsHost() {
+        assertTrue(BuildConfig.CONTROL_URL.startsWith("https://"));
+        assertEquals(BuildConfig.CONTROL_URL + "/api/devices/enroll", Protocol.enrollPath());
+    }
+
+    @Test
+    public void taskProgressPathUsesSameConfiguredHost() {
+        assertEquals(
+                BuildConfig.CONTROL_URL + "/api/elfremote/task-progress",
+                Protocol.taskProgressPath());
+    }
+
+    @Test
+    public void parseOkFlag() throws Exception {
+        assertTrue(Protocol.isOk(new JSONObject("{\"ok\":true}")));
+        assertFalse(Protocol.isOk(new JSONObject("{\"ok\":false}")));
+    }
+
+    @Test
+    public void tokenSha256Is64Hex() {
+        String hex = PairingStore.sha256Hex("lab-token");
+        assertEquals(64, hex.length());
+        assertTrue(hex.matches("[0-9a-f]{64}"));
+    }
+
+    @Test
+    public void htmlBodyIsTreatedAsMissingApi() {
+        assertEquals("控制面返回网页，配对接口未部署", Protocol.describeNonJson("<!DOCTYPE html>"));
+        assertEquals("控制面返回网页，配对接口未部署", Protocol.describeNonJson("  <html lang=\"zh\">"));
+        assertEquals(null, Protocol.describeNonJson("{\"ok\":true}"));
+        assertEquals("空响应", Protocol.describeNonJson(""));
+        assertTrue(Protocol.describeNonJson("not-json").startsWith("非JSON"));
+    }
+
+    @Test
+    public void parseObjectRejectsHtmlHomepage() throws Exception {
+        try {
+            Protocol.parseObject("<!DOCTYPE html><title>elfRadio</title>");
+            throw new AssertionError("should reject HTML");
+        } catch (Exception e) {
+            assertTrue(e.getMessage().contains("网页"));
+        }
+        assertTrue(Protocol.isOk(Protocol.parseObject("{\"ok\":true}")));
+    }
+
+    @Test
+    public void formatNetErrorKeepsControlPlaneHint() {
+        assertEquals(
+                "控制面返回网页，配对接口未部署",
+                Protocol.formatNetError(new Exception("控制面返回网页，配对接口未部署")));
+    }
+
+    @Test
+    public void formatNetErrorIncludesExceptionClass() {
+        String s = Protocol.formatNetError(new java.net.UnknownHostException("v.elfradio.net"));
+        assertTrue(s.contains("UnknownHostException"));
+        assertTrue(s.contains("v.elfradio.net"));
+    }
+
+    @Test
+    public void httpsEndpointKeepsEncryption() throws Exception {
+        assertEquals(
+                "https://v.elfradio.net/api/devices/enroll",
+                Protocol.requireHttpsUrl("https://v.elfradio.net/api/devices/enroll").toString());
+        for (String bad : new String[] {"http://example.com/x", "https://user:pass@example.com/x", "https://example.com/x#fragment"}) {
+            try { Protocol.requireHttpsUrl(bad); org.junit.Assert.fail("must reject"); }
+            catch (java.io.IOException expected) { }
+        }
+    }
+
+    @Test
+    public void formatPairCodeGroupsSixDigits() {
+        assertEquals("------", Protocol.formatPairCode(""));
+        assertEquals("------", Protocol.formatPairCode(null));
+        assertEquals("435  719", Protocol.formatPairCode("435719"));
+        assertEquals("已配对", Protocol.formatPairCode("已配对"));
+    }
+
+    @Test
+    public void remainingHintUsesWholeMinutes() {
+        long now = 1_000_000L;
+        assertEquals("配对码已过期，请重新获取", Protocol.remainingHint(now - 1, now));
+        assertEquals("有效约 1 分钟", Protocol.remainingHint(now + 1000, now));
+        assertEquals("有效约 60 分钟", Protocol.remainingHint(now + 60 * 60 * 1000L, now));
+        assertEquals("", Protocol.remainingHint(0, now));
+    }
+
+    @Test
+    public void parseIsoMillisReadsUtc() {
+        long t = Protocol.parseIsoMillis("2026-09-05T04:07:05.882Z");
+        assertTrue(t > 0);
+        assertEquals(Protocol.parseIsoMillis("2026-09-05T04:07:05Z") / 1000, t / 1000);
+    }
+}

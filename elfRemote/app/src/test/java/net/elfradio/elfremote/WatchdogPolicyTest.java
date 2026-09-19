@@ -1,0 +1,205 @@
+package net.elfradio.elfremote;
+
+import org.junit.Test;
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+public class WatchdogPolicyTest {
+    @Test
+    public void taskDirectoryIsLimitedToRootAndApplicationGroup() {
+        String script=WatchdogPolicy.script();
+        assertFalse(script.contains("0777"));
+        assertFalse(script.contains("0666"));
+        assertTrue(script.contains("chmod 2770"));
+        assertTrue(script.contains("umask 007"));
+        assertTrue(script.contains("[ ! -L \"$DIR\" ] || exit 1"));
+        assertTrue(WatchdogPolicy.LOG.startsWith(WatchdogPolicy.DIR+"/"));
+        assertTrue(WatchdogPolicy.applyCommands("/tmp/staged").contains(WatchdogPolicy.secureDirectoryCommands()));
+    }
+
+    @Test
+    public void scriptNeverTouchesD22CodexOrTalkApps() {
+        String script = WatchdogPolicy.script();
+        assertIndependent(script);
+        assertTrue(script.contains("net.elfradio.elfremote/.ReportService"));
+        assertTrue(script.contains("start-foreground-service"));
+        assertTrue(script.contains("export PATH=/system/bin"));
+        assertFalse(script.contains("awk"));
+        assertFalse(script.contains("MainActivity"));
+        assertFalse(script.contains("am start "));
+        assertFalse(script.contains("am start\t"));
+        assertTrue(script.contains("skip duplicate start"));
+        assertTrue(script.contains("sys.boot_completed"));
+        assertTrue(script.indexOf("recover_heal\n") < script.indexOf("while true; do"));
+        assertTrue(script.indexOf("sh /data/local/elfremote/core/launch.sh") < script.indexOf("then run_heal; run_update; fi"));
+        assertTrue(script.contains("SLEEP=" + WatchdogPolicy.SLEEP_SEC));
+        assertTrue(script.contains("run_heal"));
+        assertTrue(script.contains("heal.rc.tmp"));
+        assertTrue(script.contains("run_update"));
+        assertTrue(script.contains("update.job"));
+        assertTrue(script.contains("sleep 1"));
+        assertTrue(script.contains("updater.apk"));
+        assertTrue(script.contains("mv \"$DIR/update.running\" \"$DIR/update.job\""));
+        assertTrue(WatchdogPolicy.SLEEP_SEC >= 15);
+    }
+
+    @Test
+    public void lockCleanupDoesNotDropSuccessorLock() {
+        String script = WatchdogPolicy.script();
+        assertTrue(script.contains("cur=$(cat \"$PIDF\""));
+        assertTrue(script.contains("[ \"$cur\" = \"$$\" ]"));
+        assertFalse(script.contains("trap 'rm -rf \"$LOCK\"' EXIT"));
+    }
+
+    @Test
+    public void applyCommandsSkipWorkWhenUnchangedAndAlive() {
+        String cmd = WatchdogPolicy.applyCommands("/tmp/staged");
+        assertTrue(cmd.contains("cmp -s"));
+        assertTrue(cmd.contains("alive=1"));
+        assertTrue(cmd.contains("need_init=0"));
+    }
+
+    @Test
+    public void quietKeepaliveChannelIsNotTheOldDefault() {
+        assertEquals("elfremote-quiet", WatchdogPolicy.NOTIFY_CHANNEL);
+        assertFalse("elfremote".equals(WatchdogPolicy.NOTIFY_CHANNEL));
+        assertFalse(WatchdogPolicy.notificationLaunchesUi());
+    }
+
+    @Test
+    public void initRcIsOwnServiceNotCodex() {
+        String rc = WatchdogPolicy.initRc();
+        assertIndependent(rc);
+        assertTrue(rc.contains("service elfremote_wd "));
+        assertTrue(rc.contains("oneshot"));
+        assertFalse(rc.contains("codex_zello_kiosk"));
+        assertFalse(rc.contains("start codex_"));
+        assertEquals("/system/etc/init/elfremote.rc", WatchdogPolicy.INIT_RC_PATH);
+    }
+
+    @Test
+    public void magiskWrapperOnlyExecsElfRemoteScript() {
+        String w = WatchdogPolicy.magiskWrapper();
+        assertIndependent(w);
+        assertTrue(w.contains("exec"));
+        assertTrue(w.contains(WatchdogPolicy.SCRIPT_PATH));
+        assertEquals("/data/adb/service.d/elfremote_watchdog.sh", WatchdogPolicy.MAGISK_WRAPPER_PATH);
+    }
+
+    @Test
+    public void applyCommandsNeverEditCodexPaths() {
+        String cmd = WatchdogPolicy.applyCommands("/tmp/staged");
+        assertIndependent(cmd);
+        assertFalse(cmd.contains("/system/etc/codex"));
+        assertFalse(cmd.contains("codex_d22.rc"));
+        assertTrue(cmd.contains(WatchdogPolicy.SCRIPT_PATH));
+        assertTrue(cmd.contains(WatchdogPolicy.MAGISK_WRAPPER_PATH));
+        assertTrue(cmd.contains(WatchdogPolicy.INIT_RC_PATH));
+    }
+
+    @Test
+    public void resourceBudgetKeepsIdleCostLow() {
+        assertTrue(WatchdogPolicy.SLEEP_SEC >= 15);
+        assertTrue(WatchdogPolicy.STATS_EVERY_LOOPS >= 12);
+        assertTrue(WatchdogPolicy.LOG_MAX_BYTES <= 32 * 1024);
+        assertTrue(WatchdogPolicy.WD_RSS_KB_MAX <= 4096);
+        assertTrue(WatchdogPolicy.APP_RSS_KB_MAX <= 64 * 1024);
+        assertTrue(WatchdogPolicy.pairedReportIntervalMs() >= 45_000L);
+        assertTrue(WatchdogPolicy.unpairedReportIntervalMs() >= 8_000L);
+        assertTrue(WatchdogPolicy.unpairedReportIntervalMs() <= 15_000L);
+    }
+
+    @Test
+    public void hostWatchdogCopiesMatchPolicy() throws Exception {
+        assertEquals(WatchdogPolicy.script(), read(repoFile("watchdog.sh")));
+        assertEquals(WatchdogPolicy.initRc(), read(repoFile("elfremote.rc")));
+        assertEquals(WatchdogPolicy.magiskWrapper(), read(repoFile("magisk.sh")));
+    }
+
+    @Test
+    public void stageWritesThreeIndependentFiles() throws Exception {
+        File dir = Files.createTempDirectory("elfremote-wd").toFile();
+        WatchdogPolicy.stage(dir);
+        String script = read(new File(dir, "watchdog.sh"));
+        String rc = read(new File(dir, "elfremote.rc"));
+        String magisk = read(new File(dir, "magisk.sh"));
+        assertEquals(WatchdogPolicy.script(), script);
+        assertEquals(WatchdogPolicy.initRc(), rc);
+        assertEquals(WatchdogPolicy.magiskWrapper(), magisk);
+        assertIndependent(script + rc + magisk);
+    }
+
+    @Test public void initializedDirectorySkipsRecursivePermissionRepairAtBoot() throws Exception {
+        File dir = Files.createTempDirectory("watchdog-boot-").toFile();
+        String script = "set -e\nDIR=" + RescueFiles.quote(dir.getPath().replace('\\', '/'))
+                + "\nstat() { case $2 in %u) echo 10001;; *) echo 0:10001:2770;; esac; }\n"
+                + "chown() { echo UNEXPECTED_REPAIR; return 7; }\nfind() { echo UNEXPECTED_REPAIR; return 7; }\n"
+                + WatchdogPolicy.startupDirectoryCommands() + "echo READY\n";
+        String result = RebootPolicyTest.shell(script, 0);
+        assertTrue(result.contains("READY")); assertFalse(result.contains("UNEXPECTED_REPAIR"));
+    }
+
+    @Test public void reusedPidCannotStandInForTheOldWatchdog() {
+        String script = WatchdogPolicy.script();
+        assertTrue(script.contains("[ \"$old\" != \"$$\" ]"));
+        assertTrue(script.contains("/proc/$old/cmdline | grep -Fxq \"$SCRIPT\""));
+        assertFalse(script.contains("[ -d /proc/$old ]"));
+    }
+
+    @Test public void permissionRepairBatchesFilesAndPropagatesFailures() throws Exception {
+        for (boolean reject : new boolean[]{false, true}) {
+            File root = Files.createTempDirectory("watchdog-permissions-").toFile();
+            File data = new File(root, "data"), bin = new File(root, "bin");
+            assertTrue(data.mkdir()); assertTrue(bin.mkdir());
+            for (int i=0; i<80; i++) Files.write(new File(data, "space ' file "+i).toPath(), new byte[]{1});
+            File shim = new File(bin, "chmod");
+            Files.write(shim.toPath(), ("#!/bin/sh\nmode=$1; shift\nfor p do [ -e \"$p\" ] || exit 9; done\n"
+                    + "echo MODE $mode $#\n" + (reject ? "[ \"$mode\" != 0660 ] || exit 7\n" : "")).getBytes(StandardCharsets.UTF_8));
+            String code = "set -e\nchmod +x " + RescueFiles.quote(shim.getPath().replace('\\','/'))
+                    + "\nPATH=$(cd "+RescueFiles.quote(bin.getPath().replace('\\','/'))+"; pwd):$PATH\nexport PATH\n"
+                    + "stat() { echo 10001; }\nchown() { :; }\nDIR="+RescueFiles.quote(data.getPath().replace('\\','/'))+"\n"
+                    + WatchdogPolicy.secureDirectoryCommands()+"echo COMPLETE\n";
+            String result = RebootPolicyTest.shell(code, reject ? 1 : 0);
+            assertTrue(result, result.contains("MODE 0660 80"));
+            assertEquals(!reject, result.contains("COMPLETE"));
+        }
+    }
+
+    private static File repoFile(String name) {
+        File[] candidates = new File[] {
+                new File("tools/watchdog/" + name),
+                new File("../tools/watchdog/" + name),
+                new File("elfRemote/tools/watchdog/" + name)
+        };
+        for (int i = 0; i < candidates.length; i++) {
+            if (candidates[i].isFile()) return candidates[i];
+        }
+        throw new AssertionError("missing tools/watchdog/" + name);
+    }
+
+    private static String read(File f) throws Exception {
+        String raw = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+        return raw.replace("\r\n", "\n");
+    }
+
+    private static void assertIndependent(String text) {
+        String s = text.toLowerCase();
+        assertFalse(s.contains("loudtalks"));
+        assertFalse(s.contains("zello"));
+        assertFalse(s.contains("linphone"));
+        assertFalse(s.contains("codex_zello"));
+        assertFalse(s.contains("codex_call"));
+        assertFalse(s.contains("codex_wake"));
+        assertFalse(s.contains("codex_firewall"));
+        // 初始化只允许本应用后台豁免，仍禁止无关系统扫描。
+        assertFalse(s.replace("dumpsys deviceidle whitelist +net.elfradio.elfremote", "").contains("dumpsys"));
+        assertFalse(s.contains("uiautomator"));
+        assertFalse(s.contains("input keyevent"));
+    }
+}

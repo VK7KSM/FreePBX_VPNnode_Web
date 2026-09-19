@@ -1,0 +1,11 @@
+.gradle/
+build/
+app/build/
+local.properties
+.jdk/
+*.apk
+*.iml
+.idea/
+d22-xx-launcher-preferences-before.xml
+d22-xx-launcher-preferences-after.xml
+_patch_launcher.py

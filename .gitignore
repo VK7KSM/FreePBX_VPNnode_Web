@@ -48,8 +48,30 @@ staging/
 # 非 Cloudflare Worker 子项目
 mqtt-server/
 tools/
+# D22 elfRemote 客户端源码随公开仓库发布；构建产物、本机配置与制品仍由下方规则与 elfRemote/.gitignore 排除。
 elfRemote/*
 !elfRemote/control-plane.js
+!elfRemote/app/
+!elfRemote/tools/
+!elfRemote/docs/
+!elfRemote/gradle/
+!elfRemote/art/
+!elfRemote/build.gradle
+!elfRemote/settings.gradle
+!elfRemote/gradle.properties
+!elfRemote/version.properties
+!elfRemote/package.json
+!elfRemote/gradlew
+!elfRemote/gradlew.bat
+!elfRemote/README.md
+!elfRemote/.gitignore
+!elfRemote/*.test.mjs
+!elfRemote/*.md
+!elfRemote/**/*.md
+elfRemote/app/build/
+elfRemote/.gradle/
+elfRemote/local.properties
+elfRemote/captures/
 scripts/*
 !scripts/collect-cf-usage.mjs
 
