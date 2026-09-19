@@ -54,6 +54,8 @@ final class GatewayDesktopSession implements Closeable {
     private volatile boolean opened,connecting;
     /** 浏览器显示区域的长边（设备像素）。服务端还没开始下发时为 0，退回保守默认值。 */
     private volatile int requestedLongEdge;
+    /** 面板报来的播放区尺寸（物理像素）。0 表示没报，退回 max_size 的旧行为。 */
+    private volatile int boxWidth,boxHeight;
 
     private final Runnable idleCheck=new Runnable(){public void run(){
         if(closed)return;
@@ -78,6 +80,7 @@ final class GatewayDesktopSession implements Closeable {
         id=offer.optString("session_id");closed=false;readySent=false;videoFlowing=false;opened=false;connecting=false;
         generation=offer.optInt("generation",1);
         requestedLongEdge=offer.optInt("max_size",0);
+        boxWidth=offer.optInt("display_w",0);boxHeight=offer.optInt("display_h",0);
         iceServers=offer.optJSONArray("ice_servers")==null?new JSONArray():offer.optJSONArray("ice_servers");
         receivedAt=SystemClock.elapsedRealtime();lastInputAt=receivedAt;
         final String owner=id,quality=offer.optString("quality","wifi"),token=offer.optString("token");
@@ -127,6 +130,7 @@ final class GatewayDesktopSession implements Closeable {
                 generation=data.optInt("generation",generation);
                 // 服务端将来在 hello 里带显示尺寸时自动生效，不必再发一版客户端。
                 if(data.optInt("max_size",0)>0)requestedLongEdge=data.optInt("max_size");
+                if(data.optInt("display_w",0)>0&&data.optInt("display_h",0)>0){boxWidth=data.optInt("display_w");boxHeight=data.optInt("display_h");}
                 start(quality);break;
             case "signal":
                 if(data.optInt("generation")!=generation||peer==null)return;
@@ -145,9 +149,10 @@ final class GatewayDesktopSession implements Closeable {
 
     private void start(String quality)throws Exception {
         android.graphics.Point screen=realSize();
-        JSONObject encoding=GatewayDesktopPolicy.encoding(quality,requestedLongEdge,screen.x,screen.y);
+        JSONObject encoding=GatewayDesktopPolicy.encoding(quality,requestedLongEdge,boxWidth,boxHeight,screen.x,screen.y);
         log.write(System.currentTimeMillis()+" DESKTOP_ENCODING size="+encoding.getInt("max_size")
-                +" fps="+encoding.getInt("max_fps")+" bitrate="+encoding.getInt("bit_rate")+" requested="+requestedLongEdge);
+                +" fps="+encoding.getInt("max_fps")+" bitrate="+encoding.getInt("bit_rate")
+                +" box="+boxWidth+"x"+boxHeight+" screen="+screen.x+"x"+screen.y+" requested="+requestedLongEdge);
         SecureRandom random=new SecureRandom();
         scid=GatewayDesktopPolicy.scid(random);
         sendStatus("starting");

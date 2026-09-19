@@ -64,21 +64,43 @@ final class GatewayDesktopPolicy {
     }
 
     /**
-     * 画质档位。浏览器实际显示多大就编多大：超出显示尺寸的像素传过去也会被缩掉，纯浪费；
-     * 低于显示尺寸则糊。{@code requestedLongEdge} 是浏览器报来的显示区域长边（设备像素），
-     * 为 0 表示它还没报，退回保守默认值。帧率对远程管理来说 15 足够，30 只是多花一倍的帧。
+     * 画质档位。目标是全程只缩一次：手机原生尺寸直接缩到浏览器实际渲染出来的大小，
+     * 浏览器拿到后 1:1 呈现、不再放大。先缩到别的尺寸再放大，就是锯齿的来源。
+     *
+     * <p>关键在于要算「渲染后」的长边，不是播放区容器的长边。手机是竖屏，放进横向播放区里
+     * 上下顶满、左右留黑边，真正约束的是高度；反过来窗口又窄又高时才由宽度约束。
+     * 所以必须按手机自己的纵横比做一次 contain 计算，而这件事只有设备做得准——
+     * 只有它同时知道自己的屏幕尺寸和面板报来的播放区尺寸，而且转屏后能立刻取到新的屏幕尺寸。
+     *
+     * @param boxWidth  面板报来的播放区宽，物理像素；0 表示没报
+     * @param boxHeight 面板报来的播放区高，物理像素；0 表示没报
+     * @param requestedLongEdge 旧字段 max_size，仅在播放区尺寸缺失时作为回退
      */
-    static JSONObject encoding(String quality,int requestedLongEdge,int displayWidth,int displayHeight)throws Exception {
+    static JSONObject encoding(String quality,int requestedLongEdge,int boxWidth,int boxHeight,
+                               int screenWidth,int screenHeight)throws Exception {
         boolean cellular="cellular".equals(quality);
         int ceiling=cellular?SIZE_CEILING_CELLULAR:SIZE_CEILING_WIFI;
         int fps=cellular?FPS_CELLULAR:FPS_WIFI;
         int fallback=cellular?SIZE_DEFAULT_CELLULAR:SIZE_DEFAULT_WIFI;
-        int longEdge=alignedSize(requestedLongEdge>0?requestedLongEdge:fallback,ceiling);
-        int screenLong=Math.max(displayWidth,displayHeight),screenShort=Math.min(displayWidth,displayHeight);
+        int screenLong=Math.max(screenWidth,screenHeight),screenShort=Math.min(screenWidth,screenHeight);
+        int contained=containLongEdge(boxWidth,boxHeight,screenWidth,screenHeight);
+        int longEdge=alignedSize(contained>0?contained:requestedLongEdge>0?requestedLongEdge:fallback,ceiling);
         // 按屏幕纵横比推出短边，才能算准像素数；拿不到屏幕尺寸时按 9:19.5 这类窄屏保守估。
         long shortEdge=screenLong>0?Math.max(1,(long)longEdge*screenShort/screenLong):longEdge/2;
         return new JSONObject().put("max_fps",fps).put("max_size",longEdge)
                 .put("bit_rate",bitRateFor((long)longEdge*shortEdge,fps));
+    }
+
+    /**
+     * 把手机屏幕按 contain 放进播放区之后，渲染结果的长边（物理像素）。
+     * 播放区或屏幕尺寸缺失时返回 0，交给调用方退回旧字段。
+     * 缩放比封顶 1，编得比原生还大纯属浪费，多出来的像素手机自己也没有。
+     */
+    static int containLongEdge(int boxWidth,int boxHeight,int screenWidth,int screenHeight){
+        if(boxWidth<=0||boxHeight<=0||screenWidth<=0||screenHeight<=0)return 0;
+        double scale=Math.min(Math.min((double)boxWidth/screenWidth,(double)boxHeight/screenHeight),1.0);
+        long longEdge=Math.round(Math.max(screenWidth,screenHeight)*scale);
+        return (int)Math.max(1,Math.min(Integer.MAX_VALUE,longEdge));
     }
 
     /** scid 是 scrcpy 的 8 位十六进制会话号；最高位清零，服务端按有符号 31 位解析。 */

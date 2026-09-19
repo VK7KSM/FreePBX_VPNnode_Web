@@ -76,8 +76,8 @@ public class GatewayDesktopPolicyTest {
      */
     @Test public void encodingFollowsTheBrowserDisplaySize() throws Exception {
         int w=1440,h=2960;
-        JSONObject small=GatewayDesktopPolicy.encoding("wifi",480,w,h);
-        JSONObject large=GatewayDesktopPolicy.encoding("wifi",1280,w,h);
+        JSONObject small=GatewayDesktopPolicy.encoding("wifi",480,0,0,w,h);
+        JSONObject large=GatewayDesktopPolicy.encoding("wifi",1280,0,0,w,h);
         assertEquals(480,small.getInt("max_size"));
         assertEquals(1280,large.getInt("max_size"));
         // 显示区域大一倍多，码率跟着涨；小窗时不该按大窗的码率传。
@@ -85,36 +85,69 @@ public class GatewayDesktopPolicyTest {
         assertEquals(GatewayDesktopPolicy.FPS_WIFI,large.getInt("max_fps"));
     }
 
+    /**
+     * 2026-09-19 所有者反馈全屏锯齿严重、文字勉强能认。
+     * 真因是面板发的是播放区容器的长边（1458），而手机竖屏放进横向播放区后
+     * 真正约束的是高度（870），设备照 1458 编，于是缩放比偏大，浏览器再放大就出锯齿。
+     * 正确做法是按手机自己的纵横比做 contain，取渲染后的长边。
+     */
+    @Test public void containUsesTheConstrainingEdgeNotTheContainerLongEdge() {
+        // 竖屏手机放进横向播放区：约束在高度，不是容器长边 1458。
+        assertEquals(870,GatewayDesktopPolicy.containLongEdge(1458,870,1440,2960));
+        // 窗口又窄又高时，约束换成宽度。
+        assertEquals(1028,GatewayDesktopPolicy.containLongEdge(500,3000,1440,2960));   // 500/1440*2960 = 1027.8
+        // 手机转成横屏，约束边跟着换；这正是把计算放在设备端才能自动跟上的情形。
+        assertEquals(1458,GatewayDesktopPolicy.containLongEdge(1458,870,2960,1440));
+        // 播放区比屏幕还大时不放大：编得比原生大，多出来的像素手机自己也没有。
+        assertEquals(2960,GatewayDesktopPolicy.containLongEdge(5000,9000,1440,2960));
+        // 缺任何一个尺寸都返回 0，交给调用方退回 max_size。
+        for(int[] bad:new int[][]{{0,870,1440,2960},{1458,0,1440,2960},{1458,870,0,2960},{1458,870,1440,0},{-1,-1,-1,-1}})
+            assertEquals(0,GatewayDesktopPolicy.containLongEdge(bad[0],bad[1],bad[2],bad[3]));
+    }
+
+    @Test public void encodingPrefersTheContainResultOverMaxSize() throws Exception {
+        // 面板同时发了播放区与 max_size 时，以 contain 结果为准。
+        // 这一组就是当晚的真实数字：max_size 报了 1458，正确答案是 870。
+        JSONObject sized=GatewayDesktopPolicy.encoding("wifi",1458,1458,870,1440,2960);
+        assertEquals(headEight(870),sized.getInt("max_size"));
+        // 播放区缺失时退回 max_size，老服务端与新客户端的兼容路径。
+        assertEquals(headEight(1458),GatewayDesktopPolicy.encoding("wifi",1458,0,0,1440,2960).getInt("max_size"));
+        // 两者都缺时才用保守默认值。
+        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_WIFI,GatewayDesktopPolicy.encoding("wifi",0,0,0,1440,2960).getInt("max_size"));
+    }
+
+    private static int headEight(int value){return value-value%8;}
+
     @Test public void encodingClampsAndAlignsRequestedSize() throws Exception {
         int w=1440,h=2960;
         // 超出上限要压回上限，低于下限要抬到下限。
-        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",9999,w,h).getInt("max_size"));
-        assertEquals(GatewayDesktopPolicy.SIZE_FLOOR,GatewayDesktopPolicy.encoding("wifi",10,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",9999,0,0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_FLOOR,GatewayDesktopPolicy.encoding("wifi",10,0,0,w,h).getInt("max_size"));
         // 编码器要求长边是 8 的倍数。
         for(int requested=321;requested<=1930;requested+=7)
-            assertEquals(0,GatewayDesktopPolicy.encoding("wifi",requested,w,h).getInt("max_size")%8);
+            assertEquals(0,GatewayDesktopPolicy.encoding("wifi",requested,0,0,w,h).getInt("max_size")%8);
         // 没报尺寸时退回各档上限，不至于糊。
-        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_WIFI,GatewayDesktopPolicy.encoding("wifi",0,w,h).getInt("max_size"));
-        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_CELLULAR,GatewayDesktopPolicy.encoding("cellular",0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_WIFI,GatewayDesktopPolicy.encoding("wifi",0,0,0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_DEFAULT_CELLULAR,GatewayDesktopPolicy.encoding("cellular",0,0,0,w,h).getInt("max_size"));
         // 面板把浏览器请求夹到 [480,1920]，设备端上限必须能收下 1920，否则大窗会被悄悄压回去。
-        assertEquals(1920,GatewayDesktopPolicy.encoding("wifi",1920,w,h).getInt("max_size"));
+        assertEquals(1920,GatewayDesktopPolicy.encoding("wifi",1920,0,0,w,h).getInt("max_size"));
     }
 
     @Test public void encodingKeepsCellularCheaperThanWifi() throws Exception {
         int w=1440,h=2960;
-        JSONObject wifi=GatewayDesktopPolicy.encoding("wifi",0,w,h),cellular=GatewayDesktopPolicy.encoding("cellular",0,w,h);
+        JSONObject wifi=GatewayDesktopPolicy.encoding("wifi",0,0,0,w,h),cellular=GatewayDesktopPolicy.encoding("cellular",0,0,0,w,h);
         assertTrue(cellular.getInt("max_size")<wifi.getInt("max_size"));
         assertTrue(cellular.getInt("max_fps")<wifi.getInt("max_fps"));
         assertTrue(cellular.getInt("bit_rate")<wifi.getInt("bit_rate"));
         // 未知档位按 WiFi 处理，不至于把画质压到最低。
-        assertEquals(wifi.getInt("max_fps"),GatewayDesktopPolicy.encoding("ethernet",0,w,h).getInt("max_fps"));
+        assertEquals(wifi.getInt("max_fps"),GatewayDesktopPolicy.encoding("ethernet",0,0,0,w,h).getInt("max_fps"));
     }
 
     @Test public void bitRateStaysWithinBounds() throws Exception {
         assertEquals(GatewayDesktopPolicy.BIT_RATE_FLOOR,GatewayDesktopPolicy.bitRateFor(1,1));
         assertEquals(GatewayDesktopPolicy.BIT_RATE_CEILING,GatewayDesktopPolicy.bitRateFor(50_000_000L,60));
         // 拿不到屏幕尺寸也不能算出 0 或负数。
-        JSONObject blind=GatewayDesktopPolicy.encoding("wifi",640,0,0);
+        JSONObject blind=GatewayDesktopPolicy.encoding("wifi",640,0,0,0,0);
         assertTrue(blind.getInt("bit_rate")>=GatewayDesktopPolicy.BIT_RATE_FLOOR);
         assertEquals(640,blind.getInt("max_size"));
     }
