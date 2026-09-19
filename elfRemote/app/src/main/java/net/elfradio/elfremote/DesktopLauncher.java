@@ -27,8 +27,11 @@ final class DesktopLauncher {
         stopLocked();
         File log = new File(root, "desktop.log");
         // 每次拉起前重申 uid 2000 需要的读取权限，并把可读性写进日志，避免偶发的类路径为空。
+        // 核心目录在这里也要按回 0700：早期版本把 scrcpy 放在里面并放宽过它，升级后不能留着。
         try {
-            new ProcessBuilder("/system/bin/sh", "-c", "chmod 2771 /data/local/elfremote; chmod 0711 " + CoreInstaller.DIR + "; chmod 0644 " + ScrcpyAsset.TARGET
+            new ProcessBuilder("/system/bin/sh", "-c", "mkdir -p " + ScrcpyAsset.ROOT
+                    + "; chmod 2771 /data/local/elfremote; chmod 0700 " + CoreInstaller.DIR
+                    + "; chmod 0711 " + ScrcpyAsset.ROOT + "; chmod 0644 " + ScrcpyAsset.TARGET
                     + "; echo \"PRECHECK $(date +%s) $(ls -l " + ScrcpyAsset.TARGET + " 2>&1) readable_by_2000=$(su 2000 -c 'test -r " + ScrcpyAsset.TARGET + " && echo yes || echo no' 2>&1)\" >> " + RescueFiles.quote(log.getPath()))
                     .start().waitFor();
         } catch (Exception ignored) { }
@@ -37,7 +40,10 @@ final class DesktopLauncher {
                 + " scid=" + scid + " tunnel_forward=true audio=false control=true cleanup=true power_on=true"
                 + " send_dummy_byte=false log_level=info max_fps=" + maxFps + " video_bit_rate=" + bitRate
                 + (maxSize > 0 ? " max_size=" + maxSize : "");
-        // setsid 独立进程组；su 2000 降权；输出到核心目录日志。
+        // setsid 独立进程组；su 2000 降权；输出到日志。
+        // 移植提醒：这里的 "su 2000 -c" 是 Magisk 风格。D31 上的 AOSP su 不认 -c，
+        // 必须写成 "su 2000 /system/bin/sh -c"；另外有的机型会清理 /data/local/tmp，
+        // 资产放那里会静默消失，表现成类路径为空的 ClassNotFoundException，必须放核心同级目录。
         current = new ProcessBuilder("/system/bin/setsid", "/system/bin/sh", "-c",
                 "PATH=/sbin:/system/xbin:/system/bin:$PATH; exec su 2000 -c " + RescueFiles.quote(server) + " </dev/null >>" + RescueFiles.quote(log.getPath()) + " 2>&1")
                 .start();
