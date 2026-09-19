@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 71
-        versionName "1.5.0-gateway-alpha64-alarm-bounded-loop"
+        versionCode 72
+        versionName "1.5.0-gateway-alpha65-desktop-share"
 
         // NDK build config
         externalNativeBuild {
@@ -96,6 +96,8 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
     implementation 'org.java-websocket:Java-WebSocket:1.5.7'
+    // 远程桌面：scrcpy 的视频/控制字节走 DataChannel 直连浏览器，不建音频与摄像头轨道。
+    implementation 'io.github.webrtc-sdk:android:144.7559.15'
 
     // Lifecycle & ViewModel for MVVM
     implementation 'androidx.lifecycle:lifecycle-viewmodel:2.6.2'

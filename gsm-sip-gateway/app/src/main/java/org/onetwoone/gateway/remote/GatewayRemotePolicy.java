@@ -18,7 +18,7 @@ public final class GatewayRemotePolicy {
         for (String key : new String[]{"managed_update", "managed_update_v2", "managed_media",
                 "managed_media_prepare_v1", "managed_adb_session", "managed_adb_tunnel_v1", "managed_alarm_tasks",
                 "managed_file_tasks", "managed_file_return", "managed_file_operations",
-                "managed_lost_tasks", "managed_wipe_v1", "managed_config_tasks"}) body.put(key, false);
+                "managed_lost_tasks", "managed_wipe_v1", "managed_config_tasks", "managed_desktop_v1"}) body.put(key, false);
         return body.put("managed_update",true).put("managed_update_v2",true).put("managed_adb_session",true).put("managed_adb_tunnel_v1",true)
                 .put("managed_exec_tasks",true)
                 .put("managed_alarm_tasks",true).put("managed_locate_tasks",true)

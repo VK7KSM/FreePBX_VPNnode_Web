@@ -28,6 +28,9 @@ public final class GatewayRemoteActivity extends Activity implements SharedPrefe
             GatewayRemoteService.start(this);
         });
         content.addView(connect);
+        Button share = new Button(this); share.setText("生成管理链接");
+        share.setOnClickListener(v -> GatewayShareLink.generate(this, store));
+        content.addView(share);
         ScrollView scroll = new ScrollView(this); scroll.addView(content); setContentView(scroll);
     }
     @Override protected void onResume() { super.onResume(); store.prefs.registerOnSharedPreferenceChangeListener(this); render(); }

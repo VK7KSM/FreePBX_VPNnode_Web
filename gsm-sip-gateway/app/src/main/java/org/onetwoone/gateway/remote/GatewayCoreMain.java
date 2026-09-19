@@ -24,6 +24,7 @@ public final class GatewayCoreMain {
         final android.content.Context context=resolvedContext;
         GatewayCorePush push=null;try{if(context!=null)push=new GatewayCorePush(context,new File(GatewayCoreClient.DIR));}catch(Exception ignored){}
         GatewayProxyRuntime proxy=new GatewayProxyRuntime();
+        GatewayDesktopLauncher desktop=new GatewayDesktopLauncher();
         boolean running=true;
         try {
             while (running) {
@@ -51,6 +52,10 @@ public final class GatewayCoreMain {
                         else if("proxy-stop".equals(operation)){response.put("proxy",proxy.stop());if(push!=null)push.routeChanged();}
                         else if("proxy-test".equals(operation)){response.put("proxy",proxy.test());if(push!=null)push.routeChanged();}
                         else if("proxy-status".equals(operation))response.put("proxy",proxy.status());
+                        else if("desktop-prepare".equals(operation))response.put("desktop",desktop.prepare(request));
+                        else if("desktop-start".equals(operation))response.put("desktop",desktop.start(request));
+                        else if("desktop-stop".equals(operation))response.put("desktop",desktop.stop());
+                        else if("desktop-status".equals(operation))response.put("desktop",desktop.status());
                         else if("push-config".equals(operation)&&push!=null)response.put("push",push.configure(request));
                         else if("push-status".equals(operation)&&push!=null)response.put("push",push.status());
                         else if("push-tick".equals(operation)&&push!=null){push.tick();response.put("ticked",true);}
@@ -64,7 +69,7 @@ public final class GatewayCoreMain {
                     // Malformed or unauthenticated peers never stop the listener.
                 }
             }
-        } finally {if(push!=null)push.close();server.close();}
+        } finally {if(push!=null)push.close();try{desktop.stop();}catch(Exception ignored){}server.close();}
     }
     static String readLine(InputStream input) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();

@@ -32,7 +32,9 @@ public final class GatewayRemoteService extends Service {
     private GatewayLostDisplay lostDisplay;
     private GatewayManagedProxyTasks proxyTasks;
     private GatewayManagedCompanionTasks companionTasks;
+    private GatewayDesktopSession desktop;
     private boolean proxyAssetsChecked;
+    private boolean desktopAssetsChecked;
     private volatile boolean stopped;
     private int failures;
     private volatile long nextAttempt;
@@ -69,6 +71,7 @@ public final class GatewayRemoteService extends Service {
         lostTasks = new GatewayManagedLostTasks(this,store,location,new GatewayAlarmPlayer(this,worker,this::scheduleImmediateReport),lostDisplay,this::scheduleImmediateReport);
         proxyTasks = new GatewayManagedProxyTasks(this,store,this::scheduleImmediateReport);
         companionTasks = new GatewayManagedCompanionTasks(this,store,this::scheduleImmediateReport);
+        desktop = new GatewayDesktopSession(this,new java.io.File(getFilesDir(),"desktop"));
         worker.post(wifiTasks::tick);
         worker.post(fileTasks::tick);
         worker.post(transferTasks::tick);
@@ -93,6 +96,14 @@ public final class GatewayRemoteService extends Service {
             }
             JSONObject health=GatewayCoreClient.ensure(this);
             boolean ready=health.optInt("uid",-1)==0;
+            try {
+                if(!desktopAssetsChecked){GatewayScrcpyAsset.stage(this);desktopAssetsChecked=true;}
+                JSONObject screen=GatewayCoreClient.prepareDesktop(this);
+                store.prefs.edit().putBoolean("desktop_ready",screen.optBoolean("installed")).remove("desktop_error").apply();
+            } catch(Exception unavailable){
+                desktopAssetsChecked=false;
+                store.prefs.edit().putBoolean("desktop_ready",false).putString("desktop_error",unavailable.getClass().getSimpleName()).apply();
+            }
             try {JSONObject proxy=GatewayCoreClient.prepareProxy(this);GatewayProxyRoute.setPreferred(proxy.optBoolean("proxy_reachable")&&proxy.optBoolean("http_ready"));store.prefs.edit().putString("proxy_runtime",proxy.toString()).remove("proxy_runtime_error").apply();}
             catch(Exception unavailable){store.prefs.edit().remove("proxy_runtime").putString("proxy_runtime_error",unavailable.getClass().getSimpleName()).apply();}
             JSONObject push=store.prefs.getBoolean("paired",false)&&!store.deviceId().isEmpty()
@@ -158,7 +169,7 @@ public final class GatewayRemoteService extends Service {
     private void consumePush() {
         try {
             JSONObject status=GatewayCoreClient.pushStatus(this),pending=status.optJSONObject("pending");if(pending==null)return;
-            JSONObject reply=pending.getJSONObject("reply");updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
+            JSONObject reply=pending.getJSONObject("reply");desktop.accept(reply);updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
             JSONObject request=reply.optJSONObject("status_request");
             if(request!=null&&request.optString("request_id").matches("[A-Za-z0-9-]{1,96}"))
                 if(!store.prefs.edit().putString("status_request_id",request.getString("request_id")).commit())
@@ -195,7 +206,7 @@ public final class GatewayRemoteService extends Service {
             JSONObject reply=GatewayRemoteHttp.request("/api/devices/report",pendingReport);
             if(!pendingReport.getString("report_id").equals(reply.optString("report_id")))
                 throw new java.io.IOException("report acknowledgement mismatch");
-            updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
+            desktop.accept(reply);updates.accept(reply);sipTasks.accept(reply);wifiTasks.accept(reply);fileTasks.accept(reply);transferTasks.accept(reply);execTasks.accept(reply);lostTasks.accept(reply);proxyTasks.accept(reply);companionTasks.accept(reply);
             if (!store.prefs.edit().remove("pending_report").commit()) {
                 throw new java.io.IOException("report acknowledgement persistence failed");
             }
@@ -260,6 +271,8 @@ public final class GatewayRemoteService extends Service {
         body.put("alarm",lostTasks.alarmSnapshot());
         body.put("lost_display",lostDisplay.snapshot());
         body.put("proxy_runtime",proxyRuntimeStatus());
+        // 只有核心里确实装好了 scrcpy 服务端才敢报这项能力，否则面板会给一台开不出画面的设备放行远程桌面。
+        body.put("managed_desktop_v1",store.prefs.getBoolean("desktop_ready",false));
         return body;
     }
     private JSONObject proxyRuntimeStatus()throws Exception {
@@ -272,7 +285,7 @@ public final class GatewayRemoteService extends Service {
                 .put("write_locked",true).put("error",error);
     }
     @Override public void onDestroy() {
-        stopped=true;if(transferTasks!=null)transferTasks.close();if(lostTasks!=null)lostTasks.close();if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();
+        stopped=true;if(desktop!=null)desktop.close();if(transferTasks!=null)transferTasks.close();if(lostTasks!=null)lostTasks.close();if(location!=null)location.close();worker.removeCallbacksAndMessages(null); thread.quitSafely();
         if(appHealth!=null)try{appHealth.close();}catch(java.io.IOException ignored){}
         if(coreAlarms!=null&&coreAlarm!=null)try{coreAlarms.cancel(coreAlarm);}catch(Exception ignored){}
         coreWorker.removeCallbacksAndMessages(null);coreThread.quitSafely();super.onDestroy();

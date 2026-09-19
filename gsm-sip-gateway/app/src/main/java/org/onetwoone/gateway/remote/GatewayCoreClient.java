@@ -92,6 +92,22 @@ final class GatewayCoreClient {
         }
         throw new IOException("core health unavailable");
     }
+    static JSONObject prepareDesktop(Context context) throws Exception {
+        File asset=GatewayScrcpyAsset.stagedFile(context);return request(context,new JSONObject().put("operation","desktop-prepare")
+                .put("asset_path",asset.getCanonicalPath()).put("size",GatewayScrcpyAsset.SIZE)
+                .put("sha256",GatewayScrcpyAsset.SHA256),15_000).getJSONObject("desktop");
+    }
+    static JSONObject startDesktop(Context context,String scid,JSONObject encoding) throws Exception {
+        return request(context,new JSONObject().put("operation","desktop-start").put("scid",scid)
+                .put("max_fps",encoding.getInt("max_fps")).put("bit_rate",encoding.getInt("bit_rate"))
+                .put("max_size",encoding.getInt("max_size")),10_000).getJSONObject("desktop");
+    }
+    static JSONObject stopDesktop(Context context) throws Exception {
+        return request(context,new JSONObject().put("operation","desktop-stop"),8_000).getJSONObject("desktop");
+    }
+    static JSONObject desktopStatus(Context context) throws Exception {
+        return request(context,new JSONObject().put("operation","desktop-status"),5_000).getJSONObject("desktop");
+    }
     static JSONObject configurePush(Context context,String device,String token) throws Exception {
         return request(context,new JSONObject().put("operation","push-config").put("device_id",device).put("token",token)).getJSONObject("push");
     }
