@@ -1919,9 +1919,12 @@ function enqueueRepair(type,params){
   if(!d) return;
   if(typeof ElfShare!=='undefined'&&ElfShare.locked(d)&&!/^(lost_|safety_|cancel_lost|lost)/.test(type)){alert('独立用户使用中，总后台只读');return Promise.resolve();}
   var run=null;
+  var maintLabel={pull_logs:'拉取日志',heal_network:'强制自愈',reboot:'受控重启',restart_adbd:'重启adbd'}[type];
   if(MAINTENANCE_CAPS[type]){
     if(!maintenanceAvailable(d,type))return Promise.resolve();
-    run={pending:true};MAINTENANCE_RUN[d.id]=run;renderOps();
+    run={pending:true};MAINTENANCE_RUN[d.id]=run;
+    if(maintLabel){var mu=uiOf();if(mu)shellPrint('sys','已下发「'+maintLabel+'」，等待设备执行…');}
+    renderOps();
   }
   return fetch("/api/elfremote/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,type:type,params:params||{}})})
     .then(function(r){return r.json();})
@@ -1929,17 +1932,21 @@ function enqueueRepair(type,params){
       if(!x.ok){if(run)run.error=true;alert(x.msg||'下发失败');return;}
       if(run)run.id=x.task && x.task.id;
       loadDevices();
-      if(x.task&&x.task.id)watchMaintenanceTask(d.id,x.task.id);
+      if(x.task&&x.task.id)watchMaintenanceTask(d.id,x.task.id,maintLabel);
       return x;
     }).catch(function(){if(run)run.error=true;alert('下发失败，请检查连接');})
     .finally(function(){if(run){run.pending=false;if(selDev===d.id)renderOps();}});
 }
-async function watchMaintenanceTask(deviceId,taskId){
+async function watchMaintenanceTask(deviceId,taskId,label){
   var owner={};
   for(var i=0;i<45;i++){
     await new Promise(function(r){setTimeout(r,2000);});
     try{var x=await readResultJson(owner,deviceId+'/'+taskId,'/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:taskId}));
-      if(x&&x.task&&['success','failed','rejected','expired'].includes(x.task.state)){loadDevices();return;}
+      if(x&&x.task&&['success','failed','rejected','expired'].includes(x.task.state)){
+        var t=x.task,r=t.result||{},u=UI[deviceId];
+        if(label&&u){var text=(label)+' · '+(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.artifact?' · 日志 '+(r.artifact.bytes/1000).toFixed(1)+' KB，见下方「下载日志」':'');u.shell=u.shell||{};u.shell.lines=u.shell.lines||[];u.shell.lines.push({k:'sys',t:text});if(r.text)u.shell.lines.push({k:'out',t:r.text});}
+        loadDevices();return;
+      }
     }catch(e){if(e.stopPolling)return;}
   }
 }

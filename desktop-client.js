@@ -13,7 +13,7 @@ const ICONS = [
   ['copy', '复制', 'M8 8h12v12H8zM4 16V4h12'],
   ['paste', '粘贴', 'M9 4h6v3H9zM6 6h12v14H6zM9 12h6M9 16h6'],
   ['info', '连接信息', 'M12 8h.01M11 12h1v4h1M12 3a9 9 0 110 18 9 9 0 010-18z'],
-  ['fold', '折叠', 'M15 6l-6 6 6 6'],
+  ['fold', '折叠工具栏', 'M11 18l-6-6 6-6M18 18l-6-6 6-6'],
 ];
 let active = null, lastMessage = '';
 
@@ -43,7 +43,7 @@ function buildNode(s) {
   const node = document.createElement('div'); node.className = 'desktop-view'; node.dataset.deviceId = s.device.id;
   node.innerHTML = '<div class="desktop-stage"><div class="desktop-screen" tabindex="0" aria-label="设备屏幕"></div>'
     + '<div class="desktop-tools" role="toolbar" aria-label="远程桌面工具">' + ICONS.map(i => '<button type="button" data-act="' + i[0] + '" title="' + i[1] + '" aria-label="' + i[1] + '">' + icon(i[2]) + '</button>').join('') + '</div>'
-    + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden></button>'
+    + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden>' + icon('M6 6l6 6-6 6M13 6l6 6-6 6') + '</button>'
     + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div></div>';
   const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold');
   let folded = false; try { folded = localStorage.getItem('elf-desktop-folded') === '1'; } catch {}
