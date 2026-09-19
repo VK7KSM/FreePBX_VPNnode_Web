@@ -6,6 +6,7 @@ import android.os.Handler;
 
 /** 双音交替警报：响30秒、停10秒；结束后恢复原音量。 */
 final class MediaAlarm {
+    private static final int RING_MS=30000,PAUSE_MS=10000;
     private final AudioManager audio;
     private final Context context;
     private final Handler handler;
@@ -13,9 +14,11 @@ final class MediaAlarm {
     private AudioTrack track;
     private MediaFlash flash;
     private boolean active;
+    private boolean played;
     private final Runnable sound=this::sound;
     private final Runnable pause=this::pause;
-    private synchronized void pause(){if(!active)return;if(track!=null)track.pause();if(flash!=null)flash.stop();handler.postDelayed(sound,10000);}
+    // 停的时候直接 stop 而不是 pause：下一轮要重新装填并重设有限循环次数。
+    private synchronized void pause(){if(!active)return;if(track!=null){try{track.stop();}catch(Exception ignored){}}if(flash!=null)flash.stop();handler.postDelayed(sound,PAUSE_MS);}
     MediaAlarm(Context c,Handler h){context=c.getApplicationContext();audio=(AudioManager)c.getSystemService(Context.AUDIO_SERVICE);handler=h;state=c.getSharedPreferences("media-alarm",0);restore();}
     synchronized void start() throws Exception {
         if(active)return;
@@ -23,17 +26,13 @@ final class MediaAlarm {
         if(!state.edit().putInt("volume",original).putBoolean("saved",true).commit())throw new java.io.IOException("警报原音量保存失败");
         try {
             audio.setStreamVolume(AudioManager.STREAM_ALARM,audio.getStreamMaxVolume(AudioManager.STREAM_ALARM),0);
-            int rate=16000,count=rate*14/10;short[] samples=new short[count];
-            for(int i=0;i<count;i++){
-                double f=(i/(rate*35/100))%2==0?880:1320;
-                int local=i%(rate*35/100);double fade=Math.min(1,Math.min(local,rate*35/100-1-local)/160.0);
-                samples[i]=(short)(Math.sin(2*Math.PI*f*i/rate)*22000*Math.max(0,fade));
-            }
-            track=new AudioTrack(AudioManager.STREAM_ALARM,rate,AudioFormat.CHANNEL_OUT_MONO,AudioFormat.ENCODING_PCM_16BIT,count*2,AudioTrack.MODE_STATIC);
+            int count=AlarmTone.COUNT;short[] samples=AlarmTone.samples();
+            track=new AudioTrack(AudioManager.STREAM_ALARM,AlarmTone.RATE,AudioFormat.CHANNEL_OUT_MONO,AudioFormat.ENCODING_PCM_16BIT,count*2,AudioTrack.MODE_STATIC);
             if(track.getState()!=AudioTrack.STATE_NO_STATIC_DATA||track.write(samples,0,count)!=count)throw new java.io.IOException("警报音频初始化失败");
-            if(track.setLoopPoints(0,count,-1)!=AudioTrack.SUCCESS)throw new java.io.IOException("警报循环初始化失败");
+            // 有限循环：Handler 失效时最多多响一个片段就停，不会一直响下去。
+            if(track.setLoopPoints(0,count,AlarmTone.loopCount(RING_MS))!=AudioTrack.SUCCESS)throw new java.io.IOException("警报循环初始化失败");
             for(AudioDeviceInfo device:audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS))if(device.getType()==AudioDeviceInfo.TYPE_BUILTIN_SPEAKER){track.setPreferredDevice(device);break;}
-            prepareFlash();active=true;sound();
+            prepareFlash();active=true;played=false;sound();
         }catch(Exception e){close();throw e;}
     }
     private void prepareFlash(){
@@ -49,7 +48,20 @@ final class MediaAlarm {
             RuntimeLog.event("alarm_flash_unavailable");
         }catch(Exception error){RuntimeLog.error("alarm_flash_unavailable",error);}
     }
-    private synchronized void sound(){if(!active||track==null)return;WakeScheduler.hold(context,"media-alarm-cycle",60000L);track.play();if(flash!=null)flash.start();handler.postDelayed(pause,30000);}
+    private synchronized void sound(){
+        if(!active||track==null)return;
+        WakeScheduler.hold(context,"media-alarm-cycle",60000L);
+        // 第二轮起要重新装填静态缓冲并重设循环次数，否则上一轮用掉的次数不会回来，后面几轮会哑掉。
+        if(played){
+            try{track.stop();}catch(Exception ignored){}
+            if(track.reloadStaticData()!=AudioTrack.SUCCESS||track.setLoopPoints(0,AlarmTone.COUNT,AlarmTone.loopCount(RING_MS))!=AudioTrack.SUCCESS)
+                RuntimeLog.event("alarm_loop_rearm_failed");
+        }
+        played=true;
+        track.play();
+        if(flash!=null)flash.start();
+        handler.postDelayed(pause,RING_MS);
+    }
     private void restore(){if(audio!=null&&state.getBoolean("saved",false)){audio.setStreamVolume(AudioManager.STREAM_ALARM,state.getInt("volume",0),0);state.edit().clear().commit();}}
-    synchronized void close(){active=false;WakeScheduler.release("media-alarm-cycle");handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(flash!=null){flash.stop();flash=null;}if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
+    synchronized void close(){active=false;played=false;WakeScheduler.release("media-alarm-cycle");handler.removeCallbacks(sound);handler.removeCallbacks(pause);if(flash!=null){flash.stop();flash=null;}if(track!=null){try{track.stop();}catch(Exception ignored){}track.release();track=null;}restore();}
 }
