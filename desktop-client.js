@@ -51,6 +51,7 @@ const KEYMAP = (() => {
   for (let i = 1; i <= 12; i++) m['F' + i] = 130 + i;
   return m;
 })();
+const ASCII_ONLY = /^[\x20-\x7e\n]*$/;
 const META_SHIFT = 0x1 | 0x40, META_ALT = 0x2 | 0x10, META_CTRL = 0x1000 | 0x2000, META_CAPS = 0x100000;
 function metaOf(e) { return (e.shiftKey ? META_SHIFT : 0) | (e.altKey ? META_ALT : 0) | (e.ctrlKey ? META_CTRL : 0) | (e.getModifierState && e.getModifierState('CapsLock') ? META_CAPS : 0); }
 const SPECIAL_KEYS = [['电源', 26], ['音量+', 24], ['音量-', 25], ['静音', 164], ['搜索', 84], ['相机', 27], ['通话', 5], ['挂断', 6]];
@@ -123,7 +124,7 @@ function buildNode(s) {
   const flushText = async () => {
     const text = ime.value; ime.value = ''; if (!text || !s.controller || !s.inputReady) return;
     s.lastInput = Date.now(); send(s, { type: 'activity' });
-    try { if (/^[\x20-\x7e\n]*$/.test(text)) await s.controller.injectText(text); else await s.controller.setClipboard({ sequence: 0n, content: text, paste: true }); }
+    try { await sendText(s, text); }
     catch (e) { log(s, '文本输入失败：' + (e.message || e)); }
   };
   ime.addEventListener('compositionend', () => { setTimeout(flushText, 0); });
@@ -132,6 +133,23 @@ function buildNode(s) {
   window.addEventListener('blur', s.release); document.addEventListener('visibilitychange', () => { if (document.hidden) s.release(); });
   return node;
 }
+// 把文本送进设备。分两条路，因为「设剪贴板 + 由 scrcpy 注入 KEYCODE_PASTE」在老系统上不生效：
+// Android 6 的前台应用不响应那个键，表现是内容确实到了设备剪贴板、却粘不进输入框。
+// D31 实测印证了这一点：设备日志里 Device clipboard set 连出四次全部成功、没有任何注入报错，
+// 而在输入框里手动长按选「粘贴」能粘出来。scrcpy 上游提供 --legacy-paste 正是为了这个。
+//
+// 纯 ASCII 走 injectText，这就是键盘打字用的那条通路，在 D31 上已经实测可用。
+// 含非 ASCII 时只能过剪贴板，但改成自己注入 Ctrl+V：TextView 从 API 11 起就在 onKeyShortcut 里
+// 处理它，支持面比 KEYCODE_PASTE 宽。setClipboard 因此传 paste:false，避免和自己注入的键重复触发。
+async function sendText(s, text) {
+  if (ASCII_ONLY.test(text)) { await s.controller.injectText(text); return 'typed'; }
+  await s.controller.setClipboard({ sequence: 0n, content: text, paste: false });
+  const KEYCODE_V = 50;
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: KEYCODE_V, repeat: 0, metaState: META_CTRL });
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: KEYCODE_V, repeat: 0, metaState: META_CTRL });
+  return 'clipboard';
+}
+
 async function key(s, code) { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: code, repeat: 0, metaState: 0 }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: code, repeat: 0, metaState: 0 }); }
 async function action(s, act) {
   try {
@@ -140,7 +158,7 @@ async function action(s, act) {
     else if (act === 'home') await key(s, AndroidKeyCode.AndroidHome);
     else if (act === 'back') await key(s, AndroidKeyCode.AndroidBack);
     else if (act === 'copy') { const text = s.deviceClipboard; if (text === undefined) { log(s, '设备尚未复制过文本；请先在设备画面中选择文字并用安卓的复制'); return; } await navigator.clipboard.writeText(text); log(s, '已取回设备剪贴板 ' + text.length + ' 字'); }
-    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.setClipboard({ sequence: 0n, content: text, paste: true }); log(s, '已粘贴 ' + text.length + ' 字到设备'); }
+    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并触发粘贴 ' + text.length + ' 字；若没粘上，可在设备输入框长按选粘贴')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
 }
 
