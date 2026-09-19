@@ -17,12 +17,25 @@ export function turnFetcher(env,fetcher=(url,init)=>fetch(url,init)){
     return x.iceServers;
   };
 }
+/**
+ * 显示区域的长边，决定设备该编多大的画面。
+ * 面板里那个小窗只有 340 像素高，而设备默认按长边 1280 编，浏览器拿到的像素比它显示的多四倍，
+ * 全部被缩掉了：既不清晰也白费带宽。把实际显示尺寸带给设备，它按需编码。
+ * 取 8 的倍数是编码器的要求；下限 480 是再小画面就没法看了；传不上来就返回 0，届时不下发该字段，
+ * 设备走自己的保守默认值，绝不能把 0 发下去——scrcpy 的 max_size=0 表示不限制，正好是反的。
+ */
+export function displayLongEdge(value){
+  const n=Math.round(Number(value));
+  if(!Number.isFinite(n)||n<=0)return 0;
+  const clamped=Math.min(1920,Math.max(480,n));
+  return clamped-clamped%8;
+}
 export function desktopAllowed(device){return !!device&&device.enabled!==false&&device.managed_desktop_v1===true;}
 export class DesktopRelay {
   constructor({now=Date.now,schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id),iceServers=async()=>DEFAULT_ICE}={}){
     this.now=now;this.schedule=schedule;this.cancel=cancel;this.iceServers=iceServers;this.sessions=new Map();
   }
-  async create(device,quality='wifi'){
+  async create(device,quality='wifi',maxSize=0){
     if(!desktopAllowed(device))throw Error('设备尚不支持远程桌面');
     if(!['wifi','cellular'].includes(quality))throw Error('画质档位无效');
     for(const s of this.sessions.values())this.expire(s);
@@ -32,7 +45,7 @@ export class DesktopRelay {
     // TURN 凭据失败不阻止会话：退回 STUN 直连，状态里说明。
     let ice=DEFAULT_ICE,turn=true;try{ice=await this.iceServers();}catch{turn=false;}
     const id=crypto.randomUUID(),token=crypto.randomUUID()+crypto.randomUUID(),created=this.now();
-    const s={id,token,deviceId:device.id,quality,created,started:0,lastBrowser:created,roles:{},closed:false,generation:1,phase:'preparing',lastInput:created,iceServers:ice,turn};
+    const s={id,token,deviceId:device.id,quality,maxSize:displayLongEdge(maxSize),created,started:0,lastBrowser:created,roles:{},closed:false,generation:1,phase:'preparing',lastInput:created,iceServers:ice,turn};
     this.sessions.set(id,s);this.arm(s);
     return {ok:true,session_id:id,turn};
   }
@@ -55,7 +68,7 @@ export class DesktopRelay {
   }
   offer(deviceId,origin){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.roles.device);
-    return s&&!this.expire(s)?{session_id:s.id,token:s.token,quality:s.quality,generation:s.generation,ice_servers:s.iceServers,expires_at:s.created+DESKTOP_PREPARE_TIMEOUT_MS,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/desktop/device?session_id='+s.id}:null;
+    return s&&!this.expire(s)?{session_id:s.id,token:s.token,quality:s.quality,...(s.maxSize?{max_size:s.maxSize}:{}),generation:s.generation,ice_servers:s.iceServers,expires_at:s.created+DESKTOP_PREPARE_TIMEOUT_MS,url:origin.replace(/^https:/,'wss:')+'/api/elfremote/desktop/device?session_id='+s.id}:null;
   }
   status(deviceId){
     const s=[...this.sessions.values()].find(s=>s.deviceId===deviceId&&!s.closed);
@@ -74,7 +87,7 @@ export class DesktopRelay {
     ws.addEventListener('error',()=>this.close(s,'连接中断'));
     this.send(s,role,{type:'waiting',generation:s.generation});
     if(s.roles.browser&&s.roles.device){
-      const hello={type:'hello',quality:s.quality,generation:s.generation,ice_servers:s.iceServers,turn:s.turn};
+      const hello={type:'hello',quality:s.quality,...(s.maxSize?{max_size:s.maxSize}:{}),generation:s.generation,ice_servers:s.iceServers,turn:s.turn};
       this.send(s,'browser',hello);this.send(s,'device',hello);
     }
   }

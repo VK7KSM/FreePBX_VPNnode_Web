@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DesktopRelay, desktopAllowed, turnFetcher } from './desktop-relay.js';
+import { DesktopRelay, desktopAllowed, turnFetcher, displayLongEdge} from './desktop-relay.js';
 
 function fakeSocket(){
   const s={sent:[],listeners:{},closed:null};
@@ -78,4 +78,25 @@ test('准备超时与网页静默会关闭会话并通知', async () => {
   tick(30000);
   assert.equal(s.closed,true);assert.equal(d.sent.at(-1).type,'closed');assert.equal(d.closed.code,1000);
   assert.equal(r.status('dev1').active,false);
+});
+
+test('显示尺寸：夹到 8 的倍数，量不到时不下发该字段', async () => {
+  assert.equal(displayLongEdge(1280), 1280);
+  assert.equal(displayLongEdge(1333), 1328, '取 8 的倍数');
+  assert.equal(displayLongEdge(2500), 1920, '上限 1920');
+  assert.equal(displayLongEdge(330), 480, '下限 480，再小就没法看了');
+  // 0 绝不能下发：scrcpy 的 max_size=0 表示不限制，正好和「没量到」相反
+  for (const bad of [0, -1, NaN, undefined, null, 'x', {}]) assert.equal(displayLongEdge(bad), 0);
+
+  const device = { id: 'dev1', enabled: true, managed_desktop_v1: true };
+  const relay = new DesktopRelay({ schedule: () => 1, cancel: () => {} });
+  const { session_id } = await relay.create(device, 'wifi', 1333);
+  const offered = relay.offer('dev1', 'https://example.test');
+  assert.equal(offered.max_size, 1328, '会话创建时带上的尺寸要出现在 offer 里');
+  relay.close(relay.sessions.get(session_id), '测试结束');
+
+  const relay2 = new DesktopRelay({ schedule: () => 1, cancel: () => {} });
+  await relay2.create({ ...device, id: 'dev2' }, 'wifi');
+  assert.equal(Object.hasOwn(relay2.offer('dev2', 'https://example.test'), 'max_size'), false,
+    '没传尺寸时 offer 里不能出现该字段，否则设备会当成不限制');
 });

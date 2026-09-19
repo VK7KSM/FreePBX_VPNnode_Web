@@ -14,6 +14,7 @@ const ICONS = [
   ['paste', '粘贴', 'M9 4h6v3H9zM6 6h12v14H6zM9 12h6M9 16h6'],
   ['keys', '特殊按键', 'M3 7h18v10H3zM7 11h.01M11 11h.01M15 11h.01M7 14h10'],
   ['info', '连接信息', 'M12 8h.01M11 12h1v4h1M12 3a9 9 0 110 18 9 9 0 010-18z'],
+  ['expand', '占满窗口', 'M4 9V4h5M20 15v5h-5M4 15v5h5M20 9V4h-5'],
   ['fold', '折叠工具栏', 'M11 18l-6-6 6-6M18 18l-6-6 6-6'],
 ];
 let active = null, lastMessage = '';
@@ -67,7 +68,18 @@ function buildNode(s) {
   let folded = false; try { folded = localStorage.getItem('elf-desktop-folded') === '1'; } catch {}
   const applyFold = () => { tools.hidden = folded; unfold.hidden = !folded; try { localStorage.setItem('elf-desktop-folded', folded ? '1' : '0'); } catch {} };
   applyFold();
-  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
+  let expanded = false; try { expanded = localStorage.getItem('elf-desktop-expanded') === '1'; } catch {}
+  const expandBtn = node.querySelector('button[data-act="expand"]');
+  // 占满浏览器窗口而不是调 Fullscreen API：这是运维工具，多半要一边看画面一边看旁边的终端和日志，
+  // 全屏会把面板其它部分藏掉、要按 ESC 才能退出，还有用户手势与退出键的兼容问题。
+  // 清晰度按下一次连接生效：scrcpy 改不了运行中的分辨率，改了要重启服务端并重来一遍解码器。
+  const applyExpand = () => {
+    node.classList.toggle('desktop-expanded', expanded);
+    if (expandBtn) { const t = expanded ? '退出占满窗口' : '占满窗口（清晰度下次连接时生效）'; expandBtn.title = t; expandBtn.setAttribute('aria-label', t); }
+    try { localStorage.setItem('elf-desktop-expanded', expanded ? '1' : '0'); } catch {}
+  };
+  applyExpand();
+  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'expand') { expanded = !expanded; applyExpand(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
   keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); key(s, Number(b.dataset.key)); });
   unfold.onclick = () => { folded = false; applyFold(); };
   // 鼠标→触摸：按实际画面矩形换算，黑边不发；右键=返回，中键=桌面；失焦/离开/断线释放触点。
@@ -184,6 +196,18 @@ function tick(s) {
   if (Date.now() - s.lastInput < 30000 && Date.now() - (s.lastActivitySent || 0) >= 30000) { send(s, { type: 'activity' }); s.lastActivitySent = Date.now(); }
 }
 
+// 实际显示区域的长边，换算成设备像素。设备据此决定编多大：
+// 面板里那个小窗只有 340 像素高，而设备默认按长边 1280 编，多出来的四倍像素全被缩掉了。
+// 量不到就回 0，服务端收到 0 不下发该字段，设备走自己的默认值。
+function displayLongEdge(node) {
+  try {
+    const r = node?.querySelector('.desktop-stage')?.getBoundingClientRect();
+    const w = r?.width || 0, h = r?.height || 0;
+    if (!w || !h) return 0;
+    return Math.round(Math.max(w, h) * (window.devicePixelRatio || 1));
+  } catch { return 0; }
+}
+
 async function start(d) {
   if (!d || d.managed_desktop_v1 !== true || d.enabled === false) return;
   if (active && active.device.id === d.id) return;
@@ -191,7 +215,7 @@ async function start(d) {
   const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: '正在连接…' };
   active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, '正在唤醒设备…');
   try {
-    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
+    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, max_size: displayLongEdge(s.node), quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
     if (active !== s) { await json('/api/elfremote/desktop/session', { session_id: result.session_id }, 'DELETE').catch(() => {}); return; }
     s.id = result.session_id;
     s.ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/elfremote/desktop/browser?session_id=' + s.id);
