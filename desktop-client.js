@@ -12,6 +12,7 @@ const ICONS = [
   ['back', '返回', 'M15 18l-6-6 6-6'],
   ['copy', '复制', 'M8 8h12v12H8zM4 16V4h12'],
   ['paste', '粘贴', 'M9 4h6v3H9zM6 6h12v14H6zM9 12h6M9 16h6'],
+  ['keys', '特殊按键', 'M3 7h18v10H3zM7 11h.01M11 11h.01M15 11h.01M7 14h10'],
   ['info', '连接信息', 'M12 8h.01M11 12h1v4h1M12 3a9 9 0 110 18 9 9 0 010-18z'],
   ['fold', '折叠工具栏', 'M11 18l-6-6 6-6M18 18l-6-6 6-6'],
 ];
@@ -39,33 +40,78 @@ function channelWritable(dc) {
 }
 function waitOpen(dc) { return new Promise((res, rej) => { if (dc.readyState === 'open') return res(); dc.onopen = res; dc.onerror = e => rej(Error('数据通道失败')); dc.onclose = () => rej(Error('数据通道已关闭')); }); }
 
+// 浏览器按键 → 安卓 keycode（按物理键位 e.code 映射；Esc 作返回键）。
+const KEYMAP = (() => {
+  const m = { Space: 62, Enter: 66, NumpadEnter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 4, ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22, Home: 122, End: 123, PageUp: 92, PageDown: 93, Insert: 124,
+    Minus: 69, Equal: 70, BracketLeft: 71, BracketRight: 72, Backslash: 73, Semicolon: 74, Quote: 75, Comma: 55, Period: 56, Slash: 76, Backquote: 68,
+    ShiftLeft: 59, ShiftRight: 60, ControlLeft: 113, ControlRight: 114, AltLeft: 57, AltRight: 58, CapsLock: 115, NumpadAdd: 157, NumpadSubtract: 156, NumpadMultiply: 155, NumpadDivide: 154, NumpadDecimal: 158 };
+  for (let i = 0; i < 26; i++) m['Key' + String.fromCharCode(65 + i)] = 29 + i;
+  for (let i = 0; i < 10; i++) { m['Digit' + i] = 7 + i; m['Numpad' + i] = 144 + i; }
+  for (let i = 1; i <= 12; i++) m['F' + i] = 130 + i;
+  return m;
+})();
+const META_SHIFT = 0x1 | 0x40, META_ALT = 0x2 | 0x10, META_CTRL = 0x1000 | 0x2000, META_CAPS = 0x100000;
+function metaOf(e) { return (e.shiftKey ? META_SHIFT : 0) | (e.altKey ? META_ALT : 0) | (e.ctrlKey ? META_CTRL : 0) | (e.getModifierState && e.getModifierState('CapsLock') ? META_CAPS : 0); }
+const SPECIAL_KEYS = [['电源', 26], ['音量+', 24], ['音量-', 25], ['静音', 164], ['搜索', 84], ['相机', 27], ['通话', 5], ['挂断', 6]];
+
 function buildNode(s) {
   const node = document.createElement('div'); node.className = 'desktop-view'; node.dataset.deviceId = s.device.id;
-  node.innerHTML = '<div class="desktop-stage"><div class="desktop-screen" tabindex="0" aria-label="设备屏幕"></div>'
+  node.innerHTML = '<div class="desktop-stage"><div class="desktop-screen" aria-label="设备屏幕"></div>'
+    + '<textarea class="desktop-ime" aria-label="键盘输入" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>'
     + '<div class="desktop-tools" role="toolbar" aria-label="远程桌面工具">' + ICONS.map(i => '<button type="button" data-act="' + i[0] + '" title="' + i[1] + '" aria-label="' + i[1] + '">' + icon(i[2]) + '</button>').join('') + '</div>'
     + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden>' + icon('M6 6l6 6-6 6M13 6l6 6-6 6') + '</button>'
-    + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div></div>';
-  const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold');
+    + '<div class="desktop-keys" hidden>' + SPECIAL_KEYS.map(k => '<button type="button" data-key="' + k[1] + '">' + k[0] + '</button>').join('') + '</div>'
+    + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div>'
+    + '<div class="desktop-kbd-hint">键盘已接管，点击画面外释放</div></div>';
+  const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold'), ime = node.querySelector('.desktop-ime'), keysPanel = node.querySelector('.desktop-keys');
   let folded = false; try { folded = localStorage.getItem('elf-desktop-folded') === '1'; } catch {}
   const applyFold = () => { tools.hidden = folded; unfold.hidden = !folded; try { localStorage.setItem('elf-desktop-folded', folded ? '1' : '0'); } catch {} };
   applyFold();
-  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } action(s, b.dataset.act); });
+  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
+  keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); key(s, Number(b.dataset.key)); });
   unfold.onclick = () => { folded = false; applyFold(); };
-  // 鼠标→触摸：按实际画面矩形换算，黑边不发；失焦/离开/断线释放触点。
+  // 鼠标→触摸：按实际画面矩形换算，黑边不发；右键=返回，中键=桌面；失焦/离开/断线释放触点。
   let down = false, lastMove = 0;
   const pos = e => { const c = s.canvas; if (!c || !s.videoW) return null; const r = c.getBoundingClientRect(); const scale = Math.min(r.width / s.videoW, r.height / s.videoH); const w = s.videoW * scale, h = s.videoH * scale; const ox = r.left + (r.width - w) / 2, oy = r.top + (r.height - h) / 2; const x = (e.clientX - ox) / scale, y = (e.clientY - oy) / scale; return x < 0 || y < 0 || x > s.videoW || y > s.videoH ? null : { x, y }; };
   const touch = (act, p, pressure) => { if (!s.controller || !s.inputReady || s.geometryEpoch !== s.frameEpoch) return; s.lastInput = Date.now(); return s.controller.injectTouch({ action: act, pointerId: BigInt(-1), pointerX: p.x, pointerY: p.y, videoWidth: s.videoW, videoHeight: s.videoH, pressure, buttons: AndroidMotionEventButton.Primary }).catch(() => {}); };
-  const release = () => { if (!down) return; down = false; touch(AndroidMotionEventAction.Up, { x: 0, y: 0 }, 0); };
-  screen.addEventListener('pointerdown', e => { if (e.button !== 0) return; const p = pos(e); if (!p) return; down = true; screen.setPointerCapture(e.pointerId); screen.focus(); touch(AndroidMotionEventAction.Down, p, 1); });
+  const releaseTouch = () => { if (!down) return; down = false; touch(AndroidMotionEventAction.Up, { x: 0, y: 0 }, 0); };
+  screen.addEventListener('contextmenu', e => e.preventDefault());
+  screen.addEventListener('pointerdown', e => {
+    if (e.button === 2) { e.preventDefault(); key(s, AndroidKeyCode.AndroidBack); return; }
+    if (e.button === 1) { e.preventDefault(); key(s, AndroidKeyCode.AndroidHome); return; }
+    if (e.button !== 0) return; const p = pos(e); if (!p) return; down = true; screen.setPointerCapture(e.pointerId); captureKeyboard(); touch(AndroidMotionEventAction.Down, p, 1);
+  });
   screen.addEventListener('pointermove', e => { if (!down) return; const now = performance.now(); if (now - lastMove < 16) return; lastMove = now; const p = pos(e); if (p) touch(AndroidMotionEventAction.Move, p, 1); });
   screen.addEventListener('pointerup', e => { if (!down) return; down = false; touch(AndroidMotionEventAction.Up, pos(e) || { x: 0, y: 0 }, 0); });
-  screen.addEventListener('pointercancel', release);
+  screen.addEventListener('pointercancel', releaseTouch);
   screen.addEventListener('wheel', e => { const p = pos(e); if (!p || !s.controller || !s.inputReady) return; e.preventDefault(); s.lastInput = Date.now(); s.controller.injectScroll({ pointerX: p.x, pointerY: p.y, videoWidth: s.videoW, videoHeight: s.videoH, scrollX: 0, scrollY: e.deltaY > 0 ? -1 : 1, buttons: 0 }).catch(() => {}); }, { passive: false });
-  s.release = release;
-  window.addEventListener('blur', release); document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
+  // 键盘：点过画面后由隐藏输入框接管；ASCII 走按键事件，输入法组词的中文走剪贴板粘贴。
+  const held = new Set();
+  const sendKey = (act, code, meta) => { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); return s.controller.injectKeyCode({ action: act, keyCode: code, repeat: 0, metaState: meta }).catch(() => {}); };
+  const releaseKeys = () => { for (const code of held) sendKey(AndroidKeyEventAction.Up, code, 0); held.clear(); };
+  const captureKeyboard = () => { if (document.activeElement !== ime) ime.focus({ preventScroll: true }); };
+  ime.addEventListener('focus', () => { node.classList.add('capturing'); });
+  ime.addEventListener('blur', () => { node.classList.remove('capturing'); releaseKeys(); });
+  ime.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.ctrlKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); action(s, 'paste'); return; }
+    const code = KEYMAP[e.code]; if (code === undefined) return;
+    e.preventDefault(); if (e.repeat) { sendKey(AndroidKeyEventAction.Down, code, metaOf(e)); return; }
+    held.add(code); sendKey(AndroidKeyEventAction.Down, code, metaOf(e));
+  });
+  ime.addEventListener('keyup', e => { if (e.isComposing) return; const code = KEYMAP[e.code]; if (code === undefined) return; e.preventDefault(); held.delete(code); sendKey(AndroidKeyEventAction.Up, code, metaOf(e)); });
+  const flushText = async () => {
+    const text = ime.value; ime.value = ''; if (!text || !s.controller || !s.inputReady) return;
+    s.lastInput = Date.now(); send(s, { type: 'activity' });
+    try { if (/^[\x20-\x7e\n]*$/.test(text)) await s.controller.injectText(text); else await s.controller.setClipboard({ sequence: 0n, content: text, paste: true }); }
+    catch (e) { log(s, '文本输入失败：' + (e.message || e)); }
+  };
+  ime.addEventListener('compositionend', () => { setTimeout(flushText, 0); });
+  ime.addEventListener('input', e => { if (e.isComposing) return; if (e.inputType === 'insertText' || e.inputType === 'insertFromPaste' || e.inputType === 'insertCompositionText') { if (!e.isComposing) flushText(); } else ime.value = ''; });
+  s.release = () => { releaseTouch(); releaseKeys(); };
+  window.addEventListener('blur', s.release); document.addEventListener('visibilitychange', () => { if (document.hidden) s.release(); });
   return node;
 }
-
 async function key(s, code) { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: code, repeat: 0, metaState: 0 }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: code, repeat: 0, metaState: 0 }); }
 async function action(s, act) {
   try {
