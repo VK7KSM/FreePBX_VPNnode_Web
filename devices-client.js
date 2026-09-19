@@ -501,8 +501,10 @@ function gatewayFunctionAvailable(d,key){
 function gatewayAlarmHtml(d){
   var pending=d.task&&['play_alarm','stop_alarm'].includes(d.task.type)&&['pending','claimed','running'].includes(d.task.state);
   var playing=d.alarm?.state==='playing',disabled=d.enabled===false||d.managed_alarm_tasks!==true||pending;
-  // 网关客户端目前上报 managed_alarm_tasks=false（未实现警报），按钮灰显时说明原因，避免看起来“按了没反应”。
-  var why=d.enabled===false?'设备已停用':(d.managed_alarm_tasks!==true?'当前网关客户端未提供警报能力':(pending?'警报任务执行中':''));
+  // 灰显原因要区分：停用、离线或尚未上报能力、客户端确实不支持、任务执行中；不能一律说成缺功能。
+  var why=d.enabled===false?'设备已停用'
+    :(d.managed_alarm_tasks!==true?(d.online?'当前客户端未提供警报能力':'设备离线，能力以最近一次上报为准')
+    :(pending?'警报任务执行中':''));
   return ['PTT','电话','麦克风','拍照','录像'].map(function(label){return '<button type="button" disabled>'+label+'</button>';}).join('')+'<button type="button" class="'+(playing?'active':'')+'" aria-pressed="'+playing+'" title="'+esc(why||(playing?'停止警报':'播放警报'))+'" onclick="enqueueRepair(\''+(playing?'stop_alarm':'play_alarm')+'\')"'+(disabled?' disabled':'')+'>'+(playing?'停止警报':'警报')+'</button>';
 }
 function renderOps(){
