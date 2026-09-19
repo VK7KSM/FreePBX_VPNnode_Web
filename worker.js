@@ -1288,7 +1288,9 @@ const app = {
       });
     }
     if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
-    if (/^\/m\/[A-Za-z0-9]{12}$/.test(pathname)) {
+    // 路径段大小写都收：设备本机二维码用的是整条链接的大写形式（二维码字母数字模式不收小写），
+    // 扫出来就是 /M/<TOKEN>；只匹配小写会把扫码的人丢到普通管理后台登录页。
+    if (/^\/[mM]\/[A-Za-z0-9]{12}$/.test(pathname)) {
       // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
       const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
       // 已删除/到期的链接直接进结束页，不再渲染设备页；探测失败（如额度问题）时照常渲染，由页面登录时再判定。
