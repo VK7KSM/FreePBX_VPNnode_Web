@@ -247,6 +247,8 @@ public final class GatewayRemoteService extends Service {
         NetworkCapabilities net = cm.getNetworkCapabilities(cm.getActiveNetwork());
         String network=net == null ? "unknown" : net.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" : net.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cellular" : net.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet" : "unknown";
         body.put("network",network);JSONObject fix=location.best(network);if(fix!=null)body.put(fix.getString("bucket"),fix.getJSONObject("value"));
+        // 定位关着和还没定到，在面板上原先都表现成退回 IP 定位，分不出来。
+        JSONObject locationState=location.state();if(locationState!=null)body.put("location_state",locationState);
         body.put("battery",JSONObject.NULL).put("battery_present",JSONObject.NULL).put("charging",JSONObject.NULL);
         Intent battery = registerReceiver(null,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (battery != null) {

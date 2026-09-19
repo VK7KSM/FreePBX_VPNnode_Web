@@ -52,6 +52,34 @@ final class GatewayLocationSampler {
     }
     private void sampleAndReschedule(){start();worker.postDelayed(periodic,SAMPLE_INTERVAL_MS);}
     private boolean enabled(String provider){return manager.getAllProviders().contains(provider)&&manager.isProviderEnabled(provider);}
+
+    /**
+     * 定位可用性，随周期上报一起送，供面板区分「定位被关了」和「还没定到」。
+     * 以前这个原因只在面板主动下发定位任务时才回报，平时上报里没有，
+     * 面板看不出差别就一律退回 IP 定位显示两公里，每次都得连设备翻 dumpsys 才知道。
+     * 只报三个来源的开关与权限状态，不含坐标，也不改任何定位设置。
+     */
+    JSONObject state(){
+        try{
+            if(manager==null)return classify(false,false,false,false,false);
+            boolean permitted=context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    ==android.content.pm.PackageManager.PERMISSION_GRANTED;
+            return classify(true,permitted,enabled(LocationManager.GPS_PROVIDER),
+                    enabled(FUSED_PROVIDER),enabled(LocationManager.NETWORK_PROVIDER));
+        }catch(Exception unavailable){
+            try{return classify(false,false,false,false,false);}catch(Exception ignored){return null;}
+        }
+    }
+
+    /** 纯分类，便于单测。reason 的优先级：没有服务 &gt; 没有权限 &gt; 总开关关闭 &gt; 可用。 */
+    static JSONObject classify(boolean hasService,boolean permitted,boolean gps,boolean fused,boolean network){
+        String reason=!hasService?"provider_unavailable":!permitted?"permission_denied"
+                :(!gps&&!fused&&!network)?"location_disabled":"ok";
+        try{
+            return new JSONObject().put("enabled","ok".equals(reason)).put("reason",reason)
+                    .put("gps",gps).put("fused",fused).put("network",network);
+        }catch(Exception impossible){return null;}
+    }
     private void finish(){finish("timeout");}
     private void finish(String outcome){if(!sampling)return;sampling=false;worker.removeCallbacks(timeout);removeListener();
         if(requestCompletion!=null){long now=SystemClock.elapsedRealtimeNanos();boolean fresh=freshForRequest(gpsFix,now,requestSinceNanos)||freshForRequest(networkFix,now,requestSinceNanos);completeRequest(fresh?"sampled":outcome);}changed.run();}
