@@ -141,12 +141,21 @@ function buildNode(s) {
 // 纯 ASCII 走 injectText，这就是键盘打字用的那条通路，在 D31 上已经实测可用。
 // 含非 ASCII 时只能过剪贴板，但改成自己注入 Ctrl+V：TextView 从 API 11 起就在 onKeyShortcut 里
 // 处理它，支持面比 KEYCODE_PASTE 宽。setClipboard 因此传 paste:false，避免和自己注入的键重复触发。
+// 模拟真实键盘按组合键：先按下 Ctrl 这个键本身，再按字母，最后依次松开。
+// 只在字母事件的 metaState 里标上 Ctrl 是不够的——上一版就是那么发的，D31 上毫无反应。
+// 真实键盘会先产生一个 CTRL_LEFT 按下事件，窗口的快捷键分发依赖这个先后顺序。
+async function chord(s, keyCode) {
+  const CTRL_LEFT = 113;
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: CTRL_LEFT, repeat: 0, metaState: META_CTRL });
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode, repeat: 0, metaState: META_CTRL });
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode, repeat: 0, metaState: META_CTRL });
+  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: CTRL_LEFT, repeat: 0, metaState: 0 });
+}
+
 async function sendText(s, text) {
   if (ASCII_ONLY.test(text)) { await s.controller.injectText(text); return 'typed'; }
   await s.controller.setClipboard({ sequence: 0n, content: text, paste: false });
-  const KEYCODE_V = 50;
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: KEYCODE_V, repeat: 0, metaState: META_CTRL });
-  await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: KEYCODE_V, repeat: 0, metaState: META_CTRL });
+  await chord(s, 50);   // KEYCODE_V
   return 'clipboard';
 }
 
@@ -157,7 +166,20 @@ async function action(s, act) {
     else if (act === 'recent') await key(s, AndroidKeyCode.AndroidAppSwitch);
     else if (act === 'home') await key(s, AndroidKeyCode.AndroidHome);
     else if (act === 'back') await key(s, AndroidKeyCode.AndroidBack);
-    else if (act === 'copy') { const text = s.deviceClipboard; if (text === undefined) { log(s, '设备尚未复制过文本；请先在设备画面中选择文字并用安卓的复制'); return; } await navigator.clipboard.writeText(text); log(s, '已取回设备剪贴板 ' + text.length + ' 字'); }
+    else if (act === 'copy') {
+      // 「复制」应当是「把设备上选中的文字取过来」。原来它只是读设备上一次复制过的内容，
+      // 所以在设备上选中文字再点它没有任何反应，必须先用安卓自带的复制菜单，这不符合按钮的名字。
+      // 现在先在设备上触发一次 Ctrl+C，等设备把剪贴板推上来再读。
+      s.lastInput = Date.now(); send(s, { type: 'activity' });
+      const before = s.deviceClipboard;
+      try { await chord(s, 31); } catch {}   // KEYCODE_C
+      await new Promise(r => setTimeout(r, 400));
+      const text = s.deviceClipboard;
+      if (text === undefined) { log(s, '设备剪贴板为空；请先在设备画面中选中文字'); return; }
+      await navigator.clipboard.writeText(text);
+      log(s, text === before ? ('已取回设备剪贴板 ' + text.length + ' 字，内容未变；如果刚选中了文字却没复制到，请用设备上的复制菜单')
+        : ('已复制设备上选中的 ' + text.length + ' 字'));
+    }
     else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('已送到设备剪贴板并触发粘贴 ' + text.length + ' 字；若没粘上，可在设备输入框长按选粘贴')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
 }
