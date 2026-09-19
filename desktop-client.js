@@ -75,6 +75,8 @@ function buildNode(s) {
   // 清晰度按下一次连接生效：scrcpy 改不了运行中的分辨率，改了要重启服务端并重来一遍解码器。
   const applyExpand = () => {
     node.classList.toggle('desktop-expanded', expanded);
+    // 卡片的毛玻璃会成为 fixed 定位的包含块，撑满窗口前要先在 body 上解除它，否则只撑满那张卡片。
+    document.body.classList.toggle('desktop-expanded-host', expanded);
     if (expandBtn) { const t = expanded ? '退出占满窗口' : '占满窗口（清晰度下次连接时生效）'; expandBtn.title = t; expandBtn.setAttribute('aria-label', t); }
     try { localStorage.setItem('elf-desktop-expanded', expanded ? '1' : '0'); } catch {}
   };
@@ -239,6 +241,8 @@ async function stop(text) {
   try { send(s, { type: 'stop' }); } catch {}
   try { s.ws?.close(); } catch {} try { await s.controller?.close(); } catch {} try { s.decoder?.dispose(); } catch {} try { s.pc?.close(); } catch {}
   if (s.id) json('/api/elfremote/desktop/session', { session_id: s.id }, 'DELETE').catch(() => {});
+  // 桌面关掉之后 body 上的标记必须收回，否则页面会一直禁止滚动、卡片也一直没有毛玻璃。
+  document.body.classList.remove('desktop-expanded-host');
   render();
 }
 // 供设备页调用：按钮状态、把保留的桌面节点挂回终端区域。
