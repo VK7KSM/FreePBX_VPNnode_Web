@@ -1832,7 +1832,7 @@ function observedShellLines(d){
   if(!o||Date.now()-o.at>5000){OBSERVED_SHELL[d.id]=o={at:Date.now(),lines:o?o.lines:[],loading:true};
     fetch('/api/elfremote/tasks?device_id='+encodeURIComponent(d.id)).then(function(r){return r.json();}).then(function(x){
       if(!x.ok)return;var lines=[],tasks=(x.tasks||[]).filter(function(t){return ['root_exec','pull_logs','heal_network','reboot','restart_adbd'].includes(t.type);}).slice(0,30).reverse();
-      tasks.forEach(function(t){var r=t.result||{};lines.push({k:'in',t:t.type==='root_exec'?(t.params&&t.params.command||'(命令)'):(t.type_label||t.type)});if(r.text)lines.push({k:'out',t:r.text});lines.push({k:'sys',t:(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.exit_code!=null?' · 退出码 '+r.exit_code:'')+(t.completed_at?' · '+sydney(t.completed_at):'')});});
+      tasks.forEach(function(t){var r=t.result||{};lines.push({k:'in',t:t.type==='root_exec'?(t.params&&t.params.command||'(命令)'):(t.type_label||t.type)});var body=typeof r.text==='string'?r.text:'';if(body)lines.push({k:'out',t:body.length>8000?body.slice(0,8000)+'…（结果过长已截断）':body});lines.push({k:'sys',t:(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.exit_code!=null?' · 退出码 '+r.exit_code:'')+(t.completed_at?' · '+sydney(t.completed_at):'')});});
       var cur=OBSERVED_SHELL[d.id];if(cur){cur.lines=lines;cur.loading=false;}if(selDev===d.id)renderOps();
     }).catch(function(){var cur=OBSERVED_SHELL[d.id];if(cur)cur.loading=false;});
   }
@@ -1948,7 +1948,7 @@ async function watchMaintenanceTask(deviceId,taskId,label){
     try{var x=await readResultJson(owner,deviceId+'/'+taskId,'/api/elfremote/tasks?'+new URLSearchParams({device_id:deviceId,task_id:taskId}));
       if(x&&x.task&&['success','failed','rejected','expired'].includes(x.task.state)){
         var t=x.task,r=t.result||{},u=UI[deviceId];
-        if(label&&u){var text=(label)+' · '+(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.artifact?' · 日志 '+(r.artifact.bytes/1000).toFixed(1)+' KB，见下方「下载日志」':'');u.shell=u.shell||{};u.shell.lines=u.shell.lines||[];u.shell.lines.push({k:'sys',t:text});if(r.text)u.shell.lines.push({k:'out',t:r.text});}
+        if(label&&u){var text=(label)+' · '+(t.label||t.state)+(t.detail?' · '+t.detail:'')+(r.artifact?' · 日志 '+(r.artifact.bytes/1000).toFixed(1)+' KB，见下方「下载日志」':'');u.shell=u.shell||{};u.shell.lines=u.shell.lines||[];u.shell.lines.push({k:'sys',t:text});var out=typeof r.text==='string'?r.text:'';if(out)u.shell.lines.push({k:'out',t:out.length>8000?out.slice(0,8000)+'…（结果过长已截断，完整内容见下方「下载日志」）':out});}
         loadDevices();return;
       }
     }catch(e){if(e.stopPolling)return;}

@@ -676,8 +676,10 @@ ElfStore.prototype.panelGate=async function(request,url){
   if(!trustedOrigin(request))return authJson({ok:false,msg:'请求来源不匹配'},403);
   const raw=request.method==='GET'?undefined:await request.clone().text();
   return this.ctx.blockConcurrencyWhile(async()=>{
-    const ctx=await this.resolveContext(this.ctx.storage,request);
-    if(ctx instanceof Response)return ctx;
+    // 这些路由的管理员鉴权已在外层 Worker 完成，这里只区分身份并做范围裁决，
+    // 不再重复做一次管理员校验：DO 与外层的鉴权模式可能不同，重复校验会误判为未登录。
+    const share=await shareValidate(this.ctx.storage,shareCookieToken(request));
+    const ctx=share||{kind:'admin'};
     const denied=await this.applyVerdicts(this.ctx.storage,ctx,url,request.method,raw);
     return denied||ctx;
   });
@@ -1315,11 +1317,18 @@ export default {
     const path=new URL(request.url).pathname;
     const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
     const snapshotRead=path==='/api/devices'&&request.method==='GET';
-    if(path.startsWith('/api/')&&!independent&&!snapshotRead&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0))return quotaUnavailable();
+    // 冷却期内一律不再触碰 DO：设备列表改用 KV 快照只读应答，其余直接 503，避免额度耗尽后继续消耗。
+    if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0)){
+      if(snapshotRead&&env.SUB_STORE_KV){
+        try{const fallback=await devicesSnapshotResponse(env,request);if(fallback)return fallback;}
+        catch(error){console.error('devices_snapshot_failed',error?.message);}
+      }
+      return quotaUnavailable();
+    }
     let response;
     try{response=await app.fetch(request,env,ctx);}
     catch(error){if(!isQuotaError(error))throw error;markQuotaUnavailable(env);response=quotaUnavailable();}
-    if(snapshotRead&&response.status===503){
+    if(snapshotRead&&response.status===503&&env.SUB_STORE_KV){
       try{const fallback=await devicesSnapshotResponse(env,request);if(fallback)return fallback;}
       catch(error){console.error('devices_snapshot_failed',error?.message);}
     }
