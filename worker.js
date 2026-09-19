@@ -51,7 +51,7 @@ import {panelLifecycleSource} from './panel-lifecycle.js';
 import {cfUsageResponse,scheduleCfUsage} from './cf-usage.js';
 import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.js';
 // =========================================================================
-// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
+// elfRemote Manager - Cloudflare Workers 设备管理与电话管理面板 v2.5.0
 // 升级：通话组 + 网关账户 + 分级分机目录
 // =========================================================================
 
@@ -141,6 +141,12 @@ function parseStoreVal(val) {
   try { return JSON.parse(val); } catch (e) { return val; }
 }
 
+// 代理面板（订阅生成与节点池页面）只在 s.elfradio.net 那个 Worker 上注册。
+// 用注册而不是直接 import：worker.js 一旦 import 了 proxy-panel.js，那些字段就会被打进
+// 管理面板的产物里，运行时再怎么判断也去不掉。这里保持单向依赖，v 的包里彻底没有这段代码。
+let proxyPanel = null;
+export function registerProxyPanel(panel) { proxyPanel = panel; }
+
 function elfDoStub(env) {
   if (!env || !env.ELF_DO) return null;
   return env.ELF_DO.get(env.ELF_DO.idFromName("main"));
@@ -148,7 +154,7 @@ function elfDoStub(env) {
 
 // 只读路径不写存储：KV 里也没有的键只在内存里记一次，避免读取请求在额度耗尽时被写入拒绝。
 const legacyChecked = new Set();
-async function getStore(env, key) {
+export async function getStore(env, key) {
   if(panelEnabled(env)&&(panelGroup(key)||key.startsWith('geo_')))return panelRead(env,key);
   if (env.__storage) {
     const value = await env.__storage.get(key);
@@ -193,7 +199,7 @@ async function getStore(env, key) {
   return storeDefaults(key);
 }
 
-async function setStore(env, key, value) {
+export async function setStore(env, key, value) {
   if(panelEnabled(env)){
     if(panelGroup(key))return panelWrite(env,{[key]:value});
     if(key.startsWith('geo_'))return env.SUB_STORE_KV.put('panel/cache/'+key,JSON.stringify(value),{expirationTtl:7*86400});
@@ -961,37 +967,16 @@ const app = {
       return logoResponse();
     }
 
-    // 订阅下发 (支持 UA 自动适配与参数指定)
-    if (pathname.startsWith("/sub")) {
-      return handleSubscription(request, url, env);
+    // 订阅下发：只有代理面板 Worker（s.elfradio.net）注册了这个模块，
+    // 管理面板这边 proxyPanel 永远是 null，连同整页代码都不会被打包进来。
+    if (proxyPanel && pathname.startsWith("/sub")) {
+      return proxyPanel.handleSubscription(request, url, env);
     }
 
     // API 路由
-    if (pathname === "/api/data" && method === "GET") {
-      const nodes = (await getStore(env, "nodes")) || [];
-      const sub_token = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
-      const cf_ip = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
-      const admin_user = (await getStore(env, "admin_user")) || DEFAULT_USER;
-      return json({ ok: true, nodes, sub_token, cf_ip, admin_user });
-    }
-
-    if (pathname === "/api/save" && method === "POST") {
-      try {
-        const data = await request.json();
-        let passwordResult;
-        if (data.new_password) {
-          passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
-          if (!passwordResult.ok) return passwordResult;
-        }
-        const patch={};if(Array.isArray(data.nodes))patch.nodes=data.nodes;
-        if(data.sub_token)patch.sub_token=data.sub_token;
-        if(data.cf_ip!==undefined)patch.cf_preferred_ip=data.cf_ip;
-        if(Object.keys(patch).length){if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);}
-        return passwordResult || json({ ok: true });
-      } catch(e) {
-        return json({ ok: false, msg: e.message }, 400);
-      }
-    }
+    // 节点池的读写只属于代理面板，跟着页面一起搬去 proxy-panel.js。
+    if (proxyPanel && pathname === "/api/data" && method === "GET") return proxyPanel.readSettings(env);
+    if (proxyPanel && pathname === "/api/save" && method === "POST") return proxyPanel.saveSettings(env, request);
 
     if (pathname === "/api/devices/sip-directory" && method === "GET") {
       return json({ok:true,accounts:sipDirectory(await loadSipBundle(env))});
@@ -1297,25 +1282,25 @@ const app = {
       // 已删除/到期的链接直接进结束页，不再渲染设备页；探测失败（如额度问题）时照常渲染，由页面登录时再判定。
       try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
       let html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
-      html=html.replace(/<a href="\/" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
+      html=html.replace(/<a href="[^"]*" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
         .replace(/<div style="display:flex;align-items:center;gap:12px">[^]*?<button class="btn-gray" style="color:#f87171" onclick="logout\(\)">退出<\/button><\/div>/,'<div style="display:flex;align-items:center;gap:12px"><button class="btn-green" onclick="ElfShare.open()">设置</button><button class="btn-gray" style="color:#f87171" onclick="logout()">退出</button></div>')
-        .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRadio SIP\/VPN Manage<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>')
-        .replace('<title>elfRadio SIP/VPN Manage</title>','<title>elfRemote Manager</title>');
+        .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRemote Manager<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>');
       return new Response(html,{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"strict-origin-when-cross-origin"}});
     }
 
     if (pathname.startsWith("/api/")) return json({ ok: false, msg: "接口不存在" }, 404);
-    // 前端 HTML
-    return new Response(renderHtml(), {
+    // 首页：代理面板 Worker 渲染自己的节点页；管理面板没有首页，直接进设备管理。
+    if (proxyPanel) return new Response(proxyPanel.renderHtml(), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
+    return Response.redirect(new URL("/devices", url).toString(), 302);
   }
 };
 // 从被封禁的旧 Worker 转移过来的 ElfStore 命名空间，只用于数据找回，代码与 ElfStore 相同。
 export class ElfStoreLegacy extends ElfStore {}
 
 // 代理面板单独部署在 s.elfradio.net，与管理面板共用同一份代码，靠 PANEL_ROLE 区分角色。
-// 订阅接口必须对全网开放，是天然的公开面；设备管理与 SIP 管理是纯后台，不该跟着一起暴露。
+// 订阅接口必须对全网开放，是天然的公开面；设备管理与电话管理是纯后台，不该跟着一起暴露。
 // 2026-09-17 与 09-19 两次封禁都是公开地址被刷所致，把两者放在同一个 Worker 里，
 // 一次举报就会连带打掉后台。proxy 角色只放行代理面板自己用到的路径，其余一律 404。
 // 用冻结数组而不是 Set：Object.freeze 对 Set 无效，它冻不住 Set 的内容，
@@ -2982,118 +2967,10 @@ async function handleElfApk(env, pathname) {
   });
 }
 
-function json(data, status = 200, headers = {}) {
+export function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8", ...headers }
-  });
-}
-
-function b64EncodeUnicode(str) {
-  return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
-    return String.fromCharCode('0x' + p1);
-  }));
-}
-
-async function handleSubscription(request, url, env) {
-  const token = url.searchParams.get("token") || url.pathname.split("/").pop();
-  const configuredToken = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
-  if (token !== configuredToken) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const nodes = (await getStore(env, "nodes")) || [];
-  const globalCfIp = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
-
-  // 格式识别：支持 ?type=v2ray 或 ?type=clash，或通过 User-Agent 智能自适应
-  const reqType = (url.searchParams.get("type") || url.searchParams.get("format") || "").toLowerCase();
-  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
-
-  let isV2ray = false;
-  if (reqType === "v2ray" || reqType === "base64") {
-    isV2ray = true;
-  } else if (reqType === "clash" || reqType === "mihomo") {
-    isV2ray = false;
-  } else if (ua.includes("v2rayng") || ua.includes("v2rayn") || ua.includes("nekobox") || ua.includes("shadowrocket")) {
-    isV2ray = true;
-  }
-
-  // 1. v2rayNG / 通用 Base64 格式
-  if (isV2ray) {
-    let links = [];
-    for (const node of nodes) {
-      const srv = node.custom_ip || globalCfIp || node.server;
-      const sni = node.sni || node.server;
-      const path = node.path || "/";
-      const port = node.port || 443;
-      const link = "vless://" + node.uuid + "@" + srv + ":" + port +
-        "?encryption=none&security=tls&type=ws" +
-        "&host=" + encodeURIComponent(sni) +
-        "&sni=" + encodeURIComponent(sni) +
-        "&path=" + encodeURIComponent(path) +
-        "#" + encodeURIComponent(node.name);
-      links.push(link);
-    }
-    const rawText = links.join("\n");
-    const base64Content = b64EncodeUnicode(rawText);
-    return new Response(base64Content, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache",
-        "Profile-Update-Interval": "1"
-      }
-    });
-  }
-
-  // 2. Clash / Mihomo YAML 格式 (默认给 D31 座机)
-  let proxiesYaml = "";
-  let proxyNames = "";
-
-  for (const node of nodes) {
-    const srv = node.custom_ip || globalCfIp || node.server;
-    proxyNames += "      - \"" + node.name + "\"\n";
-    proxiesYaml +=
-      "  - name: \"" + node.name + "\"\n" +
-      "    type: " + (node.type || "vless") + "\n" +
-      "    server: " + srv + "\n" +
-      "    port: " + (node.port || 443) + "\n" +
-      "    uuid: " + node.uuid + "\n" +
-      "    network: ws\n" +
-      "    tls: true\n" +
-      "    udp: true\n" +
-      "    servername: \"" + (node.sni || node.server) + "\"\n" +
-      "    ws-opts:\n" +
-      "      path: \"" + (node.path || "/") + "\"\n" +
-      "      headers:\n" +
-      "        Host: \"" + (node.sni || node.server) + "\"\n\n";
-  }
-
-  const yaml =
-    "# D31 FreePBX 代理订阅 - " + new Date().toISOString() + "\n" +
-    "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: warning\nipv6: false\n\n" +
-    "tun:\n  enable: true\n  stack: gvisor\n  dns-hijack:\n    - \"any:53\"\n  auto-route: true\n  auto-detect-interface: true\n\n" +
-    "proxies:\n" + (proxiesYaml || "  []\n") +
-    "proxy-groups:\n" +
-    "  - name: \"PROXY-MODE\"\n    type: select\n    proxies:\n      - \"AUTO-FASTEST\"\n      - \"DIRECT\"\n" + proxyNames +
-    "  - name: \"AUTO-FASTEST\"\n    type: url-test\n    proxies:\n      - \"DIRECT\"\n" + proxyNames +
-    "    url: 'http://cp.cloudflare.com/generate_204'\n    interval: 60\n    tolerance: 15\n\n" +
-    "rules:\n" +
-    "  - DOMAIN-SUFFIX,telegram.org,PROXY-MODE\n" +
-    "  - DOMAIN-SUFFIX,t.me,PROXY-MODE\n" +
-    "  - IP-CIDR,91.108.4.0/22,PROXY-MODE\n" +
-    "  - IP-CIDR,149.154.160.0/20,PROXY-MODE\n" +
-    "  - GEOIP,lan,DIRECT\n" +
-    "  - IP-CIDR,192.168.0.0/16,DIRECT\n" +
-    "  - IP-CIDR,10.0.0.0/8,DIRECT\n" +
-    "  - MATCH,PROXY-MODE\n";
-
-  return new Response(yaml, {
-    headers: {
-      "Content-Type": "text/yaml; charset=utf-8",
-      "Content-Disposition": "attachment; filename=\"d31_sub.yaml\"",
-      "Cache-Control": "no-cache",
-      "Profile-Update-Interval": "1"
-    }
   });
 }
 
@@ -3114,302 +2991,10 @@ function logoResponse() {
 function brandHtml() {
   return [
     '<a href="/" style="display:flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit">',
-    '<img src="/logo.png" alt="elfRadio" width="36" height="36" style="width:36px;height:36px;border-radius:.55rem;object-fit:cover;flex-shrink:0">',
-    '<span style="font-weight:700;font-size:1.05rem;white-space:nowrap">elfRadio SIP/VPN Manage</span>',
+    '<img src="/logo.png" alt="elfRemote" width="36" height="36" style="width:36px;height:36px;border-radius:.55rem;object-fit:cover;flex-shrink:0">',
+    '<span style="font-weight:700;font-size:1.05rem;white-space:nowrap">elfRemote Manager</span>',
     '</a>'
   ].join("");
-}
-
-function renderHtml() {
-  return [
-    '<!DOCTYPE html>',
-    '<html lang="zh-CN">',
-    '<head>',
-    '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
-    '<meta charset="UTF-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
-    '<link rel="icon" type="image/png" href="/logo.png">',
-    '<script src="https://cdn.tailwindcss.com"><\/script>',
-    '<style>',
-    cfUsageStyle,
-    'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
-    '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
-    '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
-    '.inp:focus{border-color:#3b82f6}',
-    '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
-    '.btn-blue:hover{background:#1d4ed8}',
-    '.btn-purple{padding:.55rem 1.1rem;background:#7c3aed;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
-    '.btn-purple:hover{background:#6d28d9}',
-    '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
-    '.btn-green:hover{background:#047857}',
-    '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
-    '.btn-gray:hover{background:#475569}',
-    '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
-    'table{width:100%;border-collapse:collapse}',
-    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6);white-space:nowrap}',
-    'td{padding:.7rem 1rem;font-size:.85rem;border-top:1px solid #1e293b}',
-    'tr:hover td{background:rgba(30,41,59,.5)}',
-    '<\/style>',
-    '<\/head>',
-    '<body>',
-
-    // 登录模态框
-    '<div id="loginWrap" class="modal-bg">',
-    '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
-    '<div style="text-align:center;margin-bottom:1.5rem">',
-    '<img src="/logo.png" alt="elfRadio" width="64" height="64" style="width:64px;height:64px;border-radius:.8rem;object-fit:cover;margin-bottom:.6rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage</h2>',
-    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">默认账号 admin / admin888</p>',
-    '<\/div>',
-    '<div style="margin-bottom:1rem">',
-    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">账号<\/label>',
-    '<input id="lu" type="text" value="admin" class="inp">',
-    '<\/div>',
-    '<div style="margin-bottom:1.2rem">',
-    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">密码<\/label>',
-    '<input id="lp" type="password" value="admin888" class="inp">',
-    '<\/div>',
-    '<button class="btn-blue" style="width:100%;padding:.7rem" onclick="doLogin()">登 录<\/button>',
-    '<p id="lerr" style="color:#f87171;font-size:.8rem;margin-top:.6rem;text-align:center;display:none"><\/p>',
-    '<\/div>',
-    '<\/div>',
-
-    // 主导航
-    '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
-    '<div style="max-width:1100px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
-    '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">',
-    brandHtml(),
-    '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
-    // 代理面板独立部署在 s.elfradio.net，这两个后台不在那个域名上（那边只放行代理面板与订阅），
-    // 所以用绝对地址指回 v.elfradio.net。同一份 HTML 在 v 上也是这两个链接，同源跳转照常。
-    '<a href="https://v.elfradio.net/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
-    '<a href="https://v.elfradio.net/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">设备管理<\/a>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem">',
-    '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',
-    cfUsageMarkup,
-    '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/header>',
-
-    // 订阅卡片 (分别独立显示两个格式的输入框和专属复制按钮)
-    '<main style="max-width:1100px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;flex-direction:column;gap:1.2rem">',
-    '<div>',
-    '<h3 style="font-weight:700;font-size:1.1rem;margin-bottom:.3rem">&#128225; 订阅中心 (分格式专属链接)<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">根据不同设备与客户端类型，直接复制对应的专用订阅链接<\/p>',
-    '<\/div>',
-
-    // 1. Mihomo / Clash 专属卡片
-    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(59,130,246,.25)">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
-    '<div style="display:flex;align-items:center;gap:.5rem">',
-    '<span style="font-size:.9rem;font-weight:600;color:#60a5fa">&#128752; Mihomo / Clash 订阅源<\/span>',
-    '<span style="font-size:.75rem;color:#94a3b8">（专供 D31 智能座机 / TUN 全局透明代理）<\/span>',
-    '<\/div>',
-    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(59,130,246,.15);color:#93c5fd;font-weight:600">YAML 格式<\/span>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem;align-items:center">',
-    '<input id="clashUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#93c5fd">',
-    '<button class="btn-blue" onclick="copyMihomo()">复制 Mihomo 订阅<\/button>',
-    '<\/div>',
-    '<\/div>',
-
-    // 2. v2rayNG 专属卡片
-    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(124,58,237,.25)">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
-    '<div style="display:flex;align-items:center;gap:.5rem">',
-    '<span style="font-size:.9rem;font-weight:600;color:#c084fc">&#128640; v2rayNG / 通用 订阅源<\/span>',
-    '<span style="font-size:.75rem;color:#94a3b8">（专供 手机 Android / 电脑 v2rayN 客户端）<\/span>',
-    '<\/div>',
-    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(124,58,237,.15);color:#d8b4fe;font-weight:600">Base64 VLESS<\/span>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem;align-items:center">',
-    '<input id="v2rayUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#d8b4fe">',
-    '<button class="btn-purple" onclick="copyV2ray()">复制 v2rayNG 订阅<\/button>',
-    '<\/div>',
-    '<\/div>',
-
-    '<\/div>',
-    '<\/div>',
-
-    // 节点管理卡片
-    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem;padding-bottom:1rem;border-bottom:1px solid #1e293b">',
-    '<div>',
-    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128257; 代理服务器节点池<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">管理甲骨文 VPS 节点及 3 个月轮换的 GCP 节点<\/p>',
-    '<\/div>',
-    '<button class="btn-green" onclick="openAdd()">+ 添加新节点<\/button>',
-    '<\/div>',
-    '<div style="overflow-x:auto">',
-    '<table>',
-    '<thead><tr>',
-    '<th>节点名称<\/th><th>协议/端口<\/th><th>服务器域名 (SNI)<\/th><th>WS 路径<\/th><th>优选 IP<\/th><th style="text-align:right">操作<\/th>',
-    '<\/tr><\/thead>',
-    '<tbody id="ntb"><tr><td colspan="6" style="text-align:center;color:#475569;padding:2rem">暂无节点，点击右上角添加<\/td><\/tr><\/tbody>',
-    '<\/table>',
-    '<\/div>',
-    '<\/div>',
-    '<\/main>',
-
-    // 节点编辑模态框
-    '<div id="nodeWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">',
-    '<h3 id="nodeTitle" style="font-weight:700;margin-bottom:1rem">添加节点<\/h3>',
-    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">节点名称<\/label><input id="nName" type="text" placeholder="如: Oracle-Osaka-Tunnel" class="inp"><\/div>',
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">服务器域名<\/label><input id="nServer" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">端口<\/label><input id="nPort" type="number" value="443" class="inp"><\/div>',
-    '<\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">UUID<\/label><input id="nUuid" type="text" placeholder="11111111-2222-3333-4444-555555555555" class="inp" style="font-family:monospace"><\/div>',
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">WebSocket 路径<\/label><input id="nPath" type="text" value="/stream-proxy" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">SNI 域名<\/label><input id="nSni" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
-    '<\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">独立 CF 优选 IP（留空则继承全局）<\/label><input id="nIp" type="text" placeholder="172.64.32.1" class="inp"><\/div>',
-    '<\/div>',
-    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
-    '<button class="btn-gray" onclick="closeNode()">取消<\/button>',
-    '<button class="btn-green" onclick="saveNode()">保存节点<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/div>',
-
-    // 设置模态框
-    '<div id="setWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:420px">',
-    '<h3 style="font-weight:700;margin-bottom:1rem">全局设置<\/h3>',
-    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">全局 CF 优选 IP<\/label><input id="sCfIp" type="text" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">订阅 Token<\/label><input id="sToken" type="text" class="inp" style="font-family:monospace"><\/div>',
-    '<div style="border-top:1px solid #1e293b;padding-top:.8rem"><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">修改密码（留空不修改）<\/label><input id="sPass" type="password" placeholder="输入新密码" class="inp"><\/div>',
-    '<\/div>',
-    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
-    '<button class="btn-gray" onclick="closeSettings()">取消<\/button>',
-    '<button class="btn-blue" onclick="saveSettings()">保存<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/div>',
-
-    // 核心 JavaScript - 全部用普通函数和 DOM API，零模板字符串
-    '<script src="/admin-session.js"><\/script>',
-    '<script>',
-    'var D = {nodes:[], sub_token:"d31", cf_ip:"", admin_user:""};',
-    'var editIdx = -1;',
-
-    'function $(id){return document.getElementById(id)}',
-    'function show(id){$(id).style.display="flex"}',
-    'function hide(id){$(id).style.display="none"}',
-
-    'function checkAuth(){',
-    '  adminSession.check(loadData);',
-    '}',
-
-    'function doLogin(){',
-    '  var u = $("lu").value, p = $("lp").value;',
-    '  $("lerr").style.display="none";',
-    '  fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})})',
-    '  .then(function(r){return r.json();})',
-    '  .then(function(d){',
-    '    if(d.ok){ adminSession.accept(); hide("loginWrap"); loadData(); }',
-    '    else{ $("lerr").innerText = d.msg||"登录失败"; $("lerr").style.display="block"; }',
-    '  })',
-    '  .catch(function(e){ $("lerr").innerText="网络错误:"+e.message; $("lerr").style.display="block"; });',
-    '}',
-
-    'function logout(){ return adminSession.logout(); }',
-
-    'function loadData(){',
-    '  fetch("/api/data").then(function(r){return r.json();}).then(function(d){',
-    '    D = d;',
-    '    $("clashUrl").value = location.origin+"/sub/"+d.sub_token;',
-    '    $("v2rayUrl").value = location.origin+"/sub/"+d.sub_token+"?type=v2ray";',
-    '    renderNodes();',
-    '  });',
-    '}',
-
-    'function renderNodes(){',
-    '  var tb = $("ntb");',
-    '  if(!D.nodes || D.nodes.length===0){',
-    '    tb.innerHTML = "<tr><td colspan=\\"6\\" style=\\"text-align:center;color:#475569;padding:2rem\\">暂无节点，点击右上角添加<\\/td><\\/tr>";',
-    '    return;',
-    '  }',
-    '  var html = "";',
-    '  for(var i=0;i<D.nodes.length;i++){',
-    '    var n = D.nodes[i];',
-    '    var ip = n.custom_ip || D.cf_ip || "全局默认";',
-    '    html += "<tr>";',
-    '    html += "<td><span style=\\"color:#34d399\\">&#9679;<\\/span> "+n.name+"<\\/td>";',
-    '    html += "<td><span style=\\"background:rgba(59,130,246,.2);color:#60a5fa;padding:.1rem .4rem;border-radius:.3rem;font-family:monospace\\">VLESS<\\/span>:"+n.port+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+(n.sni||n.server)+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;color:#94a3b8;font-size:.8rem\\">"+n.path+"<\\/td>";',
-    '    html += "<td style=\\"color:#fbbf24;font-size:.8rem\\">"+ip+"<\\/td>";',
-    '    html += "<td style=\\"text-align:right;white-space:nowrap\\">";',
-    '    html += "<button class=\\"btn-purple\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"copySingleLink("+i+")\\">复制单链<\\/button>";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"editNode("+i+")\\">编辑<\\/button>";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;color:#f87171\\" onclick=\\"delNode("+i+")\\">删除<\\/button>";',
-    '    html += "<\\/td>";',
-    '    html += "<\\/tr>";',
-    '  }',
-    '  tb.innerHTML = html;',
-    '}',
-
-    'function openAdd(){ editIdx=-1; $("nodeTitle").innerText="添加新节点"; $("nName").value=""; $("nServer").value=""; $("nPort").value=443; $("nUuid").value=""; $("nPath").value="/stream-proxy"; $("nSni").value=""; $("nIp").value=""; show("nodeWrap"); }',
-
-    'function editNode(i){ editIdx=i; var n=D.nodes[i]; $("nodeTitle").innerText="编辑节点"; $("nName").value=n.name||""; $("nServer").value=n.server||""; $("nPort").value=n.port||443; $("nUuid").value=n.uuid||""; $("nPath").value=n.path||"/stream-proxy"; $("nSni").value=n.sni||""; $("nIp").value=n.custom_ip||""; show("nodeWrap"); }',
-
-    'function closeNode(){ hide("nodeWrap"); }',
-
-    'function saveNode(){',
-    '  var n = { name:$("nName").value||"Node-"+(D.nodes.length+1), server:$("nServer").value.trim(), port:parseInt($("nPort").value)||443, uuid:$("nUuid").value.trim(), path:$("nPath").value.trim()||"/stream-proxy", sni:$("nSni").value.trim(), custom_ip:$("nIp").value.trim(), type:"vless", tls:true };',
-    '  if(!n.server||!n.uuid){ alert("服务器域名和 UUID 不能为空"); return; }',
-    '  if(editIdx>=0){ D.nodes[editIdx]=n; } else { D.nodes.push(n); }',
-    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})});',
-    '  closeNode(); renderNodes();',
-    '}',
-
-    'function delNode(i){ if(confirm("确认删除该节点？")){ D.nodes.splice(i,1); fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})}); renderNodes(); } }',
-
-    'function openSettings(){ $("sCfIp").value=D.cf_ip||"104.16.80.80"; $("sToken").value=D.sub_token||"d31"; $("sPass").value=""; show("setWrap"); }',
-    'function closeSettings(){ hide("setWrap"); }',
-
-    'function saveSettings(){',
-    '  var payload = { cf_ip:$("sCfIp").value, sub_token:$("sToken").value||"d31" };',
-    '  if($("sPass").value) payload.new_password = $("sPass").value;',
-    '  D.cf_ip = payload.cf_ip; D.sub_token = payload.sub_token;',
-    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){ if(!d.ok) throw new Error(d.msg||"保存失败"); if(d.credentials_changed) adminSession.expire(); alert("设置已保存"); }).catch(function(e){ alert(e.message); });',
-    '  $("clashUrl").value = location.origin+"/sub/"+D.sub_token;',
-    '  $("v2rayUrl").value = location.origin+"/sub/"+D.sub_token+"?type=v2ray";',
-    '  closeSettings();',
-    '  renderNodes();',
-    '}',
-
-    'function copyMihomo(){ var u=$("clashUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
-    'function copyV2ray(){ var u=$("v2rayUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("v2rayNG / 通用 订阅链接已复制:\\n"+u); }); }',
-
-    'function copySingleLink(i){',
-    '  var n=D.nodes[i];',
-    '  var srv = n.custom_ip || D.cf_ip || n.server;',
-    '  var sni = n.sni || n.server;',
-    '  var path = n.path || "/";',
-    '  var link = "vless://" + n.uuid + "@" + srv + ":" + (n.port||443) + "?encryption=none&security=tls&type=ws&host=" + encodeURIComponent(sni) + "&sni=" + encodeURIComponent(sni) + "&path=" + encodeURIComponent(path) + "#" + encodeURIComponent(n.name);',
-    '  navigator.clipboard.writeText(link).then(function(){ alert("VLESS 节点单链已复制，可在 v2rayNG 中点击「+」->「从剪贴板导入」:\\n" + link); });',
-    '}',
-
-    // 监听回车键登录
-    'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none"){ doLogin(); } });',
-
-    'checkAuth();',
-    '<\/script>',
-    '<\/body>',
-    '<\/html>'
-  ].join('\n');
 }
 
 function renderSipHtml() {
@@ -3420,7 +3005,7 @@ function renderSipHtml() {
     '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
+    '<title>elfRemote Manager</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
@@ -3468,9 +3053,9 @@ function renderSipHtml() {
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
     '<div style="text-align:center;margin-bottom:1rem">',
-    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
-    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">SIP 管理登录<\/p>',
+    '<img src="/logo.png" alt="elfRemote" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRemote Manager<\/h2>',
+    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">电话管理登录<\/p>',
     '<\/div>',
     '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
     '<input id="lp" type="password" value="admin888" class="inp" style="margin-bottom:1rem">',
@@ -3482,8 +3067,8 @@ function renderSipHtml() {
     '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
     '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
     brandHtml(),
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="https://s.elfradio.net/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">电话管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:1rem">',
@@ -3496,7 +3081,7 @@ function renderSipHtml() {
     '<main style="max-width:1280px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
-    '<div><h3 style="font-weight:700">大阪 SIP 机运行状态<\/h3>',
+    '<div><h3 style="font-weight:700">服务器运行状态<\/h3>',
     '<p id="staleHint" style="font-size:.8rem;color:#64748b;margin-top:.3rem">等待心跳...<\/p><\/div>',
     '<button class="btn-gray" onclick="loadSip()">刷新<\/button>',
     '<\/div>',
@@ -3557,7 +3142,7 @@ function renderSipHtml() {
     '<div><label style="font-size:.8rem;color:#cbd5e1">振铃超时（秒）<\/label><input id="eRing" type="number" class="inp" value="60"><\/div>',
     '<div id="eBanBox" style="display:none"><select id="eBanAction" class="inp" aria-label="IP封禁状态" onchange="changeSipBan()"><option value="unban">正常<\/option><option value="ban">封禁<\/option><option value="unknown" hidden>状态未知<\/option><\/select><div id="eBanInfo" style="font-size:.75rem;color:#94a3b8;overflow-wrap:anywhere;margin-top:.35rem"><\/div><div id="eBanResult" style="font-size:.75rem;color:#94a3b8;margin-top:.35rem" role="status"><\/div><\/div>',
     '<\/div>',
-    '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到大阪 SIP 机，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
+    '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到服务器，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
     '<button class="btn-gray" onclick="hide(\'extWrap\')">取消<\/button>',
     '<button class="btn-green" onclick="saveExt()">保存并同步<\/button>',
@@ -3637,7 +3222,7 @@ function renderDevicesHtml() {
     '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
+    '<title>elfRemote Manager</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">',
     '<link rel="stylesheet" href="/terminal.css">',
@@ -3755,8 +3340,8 @@ function renderDevicesHtml() {
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
     '<div style="text-align:center;margin-bottom:1rem">',
-    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
+    '<img src="/logo.png" alt="elfRemote" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRemote Manager<\/h2>',
     '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">设备管理登录<\/p>',
     '<\/div>',
     '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
@@ -3768,8 +3353,8 @@ function renderDevicesHtml() {
     '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
     '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
     brandHtml(),
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="https://s.elfradio.net/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">电话管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:12px">'+cfUsageMarkup+'<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',

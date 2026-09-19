@@ -3,7 +3,9 @@
   // 角色由 PANEL_ROLE 决定，proxy 角色只放行代理面板与订阅接口，其余路径一律 404。
   // 这样订阅这个天然公开的面被单独关在一个 Worker 里，被举报也打不到设备管理与 SIP 管理。
   "name": "s-elfradio-net",
-  "main": "worker.js",
+  // 入口是 worker-proxy.js 而不是 worker.js：它比管理面板多 import 一个 proxy-panel.js，
+  // 订阅生成与节点池页面全在那里。管理面板的产物里因此一个代理协议字段都没有。
+  "main": "worker-proxy.js",
   "compatibility_date": "2024-09-23",
   // 与管理面板同理，绝不能打开：两次封禁都是这个公开地址被刷导致的。
   "workers_dev": false,

@@ -1,3 +1,4 @@
+var SIP_HOST_ADDR = "217.142.229.125";
 var E = [];
 var G = [];
 var W = [];
@@ -248,7 +249,7 @@ function renderStatus(){
   for(var i=0;i<E.length;i++) if(isOnline(E[i].ext, live)) online++;
   var callsNow=s.active_calls!=null?s.active_calls:0;
   var html="<div style=\"display:flex;flex-wrap:wrap;gap:.7rem;width:100%;margin-bottom:.9rem\">";
-  html += kpi("主机", s.hostname||"-");
+  html += kpi("主机", SIP_HOST_ADDR);
   html += kpi("Asterisk", s.asterisk||"-", s.asterisk==="active"?"ok":"bad");
   html += kpi("运行时长", s.uptime||"-");
   html += kpi("在线分机", online+" / "+(E.length||0), online?"ok":"");
@@ -266,9 +267,9 @@ function renderSync(){
   var el=$("syncHint"); if(!el) return;
   el.style.display="block";
   if(SYNC && SYNC.error){ el.innerHTML="<span class=\"bad\">保存到交换机失败：</span>"+SYNC.error; return; }
-  if(SYNC && SYNC.pending && window._sipSaved){ el.innerHTML="<span class=\"warn\">正在保存到 SIP 服务器…</span>"; return; }
+  if(SYNC && SYNC.pending && window._sipSaved){ el.innerHTML="<span class=\"warn\">正在保存到服务器…</span>"; return; }
   window._sipSaved=false;
-  el.innerHTML="<span class=\"ok\">已同步到 SIP 服务器</span>";
+  el.innerHTML="<span class=\"ok\">同步到服务器</span>";
 }
 function talkingSet(){
   var a = (ST && ST.talking_exts) || [];
