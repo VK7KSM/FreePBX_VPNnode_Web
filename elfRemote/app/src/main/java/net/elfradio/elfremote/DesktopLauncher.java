@@ -26,6 +26,12 @@ final class DesktopLauncher {
         int maxSize = Math.max(0, Math.min(1920, request.optInt("max_size", 0)));
         stopLocked();
         File log = new File(root, "desktop.log");
+        // 每次拉起前重申 uid 2000 需要的读取权限，并把可读性写进日志，避免偶发的类路径为空。
+        try {
+            new ProcessBuilder("/system/bin/sh", "-c", "chmod 2771 /data/local/elfremote; chmod 0711 " + CoreInstaller.DIR + "; chmod 0644 " + ScrcpyAsset.TARGET
+                    + "; echo \"PRECHECK $(date +%s) $(ls -l " + ScrcpyAsset.TARGET + " 2>&1) readable_by_2000=$(su 2000 -c 'test -r " + ScrcpyAsset.TARGET + " && echo yes || echo no' 2>&1)\" >> " + RescueFiles.quote(log.getPath()))
+                    .start().waitFor();
+        } catch (Exception ignored) { }
         if (log.length() > 262144) log.delete();
         String server = "CLASSPATH=" + ScrcpyAsset.TARGET + " app_process / com.genymobile.scrcpy.Server " + ScrcpyAsset.VERSION
                 + " scid=" + scid + " tunnel_forward=true audio=false control=true cleanup=true power_on=true"

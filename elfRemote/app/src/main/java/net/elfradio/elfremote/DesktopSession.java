@@ -103,7 +103,17 @@ final class DesktopSession {
         if (started == null || !started.optBoolean("ok")) throw new Exception("核心未能启动屏幕服务");
         sendStatus("starting");
         String name = "scrcpy_" + scid;
-        videoSocket = connectLocal(name, 8000); controlSocket = connectLocal(name, 3000);
+        try { videoSocket = connectLocal(name, 8000); }
+        catch (Exception first) {
+            // 服务端偶发起不来（类路径为空/被抢先结束）：换 scid 再拉一次，仍失败才报错。
+            RuntimeLog.error("desktop_server_retry", first);
+            random = new byte[4]; new SecureRandom().nextBytes(random);
+            scid = String.format("%02x%02x%02x%02x", random[0] & 0x7f, random[1], random[2], random[3]);
+            JSONObject again = CoreClient.request("/desktop/start", new JSONObject().put("scid", scid).put("max_fps", cellular ? 15 : 30).put("bit_rate", cellular ? 500000 : 1500000).put("max_size", cellular ? 960 : 1280), 8000);
+            if (again == null || !again.optBoolean("ok")) throw new Exception("核心未能启动屏幕服务");
+            name = "scrcpy_" + scid; videoSocket = connectLocal(name, 8000);
+        }
+        controlSocket = connectLocal(name, 3000);
         acquireScreen();
         openPeer();
     }
