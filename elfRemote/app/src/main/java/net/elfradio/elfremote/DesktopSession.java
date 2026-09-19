@@ -50,9 +50,20 @@ final class DesktopSession {
 
     DesktopSession(Context c) { context = c.getApplicationContext(); }
 
-    synchronized void receive(JSONObject offer) {
-        if (destroyed || offer == null || System.currentTimeMillis() > offer.optLong("expires_at") || offer.optString("session_id").equals(id)) return;
-        if (!closed) return;
+    /**
+     * 上报线程调这里，所以它绝不能去拿会话锁。
+     * 网关 2026-09-19 的事故就是这么从一个远程桌面缺陷升级成整台设备失联的：
+     * 桌面会话内部抱死之后，上报线程卡在同一把锁上，进程活着、SIP 还注册着，但上报全停。
+     * 这里只读 volatile 字段做过滤，真正的工作交给会话自己的线程。
+     */
+    void receive(JSONObject offer) {
+        if (destroyed || offer == null || System.currentTimeMillis() > offer.optLong("expires_at")
+                || offer.optString("session_id").equals(id) || !closed) return;
+        try { executor.execute(() -> begin(offer)); } catch (RejectedExecutionException stopping) { /* 正在停止，忽略 */ }
+    }
+
+    private synchronized void begin(JSONObject offer) {
+        if (destroyed || !closed || offer.optString("session_id").equals(id)) return;
         id = offer.optString("session_id"); closed = false; readySent = false; videoFlowing = false;
         generation = offer.optInt("generation", 1); iceServers = offer.optJSONArray("ice_servers") == null ? new JSONArray() : offer.optJSONArray("ice_servers");
         receivedAt = SystemClock.elapsedRealtime(); lastInputAt = receivedAt;
@@ -254,11 +265,17 @@ final class DesktopSession {
         if (pc != null) { try { pc.close(); pc.dispose(); } catch (Exception ignored) { } pc = null; }
     }
 
-    synchronized void stop(String reason) {
-        if (closed) return; closed = true;
-        main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck);
-        RuntimeLog.event("desktop_stopped reason=" + reason);
-        WebSocketClient ws = socket; socket = null; if (ws != null) try { ws.close(); } catch (Exception ignored) { }
+    void stop(String reason) {
+        WebSocketClient ws;
+        synchronized (this) {
+            if (closed) return; closed = true;
+            main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck);
+            RuntimeLog.event("desktop_stopped reason=" + reason);
+            ws = socket; socket = null;
+        }
+        // 关 WebSocket 必须在锁外：读线程会在 onClose 回调里反过来调 stop，
+        // 握着会话锁去关，两条线程就会按相反的顺序各持一把锁互等（网关实测线程栈证实）。
+        if (ws != null) try { ws.close(); } catch (Exception ignored) { }
         executor.execute(() -> {
             closePeer();
             for (LocalSocket s : new LocalSocket[]{videoSocket, controlSocket}) if (s != null) try { s.close(); } catch (IOException ignored) { }
@@ -269,7 +286,12 @@ final class DesktopSession {
             WakeScheduler.release("desktop-session");
         });
     }
-    synchronized void shutdown() { if (destroyed) return; destroyed = true; stop("客户端服务停止"); executor.shutdown(); }
+    // 不能是 synchronized：它握着锁调 stop，stop 内部要关 WebSocket，等于把上面的修复抵消掉。
+    void shutdown() {
+        synchronized (this) { if (destroyed) return; destroyed = true; }
+        stop("客户端服务停止");
+        executor.shutdown();
+    }
 
     private static class Sdp implements SdpObserver { public void onCreateSuccess(SessionDescription d) {} public void onSetSuccess() {} public void onCreateFailure(String e) {} public void onSetFailure(String e) {} }
 }
