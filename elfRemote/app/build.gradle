@@ -24,7 +24,13 @@ android {
 
     defaultConfig {
         applicationId "net.elfradio.elfremote"
-        minSdkVersion 23
+        // 代码实际要求 API 26，这是开了 lint 的 NewApi 之后逐条量出来的，不是估的：
+        // Process#waitFor(timeout) 与 #isAlive、ProcessBuilder#redirectOutput、
+        // ConnectivityManager#registerDefaultNetworkCallback 都是 26，散布在
+        // BootstrapRoot、CorePush、DesktopLauncher、DeviceIdentity、LostDebugGuard 等处；
+        // CompletableFuture 与 java.util.stream 是 24。声明 23 等于允许装到一台
+        // 必然崩溃的设备上，不如让安装直接被拒。现网三台 D22 都是 Android 8.1（API 27）。
+        minSdkVersion 26
         ndk { abiFilters "armeabi-v7a", "arm64-v8a" }
         targetSdkVersion 27
         versionCode codeText.toInteger()
@@ -58,8 +64,14 @@ android {
     }
 
     lint {
-        abortOnError false
-        checkReleaseBuilds false
+        // 发布构建必须跑 lint。D31 的 1.34.25 就是 API 24 的类用在 API 23 设备上，
+        // 编译期无声、装到机器才崩，而 NewApi 本来就能抓到它。
+        abortOnError true
+        checkReleaseBuilds true
+        // 这个库从未开过 lint，一次全开会淹没在历史告警里。先只把最危险的一项设为致命：
+        // 调用高于 minSdk 的 API。其余检查等有余力再逐项接。
+        checkOnly 'NewApi'
+        fatal 'NewApi'
     }
 }
 
