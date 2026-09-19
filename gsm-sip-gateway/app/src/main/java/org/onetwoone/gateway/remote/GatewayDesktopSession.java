@@ -52,6 +52,8 @@ final class GatewayDesktopSession implements Closeable {
     private volatile long lastInputAt,receivedAt;
     private volatile boolean readySent,videoFlowing;
     private volatile boolean opened,connecting;
+    /** 浏览器显示区域的长边（设备像素）。服务端还没开始下发时为 0，退回保守默认值。 */
+    private volatile int requestedLongEdge;
 
     private final Runnable idleCheck=new Runnable(){public void run(){
         if(closed)return;
@@ -75,6 +77,7 @@ final class GatewayDesktopSession implements Closeable {
         catch(Exception rejected){log.write(System.currentTimeMillis()+" DESKTOP_OFFER_REJECTED "+rejected.getClass().getSimpleName());return;}
         id=offer.optString("session_id");closed=false;readySent=false;videoFlowing=false;opened=false;connecting=false;
         generation=offer.optInt("generation",1);
+        requestedLongEdge=offer.optInt("max_size",0);
         iceServers=offer.optJSONArray("ice_servers")==null?new JSONArray():offer.optJSONArray("ice_servers");
         receivedAt=SystemClock.elapsedRealtime();lastInputAt=receivedAt;
         final String owner=id,quality=offer.optString("quality","wifi"),token=offer.optString("token");
@@ -122,6 +125,8 @@ final class GatewayDesktopSession implements Closeable {
             case "hello":
                 if(data.has("ice_servers"))iceServers=data.getJSONArray("ice_servers");
                 generation=data.optInt("generation",generation);
+                // 服务端将来在 hello 里带显示尺寸时自动生效，不必再发一版客户端。
+                if(data.optInt("max_size",0)>0)requestedLongEdge=data.optInt("max_size");
                 start(quality);break;
             case "signal":
                 if(data.optInt("generation")!=generation||peer==null)return;
@@ -139,7 +144,10 @@ final class GatewayDesktopSession implements Closeable {
     }
 
     private void start(String quality)throws Exception {
-        JSONObject encoding=GatewayDesktopPolicy.encoding(quality);
+        android.graphics.Point screen=realSize();
+        JSONObject encoding=GatewayDesktopPolicy.encoding(quality,requestedLongEdge,screen.x,screen.y);
+        log.write(System.currentTimeMillis()+" DESKTOP_ENCODING size="+encoding.getInt("max_size")
+                +" fps="+encoding.getInt("max_fps")+" bitrate="+encoding.getInt("bit_rate")+" requested="+requestedLongEdge);
         SecureRandom random=new SecureRandom();
         scid=GatewayDesktopPolicy.scid(random);
         sendStatus("starting");
@@ -266,10 +274,17 @@ final class GatewayDesktopSession implements Closeable {
         readySent=true;worker.removeCallbacks(prepareTimeout);worker.removeCallbacks(idleCheck);worker.postDelayed(idleCheck,30_000L);
         log.write(System.currentTimeMillis()+" DESKTOP_READY after_ms="+(SystemClock.elapsedRealtime()-receivedAt));
         try{
-            android.view.Display display=((android.view.WindowManager)context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
-            android.graphics.Point size=new android.graphics.Point();display.getRealSize(size);
+            android.graphics.Point size=realSize();
             send(new JSONObject().put("type","ready").put("width",size.x).put("height",size.y).put("encoder","hardware"));
         }catch(Exception error){fail(error);}
+    }
+
+    /** 屏幕真实分辨率。触控坐标按它换算，编码短边也按它的纵横比推。 */
+    private android.graphics.Point realSize(){
+        android.graphics.Point size=new android.graphics.Point();
+        try{((android.view.WindowManager)context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay().getRealSize(size);}
+        catch(Exception unavailable){log.write(System.currentTimeMillis()+" DESKTOP_DISPLAY_SIZE_UNAVAILABLE "+unavailable.getClass().getSimpleName());}
+        return size;
     }
 
     private void holdAwake(){

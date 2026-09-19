@@ -38,10 +38,42 @@ final class GatewayDesktopPolicy {
         return uri;
     }
 
-    /** 画质档位：移动网络压到 15 帧 500kbps 960 宽，其余走 30 帧 1.5Mbps 1280 宽。 */
-    static JSONObject encoding(String quality)throws Exception {
+    // 2026-09-19 在 Pixel 3 XL 上实测（动态壁纸、屏幕未触碰、每档 10 秒）：
+    //   1280/30帧/1.5M 2183 kbps；只把帧率降到 10 仍有 1840；只把码率降到 600k 仍有 1836；
+    //   改成 VBR 反而 2313；960/15帧 1402；800/15帧 1189；640/15帧 711；480/10帧 374。
+    //   结论：单独压帧率或码率都没用，长边尺寸才是唯一有效的杠杆，码率必须跟着像素走。
+    static final int SIZE_FLOOR=320,SIZE_CEILING_WIFI=1280,SIZE_CEILING_CELLULAR=720;
+    static final int FPS_WIFI=15,FPS_CELLULAR=10;
+    static final int BIT_RATE_FLOOR=300_000,BIT_RATE_CEILING=4_000_000;
+    /** 屏幕内容每像素每帧约 0.12 比特，实测在这个量级上画面可读且不浪费。 */
+    static final int MILLIBITS_PER_PIXEL_FRAME=120;
+
+    /** 长边取 8 的倍数，编码器对齐要求如此，不对齐会被它自己再截一次。 */
+    static int alignedSize(int longEdge,int ceiling){
+        int bounded=Math.max(SIZE_FLOOR,Math.min(ceiling,longEdge));
+        return bounded-bounded%8;
+    }
+
+    static int bitRateFor(long pixels,int fps){
+        long value=pixels*fps*MILLIBITS_PER_PIXEL_FRAME/1000L;
+        return (int)Math.max(BIT_RATE_FLOOR,Math.min(BIT_RATE_CEILING,value));
+    }
+
+    /**
+     * 画质档位。浏览器实际显示多大就编多大：超出显示尺寸的像素传过去也会被缩掉，纯浪费；
+     * 低于显示尺寸则糊。{@code requestedLongEdge} 是浏览器报来的显示区域长边（设备像素），
+     * 为 0 表示它还没报，退回保守默认值。帧率对远程管理来说 15 足够，30 只是多花一倍的帧。
+     */
+    static JSONObject encoding(String quality,int requestedLongEdge,int displayWidth,int displayHeight)throws Exception {
         boolean cellular="cellular".equals(quality);
-        return new JSONObject().put("max_fps",cellular?15:30).put("bit_rate",cellular?500_000:1_500_000).put("max_size",cellular?960:1280);
+        int ceiling=cellular?SIZE_CEILING_CELLULAR:SIZE_CEILING_WIFI;
+        int fps=cellular?FPS_CELLULAR:FPS_WIFI;
+        int longEdge=alignedSize(requestedLongEdge>0?requestedLongEdge:ceiling,ceiling);
+        int screenLong=Math.max(displayWidth,displayHeight),screenShort=Math.min(displayWidth,displayHeight);
+        // 按屏幕纵横比推出短边，才能算准像素数；拿不到屏幕尺寸时按 9:19.5 这类窄屏保守估。
+        long shortEdge=screenLong>0?Math.max(1,(long)longEdge*screenShort/screenLong):longEdge/2;
+        return new JSONObject().put("max_fps",fps).put("max_size",longEdge)
+                .put("bit_rate",bitRateFor((long)longEdge*shortEdge,fps));
     }
 
     /** scid 是 scrcpy 的 8 位十六进制会话号；最高位清零，服务端按有符号 31 位解析。 */

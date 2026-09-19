@@ -68,12 +68,53 @@ public class GatewayDesktopPolicyTest {
             catch(Exception expected){}
     }
 
-    @Test public void encodingDropsRatesOnCellular() throws Exception {
-        JSONObject wifi=GatewayDesktopPolicy.encoding("wifi"),cellular=GatewayDesktopPolicy.encoding("cellular");
-        assertEquals(30,wifi.getInt("max_fps")); assertEquals(1_500_000,wifi.getInt("bit_rate")); assertEquals(1280,wifi.getInt("max_size"));
-        assertEquals(15,cellular.getInt("max_fps")); assertEquals(500_000,cellular.getInt("bit_rate")); assertEquals(960,cellular.getInt("max_size"));
+    /**
+     * 画质档位。2026-09-19 在 Pixel 3 XL 上实测（动态壁纸、屏幕未触碰、每档 10 秒）：
+     * 1280/30帧/1.5M 得 2183 kbps，单独把帧率压到 10 仍有 1840、单独把码率压到 600k 仍有 1836、
+     * 改 VBR 反而 2313；而降长边立竿见影，960 得 1402、800 得 1189、640 得 711、480 得 374。
+     * 所以码率必须跟着像素走，固定值没有意义。
+     */
+    @Test public void encodingFollowsTheBrowserDisplaySize() throws Exception {
+        int w=1440,h=2960;
+        JSONObject small=GatewayDesktopPolicy.encoding("wifi",480,w,h);
+        JSONObject large=GatewayDesktopPolicy.encoding("wifi",1280,w,h);
+        assertEquals(480,small.getInt("max_size"));
+        assertEquals(1280,large.getInt("max_size"));
+        // 显示区域大一倍多，码率跟着涨；小窗时不该按大窗的码率传。
+        assertTrue("码率必须随像素增长",large.getInt("bit_rate")>small.getInt("bit_rate")*3);
+        assertEquals(GatewayDesktopPolicy.FPS_WIFI,large.getInt("max_fps"));
+    }
+
+    @Test public void encodingClampsAndAlignsRequestedSize() throws Exception {
+        int w=1440,h=2960;
+        // 超出上限要压回上限，低于下限要抬到下限。
+        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",9999,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_FLOOR,GatewayDesktopPolicy.encoding("wifi",10,w,h).getInt("max_size"));
+        // 编码器要求长边是 8 的倍数。
+        for(int requested=321;requested<=1290;requested+=7)
+            assertEquals(0,GatewayDesktopPolicy.encoding("wifi",requested,w,h).getInt("max_size")%8);
+        // 没报尺寸时退回各档上限，不至于糊。
+        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_WIFI,GatewayDesktopPolicy.encoding("wifi",0,w,h).getInt("max_size"));
+        assertEquals(GatewayDesktopPolicy.SIZE_CEILING_CELLULAR,GatewayDesktopPolicy.encoding("cellular",0,w,h).getInt("max_size"));
+    }
+
+    @Test public void encodingKeepsCellularCheaperThanWifi() throws Exception {
+        int w=1440,h=2960;
+        JSONObject wifi=GatewayDesktopPolicy.encoding("wifi",0,w,h),cellular=GatewayDesktopPolicy.encoding("cellular",0,w,h);
+        assertTrue(cellular.getInt("max_size")<wifi.getInt("max_size"));
+        assertTrue(cellular.getInt("max_fps")<wifi.getInt("max_fps"));
+        assertTrue(cellular.getInt("bit_rate")<wifi.getInt("bit_rate"));
         // 未知档位按 WiFi 处理，不至于把画质压到最低。
-        assertEquals(30,GatewayDesktopPolicy.encoding("ethernet").getInt("max_fps"));
+        assertEquals(wifi.getInt("max_fps"),GatewayDesktopPolicy.encoding("ethernet",0,w,h).getInt("max_fps"));
+    }
+
+    @Test public void bitRateStaysWithinBounds() throws Exception {
+        assertEquals(GatewayDesktopPolicy.BIT_RATE_FLOOR,GatewayDesktopPolicy.bitRateFor(1,1));
+        assertEquals(GatewayDesktopPolicy.BIT_RATE_CEILING,GatewayDesktopPolicy.bitRateFor(50_000_000L,60));
+        // 拿不到屏幕尺寸也不能算出 0 或负数。
+        JSONObject blind=GatewayDesktopPolicy.encoding("wifi",640,0,0);
+        assertTrue(blind.getInt("bit_rate")>=GatewayDesktopPolicy.BIT_RATE_FLOOR);
+        assertEquals(640,blind.getInt("max_size"));
     }
 
     @Test public void scidIsEightHexDigitsWithClearedTopBit() {
