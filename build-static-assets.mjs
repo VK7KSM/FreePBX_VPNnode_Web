@@ -5,6 +5,10 @@ import {createHash} from 'node:crypto';
 // 这里不再生成 index.html，静态资源缺这一条，/ 就会落到 Worker 上去跳转。
 export const STATIC_ROUTES={'/devices':'devices.html','/sip':'sip.html','/panel-events.js':'panel-events.js','/panel-lifecycle.js':'panel-lifecycle.js','/cf-usage.js':'cf-usage.js','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/desktop-client.js':'desktop-client.js','/share-client.js':'share-client.js','/fault-client.js':'fault-client.js','/evidence-client.js':'evidence-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
 export async function buildAssets(directory='.generated-assets'){
+ // 先清空：这个目录整份上传给 Workers Assets，上一轮留下的文件不会自动消失。
+ // 2026-09-20 把首页从清单里去掉后，旧的 index.html 仍留在磁盘上，照样被传了上去，
+ // v.elfradio.net 的首页于是还是那张代理面板。
+ await fs.rm(directory,{recursive:true,force:true});
  await fs.mkdir(directory,{recursive:true});const files=[];
  for(const [route,file] of Object.entries(STATIC_ROUTES)){
   const response=await worker.fetch(new Request('https://assets-build.invalid'+route),{});

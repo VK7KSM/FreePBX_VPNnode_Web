@@ -536,7 +536,7 @@ function delSelExt(){
   if(!selExt){ alert("请先勾选一个分机"); return; }
   var x=null; for(var i=0;i<E.length;i++) if(String(E[i].ext)===selExt) x=E[i];
   if(!x) return;
-  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\n将同步删除 SIP 机上的 Asterisk 分机账号。")) return;
+  if(!confirm("确定删除分机 "+x.ext+"（"+(x.name||"")+"）？\n将同步删除服务器上的分机账号。")) return;
   E = E.filter(function(e){ return String(e.ext)!==selExt; });
   selExt=""; saveAll();
 }
