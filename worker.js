@@ -297,6 +297,7 @@ export class ElfStore {
         if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='DELETE'){
           const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
           const {session_id}=JSON.parse(raw);const session=this.desktop.sessions.get(session_id);
+          if(session&&!sameOwner(session.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
           if(session)this.desktop.close(session,'远程桌面已取消');return json({ok:true});
         }
         if(url.pathname==='/api/elfremote/desktop/session'&&request.method==='GET') {
@@ -326,6 +327,7 @@ export class ElfStore {
         if(url.pathname==='/api/elfremote/media/session'&&request.method==='DELETE'){
           const raw=await request.text();if(raw.length>4096)return json({ok:false},400);
           const {session_id}=JSON.parse(raw);const session=this.media.sessions.get(session_id);
+          if(session&&!sameOwner(session.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
           if(session)this.media.close(session,'通信已取消');return json({ok:true});
         }
         if(url.pathname==='/api/elfremote/media/session'&&request.method==='GET') {
@@ -389,6 +391,7 @@ export class ElfStore {
           }
           if(request.method==='DELETE') {
             const session=this.adbTunnel.sessions.get(data.session_id);
+            if(session&&!sameOwner(session.owner,ctx))return json({ok:false,msg:'此会话不属于当前登录'},403);
             if(session)this.adbTunnel.close(session,'admin_closed',1000);
             return json({ok:true,active:false,session_id:data.session_id||null});
           }

@@ -109,6 +109,7 @@ export class DesktopRelay {
   }
   close(s,message){
     if(s.closed)return;s.closed=true;this.sessions.delete(s.id);this.cancel(s.timer);
+    console.log('desktop_session_closed',s.id,message,'browser='+!!s.roles.browser,'device='+!!s.roles.device,'started='+s.started,'age_ms='+(this.now()-s.created));
     for(const role of ['browser','device'])if(s.roles[role]){
       try{s.roles[role].send(JSON.stringify({type:'closed',message}));s.roles[role].close(1000,'desktop ended');}catch{}
     }
