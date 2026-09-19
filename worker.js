@@ -1741,6 +1741,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_wifi_scan_tasks:d.managed_wifi_scan_tasks===true,
     managed_wifi_config_tasks:d.managed_wifi_config_tasks===true,
     managed_alarm_tasks:d.managed_alarm_tasks===true,
+    managed_share_link_tasks:d.managed_share_link_tasks===true,
     managed_media: d.managed_media === true,
     ...mediaCapabilityFields(d),
     media_cameras: Number(d.media_cameras)||0,
@@ -2275,6 +2276,7 @@ async function handleDeviceReport(env, request) {
         list[i].managed_config_tasks = data.managed_config_tasks === true;
       }
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
+      list[i].managed_share_link_tasks = data.managed_share_link_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
       list[i].managed_lost_tasks = data.managed_lost_tasks === true;
       list[i].managed_lost_safety_v1=data.managed_lost_safety_v1===true;
@@ -2629,6 +2631,9 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if(device.enabled!==false&&report.managed_share_link_tasks===true&&device.task?.managed_share_link_v1===true
+    &&device.task.type==='show_share_link'&&shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_share_link_v1:true};
   if(device.enabled!==false&&report.managed_contacts_page_v1===true&&device.task?.type==='contacts_page'&&shouldOfferRepair(device,now))body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true,managed_contacts_page_v1:true};
   if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
@@ -2712,7 +2717,7 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==='wipe_data'){data.expires_at=authorizeWipe(found,data.params);if(found.managed_lost_safety_v1)data.params={...data.params,expected_revision:found.lost_mode?.revision};}
     if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello',PIXEL_COMPANION_TASK_TYPE,...PROXY_TASK_TYPES].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello','show_share_link',PIXEL_COMPANION_TASK_TYPE,...PROXY_TASK_TYPES].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(isNetworkTask(found.task)){const cancel_outcome=cancelNetworkTask(found.task);await saveDevices(env,list);return json({ok:true,cancel_outcome,task:publicRepair(found.task)});}
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
@@ -2741,6 +2746,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="restart_adbd" && found.managed_adbd_tasks===true)
         || (data.type==="scan_wifi" && found.managed_wifi_scan_tasks===true)
         || (["play_alarm","stop_alarm"].includes(data.type) && found.managed_alarm_tasks===true)
+        || (data.type==="show_share_link" && found.managed_share_link_tasks===true)
         || (data.type==="locate_now" && found.managed_locate_tasks===true)
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
@@ -2781,6 +2787,22 @@ async function handleElfEnqueueTask(env, request) {
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
+    }
+    if(data.type==='show_share_link'){
+      // 链接由服务端现生成后推给设备，设备只负责画二维码，不必用设备令牌反向申请。
+      // 信封的 expires_at 是任务领取期限（五分钟），链接有效期另放 params.link_expires_at：
+      // 两者含义不同不能共用一个名字，设备离线很久后再上线也不该突然弹出二维码。
+      data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
+      const deadline=Date.now()+5*60*1000,requested=Number(data.expires_at);
+      data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
+      const origin='https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host;
+      const {link}=await shareCreateLink(env.__storage,{deviceId,ttlMs:ttlFromInput(undefined),source:'admin',requestId:data.id});
+      const linkUrl=shareUrl(origin,link.token);
+      // 固定免密：二维码会画在可能摆在公共位置的座机屏幕上，载荷里绝不放口令。
+      // qr_text 全大写是因为二维码字母数字模式不收小写，路由已经大小写都收。
+      const requestedDisplay=Number(params?.display_ms);
+      params={url:linkUrl,qr_text:linkUrl.toUpperCase(),link_expires_at:link.expires_at,
+        ...(Number.isFinite(requestedDisplay)&&requestedDisplay>0?{display_ms:requestedDisplay}:{})};
     }
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
@@ -2832,6 +2854,7 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && isGateway(found) && LOST_MESSAGE_TASK_TYPES.includes(data.type)) found.task.managed_lost_message_v1=true;
     if(!queued.duplicate && found.status_only && isGateway(found) && data.type===PIXEL_COMPANION_TASK_TYPE) found.task.managed_pixel_companion_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
+    if(!queued.duplicate && found.status_only && data.type==="show_share_link") found.task.managed_share_link_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;
     if(data.type==='set_lost_mode'&&found.task.params?.version===2)Object.assign(found.task.params,{paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0});
