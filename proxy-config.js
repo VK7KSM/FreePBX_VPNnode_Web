@@ -1,6 +1,7 @@
 import {authJson as json} from './admin-auth.js';
 
 export const PROXY_CONFIG_MAX_BYTES=2*1024*1024;
+const DEFAULT_BASE_URL='https://v.elfradio.net';
 const active=task=>task&&['pending','claimed','running'].includes(task.state)&&Number(task.expires_at)>Date.now();
 const hex=bytes=>Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
 const validId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,96}$/.test(value);
@@ -18,8 +19,10 @@ export function publicProxyConfig(value){
   if(!value)return null;
   return {version:value.version,sha256:value.sha256,size:value.size,uploaded_at:value.uploaded_at};
 }
-export async function proxyConfigureParams(device,input,taskId,existing=null){
-  if(!device||device.product_id!=='elfremote_gateway'||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
+export async function proxyConfigureParams(device,input,taskId,existing=null,baseUrl=DEFAULT_BASE_URL){
+  // 按能力位放行，不按产品型号。原来硬判 product_id==='elfremote_gateway'，
+  // D31 这类同样实现了代理管理的机型一概进不来；为一台设备改公共合同是更糟的做法。
+  if(!device||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
   if(input==null||typeof input!=='object'||Array.isArray(input))throw Error('代理任务参数无效');
   if(Object.keys(input).length===0)return {};
   if(!validTaskId(taskId))throw Error('代理任务编号无效');
@@ -29,13 +32,17 @@ export async function proxyConfigureParams(device,input,taskId,existing=null){
   if(Object.keys(input).length!==fields.length||Object.keys(input).some(key=>!fields.includes(key)))throw Error('代理配置引用无效');
   if(input.config_version!==meta.version||input.config_sha256!==meta.sha256||input.config_size!==meta.size)throw Error('代理配置已变化，请重新选择');
   if(existing?.type==='configure_proxy'&&existing.id===taskId&&existing.params?.sha256===meta.sha256
-      &&existing.params?.size===meta.size&&typeof existing.params.url==='string'
+      &&existing.params?.size===meta.size&&existing.params?.version===meta.version
+      &&typeof existing.params.url==='string'
       &&validSha(existing.proxy_download_token_sha256))
     return {params:existing.params,token_sha256:existing.proxy_download_token_sha256};
   const token=hex(crypto.getRandomValues(new Uint8Array(32)));
   const query=new URLSearchParams({device_id:device.id,token});
-  return {params:{url:'https://v.elfradio.net/api/elfremote/proxy-config/'+taskId+'?'+query,
-    size:meta.size,sha256:meta.sha256},token_sha256:await sha256(new TextEncoder().encode(token))};
+  // version 一并下发：设备的看门狗回退时要报「退回了哪一版」，
+  // 拿 sha256 前几位当版本号是设备侧自己编的，对不上管理员在页面上看到的那个。
+  return {params:{url:baseUrl+'/api/elfremote/proxy-config/'+taskId+'?'+query,
+    version:meta.version,size:meta.size,sha256:meta.sha256},
+    token_sha256:await sha256(new TextEncoder().encode(token))};
 }
 
 export async function proxyConfigMetadata(storage,request,loadDevices,saveDevices,now=Date.now()){

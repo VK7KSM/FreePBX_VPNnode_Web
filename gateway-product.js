@@ -188,11 +188,15 @@ export const PROXY_ERROR_CATEGORIES=Object.freeze(['none','not_configured','core
 const proxyErrorCategories=new Set(PROXY_ERROR_CATEGORIES);
 
 export function proxyRuntimeStatus(value,device,managed){
-  if(!isGateway(device)){
-    if(value!==undefined||managed!==undefined)throw Error('代理运行状态仅限网关产品');
+  // 原来只认网关产品（isGateway）。D31 同样要上报这一段，判据改成设备自己声明的能力位：
+  // 声明了就按同一套字段收，没声明还上报才是越界。按型号划线会逼着为一台设备改公共合同。
+  // 明确声明 false 是允许的（基础版固件），此时只是不收运行状态，不算错误。
+  if(managed!==undefined&&typeof managed!=='boolean')throw Error('代理任务能力必须为布尔值');
+  const declared=managed===true||(managed===undefined&&device?.managed_proxy_tasks===true);
+  if(!declared){
+    if(value!==undefined)throw Error('设备未声明代理管理能力，不能上报代理运行状态');
     return null;
   }
-  if(managed!==undefined&&typeof managed!=='boolean')throw Error('网关代理任务能力必须为布尔值');
   if(value===undefined)return null;
   if(!record(value))throw Error('代理运行状态格式无效');
   if(new TextEncoder().encode(JSON.stringify(value)).length>4096)throw Error('代理运行状态内容过长');
