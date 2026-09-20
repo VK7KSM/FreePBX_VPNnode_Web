@@ -65,3 +65,24 @@ test('show_share_link：显示时长透传，撤回复用既有取消动作',asy
   assert.equal(cancelled.status,200,'该类型必须在允许撤回的名单里');
   assert.equal(f.data.get('remote_devices')[0].task.cancel_requested,true);
 });
+
+// 面板上「在设备上显示」用的是分享弹窗里那个有效期下拉框。服务端必须认这个参数，
+// 否则界面上选了「6 小时」、实际下发的却是默认一小时，那是界面在骗人。
+test('show_share_link：有效期按面板选的来，非法值当场拒绝',async()=>{
+  const f=setup(),cookie=await login(f);
+  await worker.fetch(request('/api/devices/report','POST',{
+    device_id:'device',token:'fixture-token',status_only:true,managed_share_link_tasks:true,
+    report_id:'share-ttl-1',sampled_at:new Date().toISOString()}),f.env);
+
+  const enqueue=(params,id)=>worker.fetch(request('/api/elfremote/task','POST',
+    {device_id:'device',type:'show_share_link',id,params},cookie),f.env);
+
+  const ok=await enqueue({ttl:'6h'},'ttl-ok');
+  assert.equal(ok.status,200);
+  const created=f.data.get('remote_devices')[0].task.params.link_expires_at;
+  const life=created-Date.now();
+  assert.ok(Math.abs(life-6*3600000)<10000,'有效期要按面板选的 6 小时来，实际 '+life);
+
+  const bad=await enqueue({ttl:'5m'},'ttl-bad');
+  assert.equal(bad.status,400,'非法有效期要当场拒绝，不能静默用默认值');
+});

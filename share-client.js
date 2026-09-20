@@ -32,17 +32,32 @@ function ensureNode() {
 function describe(l) {
   return '创建于 ' + fmt(l.created_at) + ' · 剩余 ' + remaining(l) + ' · ' + (l.has_password ? '有密码' : '无密码');
 }
+// 「在设备上显示」与上面的「生成新地址」是两件事：后者只在浏览器里出码，
+// 前者新建一条链接再下发任务，让二维码出现在设备自己的屏幕上（座机摆在桌上，扫它最直观）。
+// 只有设备上报了 managed_share_link_tasks 才有这个按钮；不支持时给一句话说明原因，
+// 否则使用者只会看到「没有按钮」，无从判断是功能没做还是设备不支持。
+function canShowOnDevice(d) { return !isShare() && !!d && d.enabled !== false && d.managed_share_link_tasks === true; }
+function onDeviceButton(d) {
+  if (!canShowOnDevice(d)) return '';
+  return '<button type="button" class="share-btn share-btn-ghost" onclick="ElfShare.showOnDevice()" title="新建一条链接，并让二维码显示在设备自己的屏幕上">在设备上显示</button>';
+}
+function onDeviceHint(d) {
+  if (isShare() || !d || d.managed_share_link_tasks === true) return '';
+  return '<p class="share-hint">本机不支持在设备屏幕上显示二维码（需要完整版固件并上报该能力），以上链接仍可复制使用。</p>';
+}
+
 function render() {
   const body = document.getElementById('shareBody'); if (!body || !state) return;
   const s = state, sel = s.links.find(l => l.token === s.selected);
   let h = '';
   if (s.error) h += '<p class="share-error" role="alert">' + esc(s.error) + '</p>';
+  if (s.notice) h += '<p class="share-notice" role="status">' + esc(s.notice) + '</p>';
   h += '<section class="share-panel"><div class="share-panel-title">' + (sel ? '修改链接 <code>' + esc(sel.token) + '</code>' : '新建链接') + '</div><div class="share-form-row">';
   h += '<label>密码 <input id="sharePw" class="inp" type="password" autocomplete="new-password"></label>';
   h += '<label class="share-ttl">有效期 <select id="shareTtl" class="inp">' + (sel ? '<option value="">不修改</option>' : '') + TTL_OPTIONS.map(o => '<option value="' + o[0] + '"' + (!sel && o[0] === '1h' ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>';
   if (sel && sel.has_password) h += '<label class="share-inline"><input id="shareClearPw" type="checkbox"> 取消密码</label>';
-  h += '<span class="share-form-actions">' + (sel ? '<button type="button" class="share-btn share-btn-ghost" onclick="ElfShare.select(null)">取消</button><button type="button" class="share-btn share-btn-primary" onclick="ElfShare.save()">保存修改</button>' : '<button type="button" class="share-btn share-btn-primary" onclick="ElfShare.create()">生成新地址</button>') + '</span>';
-  h += '</div></section>';
+  h += '<span class="share-form-actions">' + (sel ? '<button type="button" class="share-btn share-btn-ghost" onclick="ElfShare.select(null)">取消</button><button type="button" class="share-btn share-btn-primary" onclick="ElfShare.save()">保存修改</button>' : onDeviceButton(s.device) + '<button type="button" class="share-btn share-btn-primary" onclick="ElfShare.create()">生成新地址</button>') + '</span>';
+  h += '</div>' + onDeviceHint(s.device) + '</section>';
   h += '<div class="share-list-title">已创建链接 <span class="share-count">' + s.links.length + '</span></div><div class="share-list">';
   if (!s.links.length) h += '<div class="share-empty">暂无有效链接，先在上方生成一个。</div>';
   for (const l of s.links) {
@@ -79,16 +94,18 @@ async function reload() {
 }
 async function open() {
   const d = currentDevice(); if (!d) return;
-  state = { device: d, links: [], session: null, selected: null, qrToken: null, error: '' };
+  state = { device: d, links: [], session: null, selected: null, qrToken: null, error: '', notice: '' };
   ensureNode().style.display = 'flex'; render();
   try { await reload(); } catch (e) { state.error = e.message; } render();
 }
 function close() { const w = document.getElementById('shareWrap'); if (w) w.style.display = 'none'; const p = document.getElementById('shareQrPop'); if (p) p.hidden = true; state = null; }
-async function guard(fn) { if (!state) return; state.error = ''; try { await fn(); await reload(); } catch (e) { if (state) state.error = e.message || String(e); } render(); }
+async function guard(fn) { if (!state) return; state.error = ''; state.notice = ''; try { await fn(); await reload(); } catch (e) { if (state) state.error = e.message || String(e); } render(); }
 const ElfShare = {
   isShare, open, close,
   select(token) { if (!state) return; state.selected = token || null; render(); },
   copy(url, btn) { navigator.clipboard.writeText(url).then(() => { if (btn) { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1500); } }).catch(() => { if (btn) btn.textContent = '复制失败'; }); },
+  // 下发任务：链接由服务端现生成，设备只负责画码，所以这里不传 url，只传有效期与显示时长。
+  showOnDevice() { return guard(async () => { const ttl = document.getElementById('shareTtl')?.value || ''; await api('/api/elfremote/task', { device_id: state.device.id, type: 'show_share_link', params: ttl ? { ttl } : {} }); state.notice = '已下发：二维码将显示在设备屏幕上'; }); },
   create() { return guard(async () => { const pw = document.getElementById('sharePw')?.value || '', ttl = document.getElementById('shareTtl')?.value || ''; const x = await api('/api/share/links', { device_id: state.device.id, ttl: ttl || undefined, password: pw || null });  }); },
   save() { return guard(async () => { const pw = document.getElementById('sharePw')?.value || '', clear = document.getElementById('shareClearPw')?.checked, ttl = document.getElementById('shareTtl')?.value || ''; const body = { token: state.selected }; if (clear) body.password = { action: 'clear' }; else if (pw) body.password = { action: 'set', value: pw }; if (ttl) body.ttl = ttl; if (!body.password && !body.ttl) throw Error('没有需要保存的修改'); await api('/api/share/links/update', body); }); },
   remove(token) { const l = state?.links.find(x => x.token === token); if (!l) return; if (!confirm(l.current ? '删除当前会话正在使用的链接，将立即退出该会话。确定删除？' : '确定删除此链接？删除后立即失效。')) return; return guard(async () => { await api('/api/share/links/delete', { token }); }); },
