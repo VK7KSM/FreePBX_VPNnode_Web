@@ -136,14 +136,24 @@ function buildNode(s) {
 // 把文本送进设备。纯 ASCII 走 injectText（键盘打字那条通路，实测可用）；
 // 含非 ASCII 只能过剪贴板，由 scrcpy 服务端自己注入 KEYCODE_PASTE（setClipboard 传 paste:true）。
 //
-// 绝对不要自己注入 Ctrl+V。2026-09-20 实测截图：D31 的 Telegram 输入框里出现了
-// 「c://v.elfradio.net/devicesvvvvvvvvvvv」——每点一次粘贴就多一个字面量 v。
-// 机制和之前「复制」注入 Ctrl+C 打出一个 c 的那次完全一样，我当时写下了原因却没想到
-// 它对 Ctrl+V 同样成立：手机上有输入框获得焦点就必然有软键盘，注入的按键先过输入法，
-// 输入法直接 commitText 一个字符，Ctrl 根本没人看；就算绕过输入法，TextView 的普通按键
-// 处理也排在 onKeyShortcut 前面，消费掉之后快捷键分发压根不会被调到。
-// 所以这条路在这台机器上不是「有时不灵」，是从来就不成立，而且每次都会往用户的
-// 输入框里塞垃圾字符——比不生效更坏。
+// 绝对不要自己注入 Ctrl+V / Ctrl+C 这类带修饰键的组合。
+// 2026-09-20 实测截图：D31 的 Telegram 输入框里出现了
+// 「c://v.elfradio.net/devicesvvvvvvvvvvv」——每点一次粘贴就多一个字面量 v，
+// 和更早「复制」注入 Ctrl+C 打出一个 c 是同一回事。
+//
+// 决定性因素是**当前绑定的是哪个输入法**，不是软键盘显不显示。D31-dev 做过 A→B→A 受控对照，
+// 同一个输入框、同一套注入、同一组事件，只切输入法：
+//   拼音输入法 → Ctrl+A/C/V 全部变成字面量 a/c/v；换 LatinIME → 三个全部正常；切回拼音 → 复现。
+// 中文输入法为了组词要拿到所有字母键，在 IME 阶段就 commitText，事件到不了 post-IME 的
+// onKeyShortcut，metaState 里有没有 Ctrl 根本没人看。
+//
+// 两个要命的推论，别再踩：
+// 1. 不要想着「提示用户先收起键盘」。实测 mInputShown=false 时 mBoundToMethod 仍然是 true，
+//    输入法照样消费按键，粘贴照样失败。键盘不可见 ≠ 输入法没在拦。
+// 2. 这不是 Android 6 或 D31 特有的。任何机型只要前台绑着中文输入法就是这个结果，
+//    D22 和网关现在能用很可能只是因为常用英文输入法。所以这条路本来就不该走。
+//
+// 纯 ASCII 的 injectText 不受影响：输入法同样吃掉按键，但它 commit 出来的就是该有的字符。
 //
 // KEYCODE_PASTE(279) 是 API 24 才加的，D31 是 API 23，注入它只是个未定义键码，
 // 不会产生任何字符，安全。D22/Pixel(API>=24) 上它是有效的——数字 3/4 的剪贴板绕行
