@@ -1707,12 +1707,15 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
+    // 代理三件套对所有机型下发：面板的「网络代理」页签按 managed_proxy_tasks 显示，
+    // 放在网关专有那一坨里的话，D31 就算上报了能力位面板也永远看不到，页签不会出现。
+    managed_proxy_tasks:d.managed_proxy_tasks===true,
+    proxy_runtime:d.proxy_runtime||null,
+    proxy_config:publicProxyConfig(d.proxy_config),
     ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),
       managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null,
-      managed_proxy_tasks:d.managed_proxy_tasks===true,proxy_runtime:d.proxy_runtime||null,
       managed_lost_message_v1:d.managed_lost_message_v1===true,lost_message:d.lost_message||null,
-      managed_pixel_companion_v1:d.managed_pixel_companion_v1===true,
-      proxy_config:publicProxyConfig(d.proxy_config)}:{}),
+      managed_pixel_companion_v1:d.managed_pixel_companion_v1===true}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -2232,13 +2235,16 @@ async function handleDeviceReport(env, request) {
       list[i].last_seen = new Date().toISOString();
       list[i].online = true;
       if (fresh) {
+      // 代理能力与运行状态对所有机型都存。原来只在网关分支里赋值，
+      // 于是 D31 的上报被接受了、状态却从来没落库，面板永远是空的——
+      // 「上报 200 但面板看不到」比直接报错更难查。
+      list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
+      if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
       if(isGateway(list[i])){
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
-        list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
         list[i].managed_lost_message_v1=data.managed_lost_message_v1===true;
         list[i].managed_pixel_companion_v1=data.managed_pixel_companion_v1===true;
-        if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
         list[i].managed_mobile_status=data.managed_mobile_status===true;
         if(mobileNetwork)list[i].mobile_network=mobileNetwork;
         else delete list[i].mobile_network;

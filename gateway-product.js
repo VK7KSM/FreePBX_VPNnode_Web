@@ -20,8 +20,12 @@ export function gatewayProductFields(data,existing=null,identity=null){
 }
 export function gatewayReportGuard(device,data){
   if(!isGateway(device)){
+    // 代理能力不再是网关专有：D31 也要上报 managed_proxy_tasks 与 proxy_runtime，
+    // 它们的合法性由 proxyRuntimeStatus 按能力位单独裁决，不在这里按型号一刀切。
+    // 这条守卫拒的是**整份上报**——2026-09-20 D31 升到 218 后每一轮 report 都被 400，
+    // 设备的全部遥测（位置、电量、任务领取）一起死，比拒掉代理字段严重得多。
+    // 其余几项仍是网关专有：移动网络、丢失信息、Pixel 伴随组件，D31 不该带。
     if(Object.hasOwn(data,'managed_mobile_status')||Object.hasOwn(data,'mobile_network')
-      ||Object.hasOwn(data,'managed_proxy_tasks')||Object.hasOwn(data,'proxy_runtime')
       ||Object.hasOwn(data,'managed_lost_message_v1')||Object.hasOwn(data,'managed_pixel_companion_v1'))
       throw Error('网关专用状态仅限网关产品');
     return;
