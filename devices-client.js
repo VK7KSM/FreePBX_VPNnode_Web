@@ -1402,10 +1402,11 @@ function selectTrafficBar(i){
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
-function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&!gatewayDevice(currentDev()))readSystemSettings();}
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&tab!=='网络代理'&&!gatewayDevice(currentDev()))readSystemSettings();}
 function pageSystem(dis){
-  var gateway=gatewayDevice(currentDev()),tabs=Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
+  var gateway=gatewayDevice(currentDev()),tabs=Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(currentDev()&&currentDev().managed_proxy_tasks===true)tabs.splice(tabs.indexOf('账号配置'),0,'网络代理');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
+  if(SYSTEM_TAB==='网络代理')return h+pageProxySettings(currentDev())+'</section></div>';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
@@ -1429,6 +1430,16 @@ function pageGatewayNetworkSettings(d){
     +gatewayNetworkValue('运营商配置',m.carrier_config_readable?'可读取':'不可读取')+gatewayNetworkValue('APN配置',m.apn_provider_readable?'可读取':'不可读取');
   h+=gatewayNetworkValue('蓝牙',bluetooth)+gatewayNetworkValue('USB状态',usb)+'</div>';
   h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((snapshot.paired||[]).length?'<div class="system-items">'+snapshot.paired.map(function(p){return gatewayNetworkValue(p.name||'蓝牙设备',p.address||'');}).join('')+'</div>':'<p class="muted">'+(snapshot.bluetooth===false?'蓝牙已关闭':'暂无已配对设备信息')+'</p>')+'</div>';
+  return h;
+}
+
+// 代理那一段原先长在 pageGatewayNetworkSettings 里，只有网关型号看得到。
+// D31 同样要用，而网关那页的移动数据/SIM/蓝牙/USB 都是网关特有的，不该带给 D31，
+// 所以整段拆成独立页，按设备上报的 managed_proxy_tasks 能力位显示。
+function pageProxySettings(d){
+  if(!d)return '<p class="muted">请先选择设备</p>';
+  if(d.managed_proxy_tasks!==true)return '<p class="muted">本机客户端尚未支持代理管理。</p>';
+  var h='';
   var p=d.proxy_runtime||{},cfg=d.proxy_config||{},run=MAINTENANCE_RUN[d.id]||{},blocked=d.enabled===false||d.managed_proxy_tasks!==true||run.pending?' disabled':'';
   var management=p.management_via==='proxy'?'代理':p.management_via==='direct'?'直连':'尚未上报';
   h+='<div class="system-setting-section"><h4>代理核心与管理路径</h4><div class="system-items">'
