@@ -34,7 +34,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
-import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
+import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel } from './release-channels.js';
 import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
@@ -2487,6 +2487,23 @@ async function handleElfReleasePublish(env, request) {
   }
 }
 
+/** 取某个资产通道里最新的、未退休未过期的发布；没有就返回 null。 */
+async function latestAssetRelease(env,channel){
+  try{
+    if(!isAssetChannel(channel))return null;
+    const ids=(await getStore(env,releaseListKey(channel)))||[];
+    let best=null;
+    for(const id of ids){
+      const rel=await getStore(env,releaseKey(channel,id));
+      if(!rel||rel.retired_at||typeof rel.manifest_raw!=='string')continue;
+      const m=JSON.parse(rel.manifest_raw);
+      if(Number(m.expires_at)>0&&Number(m.expires_at)<=Date.now())continue;
+      if(!best||Number(m.versionCode)>best.versionCode)best={versionCode:Number(m.versionCode),manifest_raw:rel.manifest_raw,signature:rel.signature};
+    }
+    return best;
+  }catch(unavailable){console.error('asset_release_lookup_failed',channel);return null;}
+}
+
 async function handleElfReleaseList(env,url) {
   try {
     let channel=releaseChannel(url.searchParams.get('channel') ?? undefined);
@@ -2555,6 +2572,10 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     if (list[i].enabled === false) throw new Error("设备已停用");
     const manifest = JSON.parse(rel.manifest_raw);
     const channel=manifestChannel(manifest);
+    // 资产通道（代理核心这类裸二进制）绝不能走到这里：这条路会在设备记录上建 update 记录，
+    // 设备的更新器会消费它并按 APK 安装。22 MB 的 gz 被拿去 pm install 是必然出事的。
+    // 核心的下发走 configure_proxy 的参数，带签名清单由设备自己验签，不经更新通道。
+    if(isAssetChannel(channel))throw Error("资产通道不能指派为客户端更新");
     if(deviceReleaseChannel(list[i],await loadDeviceModels(env))!==channel)throw Error("设备与发布制品不匹配");
     if(['d31','gateway'].includes(channel) && (list[i].managed_update!==true || list[i].managed_update_v2!==true))throw Error("客户端尚未启用独立更新器");
     if(channel==='gateway'&&(list[i].app_package!==manifest.package||list[i].app_cert_sha256!==manifest.certSha256||list[i].app_abi!==manifest.abi))throw Error('网关已装应用与制品不匹配');
@@ -2686,7 +2707,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && !isGateway(device) && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
-  if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_proxy_tasks===true
+  // 这一处最要命：它是把任务真正交到设备手里的那一步。按型号挡住，任务会在服务端一直 pending 到过期，
+  // 而面板上看着是「已下发」，现场却什么都没发生——比直接报错更难查。
+  if(device.enabled!==false&&report.status_only===true&&report.managed_proxy_tasks===true
       &&device.task?.managed_proxy_v1===true&&PROXY_TASK_TYPES.includes(device.task.type)&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_proxy_v1:true};
   if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_lost_message_v1===true
@@ -2758,7 +2781,7 @@ async function handleElfEnqueueTask(env, request) {
         || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
         || (data.type==="wipe_data" && found.managed_wipe_v1===true)
         || (LOST_MESSAGE_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_lost_message_v1===true)
-        || (PROXY_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_proxy_tasks===true)
+        || (PROXY_TASK_TYPES.includes(data.type) && found.managed_proxy_tasks===true)
         || (data.type===PIXEL_COMPANION_TASK_TYPE && isGateway(found) && found.managed_pixel_companion_v1===true)
         || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
@@ -2787,7 +2810,10 @@ async function handleElfEnqueueTask(env, request) {
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
       const existing=await findRepairTask(env.__storage,found,data.id);
-      const prepared=await proxyConfigureParams(found,params||{},data.id,existing,'https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host);
+      // 核心随配置一起下发：设备自己判断本机有没有、版本对不对，决定要不要拉。
+      // 服务端不记「这台装没装」——那份状态只有设备知道，记在服务端迟早和现场不一致。
+      const coreRelease=await latestAssetRelease(env,'d31-proxy-core');
+      const prepared=await proxyConfigureParams(found,params||{},data.id,existing,'https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host,coreRelease);
       params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
     }
     if(data.type===PIXEL_COMPANION_TASK_TYPE){

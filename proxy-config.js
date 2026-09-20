@@ -19,7 +19,19 @@ export function publicProxyConfig(value){
   if(!value)return null;
   return {version:value.version,sha256:value.sha256,size:value.size,uploaded_at:value.uploaded_at};
 }
-export async function proxyConfigureParams(device,input,taskId,existing=null,baseUrl=DEFAULT_BASE_URL){
+/**
+ * 代理核心的下发形状。核心是设备以 root 执行的裸二进制，**只校验服务端回的 sha256 挡不住源头被换**——
+ * 服务端被改，哈希也跟着改。所以带的是上传时那对「签名清单 + 签名」：设备用内置公钥验签，
+ * 通过之后才按清单里的 size/sha256 校验下载到的字节。与 APK 更新走的是同一套验签代码。
+ * 下载地址在清单里（`/api/elfremote/apk/<job_id>`，job_id 本身就是凭据），不另发令牌。
+ * 没有可用的核心发布时返回 null，任务里就不带 core 这一段，设备按「核心不在」处理。
+ */
+export function proxyCoreParams(release){
+  if(!release||typeof release.manifest_raw!=='string'||!/^(?:[0-9a-f]{2})+$/i.test(release.signature||''))return null;
+  return {manifest_raw:release.manifest_raw,signature:release.signature};
+}
+
+export async function proxyConfigureParams(device,input,taskId,existing=null,baseUrl=DEFAULT_BASE_URL,core=null){
   // 按能力位放行，不按产品型号。原来硬判 product_id==='elfremote_gateway'，
   // D31 这类同样实现了代理管理的机型一概进不来；为一台设备改公共合同是更糟的做法。
   if(!device||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
@@ -34,14 +46,16 @@ export async function proxyConfigureParams(device,input,taskId,existing=null,bas
   if(existing?.type==='configure_proxy'&&existing.id===taskId&&existing.params?.sha256===meta.sha256
       &&existing.params?.size===meta.size&&existing.params?.version===meta.version
       &&typeof existing.params.url==='string'
+      &&JSON.stringify(existing.params.core??null)===JSON.stringify(proxyCoreParams(core))
       &&validSha(existing.proxy_download_token_sha256))
     return {params:existing.params,token_sha256:existing.proxy_download_token_sha256};
   const token=hex(crypto.getRandomValues(new Uint8Array(32)));
   const query=new URLSearchParams({device_id:device.id,token});
   // version 一并下发：设备的看门狗回退时要报「退回了哪一版」，
   // 拿 sha256 前几位当版本号是设备侧自己编的，对不上管理员在页面上看到的那个。
+  const coreParams=proxyCoreParams(core);
   return {params:{url:baseUrl+'/api/elfremote/proxy-config/'+taskId+'?'+query,
-    version:meta.version,size:meta.size,sha256:meta.sha256},
+    version:meta.version,size:meta.size,sha256:meta.sha256,...(coreParams?{core:coreParams}:{})},
     token_sha256:await sha256(new TextEncoder().encode(token))};
 }
 

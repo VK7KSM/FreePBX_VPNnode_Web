@@ -180,12 +180,29 @@ const PROXY_RUNTIME_FIELDS=['schema_version','bundled','version','abi','asset_ve
   'adb_wss_via_proxy_ready','file_download_via_proxy_ready','error_category'];
 const PROXY_RUNTIME_REQUIRED=['schema_version','bundled','version','abi','asset_verified','core_verified','configured',
   'running','http_ready','socks_ready','proxy_reachable','management_via','write_locked'];
-const PROXY_RUNTIME_V2_FIELDS=[...PROXY_RUNTIME_REQUIRED,'http_port','socks_port','checked_at_ms'];
+// v2 原来是「恰好这 16 个键」的精确集合，于是设备无法上报配置身份与错误类别——
+// 而回执校验只认 schema_version===2，退回 v1 也不行。核心改为按需下载之后，
+// 「装了哪一版配置」「为什么失败」恰恰是最需要看的两件事，所以把 v1 那几个可选键在 v2 里也放开。
+const PROXY_RUNTIME_V2_REQUIRED=[...PROXY_RUNTIME_REQUIRED,'http_port','socks_port','checked_at_ms'];
+const PROXY_RUNTIME_V2_FIELDS=[...PROXY_RUNTIME_V2_REQUIRED,'error','config_version','config_sha256',
+  'management_https_via_proxy','management_mqtt_via_proxy','adb_wss_via_proxy_ready','file_download_via_proxy_ready','error_category'];
 export const PROXY_ERROR_CATEGORIES=Object.freeze(['none','not_configured','core_missing','core_verification_failed',
   'config_invalid','config_read_failed','config_hash_mismatch','process_start_failed','process_stop_failed','process_not_running','listener_unavailable',
   'proxy_unreachable','https_test_failed','mqtt_test_failed','adb_wss_test_failed','file_download_test_failed',
   'rollback_failed','unknown']);
 const proxyErrorCategories=new Set(PROXY_ERROR_CATEGORIES);
+
+// 核心按需下载之后「未安装」是正常态，这时没有版本可报，允许 null。
+// 但只在确实没装的时候允许：已验证装好了却报不出版本，那是设备侧的 bug，不能放过去。
+function coreVersion(value){
+  if(value.version===null||value.version===''){
+    if(value.asset_verified===true||value.core_verified===true)throw Error('核心已就绪却未报版本');
+    return null;
+  }
+  const version=boundedString(value.version,32,'代理核心版本无效');
+  if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
+  return version;
+}
 
 export function proxyRuntimeStatus(value,device,managed){
   // 原来只认网关产品（isGateway）。D31 同样要上报这一段，判据改成设备自己声明的能力位：
@@ -201,23 +218,25 @@ export function proxyRuntimeStatus(value,device,managed){
   if(!record(value))throw Error('代理运行状态格式无效');
   if(new TextEncoder().encode(JSON.stringify(value)).length>4096)throw Error('代理运行状态内容过长');
   if(value.schema_version===2){
-    exactFields(value,PROXY_RUNTIME_V2_FIELDS,PROXY_RUNTIME_V2_FIELDS,'代理运行状态字段无效');
-    if(value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)throw Error('代理运行状态版本或只读标记无效');
-    const version=boundedString(value.version,32,'代理核心版本无效');
-    if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
-    const result={schema_version:2,bundled:true,version,abi:'arm64-v8a'};
+    exactFields(value,PROXY_RUNTIME_V2_FIELDS,PROXY_RUNTIME_V2_REQUIRED,'代理运行状态字段无效');
+    // bundled 不再硬判 true：代理核心改为按需下载，不随 APK 打包，D31 会报 false。
+    // asset_verified 的语义相应变为「核心已下载且用内置公钥验签通过」，不再是「随包自带且哈希相符」。
+    if(typeof value.bundled!=='boolean'||value.abi!=='arm64-v8a'||value.write_locked!==true)throw Error('代理运行状态版本或只读标记无效');
+    const version=coreVersion(value);
+    const result={schema_version:2,bundled:value.bundled,version,abi:'arm64-v8a'};
     for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
       result[key]=requiredBoolean(value,key,'代理运行状态必须为布尔值');
     if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
         ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理运行状态边界无效');
-    return {...result,management_via:value.management_via,write_locked:true,http_port:17890,socks_port:17891,checked_at_ms:value.checked_at_ms};
+    Object.assign(result,{management_via:value.management_via,write_locked:true,
+      http_port:17890,socks_port:17891,checked_at_ms:value.checked_at_ms});
+    return proxyOptionalFields(value,result);
   }
   exactFields(value,PROXY_RUNTIME_FIELDS,PROXY_RUNTIME_REQUIRED,'代理运行状态字段无效');
-  if(value.schema_version!==1||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
+  if(value.schema_version!==1||typeof value.bundled!=='boolean'||value.abi!=='arm64-v8a'||value.write_locked!==true)
     throw Error('代理运行状态版本或只读标记无效');
-  const version=boundedString(value.version,32,'代理核心版本无效');
-  if(!/^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9._-]{1,16})?$/.test(version))throw Error('代理核心版本无效');
-  const result={schema_version:1,bundled:true,version,abi:'arm64-v8a'};
+  const version=coreVersion(value);
+  const result={schema_version:1,bundled:value.bundled,version,abi:'arm64-v8a'};
   for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
     result[key]=requiredBoolean(value,key,'代理运行状态必须为布尔值');
   if(!['direct','proxy'].includes(value.management_via))throw Error('代理管理通道无效');
@@ -226,6 +245,12 @@ export function proxyRuntimeStatus(value,device,managed){
     if(!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理检查时间无效');
     result.checked_at_ms=value.checked_at_ms;
   }
+  return proxyOptionalFields(value,result);
+}
+
+// 配置身份、代理路径与错误类别。v1 与 v2 共用同一套语义——v2 原先根本不收这几项，
+// 于是设备报不出「装的是哪一版配置」和「为什么失败」，而这两件正是按需下载之后最该看的。
+function proxyOptionalFields(value,result){
   if(Object.hasOwn(value,'config_version')){
     if(value.config_version!==null)result.config_version=boundedString(value.config_version,64,'代理配置版本无效');
     else result.config_version=null;

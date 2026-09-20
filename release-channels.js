@@ -1,6 +1,11 @@
 import {GATEWAY_PRODUCT,isGateway,gatewayProductFields} from './gateway-product.js';
+// asset:true 的通道装的不是 APK，而是设备以 root 执行的裸二进制（当前是 D31 的代理核心）。
+// 这类资产复用发布通道的离线签名、R2 存储与版本固定，但**绝不能走指派/更新那条路**：
+// assignReleaseToDevice 会在设备记录上建 update 记录，设备的更新器会把它当 APK 去安装。
+// 它们也没有 APK 签名证书，所以 certSha256 不作要求。
 export const RELEASE_CHANNELS = Object.freeze({
   d22: {package:'net.elfradio.elfremote',model_id:'mdl_d22'},
+  'd31-proxy-core': {package:'net.elfradio.d31.proxycore',model_id:'mdl_d31',asset:true},
   d31: {package:'net.elfradio.d31bootstrap',model_id:'mdl_d31',certSha256:'9b31f89fa50b672ecfe02d73a534cc03f6cf893739aec268f9fe0b71e72da72e'},
   gateway: {package:GATEWAY_PRODUCT.app_package,model_id:GATEWAY_PRODUCT.model_id,product_id:GATEWAY_PRODUCT.product_id,certSha256:GATEWAY_PRODUCT.certSha256,abi:GATEWAY_PRODUCT.abi}
 });
@@ -24,13 +29,20 @@ export function validateReleaseManifest(m,now=Date.now()) {
   if(!Number.isSafeInteger(m.versionCode)||m.versionCode<=0||m.versionCode>2147483647
     ||typeof m.versionName!=='string'||!m.versionName||m.versionName.length>128
     ||!Number.isSafeInteger(m.size)||m.size<=0||m.size>64*1024*1024
-    ||!/^[0-9a-f]{64}$/.test(m.sha256||'')||!/^[0-9a-f]{64}$/.test(m.certSha256||'')
+    ||!/^[0-9a-f]{64}$/.test(m.sha256||'')
+    ||(!RELEASE_CHANNELS[channel].asset&&!/^[0-9a-f]{64}$/.test(m.certSha256||''))
+    ||(RELEASE_CHANNELS[channel].asset&&m.certSha256!==undefined&&!/^[0-9a-f]{64}$/.test(m.certSha256))
     ||!Number.isSafeInteger(m.expires_at)||(!(channel==='d22'&&m.expires_at===0)&&m.expires_at<=now)
     ||!/^[A-Za-z0-9_-]{1,96}$/.test(m.job_id||'')
     ||(m.device_id!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(m.device_id))
     ||m.url!=='https://v.elfradio.net/api/elfremote/apk/'+m.job_id)throw Error('清单字段或有效期无效');
   return channel;
 }
+/** 资产通道装的是裸二进制，不是 APK；不得进入指派/更新那条路。 */
+export function isAssetChannel(channel) {
+  return RELEASE_CHANNELS[releaseChannel(channel)]?.asset === true;
+}
+
 export function deviceReleaseChannel(device,models) {
   const model=models.find(m=>m.id && m.id===device.model_id);
   if(isGateway(device)){

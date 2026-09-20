@@ -127,7 +127,8 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 }
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
-export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy"];
+// remove_proxy：代理核心改为按需下载之后，装上了也要能单独卸掉。
+export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy","remove_proxy"];
 export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"];
 export const PIXEL_COMPANION_TASK_TYPE = "stage_pixel_companion";
 export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", "show_share_link", PIXEL_COMPANION_TASK_TYPE, ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
@@ -168,6 +169,7 @@ export const REPAIR_TYPE_LABELS = {
   start_proxy: "启动代理",
   stop_proxy: "停止代理",
   test_proxy: "检测代理",
+  remove_proxy: "移除代理核心",
   stage_pixel_companion: "暂存Pixel根组件",
   connect_wifi: "连接 Wi-Fi", contacts_read:"读取通信录", contact_add:"添加联系人", contact_update:"修改联系人", contact_delete:"删除号码"
 };
@@ -330,20 +332,40 @@ export function proxyTaskParams(type,value={}){
   return Object.fromEntries(fields.map(key=>[key,value[key]]));
 }
 
+const PROXY_STATUS_OPTIONAL=['config_version','config_sha256','error_category',
+  'management_https_via_proxy','management_mqtt_via_proxy','adb_wss_via_proxy_ready','file_download_via_proxy_ready'];
 const PROXY_STATUS_FIELDS=['schema_version','bundled','version','abi','asset_verified','core_verified','configured','running',
   'http_ready','socks_ready','proxy_reachable','management_via','write_locked','http_port','socks_port','checked_at_ms'];
 function proxyTaskStatus(value){
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务状态无效');
   const keys=Object.keys(value);
-  if(keys.length!==PROXY_STATUS_FIELDS.length||keys.some(key=>!PROXY_STATUS_FIELDS.includes(key)))throw Error('代理任务状态字段无效');
-  if(value.schema_version!==2||value.bundled!==true||value.abi!=='arm64-v8a'||value.write_locked!==true)
+  // 必填仍是那 16 个；可选的几项是配置身份、代理路径与错误类别——
+  // 核心改为按需下载之后，「装的是哪一版配置」「为什么失败」是最该看的两件事，
+  // 原来的精确集合根本不收，设备只能报个空壳。与 proxyRuntimeStatus 的放宽保持一致。
+  if(PROXY_STATUS_FIELDS.some(key=>!Object.hasOwn(value,key))
+      ||keys.some(key=>!PROXY_STATUS_FIELDS.includes(key)&&!PROXY_STATUS_OPTIONAL.includes(key)))
+    throw Error('代理任务状态字段无效');
+  // bundled 不再硬判 true：代理核心改为按需下载、不随 APK 打包，D31 会报 false。
+  // 这条校验和 gateway-product.js 的 proxyRuntimeStatus 是两套，两边都要放开，漏一处设备就报不上来。
+  if(value.schema_version!==2||typeof value.bundled!=='boolean'||value.abi!=='arm64-v8a'||value.write_locked!==true)
     throw Error('代理任务状态版本无效');
-  if(typeof value.version!=='string'||value.version.length<1||value.version.length>32)throw Error('代理核心版本无效');
+  // 核心未安装时没有版本可报，允许 null；但已验证装好了却报不出版本是设备侧的 bug，不放过。
+  if(value.version===null||value.version===''){
+    if(value.asset_verified===true||value.core_verified===true)throw Error('核心已就绪却未报版本');
+  }else if(typeof value.version!=='string'||value.version.length<1||value.version.length>32)throw Error('代理核心版本无效');
   for(const key of ['asset_verified','core_verified','configured','running','http_ready','socks_ready','proxy_reachable'])
     if(typeof value[key]!=='boolean')throw Error('代理任务状态必须为布尔值');
   if(!['direct','proxy'].includes(value.management_via)||value.http_port!==17890||value.socks_port!==17891
       ||!Number.isSafeInteger(value.checked_at_ms)||value.checked_at_ms<=0)throw Error('代理任务状态边界无效');
-  return Object.fromEntries(PROXY_STATUS_FIELDS.map(key=>[key,value[key]]));
+  if(Object.hasOwn(value,'config_sha256')&&value.config_sha256!==null&&!/^[a-f0-9]{64}$/.test(value.config_sha256))
+    throw Error('代理配置校验值无效');
+  if(Object.hasOwn(value,'config_version')&&value.config_version!==null
+      &&(typeof value.config_version!=='string'||value.config_version.length<1||value.config_version.length>64))
+    throw Error('代理配置版本无效');
+  for(const key of ['management_https_via_proxy','management_mqtt_via_proxy','adb_wss_via_proxy_ready','file_download_via_proxy_ready'])
+    if(Object.hasOwn(value,key)&&typeof value[key]!=='boolean')throw Error('代理路径状态必须为布尔值');
+  const picked=PROXY_STATUS_FIELDS.concat(PROXY_STATUS_OPTIONAL.filter(key=>Object.hasOwn(value,key)));
+  return Object.fromEntries(picked.map(key=>[key,value[key]]));
 }
 
 export function proxyTaskResult(type,state,value){
@@ -357,6 +379,14 @@ export function proxyTaskResult(type,state,value){
     throw Error('代理任务终态回执无效');
   const proxy=proxyTaskStatus(value.proxy);
   if(state==='success'){
+    // 移除任务的成功形状和其余四种正好相反：核心已删干净，所以这几项必须全是 false。
+    // 不反过来的话，「成功移除了却仍报着已配置」会被当成正常回执收下，面板上就看不出设备到底还有没有核心。
+    if(type==='remove_proxy'){
+      if(proxy.asset_verified||proxy.core_verified||proxy.configured||proxy.running
+          ||proxy.http_ready||proxy.socks_ready||proxy.proxy_reachable)
+        throw Error('代理移除回执仍显示核心或配置残留');
+      return {stage:'proxy',action:type,proxy};
+    }
     if(!proxy.asset_verified||!proxy.core_verified||!proxy.configured)throw Error('代理任务成功状态不完整');
     if(type==='stop_proxy'){
       if(proxy.running||proxy.http_ready||proxy.socks_ready||proxy.proxy_reachable)throw Error('代理停止回执仍显示活动进程');
@@ -369,7 +399,7 @@ export function proxyTaskResult(type,state,value){
 function proxyTaskDetail(type,state,result){
   if(state==='claimed')return '设备已领取代理任务';
   if(state==='running')return '设备正在执行代理任务';
-  if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过'}[type];
+  if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过',remove_proxy:'代理核心已移除'}[type];
   if(state==='failed')return '代理任务执行失败';
   if(state==='rejected')return '设备拒绝代理任务';
   return '';
