@@ -54,7 +54,42 @@ const KEYMAP = (() => {
 const ASCII_ONLY = /^[\x20-\x7e\n]*$/;
 const META_SHIFT = 0x1 | 0x40, META_ALT = 0x2 | 0x10, META_CTRL = 0x1000 | 0x2000, META_CAPS = 0x100000;
 function metaOf(e) { return (e.shiftKey ? META_SHIFT : 0) | (e.altKey ? META_ALT : 0) | (e.ctrlKey ? META_CTRL : 0) | (e.getModifierState && e.getModifierState('CapsLock') ? META_CAPS : 0); }
-const SPECIAL_KEYS = [['电源', 26], ['音量+', 24], ['音量-', 25], ['静音', 164], ['搜索', 84], ['相机', 27], ['通话', 5], ['挂断', 6]];
+// 特殊按键按机型给。原来是一份写死的通用清单，里面大半在三台机器上都是死键——
+// 2026-09-20 用 adb（D31/Pixel）与核心 root 通道（D22）逐个实测，结论：
+//
+//              D31(安卓6)      D22(安卓8.1)    Pixel3(安卓12)
+//   电源 26     熄屏/亮屏        同左            同左          ← 短按只是开关屏幕，不是关机菜单，照实改名
+//   音量± 24/25 有效(铃声流)     有效            有效(媒体流)
+//   静音 164    无反应           无反应          有效(媒体静音开关)
+//   搜索 84     无反应           无反应          无反应
+//   相机 27     无反应           无反应          无反应
+//   通话 5      无反应           无反应          无反应
+//   挂断 6      等同休眠         无反应          无反应        ← 与电源键重复，且黑屏后按它叫不醒
+//   菜单 82     弹出启动器菜单    焦点切换        只收通知栏
+//   通知栏      有，但要 Win+N    未验证          shell 命令可展开
+//               唤出（所有者告知）                 （scrcpy 那条控制消息本身尚未实测）
+//
+// 所以：搜索/相机/通话/挂断 全部去掉；静音只留给 Pixel。
+// 通知栏这一条暂不放进来：Pixel 上我验证的是 shell 命令，不是 scrcpy 真正走的那条
+// 控制消息；D31 上 service call statusbar 1 实测打不开（截图前后一致，而同一套截图
+// 比对能正确反映开设置页的变化，说明观测量本身没问题）。等两条路都实测过再加，
+// 宁可少一个键，也不再往面板上放没验证过的东西。
+// 菜单键实测有效，但**左侧工具栏第一个按钮就是它**（act==='menu' 发的正是 82），
+// 这里不能再放一个，否则是同一个键的两个入口。
+// 没测过的机型只给三台都验过的那三个键，宁可少给也不给死键。
+const KEY_POWER = 26, KEY_VOL_UP = 24, KEY_VOL_DOWN = 25, KEY_MUTE = 164, KEY_MENU = 82, KEY_POUND = 18;
+// 熄屏/亮屏：注入的是短按。长按才会出关机菜单，但那是台远端设备——真按到「关机」就再也
+// 叫不回来了，所以不做这个按钮；要加得先想清楚怎么远程开机。
+const BASE_KEYS = [['熄屏/亮屏', [KEY_POWER]], ['音量+', [KEY_VOL_UP]], ['音量-', [KEY_VOL_DOWN]]];
+// D31 的「应用设置」（改桌面图标那一页）没有能直接拉起的入口：EditAppActivity 冷启动会让
+// 启动器崩溃，实测过。厂商的办法是连按 11 次 # 解锁、再按一次菜单键调出菜单，实测有效。
+const D31_APP_SETTINGS = new Array(11).fill(KEY_POUND).concat([KEY_MENU]);
+const MODEL_KEYS = {
+  mdl_d31: BASE_KEYS.concat([['应用设置', D31_APP_SETTINGS]]),
+  mdl_d22: BASE_KEYS,
+  mdl_pixel3: BASE_KEYS.concat([['静音', [KEY_MUTE]]]),
+};
+function specialKeys(device) { return MODEL_KEYS[device && device.model_id] || BASE_KEYS; }
 
 function buildNode(s) {
   const node = document.createElement('div'); node.className = 'desktop-view'; node.dataset.deviceId = s.device.id;
@@ -62,7 +97,7 @@ function buildNode(s) {
     + '<textarea class="desktop-ime" aria-label="键盘输入" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>'
     + '<div class="desktop-tools" role="toolbar" aria-label="远程桌面工具">' + ICONS.map(i => '<button type="button" data-act="' + i[0] + '" title="' + i[1] + '" aria-label="' + i[1] + '">' + icon(i[2]) + '</button>').join('') + '</div>'
     + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden>' + icon('M6 6l6 6-6 6M13 6l6 6-6 6') + '</button>'
-    + '<div class="desktop-keys" hidden>' + SPECIAL_KEYS.map(k => '<button type="button" data-key="' + k[1] + '">' + k[0] + '</button>').join('') + '</div>'
+    + '<div class="desktop-keys" hidden>' + specialKeys(s.device).map((k, i) => '<button type="button" data-key="' + i + '">' + k[0] + '</button>').join('') + '</div>'
     + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div>'
     + '<div class="desktop-kbd-hint">键盘已接管，点击画面外释放</div></div>';
   const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold'), ime = node.querySelector('.desktop-ime'), keysPanel = node.querySelector('.desktop-keys');
@@ -83,7 +118,7 @@ function buildNode(s) {
   };
   applyExpand();
   tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'expand') { expanded = !expanded; applyExpand(); if (active === s && s.id && !s.closed) resize(s); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
-  keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); key(s, Number(b.dataset.key)); });
+  keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); pressSpecial(s, specialKeys(s.device)[Number(b.dataset.key)]); });
   unfold.onclick = () => { folded = false; applyFold(); };
   // 鼠标→触摸：按实际画面矩形换算，黑边不发；右键=返回，中键=桌面；失焦/离开/断线释放触点。
   let down = false, lastMove = 0;
@@ -173,6 +208,17 @@ async function sendText(s, text) {
 const deviceClipboards = new Map();
 function rememberDeviceClipboard(s, text) { if (s?.device?.id) deviceClipboards.set(s.device.id, text); }
 function recallDeviceClipboard(s) { return s?.device?.id ? deviceClipboards.get(s.device.id) : undefined; }
+
+// 特殊键有两种：单个键码，以及要按顺序连发的一串键码（D31 的应用设置）。
+async function pressSpecial(s, entry) {
+  if (!entry || !s.controller || !s.inputReady) return;
+  const [label, what] = entry;
+  s.lastInput = Date.now(); send(s, { type: 'activity' });
+  try {
+    for (const code of what) await key(s, code);
+    if (what.length > 1) log(s, '已发送「' + label + '」按键序列 ' + what.length + ' 次');
+  } catch (e) { log(s, '「' + label + '」发送失败：' + (e.message || e)); }
+}
 
 async function key(s, code) { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: code, repeat: 0, metaState: 0 }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: code, repeat: 0, metaState: 0 }); }
 async function action(s, act) {
