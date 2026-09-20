@@ -1436,6 +1436,14 @@ function pageGatewayNetworkSettings(d){
 // 代理那一段原先长在 pageGatewayNetworkSettings 里，只有网关型号看得到。
 // D31 同样要用，而网关那页的移动数据/SIM/蓝牙/USB 都是网关特有的，不该带给 D31，
 // 所以整段拆成独立页，按设备上报的 managed_proxy_tasks 能力位显示。
+// 核心改为按需下载之后，「没装」是正常态，不是「尚未上报」——设备会报 version:null 且
+// asset_verified:false。两者显示成同一句话，使用者分不清是设备没说话还是核心确实不在。
+function proxyCoreLabel(p){
+  if(p.version)return p.version+' · '+gatewayProxyFlag(p.core_verified,'已核验','校验失败');
+  if(p.version===null&&p.asset_verified===false)return '未安装（按需下载）';
+  return '尚未上报';
+}
+
 function pageProxySettings(d){
   if(!d)return '<p class="muted">请先选择设备</p>';
   if(d.managed_proxy_tasks!==true)return '<p class="muted">本机客户端尚未支持代理管理。</p>';
@@ -1445,7 +1453,7 @@ function pageProxySettings(d){
   h+='<div class="system-setting-section"><h4>代理核心与管理路径</h4><div class="system-items">'
     +gatewayNetworkValue('当前直连网络',d.network==='cellular'?'移动数据':d.network==='wifi'?'Wi-Fi':d.network==='ethernet'?'有线网络':'未知')
     +gatewayNetworkValue('当前管理通道',management)
-    +gatewayNetworkValue('转发核心',p.version?(p.version+' · '+gatewayProxyFlag(p.core_verified,'已核验','校验失败')):'尚未上报')
+    +gatewayNetworkValue('转发核心',proxyCoreLabel(p))
     +gatewayNetworkValue('内置资源',gatewayProxyFlag(p.asset_verified,'已核验','校验失败'))
     +gatewayNetworkValue('配置版本',p.config_version||cfg.version||'尚未配置')
     +gatewayNetworkValue('配置状态',gatewayProxyFlag(p.configured,'已配置','未配置'))
