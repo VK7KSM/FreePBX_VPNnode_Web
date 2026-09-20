@@ -323,13 +323,27 @@ export function proxyTaskParams(type,value={}){
     if(Object.keys(value).length)throw Error('代理控制任务不接受参数');
     return {};
   }
-  const fields=['url','size','sha256'];
-  if(Object.keys(value).length!==fields.length||Object.keys(value).some(key=>!fields.includes(key)))throw Error('代理配置任务字段无效');
+  // 必填四项；core 可选。version 是 2026-09-20 加的：设备看门狗回退时要报「退回了哪一版」，
+  // 拿 sha256 前缀自编的版本号和管理员在面板上看到的对不上。
+  // core 是按需下载的代理核心清单——服务端只搬「签名清单 + 签名」，设备用内置公钥验签后才落盘。
+  // 这里原来是「恰好三个字段」的精确集合，加了 version 与 core 之后整条下发会被它拒掉，
+  // 而单测只测了生成参数那个函数、没测这条缝，结果是线上发任务直接 400。
+  const fields=['url','size','sha256','version'],optional=['core'];
+  if(fields.some(key=>!Object.hasOwn(value,key))
+      ||Object.keys(value).some(key=>!fields.includes(key)&&!optional.includes(key)))throw Error('代理配置任务字段无效');
+  if(typeof value.version!=='string'||value.version.length<1||value.version.length>64)throw Error('代理配置版本无效');
+  if(Object.hasOwn(value,'core')){
+    const core=value.core;
+    if(!core||typeof core!=='object'||Array.isArray(core)
+        ||Object.keys(core).length!==2||!Object.hasOwn(core,'manifest_raw')||!Object.hasOwn(core,'signature')
+        ||typeof core.manifest_raw!=='string'||core.manifest_raw.length<2||core.manifest_raw.length>8192
+        ||!/^(?:[0-9a-f]{2})+$/i.test(core.signature||'')||core.signature.length>4096)throw Error('代理核心清单无效');
+  }
   if(typeof value.url!=='string'||value.url.length>4096
       ||!/^https:\/\/v\.elfradio\.net\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}(?:\?[^#]*)?$/.test(value.url))throw Error('代理配置下载地址无效');
   if(!Number.isInteger(value.size)||value.size<2||value.size>2*1024*1024)throw Error('代理配置大小无效');
   if(!/^[a-f0-9]{64}$/.test(value.sha256||''))throw Error('代理配置校验值无效');
-  return Object.fromEntries(fields.map(key=>[key,value[key]]));
+  return Object.fromEntries(fields.concat(optional.filter(key=>Object.hasOwn(value,key))).map(key=>[key,value[key]]));
 }
 
 const PROXY_STATUS_OPTIONAL=['config_version','config_sha256','error_category',
