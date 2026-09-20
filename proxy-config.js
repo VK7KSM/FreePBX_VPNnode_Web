@@ -64,7 +64,9 @@ export async function proxyConfigMetadata(storage,request,loadDevices,saveDevice
     const data=await request.json();
     if(!data||typeof data!=='object'||Array.isArray(data))throw Error('代理配置请求无效');
     const devices=await loadDevices(),device=devices.find(row=>row.id===data.device_id);
-    if(!device||device.product_id!=='elfremote_gateway')return json({ok:false,msg:'未找到Pixel Gateway'},404);
+    // 这一处也按能力位，不按产品：它管着配置上传、设备取配置与结算三条 RPC，
+    // 按型号挡住的话 D31 连配置都传不上去——报的还是「未找到 Pixel Gateway」，与实际问题毫不相干。
+    if(!device||device.managed_proxy_tasks!==true)return json({ok:false,msg:'该设备尚未支持代理管理'},404);
     if(data.action==='authorize'){
       if(!validTaskId(data.task_id)||typeof data.token!=='string'||!/^[a-f0-9]{64}$/.test(data.token))return json({ok:false,msg:'下载凭证无效'},401);
       const task=device.task,meta=device.proxy_config;
