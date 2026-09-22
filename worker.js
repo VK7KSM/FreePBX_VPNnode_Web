@@ -95,11 +95,11 @@ import {
   normalizeLostMode,
   prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
   CONFIG_TYPES, PROXY_TASK_TYPES, LOST_MESSAGE_TASK_TYPES, PIXEL_COMPANION_TASK_TYPE,
-  repairExpired, reclaimStaleRepair
-} from "./elfRemote/control-plane.js";
+  repairExpired, reclaimStaleRepair, taskCapable } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
 import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin, unknownDeviceRoute } from "./admin-auth.js";
+import { PROXY_ROLE_PATHS, singleStoreRead, storeAuthenticates, KV_INDEPENDENT, outerDeviceRoute } from "./route-table.js";
 import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import {queryTrajectoryMedia} from './trajectory-media.js';
@@ -791,15 +791,7 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
   }catch(error){return json({ok:false,msg:error.message},400);}
 };
 
-// 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
-function outerDeviceRoute(path){return path==='/api/elfremote/files'||path.startsWith('/api/elfremote/files/')||path==='/api/elfremote/file-return'||path==='/api/elfremote/file-return/received'||path==='/api/elfremote/proxy-config';}
-function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases','/api/admin/store-size','/api/admin/health'].includes(path);
-}
-// 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
-function storeAuthenticates(path,method){
-  return (method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'].includes(path))||(method==='GET'&&path==='/api/share/session');
-}
+// singleStoreRead / storeAuthenticates 由 route-table.js 派生（store:'read' / store:'auth'）。
 
 // 数据找回期间的临时机器凭证：仅对旧存储找回接口生效，删除 MIGRATION_TOKEN 密钥后即失效。
 async function migrationTokenOk(env,request,pathname){
@@ -810,6 +802,21 @@ async function migrationTokenOk(env,request,pathname){
   return crypto.subtle.timingSafeEqual(enc.encode(expected),enc.encode(given));
 }
 
+// KV 模式的登录走一趟 DO，让失败计数落盘（admin-auth.js loginThrottle 的 auth/failures），
+// 实例回收不再清零。DO 额度冷却期内、或这一趟本身撞上额度，退回实例内计数——
+// 登录不能因为 DO 不可用而失灵，那是额度耗尽时唯一还能进面板的门。
+async function kvLogin(env, request) {
+  const text = await request.text();
+  if (env.ELF_DO && Date.now() >= (quotaCooldown.get(env.ELF_DO) || 0)) {
+    try {
+      const headers = new Headers(request.headers); headers.delete('Content-Length');
+      const viaStore = await elfDoStub(env).fetch(new Request('https://elf-store/__auth/login', { method: 'POST', headers, body: text }));
+      if (viaStore.status !== 503) return viaStore;
+    } catch (error) { if (isQuotaError(error)) markQuotaUnavailable(env); else console.error('login_store_unavailable', error?.message); }
+  }
+  let body = {}; try { body = JSON.parse(text) || {}; } catch {}
+  return adminRpc(env, request, 'login', body);
+}
 const quotaCooldown=new WeakMap();
 function isQuotaError(error){return /Exceeded allowed (volume of requests|rows (written|read)|storage)[^.]*Durable Objects free tier/i.test(error?.message||'');}
 function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
@@ -888,7 +895,7 @@ const app = {
       const action = { "/api/login": "login", "/api/logout": "logout", "/api/session": "session" }[pathname];
       if (action) {
         if (method !== (action === "session" ? "GET" : "POST")) return authJson({ ok: false }, 405);
-        return adminRpc(env, request, action);
+        return action==='login'&&panelEnabled(env)?kvLogin(env,request):adminRpc(env, request, action);
       }
       if(!storeAuthenticates(pathname,method)&&!(await migrationTokenOk(env,request,pathname))){
         const session = await adminRpc(env, request, "session");
@@ -1387,17 +1394,8 @@ const app = {
 // 从被封禁的旧 Worker 转移过来的 ElfStore 命名空间，只用于数据找回，代码与 ElfStore 相同。
 export class ElfStoreLegacy extends ElfStore {}
 
-// 代理面板单独部署在 s.elfradio.net，与管理面板共用同一份代码，靠 PANEL_ROLE 区分角色。
-// 订阅接口必须对全网开放，是天然的公开面；设备管理与电话管理是纯后台，不该跟着一起暴露。
-// 2026-09-17 与 09-19 两次封禁都是公开地址被刷所致，把两者放在同一个 Worker 里，
-// 一次举报就会连带打掉后台。proxy 角色只放行代理面板自己用到的路径，其余一律 404。
-// 用冻结数组而不是 Set：Object.freeze 对 Set 无效，它冻不住 Set 的内容，
-// add() 照样能往里塞路径，那是一层看着有、实际没有的防护。
-export const PROXY_ROLE_PATHS = Object.freeze([
-  '/', '/index.html', '/favicon.ico', '/logo.png',
-  '/admin-session.js', '/cf-usage.js', '/panel-lifecycle.js',
-  '/api/login', '/api/logout', '/api/session', '/api/data', '/api/save', '/api/cf-usage',
-]);
+// 代理角色放行的路径见 route-table.js（PROXY_ROLE_PATHS）；这里转口一份，worker-proxy.js 与测试都从本文件取。
+export { PROXY_ROLE_PATHS };
 export function proxyRoleBlocked(env, pathname) {
   if (env?.PANEL_ROLE !== 'proxy') return false;
   return !pathname.startsWith('/sub') && !PROXY_ROLE_PATHS.includes(pathname);
@@ -1409,7 +1407,7 @@ export default {
     const path=new URL(request.url).pathname;
     // 角色闸门要放在最前面：被挡掉的路径连存储都不该碰。
     if(proxyRoleBlocked(env,path))return new Response('Not Found',{status:404});
-    const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
+    const independent=panelEnabled(env)&&KV_INDEPENDENT.has(path);
     const snapshotRead=path==='/api/devices'&&request.method==='GET';
     // 冷却期内一律不再触碰 DO：设备列表改用 KV 快照只读应答，其余直接 503，避免额度耗尽后继续消耗。
     if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0)){
@@ -3012,30 +3010,8 @@ async function handleElfEnqueueTask(env, request) {
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
-    const configTaskCapable=CONFIG_TYPES.includes(data.type)&&(isGateway(found)
-      ?data.type==='connect_wifi'&&found.managed_wifi_config_tasks===true
-      :found.managed_config_tasks===true);
-    if(found.status_only && !((data.type==='contacts_page'&&found.managed_contacts_page_v1===true)||(data.type==="root_exec" && found.managed_exec_tasks===true)
-        || (data.type==="file_manage" && found.managed_file_operations===true)
-        || (data.type==="system_config" && found.managed_system_settings===true)
-        || (data.type==="configure_sip" && found.managed_sip_account===true)
-        || (data.type==="configure_zello" && found.managed_zello_account===true)
-        || (data.type==="get_file" && found.managed_file_return===true)
-        || (data.type==="send_file" && found.managed_file_tasks===true)
-        || (data.type==="pull_logs" && found.managed_log_tasks===true)
-        || (data.type==="heal_network" && found.managed_heal_tasks===true)
-        || (data.type==="reboot" && found.managed_reboot_tasks===true)
-        || (data.type==="restart_adbd" && found.managed_adbd_tasks===true)
-        || (data.type==="scan_wifi" && found.managed_wifi_scan_tasks===true)
-        || (["play_alarm","stop_alarm"].includes(data.type) && found.managed_alarm_tasks===true)
-        || (data.type==="show_share_link" && found.managed_share_link_tasks===true)
-        || (data.type==="locate_now" && found.managed_locate_tasks===true)
-        || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
-        || (data.type==="wipe_data" && found.managed_wipe_v1===true)
-        || (LOST_MESSAGE_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_lost_message_v1===true)
-        || (PROXY_TASK_TYPES.includes(data.type) && found.managed_proxy_tasks===true)
-        || (data.type===PIXEL_COMPANION_TASK_TYPE && isGateway(found) && found.managed_pixel_companion_v1===true)
-        || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    // 任务类型 → 能力位的对照在 control-plane.js 的 TASK_CAPABILITIES，这里不再手写 || 链。
+    if(found.status_only && !taskCapable(found,data.type,isGateway(found))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
     if(LOST_MESSAGE_TASK_TYPES.includes(data.type)&&(!isGateway(found)||found.managed_lost_message_v1!==true))

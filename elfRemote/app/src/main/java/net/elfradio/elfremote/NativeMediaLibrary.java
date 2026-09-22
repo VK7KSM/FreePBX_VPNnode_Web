@@ -84,6 +84,12 @@ final class NativeMediaLibrary implements org.webrtc.NativeLibraryLoader {
                 lastFailure="";confirmed=true;return true;
             }
             // 3. 装的是精简包且本地还没有：按身份信息去自有服务器取。
+            //    先看空间：库要占临时文件与就位文件两份地方。空间不够就不下载——
+            //    以前每次上报都再下一遍、写到一半失败再删，移动数据上持续放血；
+            //    现在报 no_space 停在这里，下一次上报再看一眼空间（看空间不花流量）。
+            if(identity!=null&&!enoughSpace(context.getFilesDir(),identity.getLong("size"))){
+                lastFailure="no_space";return false;
+            }
             if(allowNetwork&&identity!=null&&download(file,identity)){
                 RuntimeLog.event("media_native_ready source=download abi="+abi());
                 lastFailure="";confirmed=true;return true;
@@ -154,6 +160,18 @@ final class NativeMediaLibrary implements org.webrtc.NativeLibraryLoader {
         }catch(Exception e){
             RuntimeLog.error("media_native_download_failed",new Exception(e));return false;
         }finally{ if(staged!=null)staged.delete(); }
+    }
+
+    /** 下载 + 就位要两份空间，再留 16 MB 给日志与数据库正常增长，别把机器塞到一字节不剩。 */
+    static long requiredSpace(long size){return size*2+16L*1024*1024;}
+    /** 目录可能还没建：往上找到第一个存在的祖先再问剩余空间。 */
+    static boolean enoughSpace(File directory,long size){
+        File probe=directory;
+        while(probe!=null&&!probe.exists())probe=probe.getParentFile();
+        if(probe==null)return false;
+        long usable=probe.getUsableSpace();
+        // 个别文件系统答 0 表示「不知道」而不是「没有」；此时不拦，交给写入本身去失败。
+        return usable<=0||usable>=requiredSpace(size);
     }
 
     /** 先写临时文件、校验通过才改名就位：半截文件绝不能被当成可用的库加载。 */

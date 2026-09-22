@@ -171,8 +171,11 @@ export async function proxyConfigHttp(env,request,stub){
     }
     const match=url.pathname.match(/^\/api\/elfremote\/proxy-config\/([A-Za-z0-9-]{1,96})$/);
     if(match&&request.method==='GET'){
+      // 凭据优先从 Authorization: Bearer 取；查询串那份是过渡期留给旧客户端的——URL 会进各种访问日志。
+      // 下发给设备的 url 仍带 token，待 D31 / Pixel Gateway 客户端改为发 Bearer 后再去掉。
+      const bearer=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
       const auth=await rpc(stub,{action:'authorize',device_id:url.searchParams.get('device_id'),task_id:match[1],
-        token:url.searchParams.get('token')});
+        token:bearer||url.searchParams.get('token')});
       if(!auth.ok)return auth;
       const grant=await auth.json(),object=await env.ELF_ARTIFACTS.get(grant.object_key);
       if(!object)return json({ok:false,msg:'代理配置制品不可用'},503);

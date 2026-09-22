@@ -42,36 +42,10 @@ export function trustedOrigin(request) {
 // 于是「设备轨迹」页的历史媒体当场变成「接口不存在」——正是本机制最怕的那种失败：
 // 不报错、不失联，只是某个功能安静地没了，看起来像从来没实现过。
 // 对应的结构化测试也用了同一个正则，所以一起瞎掉。测试已改为扫全部服务端文件、两种引号。
-const DEVICE_ROUTES = new Set([
-  "/api/devices", "/api/devices/delete", "/api/devices/enroll", "/api/devices/enroll-status",
-  "/api/devices/events", "/api/devices/history", "/api/devices/media-native/offer", "/api/devices/pair",
-  "/api/devices/proxy-config/offer", "/api/devices/push-config", "/api/devices/push-sync",
-  "/api/devices/recovery", "/api/devices/report", "/api/devices/request-status",
-  "/api/devices/share-link", "/api/devices/sip-directory", "/api/devices/status-request",
-  "/api/devices/traffic", "/api/devices/trajectory-media", "/api/devices/update"
-]);
-export function unknownDeviceRoute(path) {
-  return path.startsWith("/api/devices") && !DEVICE_ROUTES.has(path);
-}
-export { DEVICE_ROUTES };
+// 2026-09-23：这三样连同 share-scope 的表、PROXY_ROLE_PATHS 等一起并入 route-table.js 一张表，
+// 这里只是转口，调用方不用改 import。
+export { DEVICE_ROUTES, unknownDeviceRoute, isMachineRoute } from "./route-table.js";
 
-export function isMachineRoute(path, method) {
-  return new Set([
-    "GET /api/sip/pull", "POST /api/sip/heartbeat",
-    "POST /api/devices/enroll", "GET /api/devices/enroll-status", "POST /api/devices/report",
-    "POST /api/devices/push-config", "POST /api/devices/push-sync", "POST /api/devices/share-link",
-    // 设备自取代理配置：凭的是设备令牌，不是管理员会话。
-    "POST /api/devices/proxy-config/offer",
-    // 设备自取原生库下载地址：同样凭设备令牌。
-    "POST /api/devices/media-native/offer",
-    // MCP 端点自带 Bearer 令牌，由 handleMcp 自行认证，不认管理员会话。
-    "POST /api/mcp", "DELETE /api/mcp",
-    "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo",
-    "POST /api/elfremote/file-return", "PUT /api/elfremote/file-return", "GET /api/elfremote/adb/device", "GET /api/elfremote/media/device", "GET /api/elfremote/desktop/device",
-    "GET /api/elfremote/adb-tunnel/host", "GET /api/elfremote/adb-tunnel/device"
-  ]).has(`${method} ${path}`) || (method === "GET" && (/^\/api\/elfremote\/apk\/[^/]+$/.test(path)
-    || /^\/api\/elfremote\/proxy-config\/[A-Za-z0-9-]{1,96}$/.test(path)));
-}
 async function jsonInput(request) {
   const text = await request.text();
   if (text.length > 8192) throw new Error("请求过大");
@@ -125,7 +99,7 @@ async function validSession(storage, request, now) {
 // 由现有 Durable Object 串行调用，迁移、改密码与会话变更不会相互覆盖。
 export async function handleAdminAuth(storage, env, request, now = Date.now()) {
   const action = new URL(request.url).pathname;
-  if(panelEnabled(env))return handleKvAuth(env,request,action.slice('/__auth/'.length),undefined,now);
+  if(panelEnabled(env))return handleKvAuth(env,request,action.slice('/__auth/'.length),undefined,now,storage);
   try {
     if (action === "/__auth/login" && request.method === "POST") {
       const body = await jsonInput(request);
@@ -191,8 +165,28 @@ async function mac(auth,payload){
  return hex(await crypto.subtle.sign('HMAC',key,enc.encode(payload)));
 }
 const attempts=new WeakMap();
-// 只有错误登录才使用短期本地计数，不把每次失败写入KV的同一个键。
-export async function handleKvAuth(env,request,action,body,now=Date.now()){
+// 登录失败计数。有 DO 存储就落盘（auth/failures，与 DO 登录路径同一把钥匙），实例回收也不清零；
+// 没有 DO 的代理面板（s.elfradio.net）只能记在实例内存里——那里没有 DO 可落，也不写 KV：
+// 每次失败写 KV 的同一个键，攻击者就能用错密码把 1000 次/日的写额度耗光。
+async function loginThrottle(kv,storage,now){
+ if(storage){
+  const recent=((await storage.get('auth/failures'))||[]).filter(e=>e.until>now);
+  const bucket=peer=>recent.find(e=>e.peer===peer);
+  return {
+   blocked:peer=>(bucket(peer)?.count||0)>=8,
+   fail:async peer=>{const b=bucket(peer);if(b)b.count++;else recent.push({peer,count:1,until:now+60000});await storage.put('auth/failures',recent.slice(-128));},
+   clear:async peer=>{if(bucket(peer))await storage.put('auth/failures',recent.filter(e=>e.peer!==peer));}
+  };
+ }
+ let peers=attempts.get(kv);if(!peers){peers=new Map();attempts.set(kv,peers);}
+ return {
+  blocked:peer=>{const r=peers.get(peer);return !!r&&r.until>now&&r.count>=8;},
+  fail:peer=>{const r=peers.get(peer);if(peers.size>=128)peers.delete(peers.keys().next().value);
+   peers.set(peer,{count:r&&r.until>now?r.count+1:1,until:r&&r.until>now?r.until:now+60000});},
+  clear:peer=>{peers.delete(peer);}
+ };
+}
+export async function handleKvAuth(env,request,action,body,now=Date.now(),storage=null){
  const kv=env.SUB_STORE_KV;if(!kv)return authJson({ok:false,msg:'登录存储不可用'},503);
  try{
   const token=cookieToken(request);
@@ -203,17 +197,16 @@ export async function handleKvAuth(env,request,action,body,now=Date.now()){
   if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
   if(action==='login'){
    const input=body===undefined?await jsonInput(request):body;
-   let peers=attempts.get(kv);if(!peers){peers=new Map();attempts.set(kv,peers);}
-   const peer=await digest(request.headers.get('CF-Connecting-IP')||'local'),recent=peers.get(peer);
-   if(recent&&recent.until>now&&recent.count>=8)return authJson({ok:false,msg:'登录失败次数过多，请稍后重试'},429,{'Retry-After':'60'});
+   const throttle=await loginThrottle(kv,storage,now);
+   const peer=await digest(request.headers.get('CF-Connecting-IP')||'local');
+   if(throttle.blocked(peer))return authJson({ok:false,msg:'登录失败次数过多，请稍后重试'},429,{'Retry-After':'60'});
    const valid=typeof input.username==='string'&&typeof input.password==='string'&&input.password.length<=1024;
    const hash=await passwordHash(valid?input.password:'',auth.salt);
    if(!valid||input.username!==auth.username||!equal(hash,auth.hash)){
-    if(peers.size>=128)peers.delete(peers.keys().next().value);
-    peers.set(peer,{count:recent&&recent.until>now?recent.count+1:1,until:recent&&recent.until>now?recent.until:now+60000});
+    await throttle.fail(peer);
     return authJson({ok:false,msg:'账号或密码错误'},401);
    }
-   peers.delete(peer);
+   await throttle.clear(peer);
    const payload=btoa(JSON.stringify({id:random(),revision:auth.revision,expires:now+SESSION_MS})).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
    const value='v2.'+payload+'.'+await mac(auth,payload);
    return authJson({ok:true},200,{'Set-Cookie':cookie(value,SESSION_MS/1000)});

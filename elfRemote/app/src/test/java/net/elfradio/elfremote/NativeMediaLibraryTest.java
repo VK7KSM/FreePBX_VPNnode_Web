@@ -22,6 +22,18 @@ public class NativeMediaLibraryTest {
   }finally{Files.deleteIfExists(p);}
  }
 
+ /** 空间不够就不下载：以前每次上报都再下一遍再失败，移动数据上持续放血。 */
+ @Test public void downloadIsRefusedUpFrontWhenTheDiskCannotHoldTwoCopiesPlusHeadroom()throws Exception{
+  assertEquals(2L*12_000_000+16L*1024*1024,NativeMediaLibrary.requiredSpace(12_000_000));
+  Path dir=Files.createTempDirectory("media-native-space");
+  try{
+   assertTrue("小文件总放得下",NativeMediaLibrary.enoughSpace(dir.toFile(),1));
+   assertFalse("要的比整块盘还大就拒",NativeMediaLibrary.enoughSpace(dir.toFile(),Long.MAX_VALUE/4));
+   java.io.File missing=new java.io.File(dir.toFile(),"not/created/yet");
+   assertTrue("目录还没建时往上找存在的祖先问",NativeMediaLibrary.enoughSpace(missing,1));
+  }finally{Files.deleteIfExists(dir);}
+ }
+
  /** 源码级别是 Java 8，没有 String.repeat；自己拼一个合法的 64 位十六进制。 */
  private static String hexOf(int fill){
   StringBuilder text=new StringBuilder();

@@ -142,6 +142,50 @@ export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"
 export const PIXEL_COMPANION_TASK_TYPE = "stage_pixel_companion";
 export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", "show_share_link", PIXEL_COMPANION_TASK_TYPE, ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
 
+// 任务类型 → 设备能力位。status_only 的设备只接它在上报里声明过能力的任务。
+// 以前散在三处：入队处一段二十行的 || 链、网页端 MAINTENANCE_CAPS、REPAIR_TYPES；
+// 加一种任务要改三处，漏一处就是「客户端明明支持却报尚未接通」。现在只改这里。
+// 值为字符串 = 任一机型都看这一位；为对象 = 按是否网关（Pixel Gateway）分别看，缺省项即该机型不支持。
+export const TASK_CAPABILITIES = Object.freeze({
+  contacts_page: "managed_contacts_page_v1",
+  root_exec: "managed_exec_tasks",
+  file_manage: "managed_file_operations",
+  system_config: "managed_system_settings",
+  configure_sip: "managed_sip_account",
+  configure_zello: "managed_zello_account",
+  get_file: "managed_file_return",
+  send_file: "managed_file_tasks",
+  pull_logs: "managed_log_tasks",
+  heal_network: "managed_heal_tasks",
+  reboot: "managed_reboot_tasks",
+  restart_adbd: "managed_adbd_tasks",
+  scan_wifi: "managed_wifi_scan_tasks",
+  play_alarm: "managed_alarm_tasks",
+  stop_alarm: "managed_alarm_tasks",
+  show_share_link: "managed_share_link_tasks",
+  locate_now: "managed_locate_tasks",
+  set_lost_mode: "managed_lost_tasks",
+  wipe_data: "managed_wipe_v1",
+  // install_apk 在入队更早的分支里按发布清单处理，不经能力位。
+  ...Object.fromEntries(PROXY_TASK_TYPES.map(type => [type, "managed_proxy_tasks"])),
+  ...Object.fromEntries(LOST_MESSAGE_TASK_TYPES.map(type => [type, { gateway: "managed_lost_message_v1" }])),
+  [PIXEL_COMPANION_TASK_TYPE]: { gateway: "managed_pixel_companion_v1" },
+  connect_wifi: { gateway: "managed_wifi_config_tasks", device: "managed_config_tasks" },
+  ...Object.fromEntries(CONFIG_TYPES.filter(type => type !== "connect_wifi").map(type => [type, { device: "managed_config_tasks" }]))
+});
+/** 该任务类型在此机型上要看哪一位；不支持返回 null。 */
+export function taskCapability(type, gateway) {
+  const entry = TASK_CAPABILITIES[String(type || "")];
+  if (!entry) return null;
+  if (typeof entry === "string") return entry;
+  return (gateway ? entry.gateway : entry.device) || null;
+}
+/** status_only 设备能否接这个任务：能力位必须是严格的 true。 */
+export function taskCapable(device, type, gateway) {
+  const bit = taskCapability(type, gateway);
+  return !!bit && device?.[bit] === true;
+}
+
 export const REPAIR_STATE_LABELS = {
   pending: "待领取",
   claimed: "已领取",
