@@ -772,7 +772,7 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
 // 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
 function outerDeviceRoute(path){return path==='/api/elfremote/files'||path.startsWith('/api/elfremote/files/')||path==='/api/elfremote/file-return'||path==='/api/elfremote/file-return/received'||path==='/api/elfremote/proxy-config';}
 function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
+  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases','/api/admin/store-size'].includes(path);
 }
 // 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
 function storeAuthenticates(path,method){
@@ -1249,6 +1249,9 @@ const app = {
     }
     if (pathname === "/api/elfremote/releases" && method === "GET") {
       return handleElfReleaseList(env,url);
+    }
+    if (pathname === "/api/admin/store-size" && method === "GET") {
+      return handleStoreSize(env);
     }
     if (pathname === "/api/mcp" && (method === "POST" || method === "DELETE")) {
       return handleMcp(env, request, method);
@@ -3249,6 +3252,25 @@ async function handleMcp(env, request, method = 'POST') {
   const headers = session ? { 'Mcp-Session-Id': session.id } : {};
   if (!replies.length) return new Response(null, { status: 202, headers });
   return json(batch ? replies : replies[0], 200, headers);
+}
+
+/**
+ * 管理员只读：设备列表在存储里的真实字节数。
+ * DO 存储单值上限 128 KiB，remote_devices 是整表一个键——越限那一刻所有写入一起失败。
+ * 拆键之前先量，拆键之后用它盯索引键有没有再长回去。
+ */
+async function handleStoreSize(env) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const list = (await storage.get('remote_devices')) || [];
+  const indexBytes = JSON.stringify(list).length;
+  const ext = [...await storage.list({ prefix: 'device_ext/' })];
+  const extBytes = ext.reduce((n, [, v]) => n + JSON.stringify(v).length, 0);
+  const devices = list.map(d => ({ id: d.id, name: d.name, bytes: JSON.stringify(d).length,
+    ext_bytes: JSON.stringify(ext.find(([k]) => k === 'device_ext/' + d.id)?.[1] ?? null).length }))
+    .sort((a, b) => b.bytes - a.bytes);
+  return json({ ok: true, limit: 131072, index_bytes: indexBytes,
+    index_ratio: Number((indexBytes / 131072).toFixed(3)), ext_keys: ext.length, ext_bytes: extBytes, devices });
 }
 
 async function handleElfTaskProgress(env, request) {
