@@ -95,7 +95,7 @@ import {
   normalizeLostMode,
   prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
   CONFIG_TYPES, PROXY_TASK_TYPES, LOST_MESSAGE_TASK_TYPES, PIXEL_COMPANION_TASK_TYPE,
-  repairExpired
+  repairExpired, reclaimStaleRepair
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
@@ -2382,6 +2382,9 @@ async function handleDeviceReport(env, request) {
     const matched = list.find(d => d.id === deviceId);
     if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    // 设备回来上报时顺手回收卡死的任务：它自己都回来了，说明上一条早就没在跑。
+    // 只标终态不归档——归档在下一次入队时和其他终态一起做，这里没有 __storage。
+    reclaimStaleRepair(matched, Date.now());
     const staleAck=await acknowledgeStaleGatewayRollbackReport(env.__storage,matched,data);
     if(staleAck)return json(staleAck);
     if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
@@ -3111,6 +3114,8 @@ async function handleElfEnqueueTask(env, request) {
       if(data.type==='contacts_page'&&['CONTACTS_SNAPSHOT_BUSY','CONTACTS_SNAPSHOT_GONE'].includes(queued.reason))return json({ok:false,code:queued.reason,not_enqueued:true,msg:queued.reason==='CONTACTS_SNAPSHOT_BUSY'?'已有联系人快照，请先关闭或等待到期':'联系人快照已失效，请重新读取'},409);
       const msg = queued.reason === "unknown-type" ? "未开通该任务类型"
         : queued.reason === "inflight" ? "已有任务进行中"
+          + (queued.inflight ? "：" + queued.inflight.type + " " + queued.inflight.id
+            + (queued.inflight.releases_at ? "，最迟 " + Math.max(1, Math.ceil((queued.inflight.releases_at - Date.now()) / 60000)) + " 分钟后自动释放" : "") : "")
         : queued.reason === "expired" ? "任务已过期"
         : queued.reason === "idempotency-conflict" ? "该任务编号已用于不同的操作，请创建新任务"
         : "无法入队";

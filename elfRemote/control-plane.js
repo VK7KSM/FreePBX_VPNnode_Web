@@ -236,6 +236,34 @@ function repairInflight(task) {
   return task.state === "pending" || task.state === "claimed" || task.state === "running";
 }
 
+// 每台设备只有一个任务槽，默认有效期一小时。任务进了 claimed/running 之后设备端崩溃、
+// 重启、断网，以前服务端不会把它标过期——这台设备一小时内拒绝一切新任务，
+// 网页和 MCP 都只看到「已有任务进行中」。现在按任务自己的超时加一分钟宽限判死：
+// 过了这个点还没回报，说明执行器那边早就结束了，占着槽位没有意义。
+// pending 的不动：它还没被设备领走，本来就该等到 expires_at。
+export const REPAIR_STALE_GRACE_MS = 60000;
+export function repairStaleAfter(task) {
+  if (!task) return null;
+  if (task.state === "claimed" || task.state === "running") {
+    const started = Date.parse(task.started_at || task.claimed_at || task.updated_at || task.created_at || "");
+    if (!Number.isFinite(started)) return null;
+    const timeout = Number(task.params?.timeout);
+    // 没写超时的任务类型按 10 分钟算；写了的按它自己的。
+    return started + (Number.isFinite(timeout) && timeout > 0 ? timeout * 1000 : 600000) + REPAIR_STALE_GRACE_MS;
+  }
+  return null;
+}
+/** 把卡死的任务标成 expired（终态，留在槽位里直到被新任务顶掉并归档）；返回 true 表示改了。 */
+export function reclaimStaleRepair(device, nowMs = Date.now()) {
+  const task = device?.task;
+  const deadline = repairStaleAfter(task);
+  if (deadline === null || nowMs < deadline) return false;
+  task.state = "expired";
+  task.updated_at = task.completed_at = new Date(nowMs).toISOString();
+  task.detail = "设备未回报结果，任务已超时释放";
+  return true;
+}
+
 export function makeRepairTask(input, nowMs) {
   const src = input || {};
   const type = String(src.type || "");
@@ -695,7 +723,13 @@ export async function enqueueRepairTask(device, input, nowMs, storage, options={
     return { ok: true, duplicate: true, task: previous };
   }
   if (repairExpired(task, nowMs)) return { ok: false, reason: "expired" };
-  if (repairInflight(cur)) return { ok: false, reason: "inflight" };
+  // 卡死的任务先让位：标成 expired 之后它就是终态，下面会像其他终态一样被归档、顶掉。
+  reclaimStaleRepair(device, nowMs);
+  if (repairInflight(device.task)) {
+    const t = device.task, deadline = repairStaleAfter(t);
+    return { ok: false, reason: "inflight", inflight: { id: t.id, type: t.type, state: t.state,
+      releases_at: deadline ?? (Number(t.expires_at) || null) } };
+  }
   if(task.type==='contacts_page'){
     if(device.managed_contacts_page_v1!==true)throw Error('客户端尚未支持通讯录分页');
     const p=task.params,s=device.contacts_page_snapshot;
