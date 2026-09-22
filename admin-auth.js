@@ -86,6 +86,13 @@ async function legacyValue(storage, env, key) {
   if (raw == null) return null;
   try { return JSON.parse(raw); } catch { return raw; }
 }
+// 给改密码前的「核对当前口令」用：与登录同一套哈希与比较，不另起炉灶。
+export async function verifyPasswordAgainst(auth, password) {
+  if (typeof password !== "string" || !password || password.length > 1024) return false;
+  if (!auth?.hash || !auth.salt) return false;
+  return equal(await passwordHash(password, auth.salt), auth.hash);
+}
+
 export async function credentials(storage, env) {
   const existing = await storage.get("admin_auth");
   if (existing) return existing;

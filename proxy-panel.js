@@ -5,7 +5,54 @@
 import { getStore, setStore, json, registerProxyPanel } from './worker.js';
 import { cfUsageStyle, cfUsageMarkup } from './cf-usage-client.js';
 import { adminRpc } from './admin-auth.js';
-import { panelEnabled, panelWrite } from './panel-kv.js';
+import { panelEnabled, panelWrite, kvJson } from './panel-kv.js';
+import { verifyPasswordAgainst } from './admin-auth.js';
+
+// 改密码前核对当前口令。/api/save 在外层 Worker 执行，没有 __storage，
+// 所以口令资料按登录同样的来源取：KV 权威模式读 panel/auth，否则经 DO 读 admin_auth。
+async function verifyAdminPassword(env, request, password) {
+  const auth = panelEnabled(env) ? await kvJson(env, 'panel/auth', { request }) : await getStore(env, 'admin_auth');
+  return verifyPasswordAgainst(auth, password);
+}
+
+// 节点字段白名单。以前 nodes 原样存、原样拼进 YAML：名字里一个双引号或换行就让整份订阅
+// 解析失败，所有客户端同时断线——自己手滑的后果。现在只收这几个字段、每个都有形状。
+const NODE_FIELDS = ['name', 'type', 'server', 'port', 'uuid', 'sni', 'path', 'custom_ip'];
+const HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function validateNodes(value) {
+  if (!Array.isArray(value)) throw Error('节点列表格式无效');
+  if (value.length > 64) throw Error('节点数量超出上限');
+  const out = [], names = new Set();
+  for (const node of value) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) throw Error('节点条目格式无效');
+    for (const key of Object.keys(node)) if (!NODE_FIELDS.includes(key)) throw Error('节点字段不认识：' + key);
+    const name = String(node.name || '').trim();
+    if (!name || name.length > 48 || /[\r\n"'\\]/.test(name)) throw Error('节点名称无效（1–48 字，不能含引号、反斜杠或换行）');
+    if (names.has(name)) throw Error('节点名称重复：' + name);
+    names.add(name);
+    const server = String(node.server || '').trim().toLowerCase();
+    if (!HOST_RE.test(server) && !IP_RE.test(server)) throw Error('节点服务器地址无效：' + name);
+    const port = node.port === undefined || node.port === '' ? 443 : Number(node.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('节点端口无效：' + name);
+    const uuid = String(node.uuid || '').trim();
+    if (!UUID_RE.test(uuid)) throw Error('节点 UUID 无效：' + name);
+    const sni = node.sni === undefined || node.sni === '' ? '' : String(node.sni).trim().toLowerCase();
+    if (sni && !HOST_RE.test(sni)) throw Error('节点 SNI 无效：' + name);
+    const path = node.path === undefined || node.path === '' ? '/' : String(node.path).trim();
+    if (!/^\/[!-~]{0,255}$/.test(path) || /["'\\]/.test(path)) throw Error('节点路径无效：' + name);
+    const customIp = node.custom_ip === undefined || node.custom_ip === '' ? '' : String(node.custom_ip).trim();
+    if (customIp && !IP_RE.test(customIp)) throw Error('节点自定义 IP 无效：' + name);
+    const type = node.type === undefined || node.type === '' ? 'vless' : String(node.type);
+    if (type !== 'vless') throw Error('节点类型只支持 vless：' + name);
+    out.push({ name, type, server, port, uuid, ...(sni ? { sni } : {}), path, ...(customIp ? { custom_ip: customIp } : {}) });
+  }
+  return out;
+}
+// YAML 里的字符串一律用 JSON 引号：JSON 字符串是合法的 YAML 双引号标量，
+// 该转义的都转义了，不靠「名字里没有引号」这种假设。
+const y = v => JSON.stringify(String(v));
 
 const DEFAULT_USER = "admin";
 const DEFAULT_TOKEN = "d31";
@@ -82,21 +129,21 @@ export async function handleSubscription(request, url, env) {
 
   for (const node of nodes) {
     const srv = node.custom_ip || globalCfIp || node.server;
-    proxyNames += "      - \"" + node.name + "\"\n";
+    proxyNames += "      - " + y(node.name) + "\n";
     proxiesYaml +=
-      "  - name: \"" + node.name + "\"\n" +
-      "    type: " + (node.type || "vless") + "\n" +
-      "    server: " + srv + "\n" +
-      "    port: " + (node.port || 443) + "\n" +
-      "    uuid: " + node.uuid + "\n" +
+      "  - name: " + y(node.name) + "\n" +
+      "    type: " + y(node.type || "vless") + "\n" +
+      "    server: " + y(srv) + "\n" +
+      "    port: " + (Number(node.port) || 443) + "\n" +
+      "    uuid: " + y(node.uuid) + "\n" +
       "    network: ws\n" +
       "    tls: true\n" +
       "    udp: true\n" +
-      "    servername: \"" + (node.sni || node.server) + "\"\n" +
+      "    servername: " + y(node.sni || node.server) + "\n" +
       "    ws-opts:\n" +
-      "      path: \"" + (node.path || "/") + "\"\n" +
+      "      path: " + y(node.path || "/") + "\n" +
       "      headers:\n" +
-      "        Host: \"" + (node.sni || node.server) + "\"\n\n";
+      "        Host: " + y(node.sni || node.server) + "\n\n";
   }
 
   const yaml =
@@ -434,10 +481,13 @@ export async function saveSettings(env, request) {
     const data = await request.json();
     let passwordResult;
     if (data.new_password) {
+      // 改密码要先证明知道现在的密码：会话被拿到不等于能把主人锁在外面。
+      if (!await verifyAdminPassword(env, request, data.current_password))
+        return json({ ok: false, msg: "当前密码不正确，未修改" }, 403);
       passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
       if (!passwordResult.ok) return passwordResult;
     }
-    const patch={};if(Array.isArray(data.nodes))patch.nodes=data.nodes;
+    const patch={};if(Array.isArray(data.nodes))patch.nodes=validateNodes(data.nodes);
     if(data.sub_token)patch.sub_token=data.sub_token;
     if(data.cf_ip!==undefined)patch.cf_preferred_ip=data.cf_ip;
     if(Object.keys(patch).length){if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);}
