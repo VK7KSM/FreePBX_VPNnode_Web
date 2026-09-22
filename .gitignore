@@ -33,6 +33,8 @@ __pycache__/
 
 # 项目文档、方案、草稿与临时工作区不进入 Web 发布仓库
 *.md
+# MCP 说明文档要嵌进 Worker 供网页与 AI 读取，是代码的一部分，不是项目文档
+!mcp-guide.md
 docs/
 draft/
 scratch/

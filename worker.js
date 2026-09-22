@@ -34,6 +34,9 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
+import {authenticate as mcpAuthenticate,createToken as mcpCreateToken,revokeToken as mcpRevokeToken,revokeByLink as mcpRevokeByLink,listTokens as mcpListTokens,allows as mcpAllows,tokenHash as mcpTokenHash,noteUsage as mcpNoteUsage,flushUsage as mcpFlushUsage,serverName as mcpServerName,SCOPES as MCP_SCOPES,TTL_PRESETS as MCP_TTL_PRESETS} from './mcp-tokens.js';
+import {dispatch as mcpDispatch} from './mcp-server.js';
+import mcpGuide from './mcp-guide-source.js';
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel, releaseVariant, RELEASE_VARIANTS, preferredRelease } from './release-channels.js';
 import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus,proxyNodeList,installedAppList,proxyAppList} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
@@ -755,6 +758,8 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
       const token=normalizeToken(body.token);if(!token)return json({ok:false,msg:'链接无效'},400);
       const link=await storage.get('share/link/'+token);
       const result=await shareRevokeLink(storage,token,ctx);
+      // 收回访问就一起收回钥匙：否则链接没了，由它生成的 MCP 令牌还能继续操作这台设备。
+      if(link?.device_id)await mcpRevokeByLink(storage,link.device_id,token);
       if(result.kicked&&link){this.closeOwned(link.device_id,{kind:'admin'});this.events.revoke(link.device_id,result.kicked.session_id,'revoked');}else this.events.changed();
       return json({ok:true,kicked:!!result.kicked});
     }
@@ -838,6 +843,10 @@ const app = {
     if(!env.__storage && singleStoreRead(pathname,method)) {
       const stub=elfDoStub(env);return stub?stub.fetch(request):authJson({ok:false,msg:'设备存储不可用'},503);
     }
+    // /api/mcp 自带 Bearer 令牌，算机器路由，不走管理员会话，直接落 DO。
+    if(!env.__storage && pathname==='/api/mcp') {
+      const stub=elfDoStub(env);return stub?stub.fetch(request):json({ok:false,msg:'设备存储不可用'},503);
+    }
     if (!env.__storage && pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
       // 路径根本没注册就不是鉴权问题，别拿「请先登录」去答一个不存在的接口。
       if (unknownDeviceRoute(pathname)) return authJson({ ok: false, msg: "接口不存在" }, 404);
@@ -864,6 +873,10 @@ const app = {
           if(locked.locked){const denied=observerVerdict(pathname,method,bodyText);if(denied)return authJson({ok:false,msg:denied.msg,share_locked:true},denied.status);}
         }
       }
+    }
+    // 令牌管理的鉴权（管理员或分享，且分享只能碰自己那台）已在上面完成，这里只负责转发。
+    if(!env.__storage && (pathname==='/api/elfremote/mcp-tokens'||pathname==='/api/elfremote/mcp-tokens/delete')) {
+      const stub=elfDoStub(env);return stub?stub.fetch(request):json({ok:false,msg:'设备存储不可用'},503);
     }
     if(pathname==='/api/admin/legacy-store'){
       if(method!=='GET'&&method!=='POST')return authJson({ok:false},405);
@@ -1234,6 +1247,15 @@ const app = {
     }
     if (pathname === "/api/elfremote/releases" && method === "GET") {
       return handleElfReleaseList(env,url);
+    }
+    if (pathname === "/api/mcp" && method === "POST") {
+      return handleMcp(env, request);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens" && (method === "GET" || method === "POST")) {
+      return handleMcpTokens(env, request, url, method);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens/delete" && method === "POST") {
+      return handleMcpTokenDelete(env, request);
     }
     if (pathname === "/api/elfremote/assign" && method === "POST") {
       return handleElfAssign(env, request);
@@ -3035,6 +3057,144 @@ async function assetReleaseBySha(env, channel, sha256) {
     }
     return null;
   } catch (unavailable) { console.error('media_native_lookup_failed'); return null; }
+}
+
+// MCP 使用计数攒在这里，满 20 次或 1 分钟才落盘一次。
+// 放模块级而不是 DO 实例上：键是令牌哈希，不同设备不会撞；进程重启丢掉的最多是
+// 最后那一批计数，而计数本来就只用于判断「这个令牌最近有没有人在用」。
+const mcpUsage = new Map();
+
+function mcpOrigin(env) {
+  return 'https://' + new URL(env.ELF_BASE_URL || 'https://v.elfradio.net').host;
+}
+
+/** 令牌管理：列出 / 新建。鉴权与设备范围裁决已在上游完成（分享用户只能碰自己那台）。 */
+async function handleMcpTokens(env, request, url, method) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  try {
+    if (method === 'GET') {
+      const deviceId = String(url.searchParams.get('device_id') || '');
+      if (!deviceId) return json({ ok: false, msg: '设备编号无效' }, 400);
+      return json({ ok: true, tokens: await mcpListTokens(storage, deviceId),
+        scopes: MCP_SCOPES, ttls: Object.keys(MCP_TTL_PRESETS), server_time: Date.now() });
+    }
+    const data = await request.json();
+    const device = (await loadDevices(env)).find(d => d.id === String(data.device_id || ''));
+    if (!device) return json({ ok: false, msg: '未找到设备' }, 404);
+    // 分享页建的令牌要记住来源链接：删掉那条链接时连带吊销，否则链接收回了钥匙还在。
+    const share = env.__ctx?.kind === 'share';
+    const created = await mcpCreateToken(storage, { deviceId: device.id, deviceName: device.name,
+      name: data.name, ttl: data.ttl, scopes: data.scopes,
+      source: share ? 'share' : 'admin', link_token: share ? env.__ctx.link_token : null });
+    // secret 是唯一一次能拿到明文的机会；服务器这边只留了哈希。
+    return json({ ok: true, secret: created.secret, token: created.token,
+      server_name: created.server_name, endpoint: mcpOrigin(env) + '/api/mcp' });
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+async function handleMcpTokenDelete(env, request) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  try {
+    const data = await request.json();
+    const removed = await mcpRevokeToken(storage, String(data.device_id || ''), String(data.id || ''));
+    return removed ? json({ ok: true }) : json({ ok: false, msg: '未找到该令牌' }, 404);
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+/**
+ * 工具实现：一律回头走自己的路由表，和网页调的是同一段代码。
+ * 总计划里写死的形态是「薄封装，不复制另一份业务流程」——这里就是那句话的字面落实。
+ */
+async function mcpToolCall(env, device, name, args) {
+  const route = async (path, method, payload) => {
+    const response = await app.fetch(new Request('https://elf-store' + path, { method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) }), env);
+    const text = await response.text();
+    if (!response.ok) { let msg = text; try { msg = JSON.parse(text).msg || text; } catch {} throw Error(msg); }
+    return text;
+  };
+  const enqueue = async (type, params) => {
+    const id = 'mcp-' + crypto.randomUUID();
+    const raw = await route('/api/elfremote/task', 'POST', { device_id: device.id, type, id, params });
+    const task = JSON.parse(raw).task || {};
+    // 不在这里等结果：整个 DO 的请求是串行的，等三十秒等于把这台设备的所有流量一起卡住。
+    return JSON.stringify({ task_id: task.id || id, state: task.state || 'pending',
+      下一步: '用 task_status 查这个 task_id，通常三到十秒出结果' }, null, 1);
+  };
+  if (name === 'device_info') {
+    const caps = {};
+    for (const [key, value] of Object.entries(device))
+      if (key.startsWith('managed_') && typeof value === 'boolean') caps[key] = value;
+    return JSON.stringify({ 设备: device.name || device.id, 编号: device.id,
+      客户端版本: device.app_version || null, 在线: device.online === true,
+      最后上报: device.last_reported_at || null, 电量: device.battery ?? null,
+      网络: device.network || null, 定位: device.location || null,
+      发布通道: device.update_channel || null, 已启用: device.enabled !== false,
+      能力位: caps }, null, 1);
+  }
+  if (name === 'releases')
+    return route('/api/elfremote/releases?device_id=' + encodeURIComponent(device.id), 'GET');
+  if (name === 'task_status') {
+    const id = String(args.task_id || '');
+    if (!id) throw Error('缺少 task_id');
+    return route('/api/elfremote/tasks?device_id=' + encodeURIComponent(device.id)
+      + '&task_id=' + encodeURIComponent(id), 'GET');
+  }
+  if (name === 'install') {
+    const versionCode = Number(args.versionCode);
+    if (!Number.isSafeInteger(versionCode) || versionCode <= 0) throw Error('versionCode 无效');
+    return route('/api/elfremote/assign', 'POST', { device_id: device.id,
+      channel: device.update_channel, versionCode,
+      ...(args.variant ? { variant: args.variant } : {}), request_id: crypto.randomUUID() });
+  }
+  if (name === 'run') {
+    const command = String(args.command || '').trim();
+    if (!command) throw Error('缺少 command');
+    const timeout = Math.min(120, Math.max(5, Number(args.timeout) || 30));
+    return enqueue('root_exec', { command, timeout, cwd: '/' });
+  }
+  if (name === 'pull_logs') return enqueue('pull_logs', {});
+  if (name === 'files') return enqueue('file_manage', args.params || {});
+  if (name === 'system_config') return enqueue('system_config', args.params || {});
+  throw Error('没有实现这个工具：' + name);
+}
+
+/** MCP 端点。凭 Authorization: Bearer 认证，不认管理员会话——它是给 agent 用的。 */
+async function handleMcp(env, request) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const rpcError = (code, message, status) =>
+    json({ jsonrpc: '2.0', id: null, error: { code, message } }, status);
+  // 只从请求头读，绝不接受放在 URL 查询串里——URL 会进各种访问日志。
+  const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  let record;
+  try { record = await mcpAuthenticate(storage, bearer); }
+  catch (error) { return rpcError(-32001, error.message, error.status || 401); }
+  const device = (await loadDevices(env)).find(d => d.id === record.device_id);
+  if (!device) return rpcError(-32002, '这个令牌指向的设备已不存在', 404);
+  if (device.enabled === false) return rpcError(-32002, '这台设备已停用', 409);
+  let body;
+  try { body = await request.json(); } catch { return rpcError(-32700, '请求不是合法 JSON', 400); }
+
+  const ctx = { scopes: record.scopes, deviceName: device.name || device.id, guide: mcpGuide,
+    call: (name, args) => mcpToolCall(env, device, name, args) };
+  const batch = Array.isArray(body);
+  const messages = batch ? body : [body];
+  const replies = [];
+  let called = false;
+  for (const message of messages) {
+    if (message && message.method === 'tools/call') called = true;
+    const reply = await mcpDispatch(message, ctx);
+    if (reply) replies.push(reply);
+  }
+  if (called && mcpNoteUsage(mcpUsage, record.token_sha256, Date.now()))
+    await mcpFlushUsage(storage, mcpUsage, record.token_sha256);
+  // 全是通知时没有回包：按 JSON-RPC 规范回 202，不能回一个空 body 的 200。
+  if (!replies.length) return new Response(null, { status: 202 });
+  return json(batch ? replies : replies[0]);
 }
 
 async function handleElfTaskProgress(env, request) {
