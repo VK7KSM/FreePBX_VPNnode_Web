@@ -22,7 +22,7 @@ source "$SECRETS"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y asterisk asterisk-modules fail2ban python3 \
-  iptables-persistent netfilter-persistent curl ca-certificates
+  iptables-persistent netfilter-persistent curl ca-certificates certbot
 
 install -d -m 755 /usr/local/sbin /etc/asterisk/keys \
   /etc/systemd/system/asterisk.service.d /var/lib/sip-panel \
@@ -41,7 +41,6 @@ chgrp asterisk /var/lib/sip-panel 2>/dev/null || true
 chmod 775 /var/lib/sip-panel 2>/dev/null || true
 install -m 644 "$FILES/etc/systemd/system/sip-statusd.service" /etc/systemd/system/sip-statusd.service
 install -m 644 "$FILES/etc/systemd/system/sip-heartbeat.service" /etc/systemd/system/sip-heartbeat.service
-install -m 644 "$FILES/etc/systemd/system/sip-heartbeat.timer" /etc/systemd/system/sip-heartbeat.timer
 install -m 644 "$FILES/etc/systemd/system/asterisk.service.d/openssl-compat.conf" \
   /etc/systemd/system/asterisk.service.d/openssl-compat.conf
 install -m 644 "$FILES/etc/fail2ban/jail.d/asterisk.local" /etc/fail2ban/jail.d/asterisk.local
@@ -84,6 +83,8 @@ ensure_rule -p tcp -m state --state NEW --dport 22 -j ACCEPT
 ensure_rule -p udp --dport 5060 -j ACCEPT
 ensure_rule -p tcp -m state --state NEW --dport 5060 -j ACCEPT
 ensure_rule -p tcp -m state --state NEW --dport 5061 -j ACCEPT
+# certbot standalone 用 HTTP-01 续签，签发与续签的那几十秒需要 80 可达；平时没有程序监听它。
+ensure_rule -p tcp -m state --state NEW --dport 80 -j ACCEPT
 ensure_rule -p udp --dport 10000:20000 -j ACCEPT
 netfilter-persistent save || true
 
@@ -93,15 +94,29 @@ chmod 750 /etc/asterisk/keys
 touch /var/lib/sip-panel/applied_rev /var/lib/sip-panel/apply_error
 echo 0 > /var/lib/sip-panel/applied_rev
 
+# 证书自动续签。部署钩子必须把证书装成 pjsip.transports.conf 实际引用的文件名，
+# 不能照搬 certbot 的 fullchain.pem / privkey.pem——那样续签会「成功」但 pjsip 仍读旧文件，
+# 到期照样断线，而且全程没有任何报错。
+install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+install -m 755 -o root -g root "$FILES/etc/letsencrypt/renewal-hooks/deploy/elfremote-sip" \n  /etc/letsencrypt/renewal-hooks/deploy/elfremote-sip
+sed -i "s/sip.elfradio.net/${SIP_DOMAIN}/g" /etc/letsencrypt/renewal-hooks/deploy/elfremote-sip
+
 systemctl daemon-reload
-systemctl enable --now asterisk fail2ban sip-statusd.service
-systemctl disable sip-heartbeat.timer >/dev/null 2>&1 || true
+systemctl enable --now asterisk fail2ban sip-statusd.service certbot.timer
+# sip-heartbeat.timer 是死单元：sip-statusd.py 直接 import 心跳模块自带节拍，
+# 这个 timer 从未启用过，留着只会让人以为心跳靠它。
+systemctl disable --now sip-heartbeat.timer >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/sip-heartbeat.timer   # 旧机器上残留的也一并清掉
 systemctl restart asterisk fail2ban sip-statusd.service
 
 echo
 echo "安装完成。"
-echo "1. 云厂商安全组放行：TCP 22、TCP/UDP 5060、TCP 5061、UDP 10000-20000"
+echo "1. 云厂商安全组放行：TCP 22、TCP 80（证书续签用）、TCP/UDP 5060、TCP 5061、UDP 10000-20000"
 echo "2. DNS：${SIP_DOMAIN} A 记录指向 ${PUBLIC_IP}"
 echo "3. 面板保存一次 SIP 配置，大阪会在 30 秒内拉取密码和通话组（只改组不会重载整机 SIP）"
 echo "4. Cloudflare Tunnel（api.elfradio.net -> 127.0.0.1:8080）请单独放入 /etc/cloudflared/token，本脚本不写隧道密钥"
 echo "5. 当前 pjsip.auth.conf 里是占位密码，必须等面板同步后分机才能注册"
+echo "6. 首次签发证书（要先完成第 1 条的 TCP 80 放行）："
+echo "     certbot certonly --standalone -d ${SIP_DOMAIN} --agree-tos -m <邮箱> -n"
+echo "   签发成功会自动执行部署钩子，装进 /etc/asterisk/keys/ 并重载 PJSIP（5061 注册会短暂抖动）。"
+echo "   之后用 certbot renew --dry-run 确认续签路径；certbot.timer 负责到期前自动续签。"

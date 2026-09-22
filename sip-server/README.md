@@ -49,11 +49,41 @@ sudo bash install.sh
 - 只改通话组、外呼开关、呼入转发时，只改 Asterisk 路由库，**不执行 `pjsip reload`**，不会把 101 和网关 300 一起踢下线。
 - 只有加/删分机、改密码、改 SIP 账号文件时才重载 PJSIP。
 - 网关 300 不跑 OPTIONS；面板按是否有注册联系人判断网关在线。
-- 只放行 TCP 22、TLS 5061 与 RTP 10000–20000；明文 5060 不对公网开放（Asterisk 仍监听，但被防火墙挡住）。
+- 只放行 TCP 22、TCP 80（证书续签）、TLS 5061 与 RTP 10000–20000；明文 5060 不对公网开放（Asterisk 仍监听，但被防火墙挡住）。
 - Fail2Ban 看守 5060/5061 的连接尝试；`IGNOREIP` 里的地址永不封。封禁状态由 `sip_bans.py` 汇总给面板，面板可手动解封，细节见 `封禁管理交接.md`。
 - 短信在目标分机离线时写入本机 SQLite 队列（`sms-queue.py`），目标上线后自动补投。
 - Asterisk 使用 `openssl-compat.cnf`（允许 TLS 1.0），D31 才能注册。
 - 拨号：内网分机互打看通话组；公网外呼看「组有出口 + 分机允许外呼」。网关呼入电话走 `SIP/gwin`，入站短信走 `SIP/gwsms`，两者必须指向同一通话组。
+
+## TLS 证书自动续签
+
+`sip.elfradio.net` 的证书由 Let's Encrypt 签发，`pjsip.transports.conf` 的 `transport-tls`（0.0.0.0:5061）直接引用它。证书一过期，**所有终端的 TLS 注册立刻全断**。
+
+续签走 **certbot standalone（HTTP-01）**，与 MQTT 机 oracle1 同一套。没有选 DNS-01 是因为影响范围：这台机对公网暴露 5061 且跑 Asterisk，一旦被攻破，落在它上面的 Cloudflare DNS 令牌意味着整个 `elfradio.net` 的 DNS 编辑权（可给任意子域签证书、把面板指走）；HTTP-01 最坏只是多一个开放的 80 端口，平时没有任何程序监听它，只有 certbot 在签发/续签的那几十秒临时占用。
+
+| 组件 | 位置 |
+|---|---|
+| 证书本体 | `/etc/letsencrypt/live/sip.elfradio.net/` |
+| 部署钩子 | `/etc/letsencrypt/renewal-hooks/deploy/elfremote-sip` |
+| 定时续签 | `certbot.timer`（apt 装 certbot 时自动启用） |
+| Asterisk 实际读取 | `/etc/asterisk/keys/sip.elfradio.net-fullchain.crt` 与 `sip.elfradio.net.key` |
+
+**钩子有两处不能照抄 oracle1，抄错会静默失败：**
+
+一是文件名。oracle1 直接用 certbot 的 `fullchain.pem` / `privkey.pem`，这台机不行——`pjsip.transports.conf` 引用的是上表那两个名字。照抄的话续签会「成功」、certbot 一切正常，但 PJSIP 仍读旧文件，到期照样断，**全程没有任何报错**。
+
+二是属主与权限。oracle1 是 `root:mosquitto 0640`；这台机的 Asterisk 以 `asterisk` 身份运行，所以装成 `asterisk:asterisk`，证书 0600、私钥 0640，与原有文件一致。
+
+钩子先写 `.new` 再 `mv`，避免 Asterisk 读到写了一半的文件；最后 `asterisk -rx "module reload res_pjsip.so"`。**这次重载会让 5061 上的注册短暂抖动**，所以首次签发要挑低峰时段。
+
+首次签发（云安全组必须先放行 TCP 80）：
+
+```bash
+certbot certonly --standalone -d sip.elfradio.net --agree-tos -m <邮箱> -n
+certbot renew --dry-run
+```
+
+`--dry-run` 不能只看它说没说成功，要确认钩子真的跑了、`/etc/asterisk/keys/` 里的文件时间变了、`pjsip show transports` 仍有 `transport-tls`。
 
 ## 分机模板的既定取值（2026-09-18 确认）
 
@@ -84,7 +114,8 @@ sudo bash install.sh
 | `files/etc/asterisk/pjsip.auth.conf` | 仅占位密码 `CHANGE_ME`，以面板同步为准 |
 | `files/etc/fail2ban/`、`files/etc/iptables/` | 防护规则。`rules.v4` 是按生产机同步的基线，已去掉 fail2ban 的自建链、跳转规则和历史封禁条目，这些由 fail2ban 启动时自行重建，不应带到新机 |
 | `files/etc/sysctl.d/99-bbr.conf` | 开启 BBR |
-| `files/etc/systemd/system/` | `sip-statusd`、`sip-heartbeat` 服务与定时器 |
+| `files/etc/systemd/system/` | `sip-statusd` 与 `sip-heartbeat` 服务。**不含 `sip-heartbeat.timer`**：`sip-statusd.py` 直接 import 心跳模块自带节拍，那个 timer 从未启用过，留着只会让人误以为心跳靠它，2026-09-23 已从仓库与生产机删除 |
+| `files/etc/letsencrypt/renewal-hooks/deploy/elfremote-sip` | 证书续签后装进 Asterisk 并重载 PJSIP 的钩子 |
 | `test_sip_bans.py`、`test_sms_queue.py` | 封禁汇总与短信队列的单元测试 |
 | `封禁管理交接.md` | 封禁管理的设计与交接说明 |
 

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Let's Encrypt 续签后把证书装进 Asterisk 并重载 PJSIP。
+# 形状照抄 oracle1 的 /etc/letsencrypt/renewal-hooks/deploy/elfremote-mqtt：
+# 先写 .new 再 mv，避免 Asterisk 读到写了一半的文件。
+# 目标文件名必须与 pjsip.transports.conf 的 cert_file / priv_key_file 完全一致。
+set -eu
+source_dir=/etc/letsencrypt/live/sip.elfradio.net
+target=/etc/asterisk/keys
+[ "${RENEWED_LINEAGE:-$source_dir}" = "$source_dir" ] || exit 0
+install -o asterisk -g asterisk -m 0600 "$source_dir/fullchain.pem" "$target/sip.elfradio.net-fullchain.crt.new"
+install -o asterisk -g asterisk -m 0640 "$source_dir/privkey.pem" "$target/sip.elfradio.net.key.new"
+mv "$target/sip.elfradio.net-fullchain.crt.new" "$target/sip.elfradio.net-fullchain.crt"
+mv "$target/sip.elfradio.net.key.new" "$target/sip.elfradio.net.key"
+if systemctl is-active --quiet asterisk; then
+    asterisk -rx "module reload res_pjsip.so"
+fi
