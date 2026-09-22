@@ -3130,6 +3130,18 @@ async function mcpToolCall(env, device, name, args) {
     const id = 'mcp-' + crypto.randomUUID();
     const raw = await route('/api/elfremote/task', 'POST', { device_id: device.id, type, id, params });
     const task = JSON.parse(raw).task || {};
+    // 立刻推送唤醒。网页下发时这一步在外层 Worker 里做（见 /api/elfremote/task 那段），
+    // 而这里是在 DO 内部直接走路由表，绕过了它——不补上的话任务要躺到设备下一次
+    // 定时上报才被领走，五分钟一条命令没法用。
+    // 用一个自持 stub 复用 pushHttp 本身，而不是把它那段逻辑再抄一遍：
+    // stub.fetch 只是把 /__push/* 转成对 pushState 的直接调用，不产生对自己的重入请求。
+    try {
+      const selfStub = { fetch: (target, init) => pushState(env.__storage,
+        new Request(target, init), () => loadDevices(env)) };
+      await pushHttp(env, new Request('https://elf-store/api/devices/request-status',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: device.id }) }), selfStub);
+    } catch (unreachable) { console.error('mcp_wake_failed'); }
     // 不在这里等结果：整个 DO 的请求是串行的，等三十秒等于把这台设备的所有流量一起卡住。
     return JSON.stringify({ task_id: task.id || id, state: task.state || 'pending',
       下一步: '用 task_status 查这个 task_id，通常三到十秒出结果' }, null, 1);
