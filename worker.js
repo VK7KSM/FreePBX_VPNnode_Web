@@ -794,7 +794,7 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
 // 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
 function outerDeviceRoute(path){return path==='/api/elfremote/files'||path.startsWith('/api/elfremote/files/')||path==='/api/elfremote/file-return'||path==='/api/elfremote/file-return/received'||path==='/api/elfremote/proxy-config';}
 function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases','/api/admin/store-size'].includes(path);
+  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases','/api/admin/store-size','/api/admin/health'].includes(path);
 }
 // 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
 function storeAuthenticates(path,method){
@@ -833,6 +833,16 @@ function quotaUnavailable(){
   const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;
   return authJson({ok:false,code:'storage_quota_exceeded',msg:'服务器额度暂时用尽，正在等待恢复',retry_at:reset},503,{'Retry-After':String(Math.max(1,Math.min(900,Math.ceil((reset-now)/1000))))});
 }
+
+// Worker 自己渲染的那几页（分享页、结束页、MCP 说明）与静态页面用同一套安全头；
+// 静态页面那份在 build-static-assets.mjs 的 _headers 里，两处要保持一致。
+const HTML_SECURITY_HEADERS = Object.freeze({
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Strict-Transport-Security": "max-age=31536000",
+  "Content-Security-Policy-Report-Only": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://cdn.jsdelivr.net; font-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+});
 
 const app = {
   async scheduled(event, env, ctx) {
@@ -1275,6 +1285,9 @@ const app = {
     if (pathname === "/api/admin/store-size" && method === "GET") {
       return handleStoreSize(env);
     }
+    if (pathname === "/api/admin/health" && method === "GET") {
+      return handleAdminHealth(env);
+    }
     if (pathname === "/api/mcp" && (method === "POST" || method === "DELETE")) {
       return handleMcp(env, request, method);
     }
@@ -1325,7 +1338,7 @@ const app = {
         +'<style>body{margin:0;padding:28px;background:#0b1424;color:#e2e8f0;'
         +'font:14px/1.7 ui-monospace,Consolas,monospace}pre{white-space:pre-wrap;word-break:break-word;margin:0;max-width:900px}</style>'
         +'<pre>'+escaped+'</pre>',
-        {headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}});
+        {headers:{...HTML_SECURITY_HEADERS,"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}});
     }
     if(pathname==="/share-client.js")return new Response(shareClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/share-session.js")return new Response(shareSessionSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
@@ -1339,34 +1352,34 @@ const app = {
 
     if (pathname === "/sip" || pathname === "/sip/") {
       return new Response(renderSipHtml(), {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
+        headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
       });
     }
 
     if (pathname === "/devices" || pathname === "/devices/") {
       return new Response(renderDevicesHtml(), {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
+        headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
       });
     }
-    if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
+    if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{...HTML_SECURITY_HEADERS,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
     // 路径段大小写都收：设备本机二维码用的是整条链接的大写形式（二维码字母数字模式不收小写），
     // 扫出来就是 /M/<TOKEN>；只匹配小写会把扫码的人丢到普通管理后台登录页。
     if (/^\/[mM]\/[A-Za-z0-9]{12}$/.test(pathname)) {
       // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
       const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
       // 已删除/到期的链接直接进结束页，不再渲染设备页；探测失败（如额度问题）时照常渲染，由页面登录时再判定。
-      try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
+      try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{...HTML_SECURITY_HEADERS,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
       let html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
       html=html.replace(/<a href="[^"]*" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
         .replace(/<div style="display:flex;align-items:center;gap:12px">[^]*?<button class="btn-gray" style="color:#f87171" onclick="logout\(\)">退出<\/button><\/div>/,'<div style="display:flex;align-items:center;gap:12px"><button class="btn-green" onclick="ElfShare.open()">设置</button><button class="btn-gray" style="color:#f87171" onclick="logout()">退出</button></div>')
         .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRemote Manager<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>');
-      return new Response(html,{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"strict-origin-when-cross-origin"}});
+      return new Response(html,{headers:{...HTML_SECURITY_HEADERS,"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"strict-origin-when-cross-origin"}});
     }
 
     if (pathname.startsWith("/api/")) return json({ ok: false, msg: "接口不存在" }, 404);
     // 首页：代理面板 Worker 渲染自己的节点页；管理面板没有首页，直接进设备管理。
     if (proxyPanel) return new Response(proxyPanel.renderHtml(), {
-      headers: { "Content-Type": "text/html; charset=utf-8" }
+      headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
     });
     return Response.redirect(new URL("/devices", url).toString(), 302);
   }
@@ -3419,6 +3432,33 @@ async function handleStoreSize(env) {
     .sort((a, b) => b.bytes - a.bytes);
   return json({ ok: true, limit: 131072, index_bytes: indexBytes,
     index_ratio: Number((indexBytes / 131072).toFixed(3)), ext_keys: ext.length, ext_bytes: extBytes, devices });
+}
+
+/**
+ * 健康摘要，管理员只读。「无需维护」不等于「无人知晓」：想看的时候打开就是，不发邮件。
+ * 只汇总已有的事实（每台最后上报、存储体积、未配对数、agent 连接、额度快照），不新增采集。
+ */
+async function handleAdminHealth(env) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const now = Date.now();
+  const devices = await loadDevices(env);
+  const list = (await storage.get('remote_devices')) || [];
+  const indexBytes = JSON.stringify(list).length;
+  let usage = null;
+  try { usage = await (await cfUsageResponse(env)).json(); } catch { usage = null; }
+  const metrics = Array.isArray(usage?.metrics) ? usage.metrics
+    .filter(m => m && m.limit && typeof m.value === 'number')
+    .map(m => ({ id: m.id, ratio: Number((m.value / m.limit).toFixed(3)) })) : [];
+  return json({ ok: true, server_time: now,
+    storage: { index_bytes: indexBytes, index_ratio: Number((indexBytes / 131072).toFixed(3)), limit: 131072 },
+    devices: devices.filter(d => d && d.id).map(d => ({ id: d.id, name: d.name, paired: d.paired !== false,
+      enabled: d.enabled !== false, app_version: d.app_version || null, last_reported_at: d.last_reported_at || null,
+      silent_ms: d.last_reported_at ? Math.max(0, now - Date.parse(d.last_reported_at)) : null,
+      task: d.task ? { id: d.task.id, type: d.task.type, state: d.task.state } : null,
+      mcp_session: mcpDeviceSession(mcpSessions, d.id, now) })),
+    unpaired: devices.filter(d => d && d.paired === false).length,
+    quota: metrics, quota_generated_at: usage?.generatedAt || null });
 }
 
 async function handleElfTaskProgress(env, request) {
