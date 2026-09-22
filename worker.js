@@ -486,6 +486,24 @@ export class ElfStore {
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
+    // 设备列表的合并读与拆分写：外层 Worker 的机器路由走这里，一次 RPC 完成。
+    if(url.pathname==='/__devices'){
+      if(request.method==='GET'){
+        return this.ctx.blockConcurrencyWhile(async()=>json(await loadDevices({...this.env,__storage:this.ctx.storage})));
+      }
+      if(request.method==='POST'){
+        const raw=await request.text();
+        // 整表上限放宽到 4 MB：拆键前整表已 100 KB，拆键后索引小得多，这只是防呆。
+        if(raw.length>4*1024*1024)return json({ok:false,msg:'设备列表过大'},413);
+        let list;try{list=JSON.parse(raw);}catch{return json({ok:false,msg:'设备列表格式错误'},400);}
+        if(!Array.isArray(list))return json({ok:false,msg:'设备列表格式错误'},400);
+        return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
+          await saveDevices({...this.env,__storage:storage},list);
+          return json({ok:true});
+        }));
+      }
+      return json({ok:false},405);
+    }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>{
@@ -1701,13 +1719,98 @@ async function saveDeviceModels(env, models) {
   await setStore(env, "remote_device_models", models);
 }
 
+// ── 设备列表的存储布局 ──────────────────────────────────────────────
+//
+// DO 存储单值上限 128 KiB。remote_devices 原来是整表一个键，2026-09-23 实测公开投影
+// 已 81,780 字节、存储版约 100 KB——再加一台 D31 量级的设备就到顶，越限那一刻
+// 所有经过 saveDevices 的写入一起失败，整个控制面一起停。
+//
+// 现在拆成两层：remote_devices 只留每台的小字段（索引），大字段各自放进
+// device_ext/<id> 一个键。索引每台不到 2 KB，扩展键每台独立受 128 KiB 约束
+// （现在最大 15 KB）。设备数翻十倍也碰不到上限。
+//
+// 顺带的收益：每次上报只重写变化了的那台设备的扩展键，不再整表重写 100 KB——
+// DO 写入行数与每个请求的 CPU 一起降。
+//
+// 读取时索引里的字段优先：旧格式（大字段还在索引里）、以及测试直接塞进索引的完整记录，
+// 都按索引为准，下一次保存时自然搬进扩展键。所以不需要一次性迁移。
+const DEVICE_EXT_FIELDS = new Set([
+  'system_settings', 'installed_apps', 'sip_accounts', 'sip_targets', 'wifi_scan', 'contacts',
+  'contacts_page_snapshot', 'account_configs', 'proxy_nodes', 'proxy_apps', 'proxy_config',
+  'proxy_offer', 'update', 'task', 'safety_task', 'maintenance', 'permissions', 'traffic',
+  'report_photo', 'lost_mode', 'gateway', 'pixel_runtime', 'alarm', 'lost_message',
+  'location_state', 'loc', 'mobile_network', 'hardware_identity'
+]);
+// 名单之外的对象字段只要超过这个体积也进扩展键：以后新加的大字段不用记得改名单。
+const DEVICE_EXT_THRESHOLD = 1024;
+const deviceExtKey = id => 'device_ext/' + encodeURIComponent(String(id));
+
+export function splitDeviceRecord(device) {
+  const index = {}, ext = {};
+  for (const [key, value] of Object.entries(device || {})) {
+    if (value === undefined) continue;
+    const big = DEVICE_EXT_FIELDS.has(key)
+      || (value !== null && typeof value === 'object' && JSON.stringify(value).length > DEVICE_EXT_THRESHOLD);
+    (big ? ext : index)[key] = value;
+  }
+  return { index, ext };
+}
+
 async function loadDevices(env) {
+  // 上报、注册这些机器路由在外层 Worker 执行，没有 __storage。以前它们按整个键 RPC 读写，
+  // 拆键之后改为一次 RPC 交给 DO 内的 loadDevices/saveDevices 做拆合——
+  // 否则外层每次上报仍会把整表 100 KB 写回索引，拆键等于白做。
+  if (!env.__storage) {
+    const stub = elfDoStub(env);
+    if (stub) {
+      const res = await stub.fetch("https://elf-store/__devices");
+      if (!res.ok) throw Error("设备存储不可用");
+      const list = await res.json();
+      return Array.isArray(list) ? list : [];
+    }
+    const raw = await getStore(env, "remote_devices");
+    return Array.isArray(raw) ? raw : [];   // 没有 DO 绑定（s.elfradio.net 走 KV）：那边本来就不管设备
+  }
   const raw = await getStore(env, "remote_devices");
-  return Array.isArray(raw) ? raw : [];
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const d of list) {
+    if (!d || typeof d !== 'object' || !d.id) { out.push(d); continue; }
+    const ext = await env.__storage.get(deviceExtKey(d.id));
+    out.push(ext && typeof ext === 'object' ? { ...ext, ...d } : d);
+  }
+  return out;
 }
 
 async function saveDevices(env, list) {
-  await setStore(env, "remote_devices", list);
+  if (!env.__storage) {
+    const stub = elfDoStub(env);
+    if (stub) {
+      const res = await stub.fetch("https://elf-store/__devices", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(list) });
+      if (!res.ok) throw Error("设备存储写入失败");
+      return;
+    }
+    await setStore(env, "remote_devices", list); return;
+  }
+  const index = [], seen = new Set();
+  for (const d of list) {
+    if (!d || typeof d !== 'object' || !d.id) { index.push(d); continue; }
+    const split = splitDeviceRecord(d);
+    index.push(split.index); seen.add(String(d.id));
+    const key = deviceExtKey(d.id);
+    const next = Object.keys(split.ext).length ? split.ext : null;
+    const prev = await env.__storage.get(key);
+    // 只在扩展键内容真的变了才写：上报大多只改索引里的几个小字段。
+    if (JSON.stringify(prev ?? null) !== JSON.stringify(next)) {
+      if (next) await env.__storage.put(key, next); else if (prev !== undefined) await env.__storage.delete(key);
+    }
+  }
+  // 被删掉的设备：扩展键一起删，不留孤儿。
+  const previous = await env.__storage.get("remote_devices");
+  if (Array.isArray(previous)) for (const d of previous)
+    if (d && d.id && !seen.has(String(d.id))) await env.__storage.delete(deviceExtKey(d.id));
+  await setStore(env, "remote_devices", index);
 }
 
 async function fetchIpGeo(ip) {
