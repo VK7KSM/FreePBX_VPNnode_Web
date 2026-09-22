@@ -204,11 +204,20 @@ export function claimSession(sessions,record,requested,now=Date.now()){
   sessions.set(hash,session);
   return {session,resumed:!!current};
 }
-/** 后续请求：必须带着自己那个会话编号。带错或没带，都说明是另一个 agent。 */
+/**
+ * 后续请求：必须带着自己那个会话编号。带错或没带，都说明是另一个 agent。
+ *
+ * 没带编号且当前也没有会话时放行，是留给不握手的简单脚本用的。
+ * 但**带了编号却没有会话**不能放行——那说明这个会话已经被面板断开或超时清掉了，
+ * 放行等于「断开连接」按钮按了个寂寞，原来那个 agent 照样能接着操作设备。
+ */
 export function touchSession(sessions,record,requested,now=Date.now()){
   const hash=record.token_sha256;
   const current=activeSession(sessions,hash,now);
-  if(!current)return null;                      // 还没握手，按无会话处理
+  if(!current){
+    if(requested)throw Object.assign(Error('这个会话已被断开或超时失效，请重新 initialize。'),{status:404});
+    return null;                                // 从未握手的简单客户端，放行
+  }
   if(current.id!==requested)
     throw Object.assign(Error('这个令牌正被另一个 agent 使用，或你的会话已超时失效，请重新 initialize。'),{status:404});
   current.last=now;
