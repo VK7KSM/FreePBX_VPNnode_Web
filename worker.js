@@ -34,7 +34,7 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
-import {authenticate as mcpAuthenticate,createToken as mcpCreateToken,revokeToken as mcpRevokeToken,revokeByLink as mcpRevokeByLink,listTokens as mcpListTokens,allows as mcpAllows,tokenHash as mcpTokenHash,noteUsage as mcpNoteUsage,flushUsage as mcpFlushUsage,serverName as mcpServerName,SCOPES as MCP_SCOPES,TTL_PRESETS as MCP_TTL_PRESETS} from './mcp-tokens.js';
+import {authenticate as mcpAuthenticate,createToken as mcpCreateToken,revokeToken as mcpRevokeToken,revokeByLink as mcpRevokeByLink,listTokens as mcpListTokens,allows as mcpAllows,tokenHash as mcpTokenHash,noteUsage as mcpNoteUsage,flushUsage as mcpFlushUsage,serverName as mcpServerName,claimSession as mcpClaimSession,touchSession as mcpTouchSession,releaseSession as mcpReleaseSession,deviceSession as mcpDeviceSession,releaseDevice as mcpReleaseDevice,SCOPES as MCP_SCOPES,TTL_PRESETS as MCP_TTL_PRESETS} from './mcp-tokens.js';
 import {dispatch as mcpDispatch} from './mcp-server.js';
 import mcpGuide from './mcp-guide-source.js';
 import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel, releaseVariant, RELEASE_VARIANTS, preferredRelease } from './release-channels.js';
@@ -708,6 +708,8 @@ ElfStore.prototype.decorateDeviceList=async function(storage,ctx,response){
     body.devices=(body.devices||[]).filter(d=>d.id===ctx.device_id);body.unpaired=[];body.share=true;
     for(const d of body.devices)d.share_locked=false;
   }else for(const d of body.devices||[]){d.share_locked=await shareObserverLocked(storage,d.id);if(d.share_locked)d.adb_observable=this.adb.observeStatus(d.id).active;}
+  // 独立页与总后台都要看到「MCP 使用中」，两个提示可以同时出现。
+  for(const d of body.devices||[])d.mcp_session=mcpDeviceSession(mcpSessions,d.id);
   return json(body);
 };
 ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
@@ -875,7 +877,7 @@ const app = {
       }
     }
     // 令牌管理的鉴权（管理员或分享，且分享只能碰自己那台）已在上面完成，这里只负责转发。
-    if(!env.__storage && (pathname==='/api/elfremote/mcp-tokens'||pathname==='/api/elfremote/mcp-tokens/delete')) {
+    if(!env.__storage && (pathname==='/api/elfremote/mcp-tokens'||pathname==='/api/elfremote/mcp-tokens/delete'||pathname==='/api/elfremote/mcp-tokens/release')) {
       const stub=elfDoStub(env);return stub?stub.fetch(request):json({ok:false,msg:'设备存储不可用'},503);
     }
     if(pathname==='/api/admin/legacy-store'){
@@ -1248,14 +1250,17 @@ const app = {
     if (pathname === "/api/elfremote/releases" && method === "GET") {
       return handleElfReleaseList(env,url);
     }
-    if (pathname === "/api/mcp" && method === "POST") {
-      return handleMcp(env, request);
+    if (pathname === "/api/mcp" && (method === "POST" || method === "DELETE")) {
+      return handleMcp(env, request, method);
     }
     if (pathname === "/api/elfremote/mcp-tokens" && (method === "GET" || method === "POST")) {
       return handleMcpTokens(env, request, url, method);
     }
     if (pathname === "/api/elfremote/mcp-tokens/delete" && method === "POST") {
       return handleMcpTokenDelete(env, request);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens/release" && method === "POST") {
+      return handleMcpRelease(env, request);
     }
     if (pathname === "/api/elfremote/assign" && method === "POST") {
       return handleElfAssign(env, request);
@@ -3073,6 +3078,9 @@ async function assetReleaseBySha(env, channel, sha256) {
 // 放模块级而不是 DO 实例上：键是令牌哈希，不同设备不会撞；进程重启丢掉的最多是
 // 最后那一批计数，而计数本来就只用于判断「这个令牌最近有没有人在用」。
 const mcpUsage = new Map();
+// 一个令牌同时只让一个 agent 连着：两个 agent 共用同一个令牌会互相覆盖任务槽、
+// 抢对方的结果，现场表现是命令莫名其妙丢失。会话只存内存，与 ADB/媒体会话一致。
+const mcpSessions = new Map();
 
 function mcpOrigin(env) {
   return 'https://' + new URL(env.ELF_BASE_URL || 'https://v.elfradio.net').host;
@@ -3110,6 +3118,16 @@ async function handleMcpTokenDelete(env, request) {
     const data = await request.json();
     const removed = await mcpRevokeToken(storage, String(data.device_id || ''), String(data.id || ''));
     return removed ? json({ ok: true }) : json({ ok: false, msg: '未找到该令牌' }, 404);
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+/** 面板断开：agent 崩掉时会话要等十五分钟才自己过期，这里让人一键放行。 */
+async function handleMcpRelease(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || '');
+    if (!deviceId) return json({ ok: false, msg: '设备编号无效' }, 400);
+    return json({ ok: true, released: mcpReleaseDevice(mcpSessions, deviceId) });
   } catch (error) { return json({ ok: false, msg: error.message }, 400); }
 }
 
@@ -3185,7 +3203,7 @@ async function mcpToolCall(env, device, name, args) {
 }
 
 /** MCP 端点。凭 Authorization: Bearer 认证，不认管理员会话——它是给 agent 用的。 */
-async function handleMcp(env, request) {
+async function handleMcp(env, request, method = 'POST') {
   const storage = env.__storage;
   if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
   const rpcError = (code, message, status) =>
@@ -3198,6 +3216,12 @@ async function handleMcp(env, request) {
   const device = (await loadDevices(env)).find(d => d.id === record.device_id);
   if (!device) return rpcError(-32002, '这个令牌指向的设备已不存在', 404);
   if (device.enabled === false) return rpcError(-32002, '这台设备已停用', 409);
+  // 会话编号按 MCP 规范放在 Mcp-Session-Id 头里。
+  const sessionId = request.headers.get('Mcp-Session-Id') || '';
+  if (method === 'DELETE') {
+    mcpReleaseSession(mcpSessions, record, sessionId);
+    return new Response(null, { status: 204 });
+  }
   let body;
   try { body = await request.json(); } catch { return rpcError(-32700, '请求不是合法 JSON', 400); }
 
@@ -3205,6 +3229,13 @@ async function handleMcp(env, request) {
     call: (name, args) => mcpToolCall(env, device, name, args) };
   const batch = Array.isArray(body);
   const messages = batch ? body : [body];
+  // 握手就是「占用」，其余请求必须带着自己那个会话编号——带错或没带，就是另一个 agent。
+  const handshake = messages.some(m => m && m.method === 'initialize');
+  let session = null;
+  try {
+    session = handshake ? mcpClaimSession(mcpSessions, record, sessionId).session
+      : mcpTouchSession(mcpSessions, record, sessionId);
+  } catch (error) { return rpcError(-32003, error.message, error.status || 409); }
   const replies = [];
   let called = false;
   for (const message of messages) {
@@ -3215,8 +3246,9 @@ async function handleMcp(env, request) {
   if (called && mcpNoteUsage(mcpUsage, record.token_sha256, Date.now()))
     await mcpFlushUsage(storage, mcpUsage, record.token_sha256);
   // 全是通知时没有回包：按 JSON-RPC 规范回 202，不能回一个空 body 的 200。
-  if (!replies.length) return new Response(null, { status: 202 });
-  return json(batch ? replies : replies[0]);
+  const headers = session ? { 'Mcp-Session-Id': session.id } : {};
+  if (!replies.length) return new Response(null, { status: 202, headers });
+  return json(batch ? replies : replies[0], 200, headers);
 }
 
 async function handleElfTaskProgress(env, request) {

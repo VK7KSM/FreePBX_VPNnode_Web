@@ -65,7 +65,7 @@ export function isMachineRoute(path, method) {
     // 设备自取原生库下载地址：同样凭设备令牌。
     "POST /api/devices/media-native/offer",
     // MCP 端点自带 Bearer 令牌，由 handleMcp 自行认证，不认管理员会话。
-    "POST /api/mcp",
+    "POST /api/mcp", "DELETE /api/mcp",
     "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo",
     "POST /api/elfremote/file-return", "PUT /api/elfremote/file-return", "GET /api/elfremote/adb/device", "GET /api/elfremote/media/device", "GET /api/elfremote/desktop/device",
     "GET /api/elfremote/adb-tunnel/host", "GET /api/elfremote/adb-tunnel/device"

@@ -169,6 +169,24 @@ function pageReleases(){
 // MCP 令牌弹窗。总后台与单设备分享页共用同一套：令牌本来就只管当前这一台设备，
 // 两处没有功能差别，不需要两套设计。样式沿用分享弹窗那几个类，省一份 CSS。
 var MCP={device:'',tokens:[],scopes:[],ttls:[],loading:false,busy:false,error:'',created:null,picked:null};
+/** 标题栏提示。与分享的「只读模式」提示并排，两个可以同时出现——一台设备可能既有人在网页上看，又有 agent 连着。 */
+function mcpNotice(d){
+  var s=d&&d.mcp_session;
+  if(!s)return '';
+  return '<span class="share-lock-tag" role="status" style="background:#2e1065;color:#c4b5fd">'
+    +'MCP 使用中 · '+esc(s.name)+'</span>';
+}
+async function mcpRelease(){
+  if(MCP.busy||!MCP.device)return;
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens/release',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:MCP.device})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('断开失败 HTTP '+r.status));
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;mcpRender();loadDevices();}
+}
 function mcpButton(d){
   var can=!!d&&d.enabled!==false;
   return '<button class="device-action action-mcp" onclick="mcpOpen()"'+(can?'':' disabled')+'>MCP</button>';
@@ -295,6 +313,15 @@ function mcpRender(){
   h+='<p class="muted" style="margin:10px 0 0">有效期最长一周——这是操作硬件，不是操作程序。'
     +'媒体、丢失模式、擦除不提供给 MCP，要用请在本页操作。</p></section>';
 
+  var live=currentDev()&&currentDev().mcp_session;
+  if(live){
+    h+='<section class="share-panel" style="border-color:#6d28d9"><div class="share-panel-title">'
+      +'当前有 agent 连着：<strong style="color:#c4b5fd">'+esc(live.name)+'</strong>'
+      +' · 自 '+esc(sydney(new Date(live.started).toISOString()))+'</div>'
+      +'<p class="muted" style="margin:0 0 10px">同一个令牌同时只允许一个 agent。'
+      +'闲置十五分钟会自动断开；agent 崩了不想等就按下面这个。</p>'
+      +'<div class="share-form-actions"><button class="share-btn share-btn-danger" onclick="mcpRelease()"'+dis+'>断开连接</button></div></section>';
+  }
   h+='<div class="share-list-title">已创建令牌 <span class="share-count">'+MCP.tokens.length+'</span></div>';
   if(MCP.loading&&!MCP.tokens.length)h+='<div class="share-empty">正在读取…</div>';
   else if(!MCP.tokens.length)h+='<div class="share-empty">暂无令牌，先在上方生成一个。</div>';
@@ -793,7 +820,7 @@ function renderOps(){
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "已连接" : "未连接");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
-  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>"+(typeof ElfShare!=='undefined'?ElfShare.lockedNotice(d):'');
+  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>"+(typeof ElfShare!=='undefined'?ElfShare.lockedNotice(d):'')+mcpNotice(d);
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';

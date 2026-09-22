@@ -173,3 +173,63 @@ export async function flushUsage(storage,pending,hash){
   await storage.put(tokenKey(hash),record);
   return true;
 }
+
+// ── 会话：一个令牌同时只让一个 agent 连着 ──────────────────────────────
+//
+// 两个 agent 拿同一个令牌操作同一台设备，会互相覆盖对方的任务槽、抢对方的结果，
+// 现场表现是命令莫名其妙丢失。MCP 的 Streamable HTTP 本身是一问一答、没有长连接，
+// 所以「连着」用会话来表达：initialize 时领一个会话编号，之后每次请求都要带上它。
+//
+// 会话只存在于内存里（与 ADB/媒体会话一致）。进程回收时会话随之消失，
+// 表现为「锁自己开了」——宁可这样，也不要让一个崩掉的 agent 把令牌锁死到过期。
+export const SESSION_IDLE_MS=900000;
+
+export function pruneSessions(sessions,now){
+  for(const [hash,s] of sessions)if(now-s.last>=SESSION_IDLE_MS)sessions.delete(hash);
+}
+export function activeSession(sessions,hash,now){
+  pruneSessions(sessions,now);
+  return sessions.get(hash)||null;
+}
+/** initialize：没人占就领走；已被别的 agent 占着就明确拒绝，不抢。 */
+export function claimSession(sessions,record,requested,now=Date.now()){
+  const hash=record.token_sha256;
+  const current=activeSession(sessions,hash,now);
+  if(current&&current.id!==requested)
+    throw Object.assign(Error('这个令牌正被另一个 agent 使用（自 '+new Date(current.started).toISOString()
+      +'）。同一个令牌同时只允许一个 agent，请换一个令牌，或在设备管理页的 MCP 弹窗里断开它。'),{status:409});
+  const session=current||{id:crypto.randomUUID(),device_id:record.device_id,
+    name:record.name,started:now,last:now};
+  session.last=now;
+  sessions.set(hash,session);
+  return {session,resumed:!!current};
+}
+/** 后续请求：必须带着自己那个会话编号。带错或没带，都说明是另一个 agent。 */
+export function touchSession(sessions,record,requested,now=Date.now()){
+  const hash=record.token_sha256;
+  const current=activeSession(sessions,hash,now);
+  if(!current)return null;                      // 还没握手，按无会话处理
+  if(current.id!==requested)
+    throw Object.assign(Error('这个令牌正被另一个 agent 使用，或你的会话已超时失效，请重新 initialize。'),{status:404});
+  current.last=now;
+  return current;
+}
+export function releaseSession(sessions,record,requested,now=Date.now()){
+  const current=activeSession(sessions,record.token_sha256,now);
+  if(!current||(requested&&current.id!==requested))return false;
+  sessions.delete(record.token_sha256);
+  return true;
+}
+/** 面板用：这台设备上有没有 agent 连着。 */
+export function deviceSession(sessions,deviceId,now=Date.now()){
+  pruneSessions(sessions,now);
+  for(const s of sessions.values())
+    if(s.device_id===deviceId)return {name:s.name,started:s.started,last:s.last};
+  return null;
+}
+/** 面板断开：按设备清掉所有会话，用于 agent 崩掉后立刻放行。 */
+export function releaseDevice(sessions,deviceId){
+  let removed=0;
+  for(const [hash,s] of sessions)if(s.device_id===deviceId){sessions.delete(hash);removed++;}
+  return removed;
+}
