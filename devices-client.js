@@ -166,6 +166,158 @@ function pageReleases(){
   return h;
 }
 
+// MCP 令牌弹窗。总后台与单设备分享页共用同一套：令牌本来就只管当前这一台设备，
+// 两处没有功能差别，不需要两套设计。样式沿用分享弹窗那几个类，省一份 CSS。
+var MCP={device:'',tokens:[],scopes:[],ttls:[],loading:false,busy:false,error:'',created:null,picked:null};
+function mcpButton(d){
+  var can=!!d&&d.enabled!==false;
+  return '<button class="device-action action-mcp" onclick="mcpOpen()"'+(can?'':' disabled')+'>MCP</button>';
+}
+function mcpNode(){
+  var wrap=$('mcpWrap');
+  if(wrap)return wrap;
+  wrap=document.createElement('div');wrap.id='mcpWrap';wrap.className='file-send-wrap';wrap.style.display='none';
+  wrap.innerHTML='<div class="file-send-dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="mcpTitle">'
+    +'<div class="traffic-header"><h3 id="mcpTitle">MCP 访问令牌</h3>'
+    +'<button type="button" class="btn-close share-close" aria-label="关闭" onclick="mcpClose()">&times;</button></div>'
+    +'<div id="mcpBody"></div></div>';
+  wrap.addEventListener('click',function(e){if(e.target===wrap)mcpClose();});
+  document.body.appendChild(wrap);
+  return wrap;
+}
+function mcpOpen(){
+  var d=currentDev();if(!d)return;
+  MCP.device=d.id;MCP.created=null;MCP.error='';MCP.picked=null;MCP.tokens=[];
+  mcpNode().style.display='flex';
+  mcpRender();mcpLoad();
+}
+function mcpClose(){
+  var wrap=$('mcpWrap');if(wrap)wrap.style.display='none';
+  // 明文只存在于 MCP.created 这一个地方，关窗即丢——服务器那边本来就只有哈希。
+  MCP.created=null;
+}
+async function mcpLoad(){
+  if(!MCP.device)return;
+  MCP.loading=true;mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens?device_id='+encodeURIComponent(MCP.device),{credentials:'include'});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('读取失败 HTTP '+r.status));
+    MCP.tokens=x.tokens||[];MCP.scopes=x.scopes||[];MCP.ttls=x.ttls||[];MCP.error='';
+    if(MCP.picked===null)MCP.picked=MCP.scopes.filter(function(s){return s.default;}).map(function(s){return s.id;});
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.loading=false;mcpRender();}
+}
+function mcpRemaining(ms){
+  if(ms<=0)return '已到期';
+  var m=Math.floor(ms/60000);
+  if(m<60)return m+' 分钟';
+  var h=Math.floor(m/60);
+  if(h<48)return h+' 小时 '+(m%60)+' 分';
+  return Math.floor(h/24)+' 天 '+(h%24)+' 小时';
+}
+function mcpToggle(id,on){
+  MCP.picked=(MCP.picked||[]).filter(function(x){return x!==id;});
+  if(on)MCP.picked.push(id);
+}
+async function mcpCreate(){
+  if(MCP.busy)return;
+  var picked=MCP.picked||[];
+  if(!picked.length){MCP.error='至少要勾选一项权限';mcpRender();return;}
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device_id:MCP.device,name:($('mcpName')&&$('mcpName').value)||'',
+        ttl:($('mcpTtl')&&$('mcpTtl').value)||'12h',scopes:picked})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('生成失败 HTTP '+r.status));
+    MCP.created=x;
+    if($('mcpName'))$('mcpName').value='';
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;mcpRender();await mcpLoad();}
+}
+async function mcpDelete(id){
+  if(MCP.busy)return;
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens/delete',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:MCP.device,id:id})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('删除失败 HTTP '+r.status));
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;await mcpLoad();}
+}
+function mcpCopy(which){
+  var node=$(which);if(!node)return;
+  try{navigator.clipboard.writeText(node.textContent);}catch(e){}
+}
+function mcpRender(){
+  var body=$('mcpBody');if(!body)return;
+  var dis=MCP.busy?' disabled':'';
+  var h='';
+  if(MCP.error)h+='<p class="share-error" role="alert">'+esc(MCP.error)+'</p>';
+
+  if(MCP.created){
+    // 明文只显示这一次：服务器只留哈希，关窗就找不回来了。
+    var cmd='claude mcp add --transport http '+MCP.created.server_name+' '+MCP.created.endpoint
+      +' --header "Authorization: Bearer '+MCP.created.secret+'"';
+    var conf=JSON.stringify({mcpServers:(function(){var o={};o[MCP.created.server_name]=
+      {type:'http',url:MCP.created.endpoint,headers:{Authorization:'Bearer '+MCP.created.secret}};return o;})()},null,2);
+    h+='<section class="share-panel"><div class="share-panel-title">令牌已生成 · '
+      +'<strong style="color:#fbbf24">这串只显示这一次，关掉就再也看不到，丢了只能删掉重建</strong></div>';
+    h+='<div class="share-panel-title" style="margin:10px 0 6px">推荐：直接跑这条命令</div>';
+    h+='<pre id="mcpCmd" class="share-link" style="white-space:pre-wrap;word-break:break-all;margin:0">'+esc(cmd)+'</pre>';
+    h+='<div class="share-form-actions" style="margin:8px 0 0"><button class="share-btn share-btn-primary" onclick="mcpCopy(&quot;mcpCmd&quot;)">复制命令</button></div>';
+    h+='<div class="share-panel-title" style="margin:14px 0 6px">或者：把这段并进 MCP 配置</div>';
+    h+='<pre id="mcpJson" class="share-link" style="white-space:pre-wrap;word-break:break-all;margin:0">'+esc(conf)+'</pre>';
+    h+='<div class="share-form-actions" style="margin:8px 0 0"><button class="share-btn share-btn-ghost" onclick="mcpCopy(&quot;mcpJson&quot;)">复制 JSON</button>'
+      +'<button class="share-btn share-btn-ghost" onclick="MCP.created=null;mcpRender()">我已保存</button></div>';
+    h+='<p class="muted" style="margin:10px 0 0">不要把它贴进聊天框——那等于写进日志。</p></section>';
+  }
+
+  h+='<section class="share-panel"><div class="share-panel-title">新建令牌</div><div class="share-form-row">';
+  h+='<label>名称 <input id="mcpName" class="inp" type="text" maxlength="48" placeholder="留空则按设备名自动取"'+dis+'></label>';
+  h+='<label class="share-ttl">有效期 <select id="mcpTtl" class="inp"'+dis+'>';
+  var ttlText={'1h':'1 小时','12h':'12 小时','1d':'1 天','7d':'1 周'};
+  for(var i=0;i<MCP.ttls.length;i++)
+    h+='<option value="'+MCP.ttls[i]+'"'+(MCP.ttls[i]==='12h'?' selected':'')+'>'+esc(ttlText[MCP.ttls[i]]||MCP.ttls[i])+'</option>';
+  h+='</select></label>';
+  h+='<div class="share-form-actions"><button class="share-btn share-btn-primary" onclick="mcpCreate()"'+dis+'>生成令牌</button></div>';
+  h+='</div>';
+  h+='<div class="share-panel-title" style="margin:14px 0 8px">权限</div><div style="display:flex;flex-wrap:wrap;gap:10px 18px">';
+  for(var j=0;j<MCP.scopes.length;j++){
+    var sc=MCP.scopes[j],on=(MCP.picked||[]).indexOf(sc.id)>=0;
+    h+='<label class="chk" style="font-size:13px"><input type="checkbox"'+(on?' checked':'')+dis
+      +' onchange="mcpToggle(&quot;'+sc.id+'&quot;,this.checked)"> '+esc(sc.label)+'</label>';
+  }
+  h+='</div>';
+  h+='<p class="muted" style="margin:10px 0 0">有效期最长一周——这是操作硬件，不是操作程序。'
+    +'媒体、丢失模式、擦除不提供给 MCP，要用请在本页操作。</p></section>';
+
+  h+='<div class="share-list-title">已创建令牌 <span class="share-count">'+MCP.tokens.length+'</span></div>';
+  if(MCP.loading&&!MCP.tokens.length)h+='<div class="share-empty">正在读取…</div>';
+  else if(!MCP.tokens.length)h+='<div class="share-empty">暂无令牌，先在上方生成一个。</div>';
+  else{
+    h+='<div class="share-list">';
+    for(var k=0;k<MCP.tokens.length;k++){
+      var t=MCP.tokens[k];
+      var used=t.last_used_at?sydney(new Date(t.last_used_at).toISOString()):'从未使用';
+      h+='<div class="share-item"><div class="share-item-main">'
+        +'<div class="share-item-link"><span class="share-link" style="cursor:default">'+esc(t.name)+'</span>'
+        +(t.source==='share'?'<span class="share-lock-tag">分享页生成</span>':'')+'</div>'
+        +'<div class="share-item-meta">创建 '+esc(sydney(new Date(t.created_at).toISOString()))
+        +' · 最后使用 '+esc(used)+' · 调用 '+t.calls+' 次 · 剩余 '+esc(mcpRemaining(t.remaining_ms))
+        +' · 权限 '+t.scopes.length+' 项</div></div>'
+        +'<button class="share-btn share-btn-danger" onclick="mcpDelete(&quot;'+esc(t.id)+'&quot;)"'+dis+'>删除</button></div>';
+    }
+    h+='</div>';
+  }
+  h+='<p class="muted" style="margin:12px 0 0">调用次数与最后使用时间最多滞后 1 分钟或 20 次。'
+    +'没让它干活却在动，就该删掉。 · <a href="/mcp-guide" target="_blank" rel="noopener">MCP 使用说明</a></p>';
+  body.innerHTML=h;
+}
+
 function $(id){ return document.getElementById(id); }
 function show(id){ $(id).style.display = "flex"; }
 function hide(id){ $(id).style.display = "none"; }
@@ -645,6 +797,7 @@ function renderOps(){
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';
+  h += mcpButton(d);
   if(typeof ElfShare!=='undefined')h += ElfShare.button(d);
   h += '<button class="device-action action-edit" onclick="openEdit()"'+dis+'>编辑</button>';
   if(d && d.enabled===false) h += '<button class="device-action action-enable" onclick="setEnabled(true)">启用</button>';
