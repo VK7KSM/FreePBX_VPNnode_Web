@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises';
 import {collectCfUsage} from '../cf-usage.js';
+import {parseJsonc} from '../jsonc.js';
 
 // 外部备用采集复用 CI 凭据；Worker 主采集使用独立只读凭据。凭据不进入网页或统计快照。
 const token=process.env.CLOUDFLARE_API_TOKEN,account=process.env.CLOUDFLARE_ACCOUNT_ID;
 if(!token||!account)throw Error('缺少CF采集凭据配置');
-const config=JSON.parse(await fs.readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));
+// wrangler.jsonc 带注释，JSON.parse 见到就抛（2026-09-21 起 CI 每十五分钟失败一次即此）。
+// 那段注释是要留着的——它记着 workers_dev 为什么必须保持 false。
+const config=parseJsonc(await fs.readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));
 const namespace=config.kv_namespaces.find(row=>row.binding==='SUB_STORE_KV')?.id;
 if(!namespace)throw Error('未找到共享快照存储');
 const endpoint='https://api.cloudflare.com/client/v4/accounts/'+encodeURIComponent(account)+'/storage/kv/namespaces/'+encodeURIComponent(namespace)+'/values/';
