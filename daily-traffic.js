@@ -36,7 +36,19 @@ export function aggregateDailyTraffic(samples,from,to,now=Date.now()) {
   }
   return rows.map(row=>({...row,partial:!row.available || row.gaps || row.observed_ms<Math.max(0,Math.min(row.end,now)-row.start)-2000}));
 }
-export async function queryDailyTraffic(storage,url,now=Date.now()) {
+// 保留期外的原始行已被清理（retention.js），那些天的流量只剩 traffic-day/<设备>/<日期> 汇总键。
+// 有汇总键的天一律以汇总为准——它是在原始行齐全时算出来的，比残缺的原始行准。
+async function mergeRollups(storage,device,rows) {
+  if(typeof storage.get!=='function')return rows;
+  for(const row of rows) {
+    const rollup=await storage.get('traffic-day/'+encodeURIComponent(device)+'/'+row.date);
+    if(!rollup||typeof rollup!=='object')continue;
+    for(const key of ['rx_bytes','tx_bytes','observed_ms','estimated','gaps','available','partial'])if(key in rollup)row[key]=rollup[key];
+    row.rolled_up=true;
+  }
+  return rows;
+}
+export async function queryDailyTraffic(storage,url,now=Date.now(),{rollups=true}={}) {
   const p=url.searchParams,device=p.get('device_id');if(!device||device.length>128) throw new Error('缺少有效设备编号');
   const to=p.get('to')||sydneyDate(now),from=p.get('from')||dateShift(to,-29);
   const start=sydneyMidnight(from),end=sydneyMidnight(dateShift(to,1));sydneyMidnight(to);
@@ -62,5 +74,7 @@ export async function queryDailyTraffic(storage,url,now=Date.now()) {
     if(entries.length<500) break;cursor=entries.at(-1)[0];
   }
   if(end<=now) await adjacent(false,high);
-  return {ok:true,timezone:'Australia/Sydney',from,to,days:aggregateDailyTraffic(samples,from,to,now),sampled_at_ms:Math.max(0,...samples.filter(s=>s.available&&s.sampled_at_ms<=now).map(s=>s.sampled_at_ms))};
+  const days=aggregateDailyTraffic(samples,from,to,now);
+  if(rollups)await mergeRollups(storage,device,days);
+  return {ok:true,timezone:'Australia/Sydney',from,to,days,sampled_at_ms:Math.max(0,...samples.filter(s=>s.available&&s.sampled_at_ms<=now).map(s=>s.sampled_at_ms))};
 }

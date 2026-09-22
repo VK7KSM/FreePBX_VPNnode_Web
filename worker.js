@@ -103,6 +103,7 @@ import { PROXY_ROLE_PATHS, singleStoreRead, storeAuthenticates, KV_INDEPENDENT, 
 import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import {queryTrajectoryMedia} from './trajectory-media.js';
+import {retentionSweep,runRetention,LAST_RUN_KEY as RETENTION_LAST_KEY} from './retention.js';
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
 import { deviceModelKey, registrationModel, normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
 import { queryDailyTraffic } from "./daily-traffic.js";
@@ -504,6 +505,10 @@ export class ElfStore {
       }
       return json({ok:false},405);
     }
+    if(url.pathname==='/__retention'&&request.method==='POST'){
+      // 数据保留清理：小批量、在 DO 自己的串行队列里做，不和设备上报抢。
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>json({ok:true,...await retentionSweep(storage)})));
+    }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>{
@@ -858,7 +863,8 @@ const app = {
     try {
       const stub=elfDoStub(env);
       const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
-      const jobs=[runRecovery,cleanupFiles,...(minute%5===0?[refreshDevicesSnapshot]:[]),...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
+      // 数据保留清理整点跑一次：每次最多 400 个键，存量分日清完，稳态占写入额度约 3%。
+      const jobs=[runRecovery,cleanupFiles,...(minute%5===0?[refreshDevicesSnapshot]:[]),...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[]),...(minute%60===0?[runRetention]:[])];
       for(const work of jobs) {
         try { await work(env,stub); } catch(error) {
           console.error('scheduled_task_failed',work.name);
@@ -3434,7 +3440,8 @@ async function handleAdminHealth(env) {
       task: d.task ? { id: d.task.id, type: d.task.type, state: d.task.state } : null,
       mcp_session: mcpDeviceSession(mcpSessions, d.id, now) })),
     unpaired: devices.filter(d => d && d.paired === false).length,
-    quota: metrics, quota_generated_at: usage?.generatedAt || null });
+    quota: metrics, quota_generated_at: usage?.generatedAt || null,
+    retention: (await storage.get(RETENTION_LAST_KEY)) || null });
 }
 
 async function handleElfTaskProgress(env, request) {

@@ -33,7 +33,8 @@ export async function releaseRetentionPlan(read,devices){
 }
 export async function retireReleases(storage,read,devices,expected){
   const plan=await releaseRetentionPlan(read,devices);if(expected!==plan.digest)throw Error('发布清单已变化，请重新检查清理计划');
-  for(const r of plan.remove){const key=releaseKey(r.channel,r.versionCode,r.variant),old=await read(key);if(old)await storage.put(key,{...old,retired_at:Date.now()});}
+  // 退休的同时删掉它的发布任务映射 elfremote_job_<id>（F14）：制品对象都要删了，映射留着只会长。
+  for(const r of plan.remove){const key=releaseKey(r.channel,r.versionCode,r.variant),old=await read(key);if(old){await storage.put(key,{...old,retired_at:Date.now()});if(old.job_id)await storage.delete('elfremote_job_'+old.job_id);}}
   for(const [channel,values] of Object.entries(plan.channels))await storage.put(releaseListKey(channel),values.keep);
   const pending=await storage.get(pendingKey)||[];await storage.put(pendingKey,[...new Set([...pending,...plan.keys])]);
   await storage.put('elfremote_apk_retention_keep',10);
