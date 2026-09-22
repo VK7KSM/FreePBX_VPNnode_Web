@@ -24,7 +24,7 @@ test('show_share_link：链接由服务端生成后推给设备，设备不必�
   const created=await enqueue(undefined,'share-task-1');
   assert.equal(created.status,200);
 
-  const stored=f.data.get('remote_devices')[0].task;
+  const stored=f.devices()[0].task;
   assert.equal(stored.type,'show_share_link');
   // 载荷三项：人读地址、二维码用的全大写串、链接有效期
   assert.match(stored.params.url,/^https:\/\/[^/]+\/m\/[A-Z0-9]{12}$/);
@@ -57,13 +57,13 @@ test('show_share_link：显示时长透传，撤回复用既有取消动作',asy
   const created=await worker.fetch(request('/api/elfremote/task','POST',
     {device_id:'device',type:'show_share_link',id:'share-task-2',params:{display_ms:45000}},cookie),f.env);
   assert.equal(created.status,200);
-  const stored=f.data.get('remote_devices')[0].task;
+  const stored=f.devices()[0].task;
   assert.equal(stored.params.display_ms,45000,'显示时长原样透传，夹紧在设备侧做');
 
   const cancelled=await worker.fetch(request('/api/elfremote/task','POST',
     {device_id:'device',action:'cancel',task_id:stored.id},cookie),f.env);
   assert.equal(cancelled.status,200,'该类型必须在允许撤回的名单里');
-  assert.equal(f.data.get('remote_devices')[0].task.cancel_requested,true);
+  assert.equal(f.devices()[0].task.cancel_requested,true);
 });
 
 // 面板上「在设备上显示」用的是分享弹窗里那个有效期下拉框。服务端必须认这个参数，
@@ -79,7 +79,7 @@ test('show_share_link：有效期按面板选的来，非法值当场拒绝',asy
 
   const ok=await enqueue({ttl:'6h'},'ttl-ok');
   assert.equal(ok.status,200);
-  const created=f.data.get('remote_devices')[0].task.params.link_expires_at;
+  const created=f.devices()[0].task.params.link_expires_at;
   const life=created-Date.now();
   assert.ok(Math.abs(life-6*3600000)<10000,'有效期要按面板选的 6 小时来，实际 '+life);
 

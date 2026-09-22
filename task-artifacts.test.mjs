@@ -38,7 +38,7 @@ test('完整日志保存、校验、重试去重和历史下载都受正确认�
   const download=await worker.fetch(request(path,'GET',undefined,cookie),f.env);
   assert.equal(await download.text(),f.body.result.log_text);
   assert.equal(download.headers.get('X-Content-SHA256'),f.body.result.sha256);
-  const devices=f.data.get('remote_devices');devices[0].task={id:'next'};f.data.set('remote_devices',devices);
+  const devices=f.devices();devices[0].task={id:'next'};f.data.set('remote_devices',devices);
   assert.equal((await worker.fetch(request(path,'GET',undefined,cookie),f.env)).status,200);
 });
 
@@ -50,12 +50,12 @@ test('坏校验和存储失败不提交成功状态',async()=>{
   f.env.ELF_ARTIFACTS.put=async()=>{throw Error('private fixture failure');};
   const response=await send(f.body);assert.equal(response.status,503);
   assert.equal((await response.text()).includes('private fixture'),false);
-  assert.equal(f.data.get('remote_devices')[0].task.state,'running');
+  assert.equal(f.devices()[0].task.state,'running');
 });
 
 test('缺少设备凭证记录时不能上传日志',async()=>{
   const f=setup();
-  const devices=f.data.get('remote_devices');delete devices[0].token_sha256;f.data.set('remote_devices',devices);
+  const devices=f.devices();delete devices[0].token_sha256;f.data.set('remote_devices',devices);
   assert.equal((await worker.fetch(request('/api/elfremote/task-progress','POST',f.body),f.env)).status,401);
   assert.equal(f.writes(),0);
 });
@@ -69,7 +69,7 @@ test('状态模式仅向声明能力的客户端提供新建日志任务',async(
   }),f.env)).json();
   const enqueue=type=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type},cookie),f.env);
   assert.equal((await report(true)).managed_task,undefined);
-  const devices=f.data.get('remote_devices');devices[0].task.state='success';f.data.set('remote_devices',devices);
+  const devices=f.devices();devices[0].task.state='success';f.data.set('remote_devices',devices);
   assert.equal((await enqueue('reboot')).status,409);
   assert.equal((await enqueue('pull_logs')).status,200);
   const offered=await report(true);
@@ -87,7 +87,7 @@ test('状态模式仅向声明能力的客户端提供新建日志任务',async(
 
 test('新自愈能力不影响旧客户端且停用设备不能领取',async()=>{
   const f=setup(),cookie=await login(f);
-  const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
+  const devices=f.devices();devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
   const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'heal_network'},cookie),f.env);
   assert.equal((await enqueue()).status,409);
   let sequence=0;
@@ -99,7 +99,7 @@ test('新自愈能力不影响旧客户端且停用设备不能领取',async()=>
   assert.equal((await enqueue()).status,200);
   assert.equal((await report(false)).managed_task,undefined);
   assert.equal((await report(true)).managed_task.managed_heal_v1,true);
-  const disabled=f.data.get('remote_devices');disabled[0].enabled=false;f.data.set('remote_devices',disabled);
+  const disabled=f.devices();disabled[0].enabled=false;f.data.set('remote_devices',disabled);
   assert.equal((await report(true)).managed_task,undefined);
 });
 
@@ -110,9 +110,9 @@ function wifiParams(){return {ssid:'fixture',password:'fixture-pass'};}
 
 test('connect_wifi 非网关路径：要通用配置能力，且系统设置的 wifi/connect 被判不可用时不下发',async()=>{
   const f=setup(),cookie=await login(f);
-  const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
+  const devices=f.devices();devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
   const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type:'connect_wifi',params:wifiParams()},cookie),f.env);
-  const freeTask=()=>{const rows=f.data.get('remote_devices');rows[0].task.state='success';f.data.set('remote_devices',rows);};
+  const freeTask=()=>{const rows=f.devices();rows[0].task.state='success';f.data.set('remote_devices',rows);};
   let sequence=0;
   const report=async body=>(await worker.fetch(request('/api/devices/report','POST',{
     device_id:'device',token:'fixture-token',status_only:true,
@@ -128,7 +128,7 @@ test('connect_wifi 非网关路径：要通用配置能力，且系统设置的 
 
   // 设备自报 wifi 分组里 connect 不可用时，必须拦在下发之前，且理由要和缺能力区分开。
   freeTask();
-  const blocked=f.data.get('remote_devices');
+  const blocked=f.devices();
   blocked[0].system_settings={wifi:{unavailable:['connect']}};
   f.data.set('remote_devices',blocked);
   const refused=await enqueue();
@@ -141,7 +141,7 @@ test('connect_wifi 非网关路径：要通用配置能力，且系统设置的 
 
 test('connect_wifi 网关路径：认专用能力位，且不受系统设置 wifi/connect 判定影响',async()=>{
   const f=setup(),cookie=await login(f);
-  const devices=f.data.get('remote_devices');
+  const devices=f.devices();
   // 产品身份的四个字段缺一不可，服务端会逐项比对；直接引常量，免得证书指纹变了测试还钉着旧值。
   Object.assign(devices[0],{status_only:true,product_id:GATEWAY_PRODUCT.product_id,app_package:GATEWAY_PRODUCT.app_package,
     model_id:GATEWAY_PRODUCT.model_id,app_cert_sha256:GATEWAY_PRODUCT.certSha256,app_abi:GATEWAY_PRODUCT.abi});
@@ -169,7 +169,7 @@ test('connect_wifi 网关路径：认专用能力位，且不受系统设置 wif
 for (const [type, capability, marker] of [['reboot','managed_reboot_tasks','managed_reboot_v1'],['restart_adbd','managed_adbd_tasks','managed_adbd_v1'],['scan_wifi','managed_wifi_scan_tasks','managed_wifi_scan_v1'],['play_alarm','managed_alarm_tasks','managed_alarm_v1'],['stop_alarm','managed_alarm_tasks','managed_alarm_v1'],['locate_now','managed_locate_tasks','managed_locate_v1'],['set_lost_mode','managed_lost_tasks','managed_lost_v1'],...['contacts_read','contact_add','contact_update','contact_delete'].map(type=>[type,'managed_config_tasks','managed_config_v1'])]) {
 test(type+' 只提供给明确声明能力的客户端且过期后不再提供',async()=>{
   const f=setup(),cookie=await login(f);
-  const devices=f.data.get('remote_devices');devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
+  const devices=f.devices();devices[0].status_only=true;devices[0].task.state='success';f.data.set('remote_devices',devices);
   const enqueue=()=>worker.fetch(request('/api/elfremote/task','POST',{device_id:'device',type,params:{ssid:'fixture',password:'fixture-pass',id:1,name:'测试',phone:'000',enabled:true,message:'测试'}},cookie),f.env);
   assert.equal((await enqueue()).status,409);
   let sequence=0;
@@ -180,8 +180,8 @@ test(type+' 只提供给明确声明能力的客户端且过期后不再提供',
   await report(true); assert.equal((await enqueue()).status,200);
   assert.equal((await report(false)).managed_task,undefined);
   assert.equal((await report(true)).managed_task[marker],true);
-  const expired=f.data.get('remote_devices');expired[0].task.expires_at=1;f.data.set('remote_devices',expired);
+  const expired=f.devices();expired[0].task.expires_at=1;f.data.set('remote_devices',expired);
   assert.equal((await report(true)).managed_task,undefined);
-  assert.equal(f.data.get('remote_devices')[0].task.state,'expired');
+  assert.equal(f.devices()[0].task.state,'expired');
 });
 }
