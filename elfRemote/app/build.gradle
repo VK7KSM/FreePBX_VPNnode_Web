@@ -31,7 +31,16 @@ android {
         // CompletableFuture 与 java.util.stream 是 24。声明 23 等于允许装到一台
         // 必然崩溃的设备上，不如让安装直接被拒。现网三台 D22 都是 Android 8.1（API 27）。
         minSdkVersion 26
-        ndk { abiFilters "armeabi-v7a", "arm64-v8a" }
+        // 只打 arm64。2026-09-22 三台逐台实测（root_exec 读 getprop）：
+        // XX / BB / JJ 的 ro.product.cpu.abi 均为 arm64-v8a，ro.board.platform 与 ro.hardware
+        // 同为 mt6739，uname -m 为 aarch64，ROM 指纹逐字相同
+        // （Ruiven/full_k39tv1_64_bsp/k39tv1_64_bsp:8.1.0/O11019/1568120768:user/dev-keys）。
+        // 所有者提到 XX 芯片组稍有不同，但系统读到的平台号与指纹一致，对打包有意义的 ABI 三台相同。
+        // abilist 里虽列有 armeabi-v7a（64 位系统兼容 32 位应用），但安装时安卓只挑主 ABI，
+        // NativeMediaLibrary 也按 Process.is64Bit() 取，那份 32 位库永远走不到。
+        // 它有 6.8 MB——整包 19.8 MB 里 18.9 MB 是这个库的两份拷贝，删掉后降到 13 MB 以内。
+        // 取不到匹配的库时加载器会干净地报「当前设备没有匹配的音视频原生库」，不会崩。
+        ndk { abiFilters "arm64-v8a" }
         targetSdkVersion 27
         versionCode codeText.toInteger()
         versionName nameText
