@@ -32,11 +32,38 @@ export function trustedOrigin(request) {
   return request.headers.get("Sec-Fetch-Site") !== "cross-site"
     && (!origin || origin === new URL(request.url).origin);
 }
+// 设备会直接请求 /api/devices/* 下的接口。路径写错或服务端还没上线时，
+// 鉴权那道门会把它当成「未登录的管理员」，回一句「请先登录」——
+// 这句话对站在座机前按按钮的人毫无意义，也把「接口不存在」误导成「你没登录」。
+// 所以已注册的路径照常鉴权（会话过期就该说未登录），没注册的直接 404。
+// 这份清单必须和 worker.js 的路由表一致，有结构化测试钉住，漏加会红。
+// 2026-09-21：这份清单最初是用 pathname === "..." 的双引号写法 grep 出来的，
+// 漏掉了三条单引号写法的路由（events / trajectory-media / request-status），
+// 于是「设备轨迹」页的历史媒体当场变成「接口不存在」——正是本机制最怕的那种失败：
+// 不报错、不失联，只是某个功能安静地没了，看起来像从来没实现过。
+// 对应的结构化测试也用了同一个正则，所以一起瞎掉。测试已改为扫全部服务端文件、两种引号。
+const DEVICE_ROUTES = new Set([
+  "/api/devices", "/api/devices/delete", "/api/devices/enroll", "/api/devices/enroll-status",
+  "/api/devices/events", "/api/devices/history", "/api/devices/media-native/offer", "/api/devices/pair",
+  "/api/devices/proxy-config/offer", "/api/devices/push-config", "/api/devices/push-sync",
+  "/api/devices/recovery", "/api/devices/report", "/api/devices/request-status",
+  "/api/devices/share-link", "/api/devices/sip-directory", "/api/devices/status-request",
+  "/api/devices/traffic", "/api/devices/trajectory-media", "/api/devices/update"
+]);
+export function unknownDeviceRoute(path) {
+  return path.startsWith("/api/devices") && !DEVICE_ROUTES.has(path);
+}
+export { DEVICE_ROUTES };
+
 export function isMachineRoute(path, method) {
   return new Set([
     "GET /api/sip/pull", "POST /api/sip/heartbeat",
     "POST /api/devices/enroll", "GET /api/devices/enroll-status", "POST /api/devices/report",
     "POST /api/devices/push-config", "POST /api/devices/push-sync", "POST /api/devices/share-link",
+    // 设备自取代理配置：凭的是设备令牌，不是管理员会话。
+    "POST /api/devices/proxy-config/offer",
+    // 设备自取原生库下载地址：同样凭设备令牌。
+    "POST /api/devices/media-native/offer",
     "POST /api/elfremote/update-progress", "POST /api/elfremote/task-progress", "GET /api/elfremote/file-download", "POST /api/elfremote/report-photo",
     "POST /api/elfremote/file-return", "PUT /api/elfremote/file-return", "GET /api/elfremote/adb/device", "GET /api/elfremote/media/device", "GET /api/elfremote/desktop/device",
     "GET /api/elfremote/adb-tunnel/host", "GET /api/elfremote/adb-tunnel/device"

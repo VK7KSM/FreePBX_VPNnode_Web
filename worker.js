@@ -34,8 +34,8 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
-import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel } from './release-channels.js';
-import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus} from './gateway-product.js';
+import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel, releaseVariant, RELEASE_VARIANTS, preferredRelease } from './release-channels.js';
+import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus,proxyNodeList,installedAppList,proxyAppList} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -63,6 +63,7 @@ import {sipDirectory,managedSipParams} from './sip-provisioning.js';
 import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 import { googleLocation } from "./google-geolocation.js";
+import { cnLocation, mainland } from "./cn-geolocation.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
 // 2026-09-06: 远程Shell buttons then plain status text.
@@ -95,7 +96,7 @@ import {
 } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
-import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
+import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin, unknownDeviceRoute } from "./admin-auth.js";
 import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import {queryTrajectoryMedia} from './trajectory-media.js';
@@ -119,7 +120,7 @@ import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
-import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig} from './proxy-config.js';
+import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig,proxyOfferGrant} from './proxy-config.js';
 import {acknowledgeStaleGatewayRollbackReport} from './gateway-stale-report.js';
 import {summarizeStore,planLegacyMerge,applyLegacyMerge,currentStoreSnapshot} from './legacy-import.js';
 
@@ -838,6 +839,8 @@ const app = {
       const stub=elfDoStub(env);return stub?stub.fetch(request):authJson({ok:false,msg:'设备存储不可用'},503);
     }
     if (!env.__storage && pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
+      // 路径根本没注册就不是鉴权问题，别拿「请先登录」去答一个不存在的接口。
+      if (unknownDeviceRoute(pathname)) return authJson({ ok: false, msg: "接口不存在" }, 404);
       if (!trustedOrigin(request)) return authJson({ ok: false, msg: "请求来源不匹配" }, 403);
       const action = { "/api/login": "login", "/api/logout": "logout", "/api/session": "session" }[pathname];
       if (action) {
@@ -879,6 +882,10 @@ const app = {
     }
     if(!env.__storage&&pathname==='/api/elfremote/releases/upload'&&method==='PUT'){
       try{
+        // 上传方自带这份清单与签名（构建时随 APK 一起交付的 .sig）。
+        // 服务端只做「签名是否有效、字节是否与清单相符」这类挡误操作的检查——
+        // 真正的防线在设备上：装包前用内置公钥验清单签名、要求 APK 实际证书等于已安装证书、
+        // 并拒绝过期清单。服务端失守之后它自己的任何检查都由攻击者说了算，所以不能指望这里。
         const encoded=request.headers.get('X-Elf-Manifest')||'',sig=request.headers.get('X-Elf-Signature')||'';
         if(encoded.length>12000||sig.length>2048)throw Error('清单过大');
         const raw=new TextDecoder().decode(Uint8Array.from(atob(encoded),c=>c.charCodeAt(0)));
@@ -1192,6 +1199,12 @@ const app = {
     }
     if (pathname === "/api/devices/report" && method === "POST") {
       return handleDeviceReport(env, request);
+    }
+    if (pathname === "/api/devices/proxy-config/offer" && method === "POST") {
+      return handleProxyConfigOffer(env, request);
+    }
+    if (pathname === "/api/devices/media-native/offer" && method === "POST") {
+      return handleMediaNativeOffer(env, request);
     }
     if (pathname === "/api/devices/share-link" && method === "POST") {
       try{
@@ -1711,6 +1724,10 @@ function publicDevice(d, modelName, model = {}) {
     // 放在网关专有那一坨里的话，D31 就算上报了能力位面板也永远看不到，页签不会出现。
     managed_proxy_tasks:d.managed_proxy_tasks===true,
     proxy_runtime:d.proxy_runtime||null,
+    proxy_nodes:Array.isArray(d.proxy_nodes)?d.proxy_nodes:null,
+    installed_apps:Array.isArray(d.installed_apps)?d.installed_apps:null,
+    proxy_apps:Array.isArray(d.proxy_apps)?d.proxy_apps:null,
+    proxy_selected_node:d.proxy_selected_node||null,
     proxy_config:publicProxyConfig(d.proxy_config),
     ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),
       managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null,
@@ -2193,6 +2210,10 @@ async function handleDeviceReport(env, request) {
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
     const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
     const proxyRuntime=proxyRuntimeStatus(data.proxy_runtime,{...matched,...product},data.managed_proxy_tasks);
+    const proxyDevice={...matched,...product};
+    const proxyNodes=proxyNodeList(data.proxy_nodes,proxyDevice,data.managed_proxy_tasks);
+    const installedApps=installedAppList(data.installed_apps,proxyDevice,data.managed_proxy_tasks);
+    const proxyApps=proxyAppList(data.proxy_apps,proxyDevice,data.managed_proxy_tasks);
     const mobileNetwork=mobileNetworkStatus(data.mobile_network,{...matched,...product},data.managed_mobile_status);
     Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
@@ -2206,9 +2227,14 @@ async function handleDeviceReport(env, request) {
       if (old) reportLocation = old.location;
       else {
         try {
-          const google = await googleLocation(env,deviceId,data);
-          reportLocation = google.location;
-          if (data.radio) data.network_location_reason = google.reason;
+          // 大陆设备走自建转发，其余走 Google。这样分不是为了省事：Google 在大陆没有
+          // WiFi 指纹数据，2026-09-21 实测大陆那台连续 200 次上报全部 not_found，
+          // 继续发给它既拿不到结果，又白白消耗每月额度。
+          const found = mainland(env.__requestCf)
+            ? await cnLocation(env,deviceId,data)
+            : await googleLocation(env,deviceId,data);
+          reportLocation = found.location;
+          if (data.radio) data.network_location_reason = found.reason;
         } catch { if (data.radio) data.network_location_reason = 'unavailable'; }
         if (!reportLocation) reportLocation = pickLocation(data, await geoForIp(env, observedIp));
       }
@@ -2240,6 +2266,11 @@ async function handleDeviceReport(env, request) {
       // 「上报 200 但面板看不到」比直接报错更难查。
       list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
       if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
+      // 这四项为省流量只在首轮与内容变化时上报。undefined 是「这轮没带」，保留既有值；
+      // 空数组是设备确实报了空清单，要落库。混为一谈会让面板在设备正常运行时突然空掉。
+      if(proxyNodes!==undefined)list[i].proxy_nodes=proxyNodes;
+      if(installedApps!==undefined)list[i].installed_apps=installedApps;
+      if(proxyApps!==undefined)list[i].proxy_apps=proxyApps;
       if(isGateway(list[i])){
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
@@ -2450,8 +2481,10 @@ async function handleElfReleasePublish(env, request) {
     if (!(await verifyUpdateSig(raw, sig))) return json({ ok: false, msg: "清单签名无效" }, 400);
     let m;
     try { m = JSON.parse(raw); } catch (e) { return json({ ok: false, msg: "清单不是 JSON" }, 400); }
-    const channel=validateReleaseManifest(m),vc=m.versionCode;
-    const existing=await getStore(env,releaseKey(channel,vc));
+    const channel=validateReleaseManifest(m),vc=m.versionCode,variant=releaseVariant(m.variant);
+    // 唯一性看「通道 + 版本码 + 变体」。同一版本的全量包与精简包版本码相同、哈希不同，
+    // 若仍按「通道 + 版本码」判重，第二个变体会被当成冲突制品拒掉。
+    const existing=await getStore(env,releaseKey(channel,vc,variant));
     if(existing && (existing.sha256!==m.sha256 || existing.size!==m.size || existing.versionName!==m.versionName
         || existing.certSha256!==m.certSha256))throw Error('同一通道版本码已对应其他制品，请增加版本码');
     const jobMapping=await getStore(env,'elfremote_job_'+m.job_id);
@@ -2466,7 +2499,7 @@ async function handleElfReleasePublish(env, request) {
       if(!target || deviceReleaseChannel(target,await loadDeviceModels(env))!==channel)throw Error('清单目标设备与发布通道不匹配');
     }
     const rel = {
-      channel,package:m.package,model_id:RELEASE_CHANNELS[channel].model_id,
+      channel,variant,package:m.package,model_id:RELEASE_CHANNELS[channel].model_id,
       versionCode: vc,
       versionName: String(m.versionName || ""),
       sha256: String(m.sha256 || ""),
@@ -2481,7 +2514,7 @@ async function handleElfReleasePublish(env, request) {
     if (m.device_id && data.publish_only!==true) {
       await assignReleaseToDevice(env, String(m.device_id), rel);
     }
-    await setStore(env, releaseKey(channel,vc), rel);
+    await setStore(env, releaseKey(channel,vc,variant), rel);
     const list = (await getStore(env, releaseListKey(channel))) || [];
     if (list.indexOf(vc) < 0) list.push(vc);
     await setStore(env, releaseListKey(channel), list);
@@ -2523,14 +2556,20 @@ async function handleElfReleaseList(env,url) {
     }
     const ids=(await getStore(env,releaseListKey(channel))) || [],out=[];
     for(const id of ids) {
-      const rel=await getStore(env,releaseKey(channel,id));if(!rel||rel.retired_at)continue;
-      const m=JSON.parse(rel.manifest_raw||'{}');
-      if(deviceId && m.device_id && m.device_id!==deviceId)continue;
-      out.push({channel,package:rel.package||RELEASE_CHANNELS[channel].package,model_id:RELEASE_CHANNELS[channel].model_id,
-        versionCode:rel.versionCode,versionName:rel.versionName,sha256:rel.sha256,size:rel.size,certSha256:rel.certSha256,
-        expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
+      // 一个版本码下可能同时存在全量包与精简包，两个都要列出来，面板才能分别下发；
+      // 缺省（无 variant）的旧记录按 full 读，既有存储键不必迁移。
+      for(const variant of RELEASE_VARIANTS) {
+        const rel=await getStore(env,releaseKey(channel,id,variant));if(!rel||rel.retired_at)continue;
+        const m=JSON.parse(rel.manifest_raw||'{}');
+        if(deviceId && m.device_id && m.device_id!==deviceId)continue;
+        out.push({channel,variant:releaseVariant(rel.variant),package:rel.package||RELEASE_CHANNELS[channel].package,
+          model_id:RELEASE_CHANNELS[channel].model_id,
+          versionCode:rel.versionCode,versionName:rel.versionName,sha256:rel.sha256,size:rel.size,certSha256:rel.certSha256,
+          expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
+      }
     }
-    out.sort((a,b)=>b.versionCode-a.versionCode);
+    // 同版本码内精简包排在前面：它是日常更新用的那个，下拉里应先被看到。
+    out.sort((a,b)=>b.versionCode-a.versionCode||(a.variant==='slim'?-1:1));
     return json({ok:true,channel,releases:out,store:env.ELF_DO?'do':'kv',
       ...(channel === 'd31' ? {auto_follow: publicD31Recommendation(await env.__storage?.get(D31_RECOMMENDATION_KEY))} : {})});
   } catch(e){return json({ok:false,msg:e.message},400);}
@@ -2539,7 +2578,15 @@ async function handleElfReleaseList(env,url) {
 async function releaseForDevice(env,device,input,version) {
   const channel=deviceReleaseChannel(device,await loadDeviceModels(env));
   if(input.channel!==undefined && releaseChannel(input.channel)!==channel)throw Error('设备与发布通道不匹配');
-  return getStore(env,releaseKey(channel,version));
+  // 没指定变体时不擅自挑：取这个版本码下实际存在的那些，
+  // 由 preferredRelease 选（有精简包就用精简包，它才是日常更新用的）。
+  if(input.variant!==undefined)return getStore(env,releaseKey(channel,version,releaseVariant(input.variant)));
+  const found=[];
+  for(const variant of RELEASE_VARIANTS){
+    const rel=await getStore(env,releaseKey(channel,version,variant));
+    if(rel)found.push({...rel,variant:releaseVariant(rel.variant)});
+  }
+  return preferredRelease(found);
 }
 
 async function handleElfAssign(env, request) {
@@ -2815,12 +2862,18 @@ async function handleElfEnqueueTask(env, request) {
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
-      const existing=await findRepairTask(env.__storage,found,data.id);
-      // 核心随配置一起下发：设备自己判断本机有没有、版本对不对，决定要不要拉。
-      // 服务端不记「这台装没装」——那份状态只有设备知道，记在服务端迟早和现场不一致。
-      const coreRelease=await latestAssetRelease(env,'d31-proxy-core');
-      const prepared=await proxyConfigureParams(found,params||{},data.id,existing,'https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host,coreRelease);
-      params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
+      // 只有 configure_proxy 走这条：它要生成一次性下载地址、附上核心签名清单。
+      // select_proxy_node 与 set_proxy_apps 自带参数，交给 proxyTaskParams 校验即可；
+      // 原来整个 PROXY_TASK_TYPES 都塞进 proxyConfigureParams，那个函数对非配置任务
+      // 要求参数为空，新类型一进来就会被拒成「代理配置引用无效」。
+      if(data.type==='configure_proxy'){
+        const existing=await findRepairTask(env.__storage,found,data.id);
+        // 核心随配置一起下发：设备自己判断本机有没有、版本对不对，决定要不要拉。
+        // 服务端不记「这台装没装」——那份状态只有设备知道，记在服务端迟早和现场不一致。
+        const coreRelease=await latestAssetRelease(env,'d31-proxy-core');
+        const prepared=await proxyConfigureParams(found,params||{},data.id,existing,'https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host,coreRelease);
+        params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
+      }
     }
     if(data.type===PIXEL_COMPANION_TASK_TYPE){
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
@@ -2908,6 +2961,80 @@ async function handleElfEnqueueTask(env, request) {
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
+}
+
+// 设备侧「连接」按钮在本机没有配置时走这条，向服务端要一份配置下发参数。
+// 与管理员下发的 configure_proxy 互不干扰：授权记在 device.proxy_offer，不碰 device.task。
+async function handleProxyConfigOffer(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const requestId = String(data.request_id || "").trim();
+    if (!deviceId || !token || !requestId) return json({ ok: false, msg: "缺少设备凭证或请求编号" }, 400);
+    const tokenSha = await sha256Hex(token);
+    const list = await loadDevices(env);
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+      if (list[i].managed_proxy_tasks !== true) return json({ ok: false, msg: "客户端尚未支持代理管理" }, 409);
+      const coreRelease = await latestAssetRelease(env, 'd31-proxy-core');
+      let granted;
+      try {
+        granted = await proxyOfferGrant(list[i], requestId, Date.now(),
+          'https://' + new URL(env.ELF_BASE_URL || 'https://v.elfradio.net').host, coreRelease);
+      } catch (e) { return json({ ok: false, msg: e.message }, 409); }
+      if (!granted.reused) await saveDevices(env, list);
+      return json({ ok: true, reused: granted.reused, params: granted.params });
+    }
+    return json({ ok: false, msg: "未找到设备" }, 404);
+  } catch (e) { return json({ ok: false, msg: e.message }, 400); }
+}
+
+/**
+ * 设备来问：我这个精简包要的那份原生库，去哪儿下。
+ *
+ * 按哈希点名，不按版本：设备要的是它自己 APK 里写死的那一份，服务端只负责
+ * 在已发布的资产里找到对得上的那条，找不到就直说。之所以敢这么简单——
+ * 完整性不在这条应答里，设备下完之后拿自己 APK 内的哈希校验字节，
+ * 那个哈希在 APK 签名覆盖范围内，服务端改不动。这里即使整个被攻破，
+ * 能做到的也只是让设备白下一次、然后丢掉。
+ */
+async function handleMediaNativeOffer(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const sha256 = String(data.sha256 || "").toLowerCase();
+    if (!deviceId || !token) return json({ ok: false, msg: "缺少设备凭证" }, 400);
+    if (!/^[0-9a-f]{64}$/.test(sha256)) return json({ ok: false, msg: "缺少原生库指纹" }, 400);
+    const tokenSha = await sha256Hex(token);
+    const device = (await loadDevices(env)).find(d => d.id === deviceId);
+    if (!device) return json({ ok: false, msg: "未找到设备" }, 404);
+    if (!device.token_sha256 || device.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    const found = await assetReleaseBySha(env, MEDIA_NATIVE_CHANNEL, sha256);
+    // 没有对应资产是运维漏了发布，不是设备的错；说清楚，别让现场去猜「通信怎么灰的」。
+    if (!found) return json({ ok: false, msg: "服务端尚未发布该原生库" }, 404);
+    return json({ ok: true, url: found.url, size: found.size, sha256: found.sha256 });
+  } catch (e) { return json({ ok: false, msg: e.message }, 400); }
+}
+
+const MEDIA_NATIVE_CHANNEL = 'd22-media-native';
+/** 在某个资产通道里按内容哈希找已发布记录；退休或过期的不算。 */
+async function assetReleaseBySha(env, channel, sha256) {
+  try {
+    if (!isAssetChannel(channel)) return null;
+    const ids = (await getStore(env, releaseListKey(channel))) || [];
+    for (const id of ids) {
+      const rel = await getStore(env, releaseKey(channel, id));
+      if (!rel || rel.retired_at || typeof rel.manifest_raw !== 'string') continue;
+      const m = JSON.parse(rel.manifest_raw);
+      if (m.sha256 !== sha256) continue;
+      if (Number(m.expires_at) > 0 && Number(m.expires_at) <= Date.now()) continue;
+      return { url: m.url, size: Number(m.size), sha256: m.sha256, versionCode: Number(m.versionCode) };
+    }
+    return null;
+  } catch (unavailable) { console.error('media_native_lookup_failed'); return null; }
 }
 
 async function handleElfTaskProgress(env, request) {
@@ -3329,7 +3456,7 @@ function renderDevicesHtml() {
     '.system-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 22px;margin-top:18px}.system-setting-row{display:grid;grid-template-columns:minmax(72px,1fr) minmax(80px,1.4fr) auto;gap:8px;align-items:center;min-width:0}.system-setting-row .inp{width:100%;min-width:0}.system-setting-section{margin-top:22px;padding-top:16px;border-top:1px solid #29364a}.system-setting-section h4{font-size:12px;font-weight:500;margin:0 0 10px;color:#cbd5e1}.system-content select.inp{font-size:12px;height:34px;padding:4px 8px}.system-setting-section .ops-actions{flex-wrap:wrap}@media(max-width:950px){.system-settings-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:600px){.system-setting-row{grid-template-columns:1fr auto}.system-setting-row label{grid-column:1/-1}.system-content select.inp{max-width:100%}.system-setting-section table{min-width:0}}',
     '.system-layout{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;min-height:230px}.system-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;padding-right:16px;border-right:1px solid #334155}.system-tabs .btn-gray{font-size:12px;font-weight:400;text-align:left;line-height:18px;padding:8px 10px;border-radius:6px;background:transparent;color:#aebcce}.system-tabs .btn-gray:hover{background:#233148}.system-tabs .btn-gray.active{background:#253e60;color:#b9d8ff}.system-content{min-width:0;font-size:12px;line-height:1.8;color:#d4deec}.system-content .muted,.system-content button,.system-content input,.system-content td,.system-content th{font-size:12px;line-height:1.8}.system-content .ops-actions{gap:8px;align-items:center}.system-content .btn-gray,.system-content .btn-green{padding:5px 10px;font-weight:400;min-height:30px}.system-content input.inp{padding:6px 10px;min-width:0;height:34px}.system-content table{width:100%;border-collapse:collapse}.system-content th,.system-content td{padding:8px 10px;font-weight:400;text-align:left}.system-content th{color:#94a3b8}.system-content td:first-child{overflow-wrap:anywhere}.system-content p{margin:10px 0 0}.system-items>div{padding:10px 0;border-bottom:1px solid #29364a;min-height:42px;align-items:center}.system-table-scroll{overflow-x:auto}.system-content table{min-width:420px}.system-content td:first-child{min-width:130px}.system-content .ops-actions input{flex:1 1 120px}@media(max-width:600px){.system-layout{grid-template-columns:92px minmax(0,1fr);gap:12px}.system-tabs{padding-right:10px}.system-tabs .btn-gray{padding:7px 4px;font-size:11px}.system-content th,.system-content td{padding:7px 5px}.system-content .ops-actions{flex-wrap:wrap}.system-content .ops-actions input{width:100%;max-width:none!important;flex-basis:100%}}',
     '.fn-page h4{margin:0 0 .35rem;font-size:.95rem}',
-    '.fn-page{font-size:12px;line-height:1.8;color:#d4deec}.function-section{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;padding:0 0 18px;margin-bottom:18px;border-bottom:1px solid #29364a}.function-section:last-child{margin:0;padding-bottom:0;border-bottom:0}.function-section>h4{font-size:12px;font-weight:400;color:#aebcce;margin:0;padding:8px 16px 8px 10px;border-right:1px solid #334155}.function-content{min-width:0}.function-content .muted,.function-content button,.function-content input,.function-content label,.function-content td,.function-content th{font-size:12px;line-height:1.8}.function-content .ops-actions{gap:8px;margin-top:0!important;align-items:center}.function-content button,.function-content a.btn-gray{font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px}.function-content input.inp{font-size:12px;height:34px;padding:6px 10px;min-width:0}.function-content p{margin:10px 0}.function-content table{width:100%;border-collapse:collapse;min-width:380px}.function-content th,.function-content td{padding:8px 10px;text-align:left;font-weight:400;overflow-wrap:anywhere}.function-content th{color:#94a3b8}.function-table{overflow:auto;margin-top:12px}.function-content td button{white-space:nowrap}.update-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.update-facts .kv{background:transparent;border:0;border-bottom:1px solid #29364a;border-radius:0;padding:8px 0}.update-facts .kv .v{font-size:12px;font-weight:400;overflow-wrap:anywhere}.function-content .adb-term{height:150px;font-size:12px;line-height:1.8;background:#101827;color:#d4deec}.function-content .task-result{height:auto;max-height:180px;margin:10px 0;border:1px solid #29364a;border-radius:6px}.function-content .adb-row{background:#111c2c}.function-content .adb-cmd{height:30px!important}.function-content .adb-prompt{font-size:12px;color:#93c5fd}.function-extra{margin-top:18px;border-top:1px solid #29364a;padding-top:12px}.function-extra summary{color:#94a3b8;cursor:pointer;margin-bottom:12px}.function-content .fn-live{min-height:70px;font-size:12px}.function-content .ops-actions label{display:flex;align-items:center;gap:6px;white-space:nowrap;width:auto;flex-shrink:0}.function-content .ops-actions label input{width:190px;flex-shrink:0}.function-content #mName{max-width:200px}.function-content #mNote{max-width:260px}.function-content .ops-actions label input{max-width:200px}.function-content #lostMessage{flex:1;min-width:160px}@media(max-width:600px){.function-section{grid-template-columns:92px minmax(0,1fr);gap:12px}.function-section>h4{font-size:11px;padding:7px 10px 7px 4px}.update-facts{grid-template-columns:1fr}.function-content .ops-actions input{width:100%;max-width:none!important}.function-content .ops-actions label{flex-wrap:wrap;max-width:100%}.function-content .ops-actions label input{width:100%;max-width:100%}.function-content .adb-row{flex-wrap:wrap}.function-content #lostMessage{min-width:0;flex-basis:100%}}',
+    '.fn-page{font-size:12px;line-height:1.8;color:#d4deec}.function-section{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;padding:0 0 18px;margin-bottom:18px;border-bottom:1px solid #29364a}.function-section:last-child{margin:0;padding-bottom:0;border-bottom:0}.function-section>h4{font-size:12px;font-weight:400;color:#aebcce;margin:0;padding:8px 16px 8px 10px;border-right:1px solid #334155}.function-section>.function-nav{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin:0;padding:8px 10px 8px 0;border-right:1px solid #334155}.function-section>.function-nav .btn-gray{font-size:12px;font-weight:400;text-align:left;line-height:18px;padding:8px 10px;border-radius:6px;background:transparent;color:#aebcce;min-height:0}.function-section>.function-nav .btn-gray:hover{background:#233148}.function-section>.function-nav .btn-gray.active{background:#253e60;color:#b9d8ff}.function-content{min-width:0}.function-content .muted,.function-content button,.function-content input,.function-content label,.function-content td,.function-content th{font-size:12px;line-height:1.8}.function-content .ops-actions{gap:8px;margin-top:0!important;align-items:center}.function-content button,.function-content a.btn-gray{font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px}.function-content input.inp{font-size:12px;height:34px;padding:6px 10px;min-width:0}.function-content p{margin:10px 0}.function-content table{width:100%;border-collapse:collapse;min-width:380px}.function-content th,.function-content td{padding:8px 10px;text-align:left;font-weight:400;overflow-wrap:anywhere}.function-content th{color:#94a3b8}.function-table{overflow:auto;margin-top:12px}.function-content td button{white-space:nowrap}.update-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.update-facts .kv{background:transparent;border:0;border-bottom:1px solid #29364a;border-radius:0;padding:8px 0}.update-facts .kv .v{font-size:12px;font-weight:400;overflow-wrap:anywhere}.function-content .adb-term{height:150px;font-size:12px;line-height:1.8;background:#101827;color:#d4deec}.function-content .task-result{height:auto;max-height:180px;margin:10px 0;border:1px solid #29364a;border-radius:6px}.function-content .adb-row{background:#111c2c}.function-content .adb-cmd{height:30px!important}.function-content .adb-prompt{font-size:12px;color:#93c5fd}.function-extra{margin-top:18px;border-top:1px solid #29364a;padding-top:12px}.function-extra summary{color:#94a3b8;cursor:pointer;margin-bottom:12px}.function-content .fn-live{min-height:70px;font-size:12px}.function-content .ops-actions label{display:flex;align-items:center;gap:6px;white-space:nowrap;width:auto;flex-shrink:0}.function-content .ops-actions label input{width:190px;flex-shrink:0}.function-content #mName{max-width:200px}.function-content #mNote{max-width:260px}.function-content .ops-actions label input{max-width:200px}.function-content #lostMessage{flex:1;min-width:160px}@media(max-width:600px){.function-section{grid-template-columns:92px minmax(0,1fr);gap:12px}.function-section>h4{font-size:11px;padding:7px 10px 7px 4px}.function-section>.function-nav{padding:7px 4px 7px 0}.function-section>.function-nav .btn-gray{font-size:11px;padding:7px 6px}.update-facts{grid-template-columns:1fr}.function-content .ops-actions input{width:100%;max-width:none!important}.function-content .ops-actions label{flex-wrap:wrap;max-width:100%}.function-content .ops-actions label input{width:100%;max-width:100%}.function-content .adb-row{flex-wrap:wrap}.function-content #lostMessage{min-width:0;flex-basis:100%}}',
     '.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.monitor{min-width:0;display:flex;flex-direction:column;border:1px solid #334155;border-radius:9px;overflow:hidden;background:#111c2c}.monitor h4{font-size:12px;font-weight:400;line-height:20px;margin:0;padding:10px 12px;border-bottom:1px solid #29364a;color:#b9c8da}.monitor>.ops-actions{box-sizing:border-box;min-height:76px;margin:0!important;padding:10px 12px;align-content:center;gap:6px}.monitor .ops-actions button,.monitor .adb-row button{font-size:12px;font-weight:400;padding:5px 9px;min-height:30px}.monitor .ops-actions .muted{font-size:11px}.monitor .adb-box{display:contents}.monitor .adb-term{height:340px;min-height:340px;max-height:340px;flex-shrink:0;box-sizing:border-box;background:#080f1c;color:#cbd5e1;font-size:12px;line-height:1.8;padding:12px;border-top:1px solid #29364a}.monitor .adb-row,.monitor-footer{margin:0;min-height:46px;box-sizing:border-box;background:#111c2c;border-top:1px solid #29364a;padding:6px 12px;display:flex;align-items:center;gap:8px}.monitor-footer a{font-size:12px;color:#93c5fd}.monitor .adb-prompt{font-size:12px;color:#93c5fd}.monitor input.adb-cmd{font-size:12px;line-height:1.8;height:30px}.monitor .adb-row button{flex-shrink:0}@media(max-width:900px){.monitor-grid{grid-template-columns:1fr}}',
     '.monitor h4{box-sizing:border-box;height:48px;display:flex;align-items:center}.monitor .monitor-heading{justify-content:space-between;gap:8px}.monitor-heading button{font-size:12px;font-weight:400;padding:4px 9px;min-height:28px}.monitor-footer{flex-wrap:wrap;min-height:50px}.monitor-footer .ops-actions{margin:0!important;gap:6px}.monitor-footer button{font-size:12px;font-weight:400;min-height:30px;padding:4px 9px}.monitor-footer .muted{font-size:11px}.monitor .adb-row{min-height:50px}',
     '.monitor-footer button:disabled{background:#334155;color:#e2e8f0;opacity:1;cursor:default}.maintenance-status{font-size:11px;color:#94a3b8;margin-left:4px}.maintenance-status.maintenance-success{color:#34d399}',

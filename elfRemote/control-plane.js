@@ -1,4 +1,5 @@
 import {systemSettingsParams,applySystemSettingsResult,systemSettingAllowed} from "../system-settings.js";
+import {isManagementPackage} from "../gateway-product.js";
 import {isNetworkTask,prepareNetworkTask,applyNetworkProgress,publicNetwork} from '../network-confirmation.js';
 import {normalizeContactsPageParams,normalizeContactsPageResult,validateContactsPageSnapshot} from '../contacts-pages.js';
 import {sipDestination,sipKey,sipAllowed,checkSipTarget,validateSipResult,sipConfigurationResult,redactSipText} from '../sip-accounts.js';
@@ -128,7 +129,15 @@ export function applyUpdateProgress(device, jobId, state, detail, nowMs = Date.n
 
 export const CONFIG_TYPES = ["connect_wifi","contacts_read","contact_add","contact_update","contact_delete"];
 // remove_proxy：代理核心改为按需下载之后，装上了也要能单独卸掉。
-export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy","remove_proxy"];
+export const PROXY_TASK_TYPES = ["configure_proxy","start_proxy","stop_proxy","test_proxy","remove_proxy","select_proxy_node","set_proxy_apps"];
+// 管理程序不得进入代理名单。设备侧也拦，但这道必须在服务端：
+// 万一面板出 bug 或有人直接敲接口把管理程序勾进去，设备会连管理连接一起送进隧道，
+// 结果是失联且无法远程恢复——这种代价的单点不能只靠一侧把守。
+// 判据见 gateway-product.js 的 isManagementPackage：只认管理程序这几个包，
+// 不是整个 net.elfradio 命名空间（那样会误伤 Zello 守护等普通自家应用）。
+// 下发这条路拒整条任务是合适的：失败只影响这条任务，不波及遥测。
+const PROXY_APP_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(.[A-Za-z0-9_]+)+$/;
+const MAX_PROXY_APPS = 64;
 export const LOST_MESSAGE_TASK_TYPES = ["show_lost_message","clear_lost_message"];
 export const PIXEL_COMPANION_TASK_TYPE = "stage_pixel_companion";
 export const REPAIR_TYPES = ["contacts_page", "system_config", "configure_zello", "configure_sip", "file_manage", "get_file", "send_file", "root_exec", "pull_logs", "heal_network", "reboot", "install_apk", "restart_adbd", "scan_wifi", "play_alarm", "stop_alarm", "locate_now", "set_lost_mode", "wipe_data", "show_share_link", PIXEL_COMPANION_TASK_TYPE, ...LOST_MESSAGE_TASK_TYPES, ...PROXY_TASK_TYPES, ...CONFIG_TYPES];
@@ -319,6 +328,25 @@ export function lostMessageParams(type,value={}){
 
 export function proxyTaskParams(type,value={}){
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('代理任务参数无效');
+  if(type==='select_proxy_node'){
+    // 只认一个节点名。AUTO 这类代理组名字同样从这里过——对服务端来说它们没有区别，
+    // 哪些名字有效由设备按自己的配置裁决，服务端不维护一份会和配置脱节的白名单。
+    if(Object.keys(value).length!==1||typeof value.name!=='string'
+        ||value.name.length<1||value.name.length>64||/[ -]/.test(value.name))throw Error('代理节点名称无效');
+    return {name:value.name};
+  }
+  if(type==='set_proxy_apps'){
+    if(Object.keys(value).length!==1||!Array.isArray(value.apps))throw Error('代理应用名单无效');
+    if(value.apps.length>MAX_PROXY_APPS)throw Error('代理应用数量超出上限');
+    const seen=new Set();
+    for(const pkg of value.apps){
+      if(typeof pkg!=='string'||pkg.length<1||pkg.length>128||!PROXY_APP_PACKAGE.test(pkg))throw Error('代理应用包名无效');
+      if(seen.has(pkg))throw Error('代理应用包名重复');
+      seen.add(pkg);
+      if(isManagementPackage(pkg))throw Error('管理程序不得走代理');
+    }
+    return {apps:value.apps.slice()};
+  }
   if(type!=='configure_proxy'){
     if(Object.keys(value).length)throw Error('代理控制任务不接受参数');
     return {};
@@ -382,16 +410,60 @@ function proxyTaskStatus(value){
   return Object.fromEntries(picked.map(key=>[key,value[key]]));
 }
 
+// 任务回执里的 proxy 是设备在操作结束后、同一把锁内重新采集的完整状态，
+// 时钟与采集口径都和周期上报一致（D31-dev 2026-09-20 确认）。不写回的话，点完停止到
+// 下一轮上报之间面板一直显示「运行中」——那不是滞后，是在报假状态。
+// 只按 checked_at_ms 单调覆盖：设备墙钟对时跳变可能让晚到的回执带上更小的时间戳，
+// 那种情况下丢掉回执是安全的一侧，宁可慢一轮也不让面板倒退回旧值。
+// 设备执行后回读的实际值，落到设备记录上，面板据此显示「当前选的是哪台、哪些程序在走代理」。
+// 存回执而不是存下发的请求值：请求值只说明管理员想要什么，回执才说明设备上实际是什么。
+export function applyProxyReceiptEcho(device,normalized){
+  if(!device||!normalized)return;
+  if(normalized.action==='select_proxy_node'&&typeof normalized.selected==='string')
+    device.proxy_selected_node=normalized.selected;
+  if(normalized.action==='set_proxy_apps'&&Array.isArray(normalized.apps))
+    device.proxy_apps=normalized.apps.slice();
+}
+
+export function applyProxyReceiptRuntime(device,proxy){
+  if(!device||!proxy)return false;
+  const previous=device.proxy_runtime;
+  if(previous&&typeof previous==='object'&&Number.isSafeInteger(previous.checked_at_ms)
+      &&proxy.checked_at_ms<previous.checked_at_ms)return false;
+  device.proxy_runtime=proxy;
+  return true;
+}
+
 export function proxyTaskResult(type,state,value){
   if(!['success','failed','rejected'].includes(state))throw Error('代理任务终态无效');
   if(value==null){
     if(state==='success')throw Error('代理任务成功回执缺失');
     return {stage:'proxy',action:type,proxy:null};
   }
-  if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==3
-      ||Object.keys(value).some(key=>!['stage','action','proxy'].includes(key))||value.stage!=='proxy'||value.action!==type)
+  // 这两类任务的回执要多带一项：设备**执行后回读**的实际值。
+  // 只回 success 不够——「点完看着切了、其实没切」正是 stop_proxy 演过一遍的假状态。
+  const echoKey=type==='select_proxy_node'?'selected':type==='set_proxy_apps'?'apps':null;
+  const allowed=echoKey?['stage','action','proxy',echoKey]:['stage','action','proxy'];
+  if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>allowed.length
+      ||!Object.hasOwn(value,'stage')||!Object.hasOwn(value,'action')||!Object.hasOwn(value,'proxy')
+      ||Object.keys(value).some(key=>!allowed.includes(key))||value.stage!=='proxy'||value.action!==type)
     throw Error('代理任务终态回执无效');
   const proxy=proxyTaskStatus(value.proxy);
+  let echo;
+  if(echoKey){
+    if(state==='success'&&!Object.hasOwn(value,echoKey))throw Error('代理任务成功回执缺少设备确认值');
+    if(Object.hasOwn(value,echoKey)){
+      if(echoKey==='selected'){
+        if(typeof value.selected!=='string'||value.selected.length<1||value.selected.length>64)throw Error('代理节点确认值无效');
+        echo=value.selected;
+      }else{
+        if(!Array.isArray(value.apps)||value.apps.length>MAX_PROXY_APPS
+            ||value.apps.some(pkg=>typeof pkg!=='string'||!PROXY_APP_PACKAGE.test(pkg)||pkg.length>128))throw Error('代理应用确认值无效');
+        if(value.apps.some(isManagementPackage))throw Error('设备回报的名单含管理程序');
+        echo=value.apps.slice();
+      }
+    }
+  }
   if(state==='success'){
     // 移除任务的成功形状和其余四种正好相反：核心已删干净，所以这几项必须全是 false。
     // 不反过来的话，「成功移除了却仍报着已配置」会被当成正常回执收下，面板上就看不出设备到底还有没有核心。
@@ -401,19 +473,22 @@ export function proxyTaskResult(type,state,value){
         throw Error('代理移除回执仍显示核心或配置残留');
       return {stage:'proxy',action:type,proxy};
     }
+    // 选节点与设名单在核心没跑时也允许成功：设备记下来、下次启动生效。
+    // 因此不能套用「必须已配置且正在运行」那套判据。
+    if(echoKey)return {stage:'proxy',action:type,proxy,[echoKey]:echo};
     if(!proxy.asset_verified||!proxy.core_verified||!proxy.configured)throw Error('代理任务成功状态不完整');
     if(type==='stop_proxy'){
       if(proxy.running||proxy.http_ready||proxy.socks_ready||proxy.proxy_reachable)throw Error('代理停止回执仍显示活动进程');
     }else if(type!=='configure_proxy'&&(!proxy.running||!proxy.http_ready||!proxy.socks_ready||!proxy.proxy_reachable))
       throw Error('代理启动或检测回执不完整');
   }
-  return {stage:'proxy',action:type,proxy};
+  return echoKey&&echo!==undefined?{stage:'proxy',action:type,proxy,[echoKey]:echo}:{stage:'proxy',action:type,proxy};
 }
 
 function proxyTaskDetail(type,state,result){
   if(state==='claimed')return '设备已领取代理任务';
   if(state==='running')return '设备正在执行代理任务';
-  if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过',remove_proxy:'代理核心已移除'}[type];
+  if(state==='success')return {configure_proxy:'代理配置已应用',start_proxy:'代理服务已启动',stop_proxy:'代理服务已停止',test_proxy:'代理路径检测通过',remove_proxy:'代理核心已移除',select_proxy_node:'已切换代理服务器',set_proxy_apps:'走代理的程序已更新'}[type];
   if(state==='failed')return '代理任务执行失败';
   if(state==='rejected')return '设备拒绝代理任务';
   return '';
@@ -715,7 +790,7 @@ export function applyRepairProgress(device, taskId, state, detail, result, nowMs
     task.updated_at=new Date(nowMs).toISOString();
     if(state==='claimed')task.claimed_at=task.updated_at;
     if(state==='running'&&!task.started_at)task.started_at=task.updated_at;
-    if(terminal){task.completed_at=task.updated_at;task.result=normalized;task.params={};delete task.proxy_download_token_sha256;}
+    if(terminal){task.completed_at=task.updated_at;task.result=normalized;task.params={};delete task.proxy_download_token_sha256;applyProxyReceiptRuntime(device,normalized.proxy);applyProxyReceiptEcho(device,normalized);}
     task.state=state;task.detail=proxyTaskDetail(task.type,state,normalized);
     return device;
   }

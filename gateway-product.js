@@ -276,3 +276,132 @@ function proxyOptionalFields(value,result){
   if(!result.configured&&(result.config_version!=null||result.config_sha256!=null))throw Error('未配置状态不能携带配置身份');
   return result;
 }
+
+// ——— 第 3 步：节点列表、分应用、流量与出口地区 ———
+// 这四个字段都走「缺席 ≠ 清空」：设备为省流量只在首轮和内容变化时带，
+// 其余轮次不带。返回 undefined 表示「这轮没报」，调用方保留既有值；
+// 返回 [] 表示设备确实报了一份空清单。两者混为一谈会让面板在设备正常运行时突然空掉。
+
+// 不能走代理的只有**管理程序本身**，不是整个 net.elfradio 命名空间。
+// 2026-09-21 D31-dev 指出这条划错了：D31 上有四个 net.elfradio 包，只有 d31bootstrap 是管理程序，
+// 另外三个（Zello 守护、自研 SIP 客户端、d31system）都是普通应用，走不走代理是使用者的选择，
+// 与管理连接的安全毫无关系。按命名空间拒的话，使用者勾一下「Zello 守护」就会触发拒绝——
+// 而 Zello 守护本就在设备默认名单里，等于开箱即炸。
+// 理由回到根上：要守的是「设备不能把自己的管理连接送进隧道」，那只与管理程序这一个包有关。
+const MANAGEMENT_PACKAGES = Object.freeze([
+  'net.elfradio.elfremote',      // D22 管理程序
+  'net.elfradio.d31bootstrap',   // D31 管理程序
+  'org.onetwoone.gateway'        // Pixel 网关管理程序
+]);
+/** 精确匹配，或其子变体（.debug / .preview）。d31phone.debug 这类不同包名不会被误伤。 */
+export function isManagementPackage(value) {
+  const pkg = String(value || '');
+  return MANAGEMENT_PACKAGES.some(name => pkg === name || pkg.startsWith(name + '.'));
+}
+export { MANAGEMENT_PACKAGES };
+
+const PROXY_NODE_KINDS=Object.freeze(['node','auto','direct']);
+const MAX_PROXY_NODES=64;
+const MAX_INSTALLED_APPS=64;
+const PACKAGE_PATTERN=/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
+
+function proxyCapabilityDeclared(device,managed,what){
+  if(managed!==undefined&&typeof managed!=='boolean')throw Error('代理任务能力必须为布尔值');
+  return managed===true||(managed===undefined&&device?.managed_proxy_tasks===true);
+}
+// 超限一律拒整条上报，不静默截断：截成半截的清单在面板上看不出是截断还是设备真没有，
+// 操作者会照着一份缺项的名单做判断。
+function sizeGuard(value,limit,message){
+  if(new TextEncoder().encode(JSON.stringify(value)).length>limit)throw Error(message);
+}
+
+/** 配置里的节点及其实测延迟。名字唯一、至多一个选中。 */
+export function proxyNodeList(value,device,managed){
+  const declared=proxyCapabilityDeclared(device,managed);
+  if(!declared){
+    if(value!==undefined)throw Error('设备未声明代理管理能力，不能上报代理节点');
+    return undefined;
+  }
+  if(value===undefined)return undefined;
+  if(!Array.isArray(value))throw Error('代理节点列表格式无效');
+  if(value.length>MAX_PROXY_NODES)throw Error('代理节点数量超出上限');
+  sizeGuard(value,8192,'代理节点列表内容过长');
+  const names=new Set();let selected=0;
+  const nodes=value.map(item=>{
+    if(!record(item))throw Error('代理节点格式无效');
+    exactFields(item,['name','delay_ms','tested_at_ms','selected','kind'],
+      ['name','delay_ms','tested_at_ms','selected','kind'],'代理节点字段无效');
+    const name=boundedString(item.name,64,'代理节点名称无效');
+    if(names.has(name))throw Error('代理节点名称重复');
+    names.add(name);
+    if(!PROXY_NODE_KINDS.includes(item.kind))throw Error('代理节点类别无效');
+    // 未测过就是 null。延迟上限取 600000ms——超过十分钟的「延迟」只能是设备侧算错了。
+    if(item.delay_ms!==null&&(!Number.isSafeInteger(item.delay_ms)||item.delay_ms<0||item.delay_ms>600000))
+      throw Error('代理节点延迟无效');
+    if(item.tested_at_ms!==null&&(!Number.isSafeInteger(item.tested_at_ms)||item.tested_at_ms<=0))
+      throw Error('代理节点测速时间无效');
+    if(item.delay_ms!==null&&item.tested_at_ms===null)throw Error('有延迟却无测速时间');
+    if(requiredBoolean(item,'selected','代理节点选中态必须为布尔值'))selected++;
+    return {name,delay_ms:item.delay_ms,tested_at_ms:item.tested_at_ms,selected:item.selected,kind:item.kind};
+  });
+  if(selected>1)throw Error('代理节点选中态不唯一');
+  return nodes;
+}
+
+/** 设备上可启动的应用，供面板渲染「哪些程序走代理」的勾选清单。 */
+export function installedAppList(value,device,managed){
+  const declared=proxyCapabilityDeclared(device,managed);
+  if(!declared){
+    if(value!==undefined)throw Error('设备未声明代理管理能力，不能上报应用清单');
+    return undefined;
+  }
+  if(value===undefined)return undefined;
+  if(!Array.isArray(value))throw Error('应用清单格式无效');
+  if(value.length>MAX_INSTALLED_APPS)throw Error('应用数量超出上限');
+  sizeGuard(value,8192,'应用清单内容过长');
+  const packages=new Set();
+  return value.map(item=>{
+    if(!record(item))throw Error('应用条目格式无效');
+    exactFields(item,['package','uid','label','system'],['package','label','system'],'应用条目字段无效');
+    const pkg=boundedString(item.package,128,'应用包名无效');
+    if(!PACKAGE_PATTERN.test(pkg))throw Error('应用包名无效');
+    if(packages.has(pkg))throw Error('应用包名重复');
+    packages.add(pkg);
+    // uid 校验但不落库：它随重装变化，存下来迟早和现场对不上，
+    // 而下发名单走的是包名，服务端根本不需要 uid。面板宁可不显示，也不显示一个会过期的值。
+    if(Object.hasOwn(item,'uid')&&(!Number.isSafeInteger(item.uid)||item.uid<0))throw Error('应用 uid 无效');
+    return {package:pkg,label:boundedString(item.label,64,'应用名称无效'),
+      system:requiredBoolean(item,'system','应用系统标记必须为布尔值')};
+  });
+}
+
+
+
+/** 设备当前生效的分流名单。设备本机也能改这份名单，所以它要能从上报回来——
+ *  只认面板下发的话，用户在座机上改完，面板会长期显示一份过期名单，那是假状态。
+ *  自家包名照样拒：设备侧已经拦一道，这里是第二道，代价是设备失联且无法远程恢复。 */
+export function proxyAppList(value,device,managed){
+  const declared=proxyCapabilityDeclared(device,managed);
+  if(!declared){
+    if(value!==undefined)throw Error('设备未声明代理管理能力，不能上报代理应用名单');
+    return undefined;
+  }
+  if(value===undefined)return undefined;
+  if(!Array.isArray(value))throw Error('代理应用名单格式无效');
+  if(value.length>MAX_INSTALLED_APPS)throw Error('代理应用数量超出上限');
+  sizeGuard(value,8192,'代理应用名单内容过长');
+  const seen=new Set();
+  return value.map(pkg=>{
+    const name=boundedString(pkg,128,'代理应用包名无效');
+    if(!PACKAGE_PATTERN.test(name))throw Error('代理应用包名无效');
+    if(seen.has(name))throw Error('代理应用包名重复');
+    seen.add(name);
+    return name;
+  }).filter(name=>{
+    // 上报这条路只丢掉管理程序那一条，其余照收，**绝不拒整份上报**。
+    // 拒整份的代价是位置、电量、任务领取一起死，而且设备每轮都带同一份名单，
+    // 是持续性失联——与「使用者勾错一个应用」完全不成比例。218 那次已经演过一遍。
+    // 设备侧也会过滤，这里是第二道网，正常情况下不会触发。
+    return !isManagementPackage(name);
+  });
+}
