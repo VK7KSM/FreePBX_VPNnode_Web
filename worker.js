@@ -612,6 +612,10 @@ export class ElfStore {
     }
     if (url.pathname.startsWith("/api/")) {
       const raw = request.method === "GET" ? undefined : await request.text();
+      // 上报体是唯一没有长度上限的入口（其余接口都有 4–16 KB 的门）。
+      // 一份异常上报（比如几千个应用）会直接把设备记录撑大，拆键也扛不住无上限。
+      if (raw !== undefined && raw.length > REPORT_BODY_LIMIT && DEVICE_BODY_ROUTES.has(url.pathname))
+        return json({ ok: false, msg: "上报内容过大" }, 413);
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
           return await this.events.transaction(async storage => {
@@ -2154,6 +2158,37 @@ async function enrollTokenRetired(env, row) {
   return !!(await env.__storage.get("retired-device-token/" + row.token_sha256));
 }
 
+// 注册是全系统唯一一条不需要任何凭据就会写 DO 的路径，而免费额度每天只有 10 万行写入。
+// 两道门：同一来源每小时的注册次数，和未配对记录的总数。都不影响正常设备——
+// 一台设备注册一次，未配对的机器加起来也就几台。
+const ENROLL_PER_IP_PER_HOUR = 20;
+const ENROLL_UNPAIRED_LIMIT = 20;
+const REPORT_BODY_LIMIT = 64 * 1024;
+const DEVICE_BODY_ROUTES = new Set(["/api/devices/report", "/api/devices/enroll"]);
+// 按环境实例各自计数（同 quotaCooldown 的做法）：生产里一个 isolate 一个环境，
+// 测试里每个夹具一个环境，互不串扰。
+const enrollAttempts = new WeakMap();
+function enrollAttemptTable(env) {
+  const key = env.ELF_DO || env;
+  let table = enrollAttempts.get(key);
+  if (!table) { table = new Map(); enrollAttempts.set(key, table); }
+  return table;
+}
+export function enrollAllowed(attempts, peer, now, limit = ENROLL_PER_IP_PER_HOUR) {
+  let entry = attempts.get(peer);
+  if (!entry || entry.until <= now) { entry = { count: 0, until: now + 3600000 }; attempts.set(peer, entry); }
+  // 来源表封顶：先清过期的，仍超就按插入顺序淘汰最老的——不能让海量来源把内存撑爆。
+  if (attempts.size > 512) {
+    for (const [k, v] of attempts) if (v.until <= now) attempts.delete(k);
+    while (attempts.size > 256) attempts.delete(attempts.keys().next().value);
+  }
+  entry.count++;
+  return entry.count <= limit;
+}
+export function unpairedCapacityLeft(devices, limit = ENROLL_UNPAIRED_LIMIT) {
+  return devices.filter(d => d && d.paired === false).length < limit;
+}
+
 async function handleDeviceEnroll(env, request) {
   try {
     const data = await request.json();
@@ -2162,6 +2197,9 @@ async function handleDeviceEnroll(env, request) {
       return json({ ok: false, msg: "设备令牌哈希无效" }, 400);
     }
     const now = Date.now();
+    const peer = await sha256Hex(request.headers.get("CF-Connecting-IP") || env.__requestIp || "local");
+    if (!enrollAllowed(enrollAttemptTable(env), peer, now))
+      return json({ ok: false, msg: "注册过于频繁，请稍后再试" }, 429, { "Retry-After": "600" });
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
     const product = gatewayProductFields(data,null,normalizeDeviceIdentity(data.hardware_identity));
     if(Object.hasOwn(data,'managed_mobile_status')){
@@ -2180,6 +2218,8 @@ async function handleDeviceEnroll(env, request) {
       if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now,product);
       gatewayProductFields(data,registered,identity);
       if (!registered) {
+        if (!unpairedCapacityLeft(devices))
+          return json({ ok: false, msg: "未配对设备过多，请先在管理页清理或配对后再注册" }, 429);
         const model = registrationModel(models,data,identity);
         gatewayProductFields(data,{model_id:model.id},identity);
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
