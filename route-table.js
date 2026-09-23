@@ -125,6 +125,8 @@ export const ROUTES=Object.freeze([
   r('GET','/api/admin/legacy-store',{share:'forbidden'}),
   r('POST','/api/admin/legacy-store',{share:'forbidden'}),
   r('POST','/api/admin/prepare-kv',{share:'forbidden'}),
+  // 改管理密码：不依赖 DO（KV 权威时账号在 panel/auth），额度冷却期也要能改。
+  r('POST','/api/admin/password',{share:'forbidden',kv:true}),
 ]);
 
 const exact=new Map();

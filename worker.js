@@ -98,9 +98,9 @@ import {
   repairExpired, reclaimStaleRepair, taskCapable } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
-import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin, unknownDeviceRoute } from "./admin-auth.js";
+import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin, unknownDeviceRoute, verifyPasswordAgainst } from "./admin-auth.js";
 import { PROXY_ROLE_PATHS, singleStoreRead, storeAuthenticates, KV_INDEPENDENT, outerDeviceRoute } from "./route-table.js";
-import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
+import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite,kvJson } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import {queryTrajectoryMedia} from './trajectory-media.js';
 import {retentionSweep,runRetention,LAST_RUN_KEY as RETENTION_LAST_KEY} from './retention.js';
@@ -159,6 +159,18 @@ function elfDoStub(env) {
 
 // 只读路径不写存储：KV 里也没有的键只在内存里记一次，避免读取请求在额度耗尽时被写入拒绝。
 const legacyChecked = new Set();
+/**
+ * 改管理密码的唯一实现：先验当前密码，再改。代理面板（s）与电话/设备管理（v）的「全局设置」都走这里，
+ * 任一个 Worker 被封，另一个仍能改密码。账号只有一个（KV 权威时在 panel/auth），改一处三个面板一起生效。
+ * 在外层 Worker 执行，没有 __storage，口令资料按登录同样的来源取：KV 权威读 panel/auth，否则经 DO 读 admin_auth。
+ */
+export async function changeAdminPassword(env, request, data) {
+  if (!data || typeof data.new_password !== "string" || !data.new_password) return authJson({ ok: false, msg: "缺少新密码" }, 400);
+  const auth = panelEnabled(env) ? await kvJson(env, "panel/auth", { request }) : await getStore(env, "admin_auth");
+  if (!await verifyPasswordAgainst(auth, data.current_password)) return authJson({ ok: false, msg: "当前密码不正确，未修改" }, 403);
+  return adminRpc(env, request, "password", { password: data.new_password });
+}
+
 export async function getStore(env, key) {
   if(panelEnabled(env)&&(panelGroup(key)||key.startsWith('geo_')))return panelRead(env,key);
   if (env.__storage) {
@@ -1044,6 +1056,11 @@ const app = {
     // 节点池的读写只属于代理面板，跟着页面一起搬去 proxy-panel.js。
     if (proxyPanel && pathname === "/api/data" && method === "GET") return proxyPanel.readSettings(env);
     if (proxyPanel && pathname === "/api/save" && method === "POST") return proxyPanel.saveSettings(env, request);
+    // 电话管理、设备管理页的「全局设置」只改密码：代理面板所在的 Worker 被封时，这里仍是改密码的入口。
+    if (pathname === "/api/admin/password" && method === "POST") {
+      let data = null; try { data = await request.json(); } catch {}
+      return changeAdminPassword(env, request, data);
+    }
 
     if (pathname === "/api/devices/sip-directory" && method === "GET") {
       return json({ok:true,accounts:sipDirectory(await loadSipBundle(env))});
@@ -3634,6 +3651,7 @@ function renderSipHtml() {
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:1rem">',
     '<p id="syncHint" style="font-size:.8rem;color:#94a3b8;margin:0;white-space:nowrap">等待同步状态...<\/p>',
+    '<button class="btn-gray" onclick="adminSession.openSettings()">&#9881; 全局设置<\/button>',
     cfUsageMarkup,
     '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
     '<\/div>',
@@ -3918,7 +3936,7 @@ function renderDevicesHtml() {
     '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">电话管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
-    '<div style="display:flex;align-items:center;gap:12px">'+cfUsageMarkup+'<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',
+    '<div style="display:flex;align-items:center;gap:12px"><button class="btn-gray" onclick="adminSession.openSettings()">&#9881; 全局设置<\/button>'+cfUsageMarkup+'<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',
     '<\/div><\/header>',
     '<main style="max-width:1280px;margin:1.2rem auto;padding:0 1.5rem">',
     '<div class="layout">',

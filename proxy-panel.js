@@ -2,19 +2,10 @@
 // 2026-09-20 从 worker.js 整体搬出来单独成模块，只有 worker-proxy.js（s.elfradio.net 的入口）
 // 会 import 它。管理面板 v.elfradio.net 的入口是 worker.js 本身，打包时根本不会走到这个文件，
 // 所以 v 的产物里一个代理协议字段都不会出现——靠运行时判断做不到这一点，代码仍然留在包里。
-import { getStore, setStore, json, registerProxyPanel } from './worker.js';
+import { getStore, setStore, json, registerProxyPanel, changeAdminPassword } from './worker.js';
 import { cfUsageStyle, cfUsageMarkup } from './cf-usage-client.js';
 import { adminRpc } from './admin-auth.js';
 import { panelEnabled, panelWrite, kvJson } from './panel-kv.js';
-import { verifyPasswordAgainst } from './admin-auth.js';
-
-// 改密码前核对当前口令。/api/save 在外层 Worker 执行，没有 __storage，
-// 所以口令资料按登录同样的来源取：KV 权威模式读 panel/auth，否则经 DO 读 admin_auth。
-async function verifyAdminPassword(env, request, password) {
-  const auth = panelEnabled(env) ? await kvJson(env, 'panel/auth', { request }) : await getStore(env, 'admin_auth');
-  return verifyPasswordAgainst(auth, password);
-}
-
 // 节点字段白名单。以前 nodes 原样存、原样拼进 YAML：名字里一个双引号或换行就让整份订阅
 // 解析失败，所有客户端同时断线——自己手滑的后果。现在只收这几个字段、每个都有形状。
 const NODE_FIELDS = ['name', 'type', 'server', 'port', 'uuid', 'sni', 'path', 'custom_ip'];
@@ -494,9 +485,7 @@ export async function saveSettings(env, request) {
     let passwordResult;
     if (data.new_password) {
       // 改密码要先证明知道现在的密码：会话被拿到不等于能把主人锁在外面。
-      if (!await verifyAdminPassword(env, request, data.current_password))
-        return json({ ok: false, msg: "当前密码不正确，未修改" }, 403);
-      passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
+      passwordResult = await changeAdminPassword(env, request, data);
       if (!passwordResult.ok) return passwordResult;
     }
     const patch={};if(Array.isArray(data.nodes))patch.nodes=validateNodes(data.nodes);

@@ -48,7 +48,7 @@ test('独立页五张表与 share-scope.js 并表前一致', () => {
   same(SHARE_FORBIDDEN.map(x=>x.join(' ')),['POST /api/devices','POST /api/device-models','POST /api/devices/delete','POST /api/devices/pair','GET /api/devices/recovery',
     'GET /api/devices/sip-directory','POST /api/elfremote/releases','POST /api/elfremote/releases/prune','PUT /api/elfremote/releases/upload','POST /api/elfremote/proxy-config',
     'GET /api/cf-usage','GET /api/admin/legacy-store','GET /api/admin/store-size','GET /api/admin/health','POST /api/admin/legacy-store','POST /api/admin/prepare-kv',
-    'POST /api/sip/ban','POST /api/sip/save','POST /api/save'],'forbidden');
+    'POST /api/sip/ban','POST /api/sip/save','POST /api/save','POST /api/admin/password'],'forbidden');
   same(SHARE_GLOBAL_READ,['/api/devices','/api/device-models','/api/elfremote/releases','/api/devices/events','/api/share/session','/api/share/logout','/api/share/login','/api/session','/api/logout'],'global');
   same(OBSERVER_ALLOWED.map(x=>x.join(' ')),['POST /api/devices/update','POST /api/devices/delete','POST /api/devices/pair','POST /api/devices','POST /api/device-models',
     'POST /api/share/links','POST /api/share/links/update','POST /api/share/links/delete','POST /api/elfremote/releases','POST /api/elfremote/releases/prune',
@@ -61,7 +61,7 @@ test('外层分流三张表与 worker.js 并表前一致', () => {
   for(const p of ['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'])assert.equal(storeAuthenticates(p,'POST'),true,p);
   assert.equal(storeAuthenticates('/api/share/session','GET'),true);
   assert.equal(storeAuthenticates('/api/devices','GET'),false);
-  same(KV_INDEPENDENT,['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage']);
+  same(KV_INDEPENDENT,['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage','/api/admin/password']);
   for(const p of ['/api/elfremote/files','/api/elfremote/files/x/y','/api/elfremote/file-return','/api/elfremote/file-return/received','/api/elfremote/proxy-config'])assert.equal(outerDeviceRoute(p),true,p);
   assert.equal(outerDeviceRoute('/api/elfremote/task'),false);
 });

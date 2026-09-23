@@ -55,3 +55,29 @@ test('代理面板的改密码表单要当前密码、再输一次，且失败�
   const save=src.slice(src.indexOf("'function saveSettings(){'"),src.indexOf("'function copyMihomo"));
   assert.ok(save.indexOf('D.cf_ip = payload.cf_ip')>save.indexOf('if(!d.ok) throw'),'服务端确认成功后才改本地数据');
 });
+
+// 电话管理 / 设备管理页的「全局设置」：代理面板所在 Worker 被封时仍能改密码
+import mainWorker from './worker.js';
+test('v 上的 /api/admin/password：验当前密码、至少 12 位、成功后旧密码失效', async () => {
+  const f=fixture({admin_pass:'fixture-password'});const cookie=await login(f);
+  const post=body=>mainWorker.fetch(request('/api/admin/password','POST',body,cookie),f.env);
+  assert.equal((await post({current_password:'wrong',new_password:'long-enough-pass'})).status,403);
+  assert.equal((await post({current_password:'fixture-password',new_password:'short'})).status,400);
+  assert.equal((await post({new_password:'long-enough-pass'})).status,403,'没带当前密码');
+  const ok=await post({current_password:'fixture-password',new_password:'long-enough-pass'});
+  assert.equal(ok.status,200,await ok.clone().text());
+  assert.notEqual((await mainWorker.fetch(request('/api/login','POST',{username:'admin',password:'fixture-password'}),f.env)).status,200);
+  assert.equal((await mainWorker.fetch(request('/api/login','POST',{username:'admin',password:'long-enough-pass'}),f.env)).status,200);
+});
+test('/api/admin/password 未登录 401、分享页禁止、代理面板上不暴露', async () => {
+  const f=fixture({admin_pass:'fixture-password'});
+  assert.equal((await mainWorker.fetch(request('/api/admin/password','POST',{current_password:'fixture-password',new_password:'long-enough-pass'}),f.env)).status,401);
+  const {shareForbidden}=await import('./share-scope.js');assert.equal(shareForbidden('/api/admin/password','POST'),true);
+  const {PROXY_ROLE_PATHS}=await import('./route-table.js');assert.equal(PROXY_ROLE_PATHS.includes('/api/admin/password'),false);
+});
+test('电话管理、设备管理页头部有「全局设置」，分享页没有', async () => {
+  const src=fs.readFileSync(new URL('./worker.js',import.meta.url),'utf8');
+  assert.equal((src.match(/onclick="adminSession\.openSettings\(\)">&#9881; 全局设置/g)||[]).length,2,'两个页面各一个按钮');
+  const session=fs.readFileSync(new URL('./admin-session.js',import.meta.url),'utf8');
+  assert.match(session,/state\.openSettings = function/);assert.match(session,/\/api\/admin\/password/);
+});

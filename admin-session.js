@@ -72,5 +72,43 @@ export const adminSessionSource = String.raw`(function installAdminSession() {
       if(checkTimer!==null){clearTimeout(checkTimer);checkTimer=null;}expire(); location.href = "/";
     }).catch(function() { alert("退出未完成，请重试"); });
   };
+  // 「全局设置」：电话管理与设备管理页共用，只含改密码。代理面板自己的全局设置另含 CF 优选 IP 与订阅令牌。
+  state.openSettings = function() {
+    var old = document.getElementById("elfGlobalSettings"); if (old) old.remove();
+    var wrap = document.createElement("div");
+    wrap.id = "elfGlobalSettings";
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px";
+    var box = document.createElement("div");
+    box.style.cssText = "background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:20px;width:100%;max-width:400px;color:#e2e8f0;font-size:13px";
+    function el(tag, css, text) { var n = document.createElement(tag); if (css) n.style.cssText = css; if (text) n.textContent = text; return n; }
+    box.appendChild(el("h3", "font-weight:700;font-size:15px;margin:0 0 12px", "全局设置"));
+    box.appendChild(el("div", "color:#cbd5e1;margin-bottom:6px", "修改管理密码（代理、电话、设备三个面板共用这一个账号）"));
+    function input(ph, ac) { var i = el("input", "display:block;width:100%;box-sizing:border-box;margin-bottom:8px;padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0b1220;color:#e2e8f0"); i.type = "password"; i.placeholder = ph; i.autocomplete = ac; box.appendChild(i); return i; }
+    var cur = input("当前密码", "current-password"), np = input("新密码（至少 12 位）", "new-password"), np2 = input("再输一次新密码", "new-password");
+    var msg = el("div", "min-height:18px;color:#f87171;margin:2px 0 10px");
+    box.appendChild(msg);
+    var row = el("div", "display:flex;justify-content:flex-end;gap:8px");
+    var cancel = el("button", "", "取消"); cancel.className = "btn-gray";
+    var ok = el("button", "", "保存"); ok.className = "btn-green";
+    row.appendChild(cancel); row.appendChild(ok); box.appendChild(row);
+    wrap.appendChild(box); document.body.appendChild(wrap);
+    cancel.addEventListener("click", function() { wrap.remove(); });
+    wrap.addEventListener("click", function(e) { if (e.target === wrap) wrap.remove(); });
+    ok.addEventListener("click", function() {
+      msg.textContent = "";
+      if (!cur.value) { msg.textContent = "请输入当前密码"; return; }
+      if (np.value.length < 12) { msg.textContent = "新密码至少 12 位"; return; }
+      if (np.value !== np2.value) { msg.textContent = "两次输入的新密码不一致"; return; }
+      ok.disabled = true;
+      window.fetch("/api/admin/password", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: cur.value, new_password: np.value }) })
+        .then(function(r) { return r.json().catch(function() { return { ok: false, msg: "保存失败（HTTP " + r.status + "）" }; }); })
+        .then(function(d) {
+          if (!d.ok) throw new Error(d.msg || "保存失败");
+          wrap.remove(); alert("密码已修改，三个面板都要用新密码重新登录"); expire(); location.reload();
+        }).catch(function(e) { msg.textContent = e.message; ok.disabled = false; });
+    });
+    cur.focus();
+  };
   window.adminSession = state;
 })();`;
