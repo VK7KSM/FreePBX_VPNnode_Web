@@ -9,8 +9,8 @@ import {isMachineRoute as fromAuth,DEVICE_ROUTES as authRoutes} from './admin-au
 // 这些字面量是 2026-09-23 并表当天从 admin-auth.js / share-scope.js / worker.js 原样抄来的快照。
 // 以后改路由只改 route-table.js，这里的快照跟着改；改快照的提交就是「有意改行为」的证据。
 const same=(actual,expected,label)=>assert.deepEqual([...actual].sort(),[...expected].sort(),label);
-test('isMachineRoute：23 条精确 + 2 条正则，与并表前一致', () => {
-  const old=["GET /api/sip/pull","POST /api/sip/heartbeat","POST /api/devices/enroll","GET /api/devices/enroll-status","POST /api/devices/report",
+test('isMachineRoute：22 条精确 + 2 条正则（2026-09-23 删去已废弃的 sip/heartbeat）', () => {
+  const old=["GET /api/sip/pull","POST /api/devices/enroll","GET /api/devices/enroll-status","POST /api/devices/report",
     "POST /api/devices/push-config","POST /api/devices/push-sync","POST /api/devices/share-link","POST /api/devices/proxy-config/offer",
     "POST /api/devices/media-native/offer","POST /api/mcp","DELETE /api/mcp","POST /api/elfremote/update-progress","POST /api/elfremote/task-progress",
     "GET /api/elfremote/file-download","POST /api/elfremote/report-photo","POST /api/elfremote/file-return","PUT /api/elfremote/file-return",

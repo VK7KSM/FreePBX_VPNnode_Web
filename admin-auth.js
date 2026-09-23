@@ -107,14 +107,14 @@ export async function handleAdminAuth(storage, env, request, now = Date.now()) {
       const failures = (await storage.get("auth/failures")) || [];
       const recent = failures.filter(e => e.until > now);
       const bucket = recent.find(e => e.peer === peer);
-      if (bucket?.count >= 8) return authJson({ ok: false, msg: "登录失败次数过多，请稍后重试" }, 429, { "Retry-After": "60" });
+      if (bucket?.count >= LOGIN_MAX_FAILURES) return authJson({ ok: false, msg: "登录失败次数过多，请 15 分钟后再试" }, 429, { "Retry-After": "900" });
       const auth = await credentials(storage, env);
       if (!auth) return authJson({ ok: false, msg: "管理员登录尚未配置" }, 503);
       const inputOk = typeof body.username === "string" && typeof body.password === "string" && body.password.length <= 1024;
       const hash = await passwordHash(inputOk ? body.password : "", auth.salt);
       if (!inputOk || !equal(hash, auth.hash) || body.username !== auth.username) {
         if (bucket) bucket.count++;
-        else recent.push({ peer, count: 1, until: now + 60000 });
+        else recent.push({ peer, count: 1, until: now + LOGIN_WINDOW_MS });
         await storage.put("auth/failures", recent.slice(-128));
         return authJson({ ok: false, msg: "账号或密码错误" }, 401);
       }
@@ -133,7 +133,7 @@ export async function handleAdminAuth(storage, env, request, now = Date.now()) {
     if (!await validSession(storage, request, now)) return authJson({ ok: false, msg: "请先登录" }, 401);
     if (action === "/__auth/password" && request.method === "POST") {
       const { password } = await jsonInput(request);
-      if (typeof password !== "string" || !password || password.length > 1024) return authJson({ ok: false, msg: "密码长度无效" }, 400);
+      if (typeof password !== "string" || password.length < 12 || password.length > 1024) return authJson({ ok: false, msg: "新密码至少 12 位" }, 400);
       const auth = await storage.get("admin_auth");
       const salt = random();
       await storage.put("admin_auth", { username: auth.username, salt, hash: await passwordHash(password, salt), revision: random() });
@@ -168,21 +168,38 @@ const attempts=new WeakMap();
 // 登录失败计数。有 DO 存储就落盘（auth/failures，与 DO 登录路径同一把钥匙），实例回收也不清零；
 // 没有 DO 的代理面板（s.elfradio.net）只能记在实例内存里——那里没有 DO 可落，也不写 KV：
 // 每次失败写 KV 的同一个键，攻击者就能用错密码把 1000 次/日的写额度耗光。
-async function loginThrottle(kv,storage,now){
+// 窗口 15 分钟、错 8 次锁到窗口结束：每个来源每天最多试约 770 次，主人手滑输错几次不受影响。
+const LOGIN_WINDOW_MS=15*60000,LOGIN_MAX_FAILURES=8;
+// s.elfradio.net 没有 DO：以前只记在实例内存里，实例一换就清零，是全系统防猜密码最弱的一处。
+// 改用 Cloudflare 边缘缓存（Cache API）记账：不占 KV 写额度、实例回收不清零；同一来源通常落在同一机房。
+function cacheThrottle(cache,request,now){
+ const keyFor=peer=>new Request(new URL('/__login-throttle/'+peer,request.url).toString());
+ const read=async peer=>{try{const hit=await cache.match(keyFor(peer));const v=hit?await hit.json():null;return v&&v.until>now?v:null;}catch{return null;}};
+ const write=async(peer,v)=>{try{await cache.put(keyFor(peer),new Response(JSON.stringify(v),{headers:{'Content-Type':'application/json','Cache-Control':'max-age='+Math.max(1,Math.ceil((v.until-now)/1000))}}));}catch{}};
+ let current;
+ return {
+  load:async peer=>{current=await read(peer);},
+  blocked:()=>!!current&&current.count>=LOGIN_MAX_FAILURES,
+  fail:async peer=>{current=current?{...current,count:current.count+1}:{count:1,until:now+LOGIN_WINDOW_MS};await write(peer,current);},
+  clear:async peer=>{if(current){try{await cache.delete(keyFor(peer));}catch{}}}
+ };
+}
+async function loginThrottle(kv,storage,now,request,cache){
+ if(!storage&&cache&&request){const t=cacheThrottle(cache,request,now);return t;}
  if(storage){
   const recent=((await storage.get('auth/failures'))||[]).filter(e=>e.until>now);
   const bucket=peer=>recent.find(e=>e.peer===peer);
   return {
-   blocked:peer=>(bucket(peer)?.count||0)>=8,
-   fail:async peer=>{const b=bucket(peer);if(b)b.count++;else recent.push({peer,count:1,until:now+60000});await storage.put('auth/failures',recent.slice(-128));},
+   blocked:peer=>(bucket(peer)?.count||0)>=LOGIN_MAX_FAILURES,
+   fail:async peer=>{const b=bucket(peer);if(b)b.count++;else recent.push({peer,count:1,until:now+LOGIN_WINDOW_MS});await storage.put('auth/failures',recent.slice(-128));},
    clear:async peer=>{if(bucket(peer))await storage.put('auth/failures',recent.filter(e=>e.peer!==peer));}
   };
  }
  let peers=attempts.get(kv);if(!peers){peers=new Map();attempts.set(kv,peers);}
  return {
-  blocked:peer=>{const r=peers.get(peer);return !!r&&r.until>now&&r.count>=8;},
+  blocked:peer=>{const r=peers.get(peer);return !!r&&r.until>now&&r.count>=LOGIN_MAX_FAILURES;},
   fail:peer=>{const r=peers.get(peer);if(peers.size>=128)peers.delete(peers.keys().next().value);
-   peers.set(peer,{count:r&&r.until>now?r.count+1:1,until:r&&r.until>now?r.until:now+60000});},
+   peers.set(peer,{count:r&&r.until>now?r.count+1:1,until:r&&r.until>now?r.until:now+LOGIN_WINDOW_MS});},
   clear:peer=>{peers.delete(peer);}
  };
 }
@@ -197,9 +214,10 @@ export async function handleKvAuth(env,request,action,body,now=Date.now(),storag
   if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
   if(action==='login'){
    const input=body===undefined?await jsonInput(request):body;
-   const throttle=await loginThrottle(kv,storage,now);
+   const throttle=await loginThrottle(kv,storage,now,request,env.__loginCache||(typeof caches!=='undefined'?caches.default:null));
    const peer=await digest(request.headers.get('CF-Connecting-IP')||'local');
-   if(throttle.blocked(peer))return authJson({ok:false,msg:'登录失败次数过多，请稍后重试'},429,{'Retry-After':'60'});
+   if(throttle.load)await throttle.load(peer);
+   if(throttle.blocked(peer))return authJson({ok:false,msg:'登录失败次数过多，请 15 分钟后再试'},429,{'Retry-After':'900'});
    const valid=typeof input.username==='string'&&typeof input.password==='string'&&input.password.length<=1024;
    const hash=await passwordHash(valid?input.password:'',auth.salt);
    if(!valid||input.username!==auth.username||!equal(hash,auth.hash)){
@@ -230,7 +248,7 @@ export async function handleKvAuth(env,request,action,body,now=Date.now(),storag
   if(action==='session')return authJson({ok:true});
   if(action==='password'){
    const input=body===undefined?await jsonInput(request):body,password=input.password;
-   if(typeof password!=='string'||!password||password.length>1024)return authJson({ok:false,msg:'密码长度无效'},400);
+   if(typeof password!=='string'||password.length<12||password.length>1024)return authJson({ok:false,msg:'新密码至少 12 位'},400);
    const salt=random();await putKvJson(env,'panel/auth',{...auth,salt,hash:await passwordHash(password,salt),revision:random(),session_key:random()});
    return authJson({ok:true,credentials_changed:true},200,{'Set-Cookie':cookie('',0)});
   }

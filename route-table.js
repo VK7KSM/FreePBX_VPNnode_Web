@@ -32,9 +32,6 @@ export const ROUTES=Object.freeze([
   r('POST','/api/sip/save',{share:'forbidden',kv:true}),
   r('POST','/api/sip/ban',{share:'forbidden'}),
   r('GET','/api/sip/pull',{who:'device',kv:true}),
-  // 已废弃：自 2026-09-02 18:37（悉尼）起无调用方（大阪 sip-heartbeat.timer 停用），处理函数本来就不写任何状态。
-  // 待 SIP-dev 清掉 sip-server/ 里的发送端后删除。注意：同一个 X-Heartbeat-Token 仍是 /api/sip/pull 的凭据，不得吊销。
-  r('POST','/api/sip/heartbeat',{who:'device'}),
   // ── 设备列表与型号 ──
   r('GET','/api/devices',{share:'global',store:'read'}),
   r('POST','/api/devices',{share:'forbidden',observer:true,store:'auth'}),
