@@ -241,6 +241,7 @@ public final class GatewayRemoteService extends Service {
                 .put("app_version",version()).put("os_version","Android "+Build.VERSION.RELEASE)
                 .put("report_id",java.util.UUID.randomUUID().toString()).put("sampled_at_ms",System.currentTimeMillis())
                 .put("queued_at_ms",System.currentTimeMillis()).put("status_only",true)
+                .put("report_interval_ms",GatewayRemotePolicy.REPORT_MS)
                 .put("reported_at",java.time.Instant.now().toString()).put("ready",false);
         String statusRequest=store.prefs.getString("status_request_id","");if(!statusRequest.isEmpty())body.put("status_request_id",statusRequest);
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);

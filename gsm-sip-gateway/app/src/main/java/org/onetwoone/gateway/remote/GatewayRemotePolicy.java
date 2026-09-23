@@ -8,7 +8,16 @@ public final class GatewayRemotePolicy {
     public static final String PRODUCT = "elfremote_gateway";
     public static final String PACKAGE = "org.onetwoone.gateway";
     public static final String BASE_URL = "https://v.elfradio.net";
+    /**
+     * 稳态上报间隔。随报告体上报给面板，面板用它算轨迹断点阈值（两倍间隔）。
+     * 在此之前面板是按网络类型查表猜的，WiFi 一律当成 15 分钟，于是这台每分钟上报的
+     * 网关断点阈值被放到 30 分钟——2026-09-19 那次死锁停报 8 分钟，轨迹上一个断点都没有。
+     * 这里要报稳态值，不能报退避后的实际延迟：故障时退避会越来越长，
+     * 阈值跟着变宽，等于越出问题越不容易被发现。
+     */
     public static final long REPORT_MS = 60_000L;
+    /** 面板采信的区间，与前端 cadence() 一致；超出这个范围服务端会回退到查表值。 */
+    public static final long REPORT_INTERVAL_MIN_MS = 60_000L, REPORT_INTERVAL_MAX_MS = 86_400_000L;
 
     public static JSONObject profile() throws Exception {
         JSONObject body = new JSONObject().put("product_id", PRODUCT).put("app_package", PACKAGE)
