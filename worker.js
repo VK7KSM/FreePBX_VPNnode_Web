@@ -1210,6 +1210,7 @@ const app = {
       }
     }
 
+    // 已废弃（2026-09-23 标记）：无调用方、不写状态；面板 SIP 在线状态来自 /api/sip/live 经隧道读大阪本机。见 route-table.js。
     if (pathname === "/api/sip/heartbeat" && method === "POST") {
       const token = request.headers.get("X-Heartbeat-Token") || "";
       const expected = await heartbeatToken(env);
