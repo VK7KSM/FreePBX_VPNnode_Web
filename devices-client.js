@@ -63,8 +63,287 @@ var FN_ITEMS = [
   ["locate", "设备轨迹", '<path d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"></path><circle cx="12" cy="10" r="2.5"></circle>'],
   ["files", "文件管理", '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>'],
   ["lost", "丢失模式", '<path d="M12 3l8 4v5c0 5-3.5 8.5-8 9.5C7.5 20.5 4 17 4 12V7l8-4z"></path>'],
-  ["model", "添加型号", '<rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17 14v8M14 18h8"></path>']
+  ["model", "机型管理", '<rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17 14v8M14 18h8"></path>']
 ];
+
+// 名字不能叫 RELEASES：更新页早有一个同名的全局数组（见 loadReleases），
+// 顶层同名 var 会互相覆盖，表现是这一页永远显示「还没有发布记录」且从不发请求。
+// 这一页现在挂在机型管理下面，可见与否要同时看顶级页签与左栏选中项。
+// 早先它是顶级页签，条件写的是 selFn==='releases'；改归属后没跟着改，
+// 表现是列表读完却不重绘，页面永远停在「正在读取…」。
+function clientReleasesVisible(){return selFn==='model'&&MODEL_TAB==='客户端管理';}
+var CLIENT_RELEASES={channel:'d22',rows:null,loading:false,error:'',message:'',busy:false};
+var RELEASE_CHANNELS=[['d22','D22 对讲机'],['d31','D31 座机'],['gateway','Pixel 网关'],['d31-proxy-core','D31 代理核心（资产）'],['d22-media-native','D22 音视频原生库（资产）']];
+
+function releaseChannelPick(value){
+  if(CLIENT_RELEASES.channel===value)return;
+  CLIENT_RELEASES.channel=value;CLIENT_RELEASES.rows=null;CLIENT_RELEASES.error='';CLIENT_RELEASES.message='';
+  renderOps();releaseLoad();
+}
+async function releaseLoad(){
+  if(CLIENT_RELEASES.loading)return;
+  CLIENT_RELEASES.loading=true;var channel=CLIENT_RELEASES.channel;
+  try{
+    var response=await fetch('/api/elfremote/releases?channel='+encodeURIComponent(channel),{credentials:'include'});
+    var body=await response.json();
+    if(!response.ok||!body.ok)throw Error(body.msg||'读取发布列表失败');
+    if(CLIENT_RELEASES.channel!==channel)return;
+    CLIENT_RELEASES.rows=body.releases||body.list||[];CLIENT_RELEASES.error='';
+  }catch(error){if(CLIENT_RELEASES.channel===channel){CLIENT_RELEASES.rows=[];CLIENT_RELEASES.error=error.message;}}
+  finally{CLIENT_RELEASES.loading=false;if(clientReleasesVisible())renderOps();}
+}
+function releaseHex(bytes){
+  return Array.prototype.map.call(new Uint8Array(bytes),function(b){return ('0'+b.toString(16)).slice(-2);}).join('');
+}
+async function releaseUpload(){
+  if(CLIENT_RELEASES.busy)return;
+  var apkFile=$('relApk')&&$('relApk').files[0];
+  var sigFile=$('relSig')&&$('relSig').files[0];
+  var publishOnly=$('relPublishOnly')?$('relPublishOnly').checked:true;
+  if(!apkFile){alert('请选择 APK 文件');return;}
+  if(!sigFile){alert('请选择随 APK 一起交付的 .sig 签名文件');return;}
+  CLIENT_RELEASES.busy=true;CLIENT_RELEASES.message='正在校验…';CLIENT_RELEASES.error='';renderOps();
+  try{
+    var signed=JSON.parse(await sigFile.text());
+    if(typeof signed.manifest_raw!=='string'||typeof signed.signature!=='string')
+      throw Error('这个签名文件里没有 manifest_raw 与 signature，确认选的是随 APK 交付的 .sig');
+    var manifest=JSON.parse(signed.manifest_raw);
+    var bytes=new Uint8Array(await apkFile.arrayBuffer());
+    // 本机先核对长度与哈希。服务端也会查，但那时 20 MB 已经传完了，而且只回一句
+    // 「长度或哈希不符」，看不出是两个文件配错了、还是包本身损坏。
+    if(bytes.length!==manifest.size)
+      throw Error('APK 与签名文件对不上：APK 是 '+bytes.length+' 字节，签名文件写的是 '+manifest.size+' 字节。多半是两个文件不是同一次交付的。');
+    var digest=releaseHex(await crypto.subtle.digest('SHA-256',bytes));
+    if(digest!==manifest.sha256)
+      throw Error('APK 的哈希与签名文件不符，这两个文件不是同一次构建的产物');
+    if(manifest.expires_at>0&&manifest.expires_at<=Date.now())
+      throw Error('这份签名已过期（'+sydney(new Date(manifest.expires_at).toISOString())+'），设备也会拒绝安装，请索取新的签名文件');
+    CLIENT_RELEASES.message='正在上传 '+(bytes.length/1048576).toFixed(1)+' MB…';renderOps();
+    var headers={'X-Elf-Manifest':btoa(String.fromCharCode.apply(null,new TextEncoder().encode(signed.manifest_raw))),
+      'X-Elf-Signature':signed.signature,'Content-Type':'application/octet-stream'};
+    if(publishOnly)headers['X-Elf-Publish-Only']='1';
+    var response=await fetch('/api/elfremote/releases/upload',{method:'PUT',credentials:'include',headers:headers,body:bytes});
+    var body=await response.json();
+    if(!response.ok||!body.ok)throw Error(body.msg||('上传失败 HTTP '+response.status));
+    CLIENT_RELEASES.message='已发布 '+body.versionName+'（版本码 '+body.versionCode+'）'+(publishOnly?'，未指派任何设备':'');
+    if($('relApk'))$('relApk').value='';
+    if($('relSig'))$('relSig').value='';
+    CLIENT_RELEASES.channel=body.channel;CLIENT_RELEASES.rows=null;releaseLoad();
+  }catch(error){CLIENT_RELEASES.error=error.message;CLIENT_RELEASES.message='';}
+  finally{CLIENT_RELEASES.busy=false;if(clientReleasesVisible())renderOps();}
+}
+function pageReleases(){
+  if(CLIENT_RELEASES.rows===null&&!CLIENT_RELEASES.loading)releaseLoad();
+  var disabled=CLIENT_RELEASES.busy?' disabled':'';
+  var h='<div class="ops-actions"><select class="inp" style="width:auto;min-width:160px" aria-label="发布通道" onchange="releaseChannelPick(this.value)"'+disabled+'>';
+  for(var i=0;i<RELEASE_CHANNELS.length;i++)
+    h+='<option value="'+RELEASE_CHANNELS[i][0]+'"'+(CLIENT_RELEASES.channel===RELEASE_CHANNELS[i][0]?' selected':'')+'>'+esc(RELEASE_CHANNELS[i][1])+'</option>';
+  h+='</select><button class="btn-gray" onclick="releaseLoad()"'+disabled+'>刷新</button></div>';
+
+  h+='<div class="system-setting-section"><h4>上传新版本</h4>'
+    +'<p class="muted">选择随包交付的两个文件：APK 与同名的 .sig 签名文件。'
+    +'签名在构建时离线生成，私钥不在服务器上——所以服务器即使被攻破也伪造不出能装进设备的包。</p>'
+    +'<div class="ops-actions" style="flex-wrap:wrap;gap:8px">'
+    +'<label class="muted">APK 文件 <input id="relApk" type="file" accept=".apk,application/vnd.android.package-archive"'+disabled+'></label>'
+    +'<label class="muted">签名文件 <input id="relSig" type="file" accept=".sig,.json,application/json"'+disabled+'></label>'
+    +'<label class="chk"><input id="relPublishOnly" type="checkbox" checked'+disabled+'> 仅发布，不指派任何设备</label>'
+    +'<button class="btn-green" onclick="releaseUpload()"'+disabled+'>上传并发布</button>'
+    +'<span role="status">'+esc(CLIENT_RELEASES.message)+'</span></div>'
+    +(CLIENT_RELEASES.error?'<p class="trajectory-error" role="alert">'+esc(CLIENT_RELEASES.error)+'</p>':'')
+    +'<p class="muted">勾选「仅发布」时设备不会自动升级；要让某台设备更新或回退到旧版，到该设备的「更新客户端」里下发。</p></div>';
+
+  h+='<div class="function-table"><table><thead><tr><th>版本码</th><th>版本名</th><th>大小</th><th>SHA-256</th><th>状态</th></tr></thead><tbody>';
+  if(CLIENT_RELEASES.loading&&CLIENT_RELEASES.rows===null)h+='<tr><td colspan="5" class="muted">正在读取…</td></tr>';
+  else if(!CLIENT_RELEASES.rows||!CLIENT_RELEASES.rows.length)h+='<tr><td colspan="5" class="muted">该通道还没有发布记录</td></tr>';
+  else for(var j=0;j<CLIENT_RELEASES.rows.length;j++){
+    var row=CLIENT_RELEASES.rows[j];
+    h+='<tr><td>'+esc(row.versionCode)+'</td><td>'+esc(row.versionName||'')+'</td>'
+      +'<td>'+(row.size?(Number(row.size)/1048576).toFixed(1)+' MB':'—')+'</td>'
+      +'<td class="muted">'+esc(String(row.sha256||'').slice(0,12))+'…</td>'
+      +'<td>'+(row.expired?'<span class="muted">清单已过期</span>':'可安装')+'</td></tr>';
+  }
+  h+='</tbody></table></div>';
+  return h;
+}
+
+// MCP 令牌弹窗。总后台与单设备分享页共用同一套：令牌本来就只管当前这一台设备，
+// 两处没有功能差别，不需要两套设计。样式沿用分享弹窗那几个类，省一份 CSS。
+var MCP={device:'',tokens:[],scopes:[],ttls:[],loading:false,busy:false,error:'',created:null,picked:null};
+/** 标题栏提示。与分享的「只读模式」提示并排，两个可以同时出现——一台设备可能既有人在网页上看，又有 agent 连着。 */
+function mcpNotice(d){
+  var s=d&&d.mcp_session;
+  if(!s)return '';
+  return '<span class="share-lock-tag" role="status" style="background:#2e1065;color:#c4b5fd">'
+    +'MCP 使用中 · '+esc(s.name)+'</span>';
+}
+async function mcpRelease(){
+  if(MCP.busy||!MCP.device)return;
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens/release',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:MCP.device})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('断开失败 HTTP '+r.status));
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;mcpRender();loadDevices();}
+}
+function mcpButton(d){
+  var can=!!d&&d.enabled!==false;
+  return '<button class="device-action action-mcp" onclick="mcpOpen()"'+(can?'':' disabled')+'>MCP</button>';
+}
+function mcpNode(){
+  var wrap=$('mcpWrap');
+  if(wrap)return wrap;
+  wrap=document.createElement('div');wrap.id='mcpWrap';wrap.className='file-send-wrap';wrap.style.display='none';
+  wrap.innerHTML='<div class="file-send-dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="mcpTitle">'
+    +'<div class="traffic-header"><h3 id="mcpTitle">MCP 访问令牌</h3>'
+    +'<button type="button" class="btn-close share-close" aria-label="关闭" onclick="mcpClose()">&times;</button></div>'
+    +'<div id="mcpBody"></div></div>';
+  wrap.addEventListener('click',function(e){if(e.target===wrap)mcpClose();});
+  document.body.appendChild(wrap);
+  return wrap;
+}
+function mcpOpen(){
+  var d=currentDev();if(!d)return;
+  MCP.device=d.id;MCP.created=null;MCP.error='';MCP.picked=null;MCP.tokens=[];
+  mcpNode().style.display='flex';
+  mcpRender();mcpLoad();
+}
+function mcpClose(){
+  var wrap=$('mcpWrap');if(wrap)wrap.style.display='none';
+  // 明文只存在于 MCP.created 这一个地方，关窗即丢——服务器那边本来就只有哈希。
+  MCP.created=null;
+}
+async function mcpLoad(){
+  if(!MCP.device)return;
+  MCP.loading=true;mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens?device_id='+encodeURIComponent(MCP.device),{credentials:'include'});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('读取失败 HTTP '+r.status));
+    MCP.tokens=x.tokens||[];MCP.scopes=x.scopes||[];MCP.ttls=x.ttls||[];MCP.error='';
+    if(MCP.picked===null)MCP.picked=MCP.scopes.filter(function(s){return s.default;}).map(function(s){return s.id;});
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.loading=false;mcpRender();}
+}
+function mcpRemaining(ms){
+  if(ms<=0)return '已到期';
+  var m=Math.floor(ms/60000);
+  if(m<60)return m+' 分钟';
+  var h=Math.floor(m/60);
+  if(h<48)return h+' 小时 '+(m%60)+' 分';
+  return Math.floor(h/24)+' 天 '+(h%24)+' 小时';
+}
+function mcpToggle(id,on){
+  MCP.picked=(MCP.picked||[]).filter(function(x){return x!==id;});
+  if(on)MCP.picked.push(id);
+}
+async function mcpCreate(){
+  if(MCP.busy)return;
+  var picked=MCP.picked||[];
+  if(!picked.length){MCP.error='至少要勾选一项权限';mcpRender();return;}
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device_id:MCP.device,name:($('mcpName')&&$('mcpName').value)||'',
+        ttl:($('mcpTtl')&&$('mcpTtl').value)||'12h',scopes:picked})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('生成失败 HTTP '+r.status));
+    MCP.created=x;
+    if($('mcpName'))$('mcpName').value='';
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;mcpRender();await mcpLoad();}
+}
+async function mcpDelete(id){
+  if(MCP.busy)return;
+  MCP.busy=true;MCP.error='';mcpRender();
+  try{
+    var r=await fetch('/api/elfremote/mcp-tokens/delete',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:MCP.device,id:id})});
+    var x=await r.json();
+    if(!r.ok||!x.ok)throw Error(x.msg||('删除失败 HTTP '+r.status));
+  }catch(e){MCP.error=e.message;}
+  finally{MCP.busy=false;await mcpLoad();}
+}
+function mcpCopy(which){
+  var node=$(which);if(!node)return;
+  try{navigator.clipboard.writeText(node.textContent);}catch(e){}
+}
+function mcpRender(){
+  var body=$('mcpBody');if(!body)return;
+  var dis=MCP.busy?' disabled':'';
+  var h='';
+  if(MCP.error)h+='<p class="share-error" role="alert">'+esc(MCP.error)+'</p>';
+
+  if(MCP.created){
+    // 明文只显示这一次：服务器只留哈希，关窗就找不回来了。
+    var cmd='claude mcp add --transport http '+MCP.created.server_name+' '+MCP.created.endpoint
+      +' --header "Authorization: Bearer '+MCP.created.secret+'"';
+    var conf=JSON.stringify({mcpServers:(function(){var o={};o[MCP.created.server_name]=
+      {type:'http',url:MCP.created.endpoint,headers:{Authorization:'Bearer '+MCP.created.secret}};return o;})()},null,2);
+    h+='<section class="share-panel"><div class="share-panel-title">令牌已生成 · '
+      +'<strong style="color:#fbbf24">这串只显示这一次，关掉就再也看不到，丢了只能删掉重建</strong></div>';
+    h+='<div class="share-panel-title" style="margin:10px 0 6px">推荐：直接跑这条命令</div>';
+    h+='<pre id="mcpCmd" class="share-link" style="white-space:pre-wrap;word-break:break-all;margin:0">'+esc(cmd)+'</pre>';
+    h+='<div class="share-form-actions" style="margin:8px 0 0"><button class="share-btn share-btn-primary" onclick="mcpCopy(&quot;mcpCmd&quot;)">复制命令</button></div>';
+    h+='<div class="share-panel-title" style="margin:14px 0 6px">或者：把这段并进 MCP 配置</div>';
+    h+='<pre id="mcpJson" class="share-link" style="white-space:pre-wrap;word-break:break-all;margin:0">'+esc(conf)+'</pre>';
+    h+='<div class="share-form-actions" style="margin:8px 0 0"><button class="share-btn share-btn-ghost" onclick="mcpCopy(&quot;mcpJson&quot;)">复制 JSON</button>'
+      +'<button class="share-btn share-btn-ghost" onclick="MCP.created=null;mcpRender()">我已保存</button></div>';
+    h+='<p class="muted" style="margin:10px 0 0">不要把它贴进聊天框——那等于写进日志。</p></section>';
+  }
+
+  h+='<section class="share-panel"><div class="share-panel-title">新建令牌</div><div class="share-form-row">';
+  h+='<label>名称 <input id="mcpName" class="inp" type="text" maxlength="48" placeholder="留空则按设备名自动取"'+dis+'></label>';
+  h+='<label class="share-ttl">有效期 <select id="mcpTtl" class="inp"'+dis+'>';
+  var ttlText={'1h':'1 小时','12h':'12 小时','1d':'1 天','7d':'1 周'};
+  for(var i=0;i<MCP.ttls.length;i++)
+    h+='<option value="'+MCP.ttls[i]+'"'+(MCP.ttls[i]==='12h'?' selected':'')+'>'+esc(ttlText[MCP.ttls[i]]||MCP.ttls[i])+'</option>';
+  h+='</select></label>';
+  h+='<div class="share-form-actions"><button class="share-btn share-btn-primary" onclick="mcpCreate()"'+dis+'>生成令牌</button></div>';
+  h+='</div>';
+  h+='<div class="share-panel-title" style="margin:14px 0 8px">权限</div><div style="display:flex;flex-wrap:wrap;gap:10px 18px">';
+  for(var j=0;j<MCP.scopes.length;j++){
+    var sc=MCP.scopes[j],on=(MCP.picked||[]).indexOf(sc.id)>=0;
+    h+='<label class="chk" style="font-size:13px"><input type="checkbox"'+(on?' checked':'')+dis
+      +' onchange="mcpToggle(&quot;'+sc.id+'&quot;,this.checked)"> '+esc(sc.label)+'</label>';
+  }
+  h+='</div>';
+  h+='<p class="muted" style="margin:10px 0 0">有效期最长一周——这是操作硬件，不是操作程序。'
+    +'媒体、丢失模式、擦除不提供给 MCP，要用请在本页操作。</p></section>';
+
+  var live=currentDev()&&currentDev().mcp_session;
+  if(live){
+    h+='<section class="share-panel" style="border-color:#6d28d9"><div class="share-panel-title">'
+      +'当前有 agent 连着：<strong style="color:#c4b5fd">'+esc(live.name)+'</strong>'
+      +' · 自 '+esc(sydney(new Date(live.started).toISOString()))+'</div>'
+      +'<p class="muted" style="margin:0 0 10px">同一个令牌同时只允许一个 agent。'
+      +'闲置十五分钟会自动断开；agent 崩了不想等就按下面这个。</p>'
+      +'<div class="share-form-actions"><button class="share-btn share-btn-danger" onclick="mcpRelease()"'+dis+'>断开连接</button></div></section>';
+  }
+  h+='<div class="share-list-title">已创建令牌 <span class="share-count">'+MCP.tokens.length+'</span></div>';
+  if(MCP.loading&&!MCP.tokens.length)h+='<div class="share-empty">正在读取…</div>';
+  else if(!MCP.tokens.length)h+='<div class="share-empty">暂无令牌，先在上方生成一个。</div>';
+  else{
+    h+='<div class="share-list">';
+    for(var k=0;k<MCP.tokens.length;k++){
+      var t=MCP.tokens[k];
+      var used=t.last_used_at?sydney(new Date(t.last_used_at).toISOString()):'从未使用';
+      h+='<div class="share-item"><div class="share-item-main">'
+        +'<div class="share-item-link"><span class="share-link" style="cursor:default">'+esc(t.name)+'</span>'
+        +(t.source==='share'?'<span class="share-lock-tag">分享页生成</span>':'')+'</div>'
+        +'<div class="share-item-meta">创建 '+esc(sydney(new Date(t.created_at).toISOString()))
+        +' · 最后使用 '+esc(used)+' · 调用 '+t.calls+' 次 · 剩余 '+esc(mcpRemaining(t.remaining_ms))
+        +' · 权限 '+t.scopes.length+' 项</div></div>'
+        +'<button class="share-btn share-btn-danger" onclick="mcpDelete(&quot;'+esc(t.id)+'&quot;)"'+dis+'>删除</button></div>';
+    }
+    h+='</div>';
+  }
+  h+='<p class="muted" style="margin:12px 0 0">调用次数与最后使用时间最多滞后 1 分钟或 20 次。'
+    +'没让它干活却在动，就该删掉。 · <a href="/mcp-guide" target="_blank" rel="noopener">MCP 使用说明</a></p>';
+  body.innerHTML=h;
+}
 
 function $(id){ return document.getElementById(id); }
 function show(id){ $(id).style.display = "flex"; }
@@ -74,6 +353,18 @@ function sydney(iso){
   try {
     return new Date(iso).toLocaleString("zh-CN", { timeZone: "Australia/Sydney", hour12: false });
   } catch(e){ return String(iso); }
+}
+// 设备报上来的定位不可用原因。面板要能直接说清楚，不然只看到「IP · 2000m」会以为是还没定到。
+var LOCATION_REASON_TEXT = {
+  location_disabled: "设备定位已关闭",
+  permission_denied: "未授予定位权限",
+  provider_unavailable: "定位服务不可用"
+};
+// 三个来源各自的开关状态，放进那一格的悬停提示，排查时不用再连设备。
+function locationStateTip(st){
+  if(!st) return "";
+  var on = function(v){ return v ? "可用" : "不可用"; };
+  return "GPS " + on(st.gps) + " · 融合定位 " + on(st.fused) + " · Wi-Fi 与基站 " + on(st.network);
 }
 function locLabel(src){
   if(src==="gps") return "GPS";
@@ -521,13 +812,19 @@ function renderOps(){
     src = ({ip:"IP",wifi:"Wi-Fi",cell:"Cell",network:"Wi-Fi / Cell"})[d.loc.source] || locLabel(d.loc.source);
     if(Number(d.loc.acc_m)>0) src += " · " + Math.round(Number(d.loc.acc_m)) + "m";
   }
+  // 设备明确报了定位不可用时，显示原因而不是退回 IP 的大致区域：
+  // 后者会让人以为只是还没定到，实际是关了开关或没给权限，两者要做的事完全不同。
+  var locState = d && d.location_state;
+  var locTip = locationStateTip(locState);
+  if(locState && LOCATION_REASON_TEXT[locState.reason]) src = LOCATION_REASON_TEXT[locState.reason];
   var shell = !d ? "—" : ((uiOf() && uiOf().adb && uiOf().adb.connected) ? "已连接" : "未连接");
   var h = "";
   h += '<div class="ops-head"><div class="ops-head-left"><h3>功能设置</h3>';
-  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>"+(typeof ElfShare!=='undefined'?ElfShare.lockedNotice(d):'');
+  if(d) h += '<span class="muted">'+esc(d.name)+" · "+esc(d.model_name||modelName(d.model_id))+"</span>"+(typeof ElfShare!=='undefined'?ElfShare.lockedNotice(d):'')+mcpNotice(d);
   else h += '<span class="muted">请先从左侧选择设备，或点「添加设备」</span>';
   h += '<span id="reportFeedback" class="report-feedback" role="status">'+esc(reportFeedback(d))+'</span>';
   h += '</div><div class="ops-head-actions">';
+  h += mcpButton(d);
   if(typeof ElfShare!=='undefined')h += ElfShare.button(d);
   h += '<button class="device-action action-edit" onclick="openEdit()"'+dis+'>编辑</button>';
   if(d && d.enabled===false) h += '<button class="device-action action-enable" onclick="setEnabled(true)">启用</button>';
@@ -539,7 +836,7 @@ function renderOps(){
   h += kv(d && d.battery_present===false ? "供电" : "电量", bat);
   h += kv("网络", net);
   h += kv("IP & MAC", (d && d.ip ? d.ip : "—") + " / " + (d && d.mac ? d.mac : "未获取"));
-  h += kv("定位", src);
+  h += kv("定位", src, locTip);
   h += kv("系统", d && d.os_version ? d.os_version : "—");
   h += '<div class="kv"><div class="k">客户端版本</div><div class="v">'+esc(d?managerLabel(d):'—')+(d&&d.update_available===true?'<button type="button" class="traffic-link" style="margin-left:8px" onclick="pickFn(\'update\')">更新</button>':'')+'</div></div>';
   h += kv("最后上报", d ? sydney(reportTime(d)) : "—", d ? '数据时间；服务器接收：'+sydney(d.last_seen) : '');
@@ -566,7 +863,7 @@ function fnPageHtml(){
   if(selFn==="locate") return pageLocate(dis);
   if(selFn==="files") return pageFiles();
   if(selFn==="lost") return pageLost(dis);
-  if(selFn==="model") return functionSection('型号管理',pageModel());
+  if(selFn==="model") return pageModel();
   return pageAdb(dis);
 }
 
@@ -576,7 +873,22 @@ function functionSection(title,content){
 function powerOptions(value){
   return [['auto','自动识别'],['battery','电池设备'],['external','外接电源']].map(function(p){return '<option value="'+p[0]+'"'+(value===p[0]?' selected':'')+'>'+p[1]+'</option>';}).join('');
 }
+// 客户端管理是机型管理下的子项，不是并列的顶级功能：它管的是「某个机型跑哪一版客户端」，
+// 归属上属于机型，单独占一个顶级入口会让功能条越来越长而语义反而更散。
+var MODEL_TAB='机型管理';
+function selectModelTab(tab){MODEL_TAB=tab;renderOps();if(tab==='客户端管理'&&CLIENT_RELEASES.rows===null)releaseLoad();}
 function pageModel(){
+  // 左栏就是这一节的标题列。第一项「机型管理」既是本节名字也是默认内容（型号列表），
+  // 客户端管理挂在它下面。不要再套一层同名的子项——那会变成机型管理里又有一个机型管理。
+  var tabs=['机型管理','客户端管理'];
+  if(tabs.indexOf(MODEL_TAB)<0)MODEL_TAB=tabs[0];
+  var nav='<nav class="function-nav" aria-label="机型管理分类">'
+    +tabs.map(function(k){return '<button class="btn-gray'+(MODEL_TAB===k?' active':'')+'" aria-pressed="'+(MODEL_TAB===k)+'" onclick="selectModelTab(&quot;'+k+'&quot;)">'+k+'</button>';}).join('')
+    +'</nav>';
+  var body=MODEL_TAB==='客户端管理'?pageReleases():pageModelList();
+  return '<section class="function-section">'+nav+'<div class="function-content">'+body+'</div></section>';
+}
+function pageModelList(){
   var h='<div class="ops-actions"><input id="mName" class="inp" placeholder="型号名称"><input id="mNote" class="inp" placeholder="备注"><select id="mPower" class="inp" style="width:auto;min-width:112px;min-height:32px;padding:5px 9px" aria-label="供电方式">'+powerOptions('auto')+'</select><button class="btn-green" onclick="addModel()">添加型号</button></div><div class="function-table"><table><thead><tr><th>型号</th><th>备注</th><th>供电方式</th><th>操作</th></tr></thead><tbody>';
   MODELS.forEach(function(m,i){h+='<tr><td>'+esc(m.name)+'</td><td>'+esc(m.note||'—')+'</td><td><select class="inp" style="width:auto;min-width:112px;min-height:32px;padding:5px 9px" aria-label="'+esc(m.name)+'供电方式" onchange="setModelPower(MODELS['+i+'].id,this.value)">'+powerOptions(m.power_type||'auto')+'</select></td><td><button class="btn-gray" onclick="editModel(MODELS['+i+'].id)">编辑</button> <button class="btn-gray" onclick="delModel(MODELS['+i+'].id)">删除</button></td></tr>';});
   return h+(MODELS.length?'':'<tr><td colspan="4" class="muted">暂无型号</td></tr>')+'</tbody></table></div>';
@@ -1005,10 +1317,21 @@ function loadReleases(){
   }).catch(function(){if(sequence===RELEASE_SEQUENCE)RELEASE_STATE='error';}).finally(function(){if(sequence===RELEASE_SEQUENCE){RELEASE_REQUEST=null;if(selFn==='update')renderOps();}});
   return RELEASE_REQUEST;
 }
+// 同一版本码现在可能有两个包（全量/精简），下拉项的值必须带上变体，
+// 否则「选了哪一个」无从分辨，下发时只能靠猜。
+function releaseOptionValue(r){return r.versionCode+':'+(r.variant||'full');}
+function releaseVariantLabel(r){return (r.variant||'full')==='slim'?'更新包':'完整包';}
+/** 「更新」按钮走的那个包：同版本有精简包就用精简包，设备本地已有原生库。 */
+function updateTarget(versionCode){
+  var same=RELEASES.filter(function(r){return r.versionCode===versionCode;});
+  return same.find(function(r){return (r.variant||'full')==='slim';}) || same[0] || null;
+}
 function selectedRelease(){
   var u=uiOf(),selected=u && u.releaseVersion;
   var d=currentDev(),d31=d && (d.update_channel==='d31'||d.model_id==='mdl_d31');
-  return RELEASES.find(function(r){return String(r.versionCode)===String(selected);}) || (d31 && RELEASES.find(function(r){return !r.expired;})) || RELEASES[0];
+  return RELEASES.find(function(r){return releaseOptionValue(r)===String(selected);})
+    || RELEASES.find(function(r){return String(r.versionCode)===String(selected);})
+    || (d31 && RELEASES.find(function(r){return !r.expired;})) || RELEASES[0];
 }
 function compareReleaseVersion(current,latest){
   var exact=RELEASES.find(function(r){return r.versionName===current;});
@@ -1061,7 +1384,9 @@ function pageUpdate(dis){
   var check=RELEASE_STATE==='error'?'无法读取已发布版本，请重试。':RELEASE_STATE!=='ready'?'正在检查是否有新版本…':!latest?(d31?'此设备暂无可用更新':'暂无已发布版本。'):comparison===null?'无法识别设备当前版本，请先拉取设备信息。':comparison>=0?(d31?'此设备暂无可用更新':'当前版本即最新版本'):'新的软件版本 '+latest.versionName;
   h += '<div class="kv"><div class="k">更新安装状态</div><div class="v">'+esc(check);
   var busy=updateBusy(u),updateDisabled=dis || (!d || !d.can_update || busy || RELEASE_DEVICE!==d.id?' disabled':'');
-  if(RELEASE_STATE==='ready' && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate('+latest.versionCode+')"'+(latest.expired?' disabled':updateDisabled)+'>更新</button>';
+  // 「更新」固定走更新包：设备本地已有原生库，没必要每次把十几兆再下一遍。
+  var target=RELEASE_STATE==='ready'&&latest?updateTarget(latest.versionCode):null;
+  if(target && comparison!==null && comparison<0)h+=' <button class="btn-green" onclick="assignUpdate(&quot;'+releaseOptionValue(target)+'&quot;)"'+(target.expired?' disabled':updateDisabled)+'>更新</button>';
   h += '</div></div>';
   h += '<div id="updateProgressLive" style="display:contents">'+kv("安装进展", installationProgress(u));
   h += '<div class="kv"><div class="k">安装结果</div><div class="v">'+installationResult(u)+'</div></div>';
@@ -1073,7 +1398,12 @@ function pageUpdate(dis){
   var ready=d && RELEASE_DEVICE===d.id && RELEASE_STATE==='ready' && RELEASES.length>0,selected=selectedRelease(),blocked=updateDisabled || (!ready || selected.expired?' disabled':'');
   h += '<select id="updVc" class="inp release-select" aria-label="已发布版本" onchange="uiOf().releaseVersion=this.value;renderOps()"'+(ready?'':' disabled')+'>';
   if(!ready)h+='<option value="">'+(RELEASE_STATE==='error'?'版本读取失败':RELEASE_STATE==='ready'?'暂无已发布版本':'正在读取版本…')+'</option>';
-  else RELEASES.forEach(function(r,i){h+='<option value="'+r.versionCode+'"'+(selected.versionCode===r.versionCode?' selected':'')+'>'+esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+(d31?(latest && r.versionCode===latest.versionCode?'（此设备最新可用）':''):(i===0?'（最新发布）':''))+(r.expired?' · 发布已过期':'')+'</option>';});
+  else RELEASES.forEach(function(r,i){
+    var value=releaseOptionValue(r),mb=r.size>0?' · '+(Number(r.size)/1048576).toFixed(1)+' MB':'';
+    h+='<option value="'+value+'"'+(releaseOptionValue(selected)===value?' selected':'')+'>'
+      +esc(r.versionName||String(r.versionCode))+' · '+r.versionCode+' · '+releaseVariantLabel(r)+mb
+      +(d31?(latest && r.versionCode===latest.versionCode?'（此设备最新可用）':''):(i===0?'（最新发布）':''))
+      +(r.expired?' · 发布已过期':'')+'</option>';});
   h+='</select><button class="btn-green" onclick="assignUpdate()"'+blocked+'>下发该版本</button>';
   if(RELEASE_STATE==='error')h+='<button class="btn-gray" onclick="loadReleases()">重试</button>';
   h += "</div>";
@@ -1385,10 +1715,11 @@ function selectTrafficBar(i){
 }
 var SYSTEM_TAB='Wi-Fi';
 var SYSTEM_GROUPS={'Wi-Fi':[],'网络与连接':['移动数据','热点','蓝牙与已配对设备','USB状态'],'应用':['应用列表','权限','通知','后台限制'],'声音与显示':['音量','亮度','字体大小'],'语言与时间':['语言','自动时间','时区'],'账号配置':[]};
-function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&!gatewayDevice(currentDev()))readSystemSettings();}
+function selectSystemTab(tab){SYSTEM_TAB=tab;renderOps();if(tab!=='账号配置'&&tab!=='故障记录'&&tab!=='网络代理'&&!gatewayDevice(currentDev()))readSystemSettings();}
 function pageSystem(dis){
-  var gateway=gatewayDevice(currentDev()),tabs=Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
+  var gateway=gatewayDevice(currentDev()),tabs=Object.keys(SYSTEM_GROUPS),faults=!gateway&&typeof ElfFaults!=='undefined'&&ElfFaults.available(currentDev());if(faults)tabs.push('故障记录');if(currentDev()&&currentDev().managed_proxy_tasks===true)tabs.splice(tabs.indexOf('账号配置'),0,'网络代理');if(!tabs.includes(SYSTEM_TAB))SYSTEM_TAB='Wi-Fi';
   var h='<div class="system-layout"><nav class="system-tabs" aria-label="系统配置分类">'+tabs.map(function(k){return '<button class="btn-gray'+(SYSTEM_TAB===k?' active':'')+'" aria-pressed="'+(SYSTEM_TAB===k)+'" onclick="selectSystemTab(\''+k+'\')">'+k+'</button>';}).join('')+'</nav><section class="system-content">';
+  if(SYSTEM_TAB==='网络代理')return h+pageProxySettings(currentDev())+'</section></div>';
   if(SYSTEM_TAB==='账号配置')return h+pageAccountSettings(dis)+'</section></div>';
   if(SYSTEM_TAB==='故障记录')return h+ElfFaults.page()+'</section></div>';
   if(SYSTEM_TAB==='Wi-Fi')return h+'<div class="system-wifi">'+pageWifi(dis).replace('<table','<div class="system-table-scroll"><table').replace('</table>','</table></div>')+'</div></section></div>';
@@ -1412,14 +1743,88 @@ function pageGatewayNetworkSettings(d){
     +gatewayNetworkValue('运营商配置',m.carrier_config_readable?'可读取':'不可读取')+gatewayNetworkValue('APN配置',m.apn_provider_readable?'可读取':'不可读取');
   h+=gatewayNetworkValue('蓝牙',bluetooth)+gatewayNetworkValue('USB状态',usb)+'</div>';
   h+='<div class="system-setting-section"><h4>已配对蓝牙设备</h4>'+((snapshot.paired||[]).length?'<div class="system-items">'+snapshot.paired.map(function(p){return gatewayNetworkValue(p.name||'蓝牙设备',p.address||'');}).join('')+'</div>':'<p class="muted">'+(snapshot.bluetooth===false?'蓝牙已关闭':'暂无已配对设备信息')+'</p>')+'</div>';
-  var p=d.proxy_runtime||{},cfg=d.proxy_config||{},run=MAINTENANCE_RUN[d.id]||{},blocked=d.enabled===false||d.managed_proxy_tasks!==true||run.pending?' disabled':'';
-  var management=p.management_via==='proxy'?'代理':p.management_via==='direct'?'直连':'尚未上报';
-  h+='<div class="system-setting-section"><h4>代理核心与管理路径</h4><div class="system-items">'
+  return h;
+}
+
+// 代理那一段原先长在 pageGatewayNetworkSettings 里，只有网关型号看得到。
+// D31 同样要用，而网关那页的移动数据/SIM/蓝牙/USB 都是网关特有的，不该带给 D31，
+// 所以整段拆成独立页，按设备上报的 managed_proxy_tasks 能力位显示。
+// 核心改为按需下载之后，「没装」是正常态，不是「尚未上报」——设备会报 version:null 且
+// asset_verified:false。两者显示成同一句话，使用者分不清是设备没说话还是核心确实不在。
+function proxyCoreLabel(p){
+  if(p.version)return p.version+' · '+gatewayProxyFlag(p.core_verified,'已核验','校验失败');
+  if(p.version===null&&p.asset_verified===false)return '未安装（按需下载）';
+  return '尚未上报';
+}
+
+function proxyNodeRows(d,blocked){
+  var nodes=d.proxy_nodes;
+  if(!nodes)return '<p class="muted">设备尚未上报服务器列表。下发一次配置后即可看到。</p>';
+  if(!nodes.length)return '<p class="muted">当前配置里没有可用服务器。</p>';
+  var rows=nodes.map(function(n){
+    var delay=n.delay_ms===null?'未测速':n.delay_ms+' ms';
+    // 自动挑最快的那一项单独标一下：操作者多数时候该选它，不该去手点某一台机器。
+    var label=n.kind==='auto'?esc(n.name)+' <span class="muted">（自动挑最快）</span>':esc(n.name);
+    return '<tr><td>'+(n.selected?'● ':'○ ')+label
+      +'</td><td style="text-align:right">'+esc(delay)+'</td><td style="text-align:right">'
+      +'<button class="btn-gray"'+(blocked||n.selected?' disabled':'')
+      +' onclick="selectProxyNode(&quot;'+esc(n.name)+'&quot;)">'+(n.selected?'使用中':'改用')+'</button></td></tr>';
+  }).join('');
+  return '<table class="tbl"><tbody>'+rows+'</tbody></table>';
+}
+function proxyAppRows(d,blocked){
+  var applied=d.proxy_apps||[],apps=d.installed_apps;
+  if(!apps){
+    // 设备还没报应用清单时不能什么都不显示——至少让人看见当前生效的是哪几个，
+    // 否则这页看起来像「没有任何程序走代理」，那是假的。
+    var current=applied.length?applied.map(function(x){return '<li>'+esc(x)+'</li>';}).join(''):'<li class="muted">（无）</li>';
+    return '<p class="muted">设备尚未上报已安装应用，暂时无法勾选。当前生效的名单：</p><ul>'+current+'</ul>';
+  }
+  if(!apps.length)return '<p class="muted">设备上没有可选的应用。</p>';
+  return apps.map(function(a){
+    var on=applied.indexOf(a.package)>=0;
+    return '<label class="chk"><input type="checkbox" class="proxy-app" value="'+esc(a.package)+'"'
+      +(on?' checked':'')+(blocked?' disabled':'')+'> '+esc(a.label)
+      +' <span class="muted">'+esc(a.package)+'</span></label>';
+  }).join('');
+}
+function pageProxySettings(d){
+  if(!d)return '<p class="muted">请先选择设备</p>';
+  if(d.managed_proxy_tasks!==true)return '<p class="muted">本机客户端尚未支持代理管理。</p>';
+  var p=d.proxy_runtime||{},cfg=d.proxy_config||{},run=MAINTENANCE_RUN[d.id]||{};
+  var blocked=d.enabled===false||run.pending?' disabled':'';
+  var disabled=!!blocked;
+  var nodes=d.proxy_nodes||[],active=nodes.filter(function(n){return n.selected;})[0];
+  var state=p.running?'已连接':(p.version===null&&p.core_verified===false)?'代理核心未安装':'已断开';
+  var current=active?active.name+(active.delay_ms===null?'':' · '+active.delay_ms+' ms')
+    :(d.proxy_selected_node||'尚未选择');
+  var h='';
+  h+='<div class="system-setting-section"><h4>代理开关</h4><div class="system-items">'
+    +gatewayNetworkValue('状态',state)
+    +gatewayNetworkValue('当前服务器',current)
+    +gatewayNetworkValue('走代理的程序',(d.proxy_apps&&d.proxy_apps.length)?d.proxy_apps.join('、'):'尚未设置')
+    +'</div>'
+    +'<div class="ops-actions" style="margin-top:12px">'
+    +'<button class="btn-green" onclick="enqueueProxyTask(&quot;start_proxy&quot;)"'+blocked+'>启动</button>'
+    +'<button class="btn-gray" onclick="enqueueProxyTask(&quot;stop_proxy&quot;)"'+blocked+'>停止</button>'
+    +'<button class="btn-gray" onclick="enqueueProxyTask(&quot;test_proxy&quot;)"'+blocked+'>测速</button>'
+    +'<span role="status">'+esc(run.pending?'正在下发':run.message
+      ||(d.task&&['configure_proxy','start_proxy','stop_proxy','test_proxy','select_proxy_node','set_proxy_apps'].indexOf(d.task.type)>=0?(d.task.detail||d.task.label):''))
+    +'</span></div></div>';
+  h+='<div class="system-setting-section"><h4>代理服务器</h4>'+proxyNodeRows(d,disabled)+'</div>';
+  h+='<div class="system-setting-section"><h4>哪些程序走代理</h4>'+proxyAppRows(d,disabled)
+    +(d.installed_apps?'<div class="ops-actions" style="margin-top:12px"><button class="btn-green" onclick="saveProxyApps()"'+blocked+'>保存</button></div>':'')
+    +'</div>';
+  h+='<div class="system-setting-section"><h4>配置</h4><div class="system-items">'
+    +gatewayNetworkValue('版本',p.config_version||cfg.version||'尚未下发')
+    +gatewayNetworkValue('服务器数量',nodes.length?String(nodes.length):'—')
+    +'</div><div class="ops-actions" style="margin-top:12px">'
+    +'<button class="btn-gray" onclick="redeployProxyConfig()"'+(cfg.sha256?blocked:' disabled')+'>重新下发配置</button></div></div>';
+  // 那十六行诊断留着，但收进折叠区：排障时要用，日常操作时不该占满整页。
+  h+='<details class="system-setting-section"><summary>诊断详情</summary><div class="system-items">'
     +gatewayNetworkValue('当前直连网络',d.network==='cellular'?'移动数据':d.network==='wifi'?'Wi-Fi':d.network==='ethernet'?'有线网络':'未知')
-    +gatewayNetworkValue('当前管理通道',management)
-    +gatewayNetworkValue('Mihomo 核心',p.version?(p.version+' · '+gatewayProxyFlag(p.core_verified,'已核验','校验失败')):'尚未上报')
-    +gatewayNetworkValue('内置资源',gatewayProxyFlag(p.asset_verified,'已核验','校验失败'))
-    +gatewayNetworkValue('配置版本',p.config_version||cfg.version||'尚未配置')
+    +gatewayNetworkValue('当前管理通道',p.management_via==='proxy'?'代理':p.management_via==='direct'?'直连':'尚未上报')
+    +gatewayNetworkValue('转发核心',proxyCoreLabel(p))
     +gatewayNetworkValue('配置状态',gatewayProxyFlag(p.configured,'已配置','未配置'))
     +gatewayNetworkValue('HTTP 监听',gatewayProxyFlag(p.http_ready,'就绪','未就绪'))
     +gatewayNetworkValue('SOCKS 监听',gatewayProxyFlag(p.socks_ready,'就绪','未就绪'))
@@ -1431,10 +1836,8 @@ function pageGatewayNetworkSettings(d){
     +gatewayNetworkValue('SIP TLS / RTP','直连（固定）')+gatewayNetworkValue('蜂窝 IMS','直连（固定）')
     +gatewayNetworkValue('局域网','直连（固定）')
     +gatewayNetworkValue('最后检查',p.checked_at_ms?sydney(new Date(p.checked_at_ms).toISOString()):'尚未上报')
-    +gatewayNetworkValue('错误状态',gatewayProxyError(p.error_category))+'</div>';
-  h+='<div class="ops-actions" style="margin-top:14px"><input class="inp" id="proxyConfigVersion" maxlength="64" placeholder="配置版本" value="'+esc(cfg.version||'')+'"'+blocked+'><input id="proxyConfigFile" type="file" accept=".yaml,.yml,text/yaml,application/yaml"'+blocked+'><button class="btn-green" onclick="uploadProxyConfig()"'+blocked+'>上传并配置</button><button class="btn-green" onclick="enqueueProxyTask(\'start_proxy\')"'+blocked+'>启动</button><button class="btn-gray" onclick="enqueueProxyTask(\'stop_proxy\')"'+blocked+'>停止</button><button class="btn-gray" onclick="enqueueProxyTask(\'test_proxy\')"'+blocked+'>检测</button><span role="status">'+esc(run.pending?'正在下发':run.message||(!d.managed_proxy_tasks?'请更新客户端后使用':d.task&&['configure_proxy','start_proxy','stop_proxy','test_proxy'].includes(d.task.type)?(d.task.detail||d.task.label):''))+'</span></div>';
-  if(cfg.sha256)h+='<p class="muted">已保存配置：'+esc(cfg.version)+' · '+esc(cfg.size)+' 字节 · SHA-256 '+esc(cfg.sha256.slice(0,12))+'…</p>';
-  h+='</div>';
+    +gatewayNetworkValue('错误状态',gatewayProxyError(p.error_category))
+    +'</div></details>';
   return h;
 }
 
@@ -1906,12 +2309,16 @@ async function cancelCommand(){
     var x=await r.json();if(!r.ok||!x.ok)throw Error(x.msg||'停止请求失败');
   } catch(e){u.shell.cancelRequested=false;u.shell.lines.push({k:'sys',t:e.message});if(selDev===d.id)renderOps();}
 }
-function assignUpdate(versionCode){
+function assignUpdate(choice){
   var d = currentDev();
   if(!d || !d.can_update || RELEASE_DEVICE!==d.id || updateBusy(d.update||{})) return;
-  var vc = parseInt(versionCode===undefined ? ($("updVc") && $("updVc").value) : versionCode, 10);
-  if(RELEASE_STATE!=='ready' || !RELEASES.some(function(r){return r.versionCode===vc && !r.expired;})){ alert('请选择已发布版本'); return; }
-  fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,channel:d.update_channel,versionCode:vc,request_id:crypto.randomUUID()})})
+  // 入参形如 "204:slim"；不传时取下拉当前值。老的纯版本码写法也接受，按精简包优先解释。
+  var raw = String(choice===undefined ? ($("updVc") && $("updVc").value || '') : choice);
+  var vc = parseInt(raw, 10), variant = raw.indexOf(':')>0 ? raw.split(':')[1] : '';
+  var picked = RELEASES.find(function(r){return r.versionCode===vc && (!variant || (r.variant||'full')===variant);})
+    || updateTarget(vc);
+  if(RELEASE_STATE!=='ready' || !picked || picked.expired){ alert('请选择已发布版本'); return; }
+  fetch("/api/elfremote/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device_id:d.id,channel:d.update_channel,versionCode:vc,variant:picked.variant||'full',request_id:crypto.randomUUID()})})
     .then(function(r){ return r.json(); })
     .then(function(x){
       if(!x.ok){ alert(x.msg || "下发失败"); return; }
@@ -1954,25 +2361,33 @@ async function watchMaintenanceTask(deviceId,taskId,label){
     }catch(e){if(e.stopPolling)return;}
   }
 }
+// 判据是能力位，不是型号。原来这里卡 gatewayDevice(d)，于是 D31 上「启动/停止/测速」
+// 三个按钮点了毫无反应——和先前修掉的那六处网关闸门是同一类错。
+function proxyDeviceReady(d){return !!d&&d.managed_proxy_tasks===true&&d.enabled!==false;}
 function enqueueProxyTask(type){
-  var d=currentDev();if(!d||!gatewayDevice(d)||d.managed_proxy_tasks!==true)return Promise.resolve();
+  var d=currentDev();if(!proxyDeviceReady(d))return Promise.resolve();
   return enqueueRepair(type,{});
 }
-async function uploadProxyConfig(){
-  var d=currentDev(),file=$('proxyConfigFile')&&$('proxyConfigFile').files[0],version=$('proxyConfigVersion')?$('proxyConfigVersion').value.trim():'';
-  if(!d||!gatewayDevice(d)||d.managed_proxy_tasks!==true)return;
-  if(!version){alert('请填写配置版本');return;}
-  if(!file){alert('请选择 YAML 配置文件');return;}
-  if(file.size<1||file.size>65536){alert('配置文件须为 1 至 64 KiB');return;}
-  if(d.proxy_config&&!confirm('设备已有代理配置，确定替换为新配置？'))return;
-  var run={pending:true,message:'正在上传私有配置'};MAINTENANCE_RUN[d.id]=run;renderOps();
-  try{
-    var response=await fetch('/api/elfremote/proxy-config?'+new URLSearchParams({device_id:d.id,version:version}),{method:'POST',headers:{'Content-Type':'application/yaml; charset=utf-8'},body:file});
-    var result=await response.json();if(!response.ok||!result.ok)throw Error(result.msg||'代理配置上传失败');
-    run.pending=false;run.message='配置已私有保存，正在下发';
-    if(selDev===d.id)renderOps();
-    return enqueueRepair('configure_proxy',{config_version:result.config.version,config_sha256:result.config.sha256,config_size:result.config.size});
-  }catch(error){run.pending=false;run.error=true;run.message=error.message;if(selDev===d.id)renderOps();alert(error.message);}
+function selectProxyNode(name){
+  var d=currentDev();if(!proxyDeviceReady(d))return Promise.resolve();
+  return enqueueRepair('select_proxy_node',{name:name});
+}
+function saveProxyApps(){
+  var d=currentDev();if(!proxyDeviceReady(d))return Promise.resolve();
+  var picked=[].slice.call(document.querySelectorAll('input.proxy-app:checked')).map(function(x){return x.value;});
+  // 只拦管理程序本身，不拦整个 net.elfradio 命名空间——Zello 守护、自研 SIP 客户端
+  // 都在那个命名空间里，它们走不走代理是使用者的选择。这份名单必须与
+  // gateway-product.js 的 MANAGEMENT_PACKAGES 一致，有测试钉住。
+  // 服务端也拦；这里先拦一次是为了当场说清理由，而不是让人看到一条无头无尾的下发失败。
+  var managed=['net.elfradio.elfremote','net.elfradio.d31bootstrap','org.onetwoone.gateway'];
+  var mine=picked.filter(function(x){return managed.some(function(n){return x===n||x.indexOf(n+'.')===0;});});
+  if(mine.length){alert('管理程序不能走代理：'+mine.join('、'));return Promise.resolve();}
+  return enqueueRepair('set_proxy_apps',{apps:picked});
+}
+function redeployProxyConfig(){
+  var d=currentDev();if(!proxyDeviceReady(d))return Promise.resolve();
+  var cfg=d.proxy_config;if(!cfg||!cfg.sha256)return Promise.resolve();
+  return enqueueRepair('configure_proxy',{config_version:cfg.version,config_sha256:cfg.sha256,config_size:cfg.size});
 }
 function wifiScan(){
   enqueueRepair('scan_wifi');

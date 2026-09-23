@@ -1,6 +1,7 @@
 import {authJson as json} from './admin-auth.js';
 
 export const PROXY_CONFIG_MAX_BYTES=2*1024*1024;
+const DEFAULT_BASE_URL='https://v.elfradio.net';
 const active=task=>task&&['pending','claimed','running'].includes(task.state)&&Number(task.expires_at)>Date.now();
 const hex=bytes=>Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
 const validId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,96}$/.test(value);
@@ -18,8 +19,64 @@ export function publicProxyConfig(value){
   if(!value)return null;
   return {version:value.version,sha256:value.sha256,size:value.size,uploaded_at:value.uploaded_at};
 }
-export async function proxyConfigureParams(device,input,taskId,existing=null){
-  if(!device||device.product_id!=='elfremote_gateway'||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
+/**
+ * 代理核心的下发形状。核心是设备以 root 执行的裸二进制，**只校验服务端回的 sha256 挡不住源头被换**——
+ * 服务端被改，哈希也跟着改。所以带的是上传时那对「签名清单 + 签名」：设备用内置公钥验签，
+ * 通过之后才按清单里的 size/sha256 校验下载到的字节。与 APK 更新走的是同一套验签代码。
+ * 下载地址在清单里（`/api/elfremote/apk/<job_id>`，job_id 本身就是凭据），不另发令牌。
+ * 没有可用的核心发布时返回 null，任务里就不带 core 这一段，设备按「核心不在」处理。
+ */
+export function proxyCoreParams(release){
+  if(!release||typeof release.manifest_raw!=='string'||!/^(?:[0-9a-f]{2})+$/i.test(release.signature||''))return null;
+  return {manifest_raw:release.manifest_raw,signature:release.signature};
+}
+
+
+// 设备自己来要配置，而不是等管理员下发一条 configure_proxy。
+// 1.34.32 的「连接」按钮在本机没有配置时走这条：用户当场按下按钮，没人能保证
+// 此刻恰好有管理员在面板前。但「设备能自取」不等于「谁都能取」——所以这条路
+// 仍要设备凭证，并且发的是一次性、十分钟到期的下载令牌，和任务那条路同样的强度。
+//
+// 授权记录独立于任务（device.proxy_offer），不复用 device.task：
+// 借用任务记录会让设备的自取动作覆盖管理员正在跑的任务，那是拿两件事共用一个格子。
+export const PROXY_OFFER_TTL_MS=10*60*1000;
+export const PROXY_OFFER_MIN_INTERVAL_MS=60*1000;
+
+export function proxyOfferValid(offer,requestId,now=Date.now()){
+  return !!offer&&offer.request_id===requestId&&Number(offer.expires_at)>now;
+}
+
+/**
+ * 为设备铸一份自取授权。同一个 request_id 重复来要，返回同一份参数——
+ * 设备重试、或回执丢了再问一次，都不该换一份新令牌，否则设备手里的旧令牌立刻失效，
+ * 表现为「点一次连接失败、再点一次又失败」。
+ */
+export async function proxyOfferGrant(device,requestId,now=Date.now(),baseUrl=DEFAULT_BASE_URL,core=null){
+  if(!device||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
+  if(device.enabled===false)throw Error('设备已停用');
+  if(!validTaskId(requestId))throw Error('请求编号无效');
+  const meta=device.proxy_config;
+  if(!meta||!validSha(meta.sha256)||!Number.isInteger(meta.size))throw Error('尚未上传代理配置');
+  const previous=device.proxy_offer;
+  if(proxyOfferValid(previous,requestId,now))return {params:previous.params,reused:true};
+  // 换一个 request_id 就等于换一份令牌。不限频的话，设备侧一个重试循环
+  // 就能把上一刻刚发出去的令牌不断作废，自己把自己锁在门外。
+  if(previous&&Number(previous.issued_at)>now-PROXY_OFFER_MIN_INTERVAL_MS&&previous.request_id!==requestId)
+    throw Error('索取过于频繁，请稍后重试');
+  const token=hex(crypto.getRandomValues(new Uint8Array(32)));
+  const query=new URLSearchParams({device_id:device.id,token});
+  const coreParams=proxyCoreParams(core);
+  const params={url:baseUrl+'/api/elfremote/proxy-config/'+requestId+'?'+query,
+    version:meta.version,size:meta.size,sha256:meta.sha256,...(coreParams?{core:coreParams}:{})};
+  device.proxy_offer={request_id:requestId,token_sha256:await sha256(new TextEncoder().encode(token)),
+    issued_at:now,expires_at:now+PROXY_OFFER_TTL_MS,params};
+  return {params,reused:false};
+}
+
+export async function proxyConfigureParams(device,input,taskId,existing=null,baseUrl=DEFAULT_BASE_URL,core=null){
+  // 按能力位放行，不按产品型号。原来硬判 product_id==='elfremote_gateway'，
+  // D31 这类同样实现了代理管理的机型一概进不来；为一台设备改公共合同是更糟的做法。
+  if(!device||device.managed_proxy_tasks!==true)throw Error('客户端尚未支持代理管理');
   if(input==null||typeof input!=='object'||Array.isArray(input))throw Error('代理任务参数无效');
   if(Object.keys(input).length===0)return {};
   if(!validTaskId(taskId))throw Error('代理任务编号无效');
@@ -29,13 +86,19 @@ export async function proxyConfigureParams(device,input,taskId,existing=null){
   if(Object.keys(input).length!==fields.length||Object.keys(input).some(key=>!fields.includes(key)))throw Error('代理配置引用无效');
   if(input.config_version!==meta.version||input.config_sha256!==meta.sha256||input.config_size!==meta.size)throw Error('代理配置已变化，请重新选择');
   if(existing?.type==='configure_proxy'&&existing.id===taskId&&existing.params?.sha256===meta.sha256
-      &&existing.params?.size===meta.size&&typeof existing.params.url==='string'
+      &&existing.params?.size===meta.size&&existing.params?.version===meta.version
+      &&typeof existing.params.url==='string'
+      &&JSON.stringify(existing.params.core??null)===JSON.stringify(proxyCoreParams(core))
       &&validSha(existing.proxy_download_token_sha256))
     return {params:existing.params,token_sha256:existing.proxy_download_token_sha256};
   const token=hex(crypto.getRandomValues(new Uint8Array(32)));
   const query=new URLSearchParams({device_id:device.id,token});
-  return {params:{url:'https://v.elfradio.net/api/elfremote/proxy-config/'+taskId+'?'+query,
-    size:meta.size,sha256:meta.sha256},token_sha256:await sha256(new TextEncoder().encode(token))};
+  // version 一并下发：设备的看门狗回退时要报「退回了哪一版」，
+  // 拿 sha256 前几位当版本号是设备侧自己编的，对不上管理员在页面上看到的那个。
+  const coreParams=proxyCoreParams(core);
+  return {params:{url:baseUrl+'/api/elfremote/proxy-config/'+taskId+'?'+query,
+    version:meta.version,size:meta.size,sha256:meta.sha256,...(coreParams?{core:coreParams}:{})},
+    token_sha256:await sha256(new TextEncoder().encode(token))};
 }
 
 export async function proxyConfigMetadata(storage,request,loadDevices,saveDevices,now=Date.now()){
@@ -43,10 +106,22 @@ export async function proxyConfigMetadata(storage,request,loadDevices,saveDevice
     const data=await request.json();
     if(!data||typeof data!=='object'||Array.isArray(data))throw Error('代理配置请求无效');
     const devices=await loadDevices(),device=devices.find(row=>row.id===data.device_id);
-    if(!device||device.product_id!=='elfremote_gateway')return json({ok:false,msg:'未找到Pixel Gateway'},404);
+    // 这一处也按能力位，不按产品：它管着配置上传、设备取配置与结算三条 RPC，
+    // 按型号挡住的话 D31 连配置都传不上去——报的还是「未找到 Pixel Gateway」，与实际问题毫不相干。
+    if(!device||device.managed_proxy_tasks!==true)return json({ok:false,msg:'该设备尚未支持代理管理'},404);
     if(data.action==='authorize'){
       if(!validTaskId(data.task_id)||typeof data.token!=='string'||!/^[a-f0-9]{64}$/.test(data.token))return json({ok:false,msg:'下载凭证无效'},401);
       const task=device.task,meta=device.proxy_config;
+      // 设备自取那条路没有任务，凭的是 proxy_offer 里的一次性令牌。
+      // 放在任务判定之前：自取和任务可能同时存在，此时按 task_id 精确匹配到哪一边就走哪一边。
+      const offer=device.proxy_offer;
+      if(offer&&offer.request_id===data.task_id){
+        if(device.enabled===false||Number(offer.expires_at)<=now||!meta
+          ||offer.params?.sha256!==meta.sha256||offer.params?.size!==meta.size
+          ||offer.token_sha256!==await sha256(new TextEncoder().encode(data.token)))
+          return json({ok:false,msg:'自取授权已过期或不匹配'},409);
+        return json({ok:true,object_key:meta.object_key,config:publicProxyConfig(meta)});
+      }
       if(device.enabled===false||!active(task)||task.id!==data.task_id||task.type!=='configure_proxy'||task.cancel_requested
         ||!meta||task.params?.sha256!==meta.sha256||task.params?.size!==meta.size
         ||task.proxy_download_token_sha256!==await sha256(new TextEncoder().encode(data.token)))
@@ -96,8 +171,11 @@ export async function proxyConfigHttp(env,request,stub){
     }
     const match=url.pathname.match(/^\/api\/elfremote\/proxy-config\/([A-Za-z0-9-]{1,96})$/);
     if(match&&request.method==='GET'){
+      // 凭据优先从 Authorization: Bearer 取；查询串那份是过渡期留给旧客户端的——URL 会进各种访问日志。
+      // 下发给设备的 url 仍带 token，待 D31 / Pixel Gateway 客户端改为发 Bearer 后再去掉。
+      const bearer=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
       const auth=await rpc(stub,{action:'authorize',device_id:url.searchParams.get('device_id'),task_id:match[1],
-        token:url.searchParams.get('token')});
+        token:bearer||url.searchParams.get('token')});
       if(!auth.ok)return auth;
       const grant=await auth.json(),object=await env.ELF_ARTIFACTS.get(grant.object_key);
       if(!object)return json({ok:false,msg:'代理配置制品不可用'},503);

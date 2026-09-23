@@ -129,6 +129,9 @@ public final class ReportService extends Service {
         traffic = new TrafficMeter(this);
         if (!BuildConfig.STATUS_ONLY) healer = new NetworkHealer(this, store);
         RuntimeLog.event("service_start status_only=" + BuildConfig.STATUS_ONLY);
+        // 缺库时在后台补齐：全量包是从自己的 APK 里解，精简包是去服务器取。
+        // 放在这里而不是等按下「通信」，是因为那时候再下 12 MB 只会等来超时。
+        if (!BuildConfig.STATUS_ONLY) NativeMediaLibrary.prepare(this);
         startForeground(7, buildNotification());
         if(LostProtection.supported()){
             lostUnlockReceiver=new LostUnlockReceiver();
@@ -468,9 +471,17 @@ public final class ReportService extends Service {
         body.put("managed_log_tasks", true);
         body.put("managed_exec_tasks", CoreInstaller.ready());
         body.put("managed_adb_session", CoreInstaller.ready());
-        body.put("managed_media", true);
+        // 通信与远程桌面都建立在那个 12 MB 的 WebRTC 原生库上。精简更新包不带它，
+        // 首次装精简包的机器要先把库取回来；在那之前如实报「不可用」，
+        // 面板据此把按钮置灰——总好过让人点下去等一个没有结果的会话。
+        boolean mediaNative = NativeMediaLibrary.ready(this);
+        body.put("managed_media", mediaNative);
         body.put("managed_media_prepare_v1", true);
-        body.put("managed_desktop_v1", CoreInstaller.ready() && ScrcpyAsset.ready());
+        body.put("media_native", mediaNative ? "ready" : NativeMediaLibrary.lastFailure());
+        // 还没到位就再催一次。首装精简包的机器往往开机时还没配对，
+        // 拿不到设备令牌也就要不到下载地址，得等配对完成后的这次上报。
+        if (!mediaNative) NativeMediaLibrary.prepare(this);
+        body.put("managed_desktop_v1", CoreInstaller.ready() && ScrcpyAsset.ready() && mediaNative);
         body.put("media_cameras", android.hardware.Camera.getNumberOfCameras());
         body.put("managed_file_tasks", CoreInstaller.ready());
         body.put("managed_file_return", CoreInstaller.ready());
@@ -615,7 +626,7 @@ public final class ReportService extends Service {
     }
 
     private void scheduleMovement(){
-        if(!destroyed&&movementReports!=null&&"cellular".equals(networkType()))wake.schedule("movement",MovementReports.CHECK_MS);
+        if(!destroyed&&movementReports!=null&&"cellular".equals(networkType()))wake.schedule("movement",movementReports.nextCheckMs());
         else wake.cancel("movement");
     }
     private void checkMovement(){
@@ -627,7 +638,8 @@ public final class ReportService extends Service {
                 if(destroyed||!"cellular".equals(networkType()))return;
                 StatusOutbox outbox=statusOutbox();String id=movementReports.prepare(outbox,statusBody(null),System.currentTimeMillis());
                 if(id!=null){RuntimeLog.event("movement_report_queued");flushStatus(outbox,null,id);scheduleReport(push!=null&&push.connected()?3600000L:900000L);}
-                else RuntimeLog.event("movement_report_not_due");
+                else RuntimeLog.event("movement_report_not_due reason="+movementReports.decision()
+                        +" meters="+movementReports.decisionMeters()+" moving="+movementReports.moving());
             }catch(Exception error){RuntimeLog.error("movement_report_pending",error);scheduleStatusDrain();}
             finally{movementSampling=false;WakeScheduler.release("movement");scheduleMovement();}
         });
@@ -1536,6 +1548,12 @@ public final class ReportService extends Service {
                 return;
             }
             if (!UpdatePolicy.ST_WAIT_HEALTH.equals(disk)) return;
+            if (BuildConfig.ROLLBACK_DRILL) {
+                // 演练包：健康检查永远不过，等更新器 150 秒超时后回滚到 last_good。
+                RuntimeLog.event("update_health_drill refusing health.ok on purpose");
+                if (worker != null) worker.postDelayed(healthCheck, 5000L);
+                return;
+            }
             int want = st.optInt("versionCode", 0);
             String wantName = st.optString("versionName", "");
             android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);

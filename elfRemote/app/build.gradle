@@ -24,13 +24,30 @@ android {
 
     defaultConfig {
         applicationId "net.elfradio.elfremote"
-        minSdkVersion 23
-        ndk { abiFilters "armeabi-v7a", "arm64-v8a" }
+        // 代码实际要求 API 26，这是开了 lint 的 NewApi 之后逐条量出来的，不是估的：
+        // Process#waitFor(timeout) 与 #isAlive、ProcessBuilder#redirectOutput、
+        // ConnectivityManager#registerDefaultNetworkCallback 都是 26，散布在
+        // BootstrapRoot、CorePush、DesktopLauncher、DeviceIdentity、LostDebugGuard 等处；
+        // CompletableFuture 与 java.util.stream 是 24。声明 23 等于允许装到一台
+        // 必然崩溃的设备上，不如让安装直接被拒。现网三台 D22 都是 Android 8.1（API 27）。
+        minSdkVersion 26
+        // 只打 arm64。2026-09-22 三台逐台实测（root_exec 读 getprop）：
+        // XX / BB / JJ 的 ro.product.cpu.abi 均为 arm64-v8a，ro.board.platform 与 ro.hardware
+        // 同为 mt6739，uname -m 为 aarch64，ROM 指纹逐字相同
+        // （Ruiven/full_k39tv1_64_bsp/k39tv1_64_bsp:8.1.0/O11019/1568120768:user/dev-keys）。
+        // 所有者提到 XX 芯片组稍有不同，但系统读到的平台号与指纹一致，对打包有意义的 ABI 三台相同。
+        // abilist 里虽列有 armeabi-v7a（64 位系统兼容 32 位应用），但安装时安卓只挑主 ABI，
+        // NativeMediaLibrary 也按 Process.is64Bit() 取，那份 32 位库永远走不到。
+        // 它有 6.8 MB——整包 19.8 MB 里 18.9 MB 是这个库的两份拷贝，删掉后降到 13 MB 以内。
+        // 取不到匹配的库时加载器会干净地报「当前设备没有匹配的音视频原生库」，不会崩。
+        ndk { abiFilters "arm64-v8a" }
         targetSdkVersion 27
         versionCode codeText.toInteger()
         versionName nameText
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         buildConfigField "boolean", "STATUS_ONLY", project.hasProperty("elfStatusOnly") ? Boolean.parseBoolean("$elfStatusOnly").toString() : "true"
+        // 回滚演练包：故意永不写 health.ok，让更新器走「健康超时 → 回滚」那条路。只用于真机演练，正式包一律 false。
+        buildConfigField "boolean", "ROLLBACK_DRILL", project.hasProperty("elfRollbackDrill") ? Boolean.parseBoolean("$elfRollbackDrill").toString() : "false"
         def controlUrl = project.findProperty("elfControlUrl") ?: "https://v.elfradio.net"
         def endpoint = new URI(controlUrl)
         if (endpoint.scheme != "https" || !endpoint.host || endpoint.userInfo || endpoint.query || endpoint.fragment || (endpoint.path && endpoint.path != "/")) {
@@ -58,8 +75,14 @@ android {
     }
 
     lint {
-        abortOnError false
-        checkReleaseBuilds false
+        // 发布构建必须跑 lint。D31 的 1.34.25 就是 API 24 的类用在 API 23 设备上，
+        // 编译期无声、装到机器才崩，而 NewApi 本来就能抓到它。
+        abortOnError true
+        checkReleaseBuilds true
+        // 这个库从未开过 lint，一次全开会淹没在历史告警里。先只把最危险的一项设为致命：
+        // 调用高于 minSdk 的 API。其余检查等有余力再逐项接。
+        checkOnly 'NewApi'
+        fatal 'NewApi'
     }
 }
 

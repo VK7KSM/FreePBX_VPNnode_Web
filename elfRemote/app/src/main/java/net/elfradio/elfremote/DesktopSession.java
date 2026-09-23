@@ -50,19 +50,42 @@ final class DesktopSession {
 
     DesktopSession(Context c) { context = c.getApplicationContext(); }
 
-    synchronized void receive(JSONObject offer) {
-        if (destroyed || offer == null || System.currentTimeMillis() > offer.optLong("expires_at") || offer.optString("session_id").equals(id)) return;
-        if (!closed) return;
+    /**
+     * 上报线程调这里，所以它绝不能去拿会话锁。
+     * 网关 2026-09-19 的事故就是这么从一个远程桌面缺陷升级成整台设备失联的：
+     * 桌面会话内部抱死之后，上报线程卡在同一把锁上，进程活着、SIP 还注册着，但上报全停。
+     * 这里只读 volatile 字段做过滤，真正的工作交给会话自己的线程。
+     */
+    void receive(JSONObject offer) {
+        if (destroyed || offer == null || System.currentTimeMillis() > offer.optLong("expires_at")
+                || offer.optString("session_id").equals(id) || !closed) return;
+        try { executor.execute(() -> begin(offer)); } catch (RejectedExecutionException stopping) { /* 正在停止，忽略 */ }
+    }
+
+    private synchronized void begin(JSONObject offer) {
+        if (destroyed || !closed || offer.optString("session_id").equals(id)) return;
         id = offer.optString("session_id"); closed = false; readySent = false; videoFlowing = false;
         generation = offer.optInt("generation", 1); iceServers = offer.optJSONArray("ice_servers") == null ? new JSONArray() : offer.optJSONArray("ice_servers");
         receivedAt = SystemClock.elapsedRealtime(); lastInputAt = receivedAt;
         final String owner = id; final String quality = offer.optString("quality", "wifi");
         executor.execute(() -> { try {
             java.net.URI uri = new java.net.URI(offer.getString("url"));
-            if (!"wss".equals(uri.getScheme()) || !new java.net.URI(Protocol.BASE_URL).getHost().equals(uri.getHost()) || !"/api/elfremote/desktop/device".equals(uri.getPath())) throw new Exception("远程桌面地址无效");
+            // 只接受面板同源的 wss 中继地址，且查询串恰好是本次会话号，避免 offer 被改写把设备引到别处。
+            // 端口、用户信息、片段都要卡死：只比对主机名不够，wss://u@host、host:8443、带片段都能绕过去。
+            java.net.URI control = new java.net.URI(Protocol.BASE_URL);
+            if (!"wss".equals(uri.getScheme()) || !control.getHost().equals(uri.getHost())
+                    || uri.getUserInfo() != null || uri.getFragment() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)
+                    || !"/api/elfremote/desktop/device".equals(uri.getPath())
+                    || !("session_id=" + owner).equals(uri.getRawQuery())) throw new Exception("远程桌面地址无效");
+            // 令牌要放进 Authorization 头，所以只做健壮性检查，不校验形状。它是服务端签发、服务端核验的
+            // 持有者凭据，形状属于服务端实现细节（当前是两个 UUID 拼接），设备端钉死格式只会在服务端换
+            // 格式时把自己弄哑，而且哑得很难查。这里只限制长度与字符集，挡住换行等头注入字符。
+            String bearer = offer.getString("token");
+            if (bearer.isEmpty() || bearer.length() > 256 || !bearer.matches("[A-Za-z0-9._~+/=-]+")) throw new Exception("远程桌面凭据无效");
             if (!CoreInstaller.ready() || !ScrcpyAsset.ready()) throw new Exception("远程桌面组件尚未就绪");
             WakeScheduler.hold(context, "desktop-session", 1830000L);
-            socket = new WebSocketClient(uri, Collections.singletonMap("Authorization", "Bearer " + offer.getString("token"))) {
+            socket = new WebSocketClient(uri, Collections.singletonMap("Authorization", "Bearer " + bearer)) {
                 public void onOpen(ServerHandshake h) { RuntimeLog.event("desktop_connected"); }
                 public void onMessage(String raw) {
                     if (socket != this || closed) return;
@@ -204,12 +227,18 @@ final class DesktopSession {
         } catch (Exception e) { if (!closed && gen == generation) fail(e); }
     }
 
-    private synchronized void checkReady() {
-        if (closed || readySent || !videoFlowing || control == null || control.state() != DataChannel.State.OPEN) return;
-        readySent = true; main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck); main.postDelayed(idleCheck, 30000L);
-        RuntimeLog.event("desktop_ready after_ms=" + (SystemClock.elapsedRealtime() - receivedAt));
-        try { android.view.Display d = ((android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay(); android.graphics.Point p = new android.graphics.Point(); d.getRealSize(p);
-            send(new JSONObject().put("type", "ready").put("width", p.x).put("height", p.y).put("encoder", "hardware")); } catch (Exception e) { fail(e); }
+    private void checkReady() {
+        Exception failure = null;
+        synchronized (this) {
+            if (closed || readySent || !videoFlowing || control == null || control.state() != DataChannel.State.OPEN) return;
+            readySent = true; main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck); main.postDelayed(idleCheck, 30000L);
+            RuntimeLog.event("desktop_ready after_ms=" + (SystemClock.elapsedRealtime() - receivedAt));
+            try { android.view.Display d = ((android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay(); android.graphics.Point p = new android.graphics.Point(); d.getRealSize(p);
+                send(new JSONObject().put("type", "ready").put("width", p.x).put("height", p.y).put("encoder", "hardware")); } catch (Exception e) { failure = e; }
+        }
+        // fail 会走到 stop、stop 要关 WebSocket。必须在锁外调：否则本方法的锁仍被本线程持有，
+        // 等于把 stop 里「关闭放到锁外」的修复整个抵消。D31-dev 在他那边发现同型的 start() 后提醒的。
+        if (failure != null) fail(failure);
     }
 
     private void acquireScreen() {
@@ -234,7 +263,7 @@ final class DesktopSession {
     private void signal(String kind, String payload) throws Exception { send(new JSONObject().put("type", "signal").put("kind", kind).put("payload", payload).put("generation", generation)); }
     private void sendStatus(String stage) { try { send(new JSONObject().put("type", "status").put("stage", stage)); } catch (Exception ignored) { } }
     private void send(JSONObject x) { WebSocketClient ws = socket; if (!closed && ws != null && ws.isOpen()) ws.send(x.toString()); }
-    private void fail(Exception e) { RuntimeLog.error("desktop_failed", e); try { send(new JSONObject().put("type", "status").put("stage", "failed").put("message", String.valueOf(e.getMessage()))); } catch (Exception ignored) { } stop("远程桌面失败"); }
+    private void fail(Exception e) { RuntimeLog.error("desktop_failed", e); try { send(new JSONObject().put("type", "status").put("stage", "failed").put("message", DesktopText.redact(e.getMessage()))); } catch (Exception ignored) { } stop("远程桌面失败"); }
 
     private void closePeer() {
         if (video != null) { try { video.unregisterObserver(); video.close(); video.dispose(); } catch (Exception ignored) { } video = null; }
@@ -242,11 +271,17 @@ final class DesktopSession {
         if (pc != null) { try { pc.close(); pc.dispose(); } catch (Exception ignored) { } pc = null; }
     }
 
-    synchronized void stop(String reason) {
-        if (closed) return; closed = true;
-        main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck);
-        RuntimeLog.event("desktop_stopped reason=" + reason);
-        WebSocketClient ws = socket; socket = null; if (ws != null) try { ws.close(); } catch (Exception ignored) { }
+    void stop(String reason) {
+        WebSocketClient ws;
+        synchronized (this) {
+            if (closed) return; closed = true;
+            main.removeCallbacks(prepareTimeout); main.removeCallbacks(idleCheck);
+            RuntimeLog.event("desktop_stopped reason=" + reason);
+            ws = socket; socket = null;
+        }
+        // 关 WebSocket 必须在锁外：读线程会在 onClose 回调里反过来调 stop，
+        // 握着会话锁去关，两条线程就会按相反的顺序各持一把锁互等（网关实测线程栈证实）。
+        if (ws != null) try { ws.close(); } catch (Exception ignored) { }
         executor.execute(() -> {
             closePeer();
             for (LocalSocket s : new LocalSocket[]{videoSocket, controlSocket}) if (s != null) try { s.close(); } catch (IOException ignored) { }
@@ -257,7 +292,12 @@ final class DesktopSession {
             WakeScheduler.release("desktop-session");
         });
     }
-    synchronized void shutdown() { if (destroyed) return; destroyed = true; stop("客户端服务停止"); executor.shutdown(); }
+    // 不能是 synchronized：它握着锁调 stop，stop 内部要关 WebSocket，等于把上面的修复抵消掉。
+    void shutdown() {
+        synchronized (this) { if (destroyed) return; destroyed = true; }
+        stop("客户端服务停止");
+        executor.shutdown();
+    }
 
     private static class Sdp implements SdpObserver { public void onCreateSuccess(SessionDescription d) {} public void onSetSuccess() {} public void onCreateFailure(String e) {} public void onSetFailure(String e) {} }
 }

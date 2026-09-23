@@ -1,0 +1,29 @@
+{
+  // 代理面板独立 Worker。与管理面板同一份代码、同一个仓库，只是配置不同：
+  // 角色由 PANEL_ROLE 决定，proxy 角色只放行代理面板与订阅接口，其余路径一律 404。
+  // 这样订阅这个天然公开的面被单独关在一个 Worker 里，被举报也打不到设备管理与 SIP 管理。
+  "name": "s-elfradio-net",
+  // 入口是 worker-proxy.js 而不是 worker.js：它比管理面板多 import 一个 proxy-panel.js，
+  // 订阅生成与节点池页面全在那里。管理面板的产物里因此一个代理协议字段都没有。
+  "main": "worker-proxy.js",
+  "compatibility_date": "2024-09-23",
+  // 与管理面板同理，绝不能打开：两次封禁都是这个公开地址被刷导致的。
+  "workers_dev": false,
+  "vars": { "PANEL_KV_ENABLED": "1", "CF_USAGE_ENABLED": "1", "PANEL_ROLE": "proxy" },
+  "assets": {
+    "directory": "./.generated-assets-proxy",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/sub*"],
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "none"
+  },
+  // 不绑 Durable Object：代理面板与订阅只读写 KV，elfDoStub 在没有绑定时返回 null，
+  // getStore/setStore 会退回 KV 这条路，所以功能完整而且不占用 DO 额度。
+  // 也不绑 R2 与 cron：制品分发和定时清理都只属于管理面板。
+  "kv_namespaces": [
+    {
+      "binding": "SUB_STORE_KV",
+      "id": "833409e1f96d4ef28334811dfec66b52"
+    }
+  ]
+}

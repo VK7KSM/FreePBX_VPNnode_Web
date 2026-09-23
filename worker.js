@@ -34,8 +34,11 @@ body{--device-ui-text:#d4deec;--device-ui-muted:#94a3b8;--device-ui-border:#3341
 #devOps .fn-page .ops-actions{gap:8px}
 `;
 
-import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable } from './release-channels.js';
-import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus} from './gateway-product.js';
+import {authenticate as mcpAuthenticate,createToken as mcpCreateToken,revokeToken as mcpRevokeToken,revokeByLink as mcpRevokeByLink,listTokens as mcpListTokens,allows as mcpAllows,tokenHash as mcpTokenHash,noteUsage as mcpNoteUsage,flushUsage as mcpFlushUsage,serverName as mcpServerName,claimSession as mcpClaimSession,touchSession as mcpTouchSession,releaseSession as mcpReleaseSession,deviceSession as mcpDeviceSession,releaseDevice as mcpReleaseDevice,SCOPES as MCP_SCOPES,TTL_PRESETS as MCP_TTL_PRESETS} from './mcp-tokens.js';
+import {dispatch as mcpDispatch} from './mcp-server.js';
+import mcpGuide from './mcp-guide-source.js';
+import { RELEASE_CHANNELS, releaseChannel, releaseKey, releaseListKey, manifestChannel, validateReleaseManifest, deviceReleaseChannel, deviceUpdateAvailable, isAssetChannel, releaseVariant, RELEASE_VARIANTS, preferredRelease } from './release-channels.js';
+import {isGateway,gatewayProductFields,gatewayReportGuard,gatewayStatus,pixelRuntimeStatus,proxyRuntimeStatus,mobileNetworkStatus,proxyNodeList,installedAppList,proxyAppList} from './gateway-product.js';
 import {D31_RECOMMENDATION_KEY, publicD31Recommendation, setD31Recommendation, followD31Recommendation, rememberD31Update} from './d31-auto-follow.js';
 import {releaseRetentionPlan,retireReleases,cleanupRetiredReleases} from './release-retention.js';
 import mediaClientSource from './media-client-source.js';
@@ -43,6 +46,7 @@ import desktopClientSource from './desktop-client-source.js';
 import {shareSessionSource} from './share-session.js';
 import shareClientSource from './share-client-source.js';
 import {mediaModes,mediaCapabilityFields,applyMediaCapabilities,mediaCapabilitiesSource} from './media-capabilities.js';
+import {normalizeLocationState} from './location-state.js';
 import faultClientSource from './fault-client-source.js';
 import {systemSettingAllowed} from './system-settings.js';
 import {isNetworkTask,holdNetworkTask,grantNetworkConfirmation,cancelNetworkTask,networkAcceptanceAllowed} from './network-confirmation.js';
@@ -50,7 +54,7 @@ import {panelLifecycleSource} from './panel-lifecycle.js';
 import {cfUsageResponse,scheduleCfUsage} from './cf-usage.js';
 import {cfUsageMarkup,cfUsageStyle,cfUsageClientSource} from './cf-usage-client.js';
 // =========================================================================
-// elfRadio SIP/VPN Manage - Cloudflare Workers 管理面板与订阅生成器 v2.5.0
+// elfRemote Manager - Cloudflare Workers 设备管理与电话管理面板 v2.5.0
 // 升级：通话组 + 网关账户 + 分级分机目录
 // =========================================================================
 
@@ -62,6 +66,7 @@ import {sipDirectory,managedSipParams} from './sip-provisioning.js';
 import { terminalScript,terminalCss } from "./terminal-assets.js";
 import { isPrivateIp, pickLocation, parseGeoCache } from "./remote-location.js";
 import { googleLocation } from "./google-geolocation.js";
+import { cnLocation, mainland } from "./cn-geolocation.js";
 // control-plane.js is imported below; keep this file on the deploy path filter.
 // 2026-09-05: inflight stages may jump to rollback if installer is killed.
 // 2026-09-06: 远程Shell buttons then plain status text.
@@ -90,14 +95,15 @@ import {
   normalizeLostMode,
   prepareWipe, authorizeWipe, isLostSafety, mergeLostMode,
   CONFIG_TYPES, PROXY_TASK_TYPES, LOST_MESSAGE_TASK_TYPES, PIXEL_COMPANION_TASK_TYPE,
-  repairExpired
-} from "./elfRemote/control-plane.js";
+  repairExpired, reclaimStaleRepair, taskCapable } from "./elfRemote/control-plane.js";
 import devicesClientSource from "./devices-client-source.js";
 import sipClientSource from "./sip-client-source.js";
-import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin } from "./admin-auth.js";
+import { adminRpc, authJson, handleAdminAuth, migratePanelAuth, isMachineRoute, trustedOrigin, unknownDeviceRoute } from "./admin-auth.js";
+import { PROXY_ROLE_PATHS, singleStoreRead, storeAuthenticates, KV_INDEPENDENT, outerDeviceRoute } from "./route-table.js";
 import { PANEL_GROUPS,panelEnabled,panelGroup,panelRead,panelWrite } from './panel-kv.js';
 import { adminSessionSource } from "./admin-session.js";
 import {queryTrajectoryMedia} from './trajectory-media.js';
+import {retentionSweep,runRetention,LAST_RUN_KEY as RETENTION_LAST_KEY} from './retention.js';
 import { appendLocationHistory, queryLocationHistory } from "./location-history.js";
 import { deviceModelKey, registrationModel, normalizeDeviceIdentity, restoreDeviceIdentity } from "./device-identity.js";
 import { queryDailyTraffic } from "./daily-traffic.js";
@@ -118,7 +124,7 @@ import {PanelEvents,panelKey,panelRefreshDelay} from './panel-events.js';
 import {panelEventsSource} from './panel-events-client.js';
 import {recordingMetadata,recordingHttp,cleanupRecordings} from './media-recordings.js';
 import {returnMetadata,returnHttp,returnParams,cleanupReturns} from './file-return.js';
-import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig} from './proxy-config.js';
+import {proxyConfigureParams,proxyConfigHttp,proxyConfigMetadata,publicProxyConfig,proxyOfferGrant} from './proxy-config.js';
 import {acknowledgeStaleGatewayRollbackReport} from './gateway-stale-report.js';
 import {summarizeStore,planLegacyMerge,applyLegacyMerge,currentStoreSnapshot} from './legacy-import.js';
 
@@ -140,6 +146,12 @@ function parseStoreVal(val) {
   try { return JSON.parse(val); } catch (e) { return val; }
 }
 
+// 代理面板（订阅生成与节点池页面）只在 s.elfradio.net 那个 Worker 上注册。
+// 用注册而不是直接 import：worker.js 一旦 import 了 proxy-panel.js，那些字段就会被打进
+// 管理面板的产物里，运行时再怎么判断也去不掉。这里保持单向依赖，v 的包里彻底没有这段代码。
+let proxyPanel = null;
+export function registerProxyPanel(panel) { proxyPanel = panel; }
+
 function elfDoStub(env) {
   if (!env || !env.ELF_DO) return null;
   return env.ELF_DO.get(env.ELF_DO.idFromName("main"));
@@ -147,7 +159,7 @@ function elfDoStub(env) {
 
 // 只读路径不写存储：KV 里也没有的键只在内存里记一次，避免读取请求在额度耗尽时被写入拒绝。
 const legacyChecked = new Set();
-async function getStore(env, key) {
+export async function getStore(env, key) {
   if(panelEnabled(env)&&(panelGroup(key)||key.startsWith('geo_')))return panelRead(env,key);
   if (env.__storage) {
     const value = await env.__storage.get(key);
@@ -192,7 +204,7 @@ async function getStore(env, key) {
   return storeDefaults(key);
 }
 
-async function setStore(env, key, value) {
+export async function setStore(env, key, value) {
   if(panelEnabled(env)){
     if(panelGroup(key))return panelWrite(env,{[key]:value});
     if(key.startsWith('geo_'))return env.SUB_STORE_KV.put('panel/cache/'+key,JSON.stringify(value),{expirationTtl:7*86400});
@@ -316,7 +328,7 @@ export class ElfStore {
           if(!data||typeof data!=='object'||Array.isArray(data))return json({ok:false,msg:'远程桌面请求无效'},400);
           const d=(await loadDevices({...this.env,__storage:this.ctx.storage})).find(d=>d.id===data.device_id);
           if(!d)return json({ok:false,msg:'未找到设备'},404);
-          try{const created=await this.desktop.create(d,data.quality||'wifi');const s=this.desktop.sessions.get(created.session_id);if(s&&!s.owner)s.owner=ownerOf(ctx);if(s&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'该设备的远程桌面正由其他登录使用'},409);return json(created);}catch(error){return json({ok:false,msg:error.message},400);}
+          try{const created=await this.desktop.create(d,data.quality||'wifi',{w:data.display_w,h:data.display_h});const s=this.desktop.sessions.get(created.session_id);if(s&&!s.owner)s.owner=ownerOf(ctx);if(s&&!sameOwner(s.owner,ctx))return json({ok:false,msg:'该设备的远程桌面正由其他登录使用'},409);return json(created);}catch(error){return json({ok:false,msg:error.message},400);}
         }
         const role=url.pathname==='/api/elfremote/desktop/browser'?'browser':url.pathname==='/api/elfremote/desktop/device'?'device':null;
         if(!role||request.method!=='GET')return json({ok:false},404);
@@ -475,6 +487,28 @@ export class ElfStore {
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>recordingMetadata(storage,new Request(request.url,{method:'POST',body:raw}),()=>loadDevices({...this.env,__storage:storage}))));
     }
+    // 设备列表的合并读与拆分写：外层 Worker 的机器路由走这里，一次 RPC 完成。
+    if(url.pathname==='/__devices'){
+      if(request.method==='GET'){
+        return this.ctx.blockConcurrencyWhile(async()=>json(await loadDevices({...this.env,__storage:this.ctx.storage})));
+      }
+      if(request.method==='POST'){
+        const raw=await request.text();
+        // 整表上限放宽到 4 MB：拆键前整表已 100 KB，拆键后索引小得多，这只是防呆。
+        if(raw.length>4*1024*1024)return json({ok:false,msg:'设备列表过大'},413);
+        let list;try{list=JSON.parse(raw);}catch{return json({ok:false,msg:'设备列表格式错误'},400);}
+        if(!Array.isArray(list))return json({ok:false,msg:'设备列表格式错误'},400);
+        return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>{
+          await saveDevices({...this.env,__storage:storage},list);
+          return json({ok:true});
+        }));
+      }
+      return json({ok:false},405);
+    }
+    if(url.pathname==='/__retention'&&request.method==='POST'){
+      // 数据保留清理：小批量、在 DO 自己的串行队列里做，不和设备上报抢。
+      return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(async storage=>json({ok:true,...await retentionSweep(storage)})));
+    }
     if(url.pathname==='/__photos'&&request.method==='POST'){
       const raw=await request.text();if(raw.length>8192)return json({ok:false},400);
       return this.ctx.blockConcurrencyWhile(()=>this.events.transaction(storage=>{
@@ -583,6 +617,10 @@ export class ElfStore {
     }
     if (url.pathname.startsWith("/api/")) {
       const raw = request.method === "GET" ? undefined : await request.text();
+      // 上报体是唯一没有长度上限的入口（其余接口都有 4–16 KB 的门）。
+      // 一份异常上报（比如几千个应用）会直接把设备记录撑大，拆键也扛不住无上限。
+      if (raw !== undefined && raw.length > REPORT_BODY_LIMIT && DEVICE_BODY_ROUTES.has(url.pathname))
+        return json({ ok: false, msg: "上报内容过大" }, 413);
       return this.ctx.blockConcurrencyWhile(async () => {
         try {
           return await this.events.transaction(async storage => {
@@ -697,6 +735,8 @@ ElfStore.prototype.decorateDeviceList=async function(storage,ctx,response){
     body.devices=(body.devices||[]).filter(d=>d.id===ctx.device_id);body.unpaired=[];body.share=true;
     for(const d of body.devices)d.share_locked=false;
   }else for(const d of body.devices||[]){d.share_locked=await shareObserverLocked(storage,d.id);if(d.share_locked)d.adb_observable=this.adb.observeStatus(d.id).active;}
+  // 独立页与总后台都要看到「MCP 使用中」，两个提示可以同时出现。
+  for(const d of body.devices||[])d.mcp_session=mcpDeviceSession(mcpSessions,d.id);
   return json(body);
 };
 ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
@@ -747,6 +787,8 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
       const token=normalizeToken(body.token);if(!token)return json({ok:false,msg:'链接无效'},400);
       const link=await storage.get('share/link/'+token);
       const result=await shareRevokeLink(storage,token,ctx);
+      // 收回访问就一起收回钥匙：否则链接没了，由它生成的 MCP 令牌还能继续操作这台设备。
+      if(link?.device_id)await mcpRevokeByLink(storage,link.device_id,token);
       if(result.kicked&&link){this.closeOwned(link.device_id,{kind:'admin'});this.events.revoke(link.device_id,result.kicked.session_id,'revoked');}else this.events.changed();
       return json({ok:true,kicked:!!result.kicked});
     }
@@ -754,15 +796,7 @@ ElfStore.prototype.shareApi=async function(storage,ctx,url,request,raw){
   }catch(error){return json({ok:false,msg:error.message},400);}
 };
 
-// 高频只读管理请求在同一次DO调用中完成登录检查与数据读取。
-function outerDeviceRoute(path){return path==='/api/elfremote/files'||path.startsWith('/api/elfremote/files/')||path==='/api/elfremote/file-return'||path==='/api/elfremote/file-return/received'||path==='/api/elfremote/proxy-config';}
-function singleStoreRead(path,method) {
-  return method==='GET' && ['/api/devices/events','/api/devices','/api/device-models','/api/devices/traffic','/api/devices/history','/api/devices/status-request','/api/elfremote/tasks','/api/elfremote/releases'].includes(path);
-}
-// 此白名单仍经过 ElfStore 的来源与会话验证；保留任务转发后的通知逻辑。
-function storeAuthenticates(path,method){
-  return (method==='POST'&&['/api/elfremote/task','/api/elfremote/assign','/api/devices','/api/devices/pair','/api/device-models','/api/share/login'].includes(path))||(method==='GET'&&path==='/api/share/session');
-}
+// singleStoreRead / storeAuthenticates 由 route-table.js 派生（store:'read' / store:'auth'）。
 
 // 数据找回期间的临时机器凭证：仅对旧存储找回接口生效，删除 MIGRATION_TOKEN 密钥后即失效。
 async function migrationTokenOk(env,request,pathname){
@@ -773,6 +807,21 @@ async function migrationTokenOk(env,request,pathname){
   return crypto.subtle.timingSafeEqual(enc.encode(expected),enc.encode(given));
 }
 
+// KV 模式的登录走一趟 DO，让失败计数落盘（admin-auth.js loginThrottle 的 auth/failures），
+// 实例回收不再清零。DO 额度冷却期内、或这一趟本身撞上额度，退回实例内计数——
+// 登录不能因为 DO 不可用而失灵，那是额度耗尽时唯一还能进面板的门。
+async function kvLogin(env, request) {
+  const text = await request.text();
+  if (env.ELF_DO && Date.now() >= (quotaCooldown.get(env.ELF_DO) || 0)) {
+    try {
+      const headers = new Headers(request.headers); headers.delete('Content-Length');
+      const viaStore = await elfDoStub(env).fetch(new Request('https://elf-store/__auth/login', { method: 'POST', headers, body: text }));
+      if (viaStore.status !== 503) return viaStore;
+    } catch (error) { if (isQuotaError(error)) markQuotaUnavailable(env); else console.error('login_store_unavailable', error?.message); }
+  }
+  let body = {}; try { body = JSON.parse(text) || {}; } catch {}
+  return adminRpc(env, request, 'login', body);
+}
 const quotaCooldown=new WeakMap();
 function isQuotaError(error){return /Exceeded allowed (volume of requests|rows (written|read)|storage)[^.]*Durable Objects free tier/i.test(error?.message||'');}
 function markQuotaUnavailable(env){const now=Date.now(),reset=(Math.floor(now/86400000)+1)*86400000;quotaCooldown.set(env.ELF_DO||env,Math.min(now+60000,reset));}
@@ -797,6 +846,16 @@ function quotaUnavailable(){
   return authJson({ok:false,code:'storage_quota_exceeded',msg:'服务器额度暂时用尽，正在等待恢复',retry_at:reset},503,{'Retry-After':String(Math.max(1,Math.min(900,Math.ceil((reset-now)/1000))))});
 }
 
+// Worker 自己渲染的那几页（分享页、结束页、MCP 说明）与静态页面用同一套安全头；
+// 静态页面那份在 build-static-assets.mjs 的 _headers 里，两处要保持一致。
+const HTML_SECURITY_HEADERS = Object.freeze({
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Strict-Transport-Security": "max-age=31536000",
+  "Content-Security-Policy-Report-Only": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://cdn.jsdelivr.net; font-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+});
+
 const app = {
   async scheduled(event, env, ctx) {
     // 用量采集独立于设备 DO；设备存储额度耗尽也不能阻止统计更新。
@@ -804,7 +863,8 @@ const app = {
     try {
       const stub=elfDoStub(env);
       const minute=Math.floor(Number(event.scheduledTime ?? 0)/60000);
-      const jobs=[runRecovery,cleanupFiles,...(minute%5===0?[refreshDevicesSnapshot]:[]),...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[])];
+      // 数据保留清理整点跑一次：每次最多 400 个键，存量分日清完，稳态占写入额度约 3%。
+      const jobs=[runRecovery,cleanupFiles,...(minute%5===0?[refreshDevicesSnapshot]:[]),...(minute%15===0?[cleanupPhotos,cleanupReturns,cleanupRecordings]:[]),...(minute%60===0?[runRetention]:[])];
       for(const work of jobs) {
         try { await work(env,stub); } catch(error) {
           console.error('scheduled_task_failed',work.name);
@@ -830,12 +890,18 @@ const app = {
     if(!env.__storage && singleStoreRead(pathname,method)) {
       const stub=elfDoStub(env);return stub?stub.fetch(request):authJson({ok:false,msg:'设备存储不可用'},503);
     }
+    // /api/mcp 自带 Bearer 令牌，算机器路由，不走管理员会话，直接落 DO。
+    if(!env.__storage && pathname==='/api/mcp') {
+      const stub=elfDoStub(env);return stub?stub.fetch(request):json({ok:false,msg:'设备存储不可用'},503);
+    }
     if (!env.__storage && pathname.startsWith("/api/") && !isMachineRoute(pathname, method)) {
+      // 路径根本没注册就不是鉴权问题，别拿「请先登录」去答一个不存在的接口。
+      if (unknownDeviceRoute(pathname)) return authJson({ ok: false, msg: "接口不存在" }, 404);
       if (!trustedOrigin(request)) return authJson({ ok: false, msg: "请求来源不匹配" }, 403);
       const action = { "/api/login": "login", "/api/logout": "logout", "/api/session": "session" }[pathname];
       if (action) {
         if (method !== (action === "session" ? "GET" : "POST")) return authJson({ ok: false }, 405);
-        return adminRpc(env, request, action);
+        return action==='login'&&panelEnabled(env)?kvLogin(env,request):adminRpc(env, request, action);
       }
       if(!storeAuthenticates(pathname,method)&&!(await migrationTokenOk(env,request,pathname))){
         const session = await adminRpc(env, request, "session");
@@ -855,6 +921,10 @@ const app = {
         }
       }
     }
+    // 令牌管理的鉴权（管理员或分享，且分享只能碰自己那台）已在上面完成，这里只负责转发。
+    if(!env.__storage && (pathname==='/api/elfremote/mcp-tokens'||pathname==='/api/elfremote/mcp-tokens/delete'||pathname==='/api/elfremote/mcp-tokens/release')) {
+      const stub=elfDoStub(env);return stub?stub.fetch(request):json({ok:false,msg:'设备存储不可用'},503);
+    }
     if(pathname==='/api/admin/legacy-store'){
       if(method!=='GET'&&method!=='POST')return authJson({ok:false},405);
       const stub=elfDoStub(env);if(!stub)return authJson({ok:false,msg:'设备存储不可用'},503);
@@ -872,6 +942,10 @@ const app = {
     }
     if(!env.__storage&&pathname==='/api/elfremote/releases/upload'&&method==='PUT'){
       try{
+        // 上传方自带这份清单与签名（构建时随 APK 一起交付的 .sig）。
+        // 服务端只做「签名是否有效、字节是否与清单相符」这类挡误操作的检查——
+        // 真正的防线在设备上：装包前用内置公钥验清单签名、要求 APK 实际证书等于已安装证书、
+        // 并拒绝过期清单。服务端失守之后它自己的任何检查都由攻击者说了算，所以不能指望这里。
         const encoded=request.headers.get('X-Elf-Manifest')||'',sig=request.headers.get('X-Elf-Signature')||'';
         if(encoded.length>12000||sig.length>2048)throw Error('清单过大');
         const raw=new TextDecoder().decode(Uint8Array.from(atob(encoded),c=>c.charCodeAt(0)));
@@ -960,37 +1034,16 @@ const app = {
       return logoResponse();
     }
 
-    // 订阅下发 (支持 UA 自动适配与参数指定)
-    if (pathname.startsWith("/sub")) {
-      return handleSubscription(request, url, env);
+    // 订阅下发：只有代理面板 Worker（s.elfradio.net）注册了这个模块，
+    // 管理面板这边 proxyPanel 永远是 null，连同整页代码都不会被打包进来。
+    if (proxyPanel && pathname.startsWith("/sub")) {
+      return proxyPanel.handleSubscription(request, url, env);
     }
 
     // API 路由
-    if (pathname === "/api/data" && method === "GET") {
-      const nodes = (await getStore(env, "nodes")) || [];
-      const sub_token = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
-      const cf_ip = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
-      const admin_user = (await getStore(env, "admin_user")) || DEFAULT_USER;
-      return json({ ok: true, nodes, sub_token, cf_ip, admin_user });
-    }
-
-    if (pathname === "/api/save" && method === "POST") {
-      try {
-        const data = await request.json();
-        let passwordResult;
-        if (data.new_password) {
-          passwordResult = await adminRpc(env, request, "password", { password: data.new_password });
-          if (!passwordResult.ok) return passwordResult;
-        }
-        const patch={};if(Array.isArray(data.nodes))patch.nodes=data.nodes;
-        if(data.sub_token)patch.sub_token=data.sub_token;
-        if(data.cf_ip!==undefined)patch.cf_preferred_ip=data.cf_ip;
-        if(Object.keys(patch).length){if(panelEnabled(env))await panelWrite(env,patch);else for(const [key,value] of Object.entries(patch))await setStore(env,key,value);}
-        return passwordResult || json({ ok: true });
-      } catch(e) {
-        return json({ ok: false, msg: e.message }, 400);
-      }
-    }
+    // 节点池的读写只属于代理面板，跟着页面一起搬去 proxy-panel.js。
+    if (proxyPanel && pathname === "/api/data" && method === "GET") return proxyPanel.readSettings(env);
+    if (proxyPanel && pathname === "/api/save" && method === "POST") return proxyPanel.saveSettings(env, request);
 
     if (pathname === "/api/devices/sip-directory" && method === "GET") {
       return json({ok:true,accounts:sipDirectory(await loadSipBundle(env))});
@@ -1207,6 +1260,12 @@ const app = {
     if (pathname === "/api/devices/report" && method === "POST") {
       return handleDeviceReport(env, request);
     }
+    if (pathname === "/api/devices/proxy-config/offer" && method === "POST") {
+      return handleProxyConfigOffer(env, request);
+    }
+    if (pathname === "/api/devices/media-native/offer" && method === "POST") {
+      return handleMediaNativeOffer(env, request);
+    }
     if (pathname === "/api/devices/share-link" && method === "POST") {
       try{
         const data=await request.json();
@@ -1235,6 +1294,24 @@ const app = {
     }
     if (pathname === "/api/elfremote/releases" && method === "GET") {
       return handleElfReleaseList(env,url);
+    }
+    if (pathname === "/api/admin/store-size" && method === "GET") {
+      return handleStoreSize(env);
+    }
+    if (pathname === "/api/admin/health" && method === "GET") {
+      return handleAdminHealth(env);
+    }
+    if (pathname === "/api/mcp" && (method === "POST" || method === "DELETE")) {
+      return handleMcp(env, request, method);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens" && (method === "GET" || method === "POST")) {
+      return handleMcpTokens(env, request, url, method);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens/delete" && method === "POST") {
+      return handleMcpTokenDelete(env, request);
+    }
+    if (pathname === "/api/elfremote/mcp-tokens/release" && method === "POST") {
+      return handleMcpRelease(env, request);
     }
     if (pathname === "/api/elfremote/assign" && method === "POST") {
       return handleElfAssign(env, request);
@@ -1266,6 +1343,16 @@ const app = {
     }
     if(pathname==="/fault-client.js")return new Response(faultClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/evidence-client.js")return new Response(evidenceDataSource+'\n'+evidenceClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
+    // MCP 说明：弹窗底部那个链接指到这里。用 <pre> 原样呈现，
+    // 不引任何 Markdown 渲染库——这份文档的价值在内容，不在排版。
+    if(pathname==="/mcp-guide"){
+      const escaped=mcpGuide.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+      return new Response('<!doctype html><meta charset="utf-8"><title>elfRemote MCP 操作说明</title>'
+        +'<style>body{margin:0;padding:28px;background:#0b1424;color:#e2e8f0;'
+        +'font:14px/1.7 ui-monospace,Consolas,monospace}pre{white-space:pre-wrap;word-break:break-word;margin:0;max-width:900px}</style>'
+        +'<pre>'+escaped+'</pre>',
+        {headers:{...HTML_SECURITY_HEADERS,"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}});
+    }
     if(pathname==="/share-client.js")return new Response(shareClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/share-session.js")return new Response(shareSessionSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
     if(pathname==="/desktop-client.js")return new Response(desktopClientSource,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-store"}});
@@ -1278,44 +1365,55 @@ const app = {
 
     if (pathname === "/sip" || pathname === "/sip/") {
       return new Response(renderSipHtml(), {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
+        headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
       });
     }
 
     if (pathname === "/devices" || pathname === "/devices/") {
       return new Response(renderDevicesHtml(), {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
+        headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
       });
     }
-    if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
-    if (/^\/m\/[A-Za-z0-9]{12}$/.test(pathname)) {
+    if (pathname === '/m/ended') return new Response(renderShareEndedHtml(url), {headers:{...HTML_SECURITY_HEADERS,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
+    // 路径段大小写都收：设备本机二维码用的是整条链接的大写形式（二维码字母数字模式不收小写），
+    // 扫出来就是 /M/<TOKEN>；只匹配小写会把扫码的人丢到普通管理后台登录页。
+    if (/^\/[mM]\/[A-Za-z0-9]{12}$/.test(pathname)) {
       // 单设备管理页：同一份页面模板加分享上下文；GET 不登录、不踢人，由页面脚本显式提交登录。
       const token=(normalizeToken(pathname.slice(3))||'').toUpperCase();
       // 已删除/到期的链接直接进结束页，不再渲染设备页；探测失败（如额度问题）时照常渲染，由页面登录时再判定。
-      try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
+      try{const stub=elfDoStub(env);const probe=stub?await (await stub.fetch('https://elf-store/__share/link?token='+token)).json():null;if(probe&&probe.ok&&!probe.active)return new Response(renderShareEndedHtml(new URL('/m/ended?r=invalid',url)),{status:410,headers:{...HTML_SECURITY_HEADERS,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});}catch{}
       let html=renderDevicesHtml().replace('<meta name="elf-panel-version"','<meta name="elf-share" content="'+token+'"><meta name="elf-panel-version"').replace('<script src="/admin-session.js"><\/script>','<script src="/admin-session.js"><\/script><script src="/share-session.js"><\/script>');
-      html=html.replace(/<a href="\/" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
+      html=html.replace(/<a href="[^"]*" style="margin-left:\.6rem[^]*?设备管理<\/a>/,'<span id="shareDeviceName" style="margin-left:.6rem">设备</span><span class="share-brand-sub">elfRemote Manager</span>')
         .replace(/<div style="display:flex;align-items:center;gap:12px">[^]*?<button class="btn-gray" style="color:#f87171" onclick="logout\(\)">退出<\/button><\/div>/,'<div style="display:flex;align-items:center;gap:12px"><button class="btn-green" onclick="ElfShare.open()">设置</button><button class="btn-gray" style="color:#f87171" onclick="logout()">退出</button></div>')
-        .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRadio SIP\/VPN Manage<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>')
-        .replace('<title>elfRadio SIP/VPN Manage</title>','<title>elfRemote Manager</title>');
-      return new Response(html,{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"strict-origin-when-cross-origin"}});
+        .replace(/<a href="\/" style="display:flex;align-items:center;gap:\.55rem;text-decoration:none;color:inherit">([^]*?)<span style="font-weight:700;font-size:1\.05rem;white-space:nowrap">elfRemote Manager<\/span><\/a>/,'<span style="display:flex;align-items:center;gap:.55rem">$1</span>');
+      return new Response(html,{headers:{...HTML_SECURITY_HEADERS,"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Referrer-Policy":"strict-origin-when-cross-origin"}});
     }
 
     if (pathname.startsWith("/api/")) return json({ ok: false, msg: "接口不存在" }, 404);
-    // 前端 HTML
-    return new Response(renderHtml(), {
-      headers: { "Content-Type": "text/html; charset=utf-8" }
+    // 首页：代理面板 Worker 渲染自己的节点页；管理面板没有首页，直接进设备管理。
+    if (proxyPanel) return new Response(proxyPanel.renderHtml(), {
+      headers: {...HTML_SECURITY_HEADERS,"Content-Type": "text/html; charset=utf-8" }
     });
+    return Response.redirect(new URL("/devices", url).toString(), 302);
   }
 };
 // 从被封禁的旧 Worker 转移过来的 ElfStore 命名空间，只用于数据找回，代码与 ElfStore 相同。
 export class ElfStoreLegacy extends ElfStore {}
 
+// 代理角色放行的路径见 route-table.js（PROXY_ROLE_PATHS）；这里转口一份，worker-proxy.js 与测试都从本文件取。
+export { PROXY_ROLE_PATHS };
+export function proxyRoleBlocked(env, pathname) {
+  if (env?.PANEL_ROLE !== 'proxy') return false;
+  return !pathname.startsWith('/sub') && !PROXY_ROLE_PATHS.includes(pathname);
+}
+
 export default {
   ...app,
   async fetch(request,env,ctx){
     const path=new URL(request.url).pathname;
-    const independent=panelEnabled(env)&&['/api/login','/api/logout','/api/session','/api/data','/api/save','/api/sip','/api/sip/live','/api/sip/save','/api/sip/pull','/api/cf-usage'].includes(path);
+    // 角色闸门要放在最前面：被挡掉的路径连存储都不该碰。
+    if(proxyRoleBlocked(env,path))return new Response('Not Found',{status:404});
+    const independent=panelEnabled(env)&&KV_INDEPENDENT.has(path);
     const snapshotRead=path==='/api/devices'&&request.method==='GET';
     // 冷却期内一律不再触碰 DO：设备列表改用 KV 快照只读应答，其余直接 503，避免额度耗尽后继续消耗。
     if(path.startsWith('/api/')&&!independent&&Date.now()<(quotaCooldown.get(env.ELF_DO||env)||0)){
@@ -1642,13 +1740,98 @@ async function saveDeviceModels(env, models) {
   await setStore(env, "remote_device_models", models);
 }
 
+// ── 设备列表的存储布局 ──────────────────────────────────────────────
+//
+// DO 存储单值上限 128 KiB。remote_devices 原来是整表一个键，2026-09-23 实测公开投影
+// 已 81,780 字节、存储版约 100 KB——再加一台 D31 量级的设备就到顶，越限那一刻
+// 所有经过 saveDevices 的写入一起失败，整个控制面一起停。
+//
+// 现在拆成两层：remote_devices 只留每台的小字段（索引），大字段各自放进
+// device_ext/<id> 一个键。索引每台不到 2 KB，扩展键每台独立受 128 KiB 约束
+// （现在最大 15 KB）。设备数翻十倍也碰不到上限。
+//
+// 顺带的收益：每次上报只重写变化了的那台设备的扩展键，不再整表重写 100 KB——
+// DO 写入行数与每个请求的 CPU 一起降。
+//
+// 读取时索引里的字段优先：旧格式（大字段还在索引里）、以及测试直接塞进索引的完整记录，
+// 都按索引为准，下一次保存时自然搬进扩展键。所以不需要一次性迁移。
+const DEVICE_EXT_FIELDS = new Set([
+  'system_settings', 'installed_apps', 'sip_accounts', 'sip_targets', 'wifi_scan', 'contacts',
+  'contacts_page_snapshot', 'account_configs', 'proxy_nodes', 'proxy_apps', 'proxy_config',
+  'proxy_offer', 'update', 'task', 'safety_task', 'maintenance', 'permissions', 'traffic',
+  'report_photo', 'lost_mode', 'gateway', 'pixel_runtime', 'alarm', 'lost_message',
+  'location_state', 'loc', 'mobile_network', 'hardware_identity'
+]);
+// 名单之外的对象字段只要超过这个体积也进扩展键：以后新加的大字段不用记得改名单。
+const DEVICE_EXT_THRESHOLD = 1024;
+const deviceExtKey = id => 'device_ext/' + encodeURIComponent(String(id));
+
+export function splitDeviceRecord(device) {
+  const index = {}, ext = {};
+  for (const [key, value] of Object.entries(device || {})) {
+    if (value === undefined) continue;
+    const big = DEVICE_EXT_FIELDS.has(key)
+      || (value !== null && typeof value === 'object' && JSON.stringify(value).length > DEVICE_EXT_THRESHOLD);
+    (big ? ext : index)[key] = value;
+  }
+  return { index, ext };
+}
+
 async function loadDevices(env) {
+  // 上报、注册这些机器路由在外层 Worker 执行，没有 __storage。以前它们按整个键 RPC 读写，
+  // 拆键之后改为一次 RPC 交给 DO 内的 loadDevices/saveDevices 做拆合——
+  // 否则外层每次上报仍会把整表 100 KB 写回索引，拆键等于白做。
+  if (!env.__storage) {
+    const stub = elfDoStub(env);
+    if (stub) {
+      const res = await stub.fetch("https://elf-store/__devices");
+      if (!res.ok) throw Error("设备存储不可用");
+      const list = await res.json();
+      return Array.isArray(list) ? list : [];
+    }
+    const raw = await getStore(env, "remote_devices");
+    return Array.isArray(raw) ? raw : [];   // 没有 DO 绑定（s.elfradio.net 走 KV）：那边本来就不管设备
+  }
   const raw = await getStore(env, "remote_devices");
-  return Array.isArray(raw) ? raw : [];
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const d of list) {
+    if (!d || typeof d !== 'object' || !d.id) { out.push(d); continue; }
+    const ext = await env.__storage.get(deviceExtKey(d.id));
+    out.push(ext && typeof ext === 'object' ? { ...ext, ...d } : d);
+  }
+  return out;
 }
 
 async function saveDevices(env, list) {
-  await setStore(env, "remote_devices", list);
+  if (!env.__storage) {
+    const stub = elfDoStub(env);
+    if (stub) {
+      const res = await stub.fetch("https://elf-store/__devices", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(list) });
+      if (!res.ok) throw Error("设备存储写入失败");
+      return;
+    }
+    await setStore(env, "remote_devices", list); return;
+  }
+  const index = [], seen = new Set();
+  for (const d of list) {
+    if (!d || typeof d !== 'object' || !d.id) { index.push(d); continue; }
+    const split = splitDeviceRecord(d);
+    index.push(split.index); seen.add(String(d.id));
+    const key = deviceExtKey(d.id);
+    const next = Object.keys(split.ext).length ? split.ext : null;
+    const prev = await env.__storage.get(key);
+    // 只在扩展键内容真的变了才写：上报大多只改索引里的几个小字段。
+    if (JSON.stringify(prev ?? null) !== JSON.stringify(next)) {
+      if (next) await env.__storage.put(key, next); else if (prev !== undefined) await env.__storage.delete(key);
+    }
+  }
+  // 被删掉的设备：扩展键一起删，不留孤儿。
+  const previous = await env.__storage.get("remote_devices");
+  if (Array.isArray(previous)) for (const d of previous)
+    if (d && d.id && !seen.has(String(d.id))) await env.__storage.delete(deviceExtKey(d.id));
+  await setStore(env, "remote_devices", index);
 }
 
 async function fetchIpGeo(ip) {
@@ -1701,12 +1884,19 @@ function publicDevice(d, modelName, model = {}) {
     paired: d.paired !== false,
     model_id: d.model_id,
     model_name: modelName || "",
+    // 代理三件套对所有机型下发：面板的「网络代理」页签按 managed_proxy_tasks 显示，
+    // 放在网关专有那一坨里的话，D31 就算上报了能力位面板也永远看不到，页签不会出现。
+    managed_proxy_tasks:d.managed_proxy_tasks===true,
+    proxy_runtime:d.proxy_runtime||null,
+    proxy_nodes:Array.isArray(d.proxy_nodes)?d.proxy_nodes:null,
+    installed_apps:Array.isArray(d.installed_apps)?d.installed_apps:null,
+    proxy_apps:Array.isArray(d.proxy_apps)?d.proxy_apps:null,
+    proxy_selected_node:d.proxy_selected_node||null,
+    proxy_config:publicProxyConfig(d.proxy_config),
     ...(isGateway(d)?{product_id:d.product_id,app_package:d.app_package,app_abi:d.app_abi,gateway:gatewayStatus(d.gateway),
       managed_mobile_status:d.managed_mobile_status===true,mobile_network:d.mobile_network||null,
-      managed_proxy_tasks:d.managed_proxy_tasks===true,proxy_runtime:d.proxy_runtime||null,
       managed_lost_message_v1:d.managed_lost_message_v1===true,lost_message:d.lost_message||null,
-      managed_pixel_companion_v1:d.managed_pixel_companion_v1===true,
-      proxy_config:publicProxyConfig(d.proxy_config)}:{}),
+      managed_pixel_companion_v1:d.managed_pixel_companion_v1===true}:{}),
     update_channel:channel,can_update:canUpdate,
     managed_update:d.managed_update===true,managed_update_v2:d.managed_update_v2===true,
     enabled: d.enabled !== false,
@@ -1739,6 +1929,7 @@ function publicDevice(d, modelName, model = {}) {
     managed_wifi_scan_tasks:d.managed_wifi_scan_tasks===true,
     managed_wifi_config_tasks:d.managed_wifi_config_tasks===true,
     managed_alarm_tasks:d.managed_alarm_tasks===true,
+    managed_share_link_tasks:d.managed_share_link_tasks===true,
     managed_media: d.managed_media === true,
     ...mediaCapabilityFields(d),
     media_cameras: Number(d.media_cameras)||0,
@@ -1766,6 +1957,7 @@ function publicDevice(d, modelName, model = {}) {
     maintenance: d.maintenance || null,
     permissions: d.permissions || null,
     loc: d.loc || null,
+    location_state: d.location_state || null,
     update: publicUpdate(d.update),
     task: publicRepair(d.task)
   };
@@ -1983,6 +2175,37 @@ async function enrollTokenRetired(env, row) {
   return !!(await env.__storage.get("retired-device-token/" + row.token_sha256));
 }
 
+// 注册是全系统唯一一条不需要任何凭据就会写 DO 的路径，而免费额度每天只有 10 万行写入。
+// 两道门：同一来源每小时的注册次数，和未配对记录的总数。都不影响正常设备——
+// 一台设备注册一次，未配对的机器加起来也就几台。
+const ENROLL_PER_IP_PER_HOUR = 20;
+const ENROLL_UNPAIRED_LIMIT = 20;
+const REPORT_BODY_LIMIT = 64 * 1024;
+const DEVICE_BODY_ROUTES = new Set(["/api/devices/report", "/api/devices/enroll"]);
+// 按环境实例各自计数（同 quotaCooldown 的做法）：生产里一个 isolate 一个环境，
+// 测试里每个夹具一个环境，互不串扰。
+const enrollAttempts = new WeakMap();
+function enrollAttemptTable(env) {
+  const key = env.ELF_DO || env;
+  let table = enrollAttempts.get(key);
+  if (!table) { table = new Map(); enrollAttempts.set(key, table); }
+  return table;
+}
+export function enrollAllowed(attempts, peer, now, limit = ENROLL_PER_IP_PER_HOUR) {
+  let entry = attempts.get(peer);
+  if (!entry || entry.until <= now) { entry = { count: 0, until: now + 3600000 }; attempts.set(peer, entry); }
+  // 来源表封顶：先清过期的，仍超就按插入顺序淘汰最老的——不能让海量来源把内存撑爆。
+  if (attempts.size > 512) {
+    for (const [k, v] of attempts) if (v.until <= now) attempts.delete(k);
+    while (attempts.size > 256) attempts.delete(attempts.keys().next().value);
+  }
+  entry.count++;
+  return entry.count <= limit;
+}
+export function unpairedCapacityLeft(devices, limit = ENROLL_UNPAIRED_LIMIT) {
+  return devices.filter(d => d && d.paired === false).length < limit;
+}
+
 async function handleDeviceEnroll(env, request) {
   try {
     const data = await request.json();
@@ -1991,6 +2214,9 @@ async function handleDeviceEnroll(env, request) {
       return json({ ok: false, msg: "设备令牌哈希无效" }, 400);
     }
     const now = Date.now();
+    const peer = await sha256Hex(request.headers.get("CF-Connecting-IP") || env.__requestIp || "local");
+    if (!enrollAllowed(enrollAttemptTable(env), peer, now))
+      return json({ ok: false, msg: "注册过于频繁，请稍后再试" }, 429, { "Retry-After": "600" });
     const enrolls = purgeEnrolls(await loadEnrolls(env), now);
     const product = gatewayProductFields(data,null,normalizeDeviceIdentity(data.hardware_identity));
     if(Object.hasOwn(data,'managed_mobile_status')){
@@ -2009,6 +2235,8 @@ async function handleDeviceEnroll(env, request) {
       if (!registered) registered = await restoreDeviceIdentity(env.__storage,devices,identity,tokenSha,now,product);
       gatewayProductFields(data,registered,identity);
       if (!registered) {
+        if (!unpairedCapacityLeft(devices))
+          return json({ ok: false, msg: "未配对设备过多，请先在管理页清理或配对后再注册" }, 429);
         const model = registrationModel(models,data,identity);
         gatewayProductFields(data,{model_id:model.id},identity);
         registered = { id: newRemoteId("dev_"), token_sha256: tokenSha, paired: false,
@@ -2171,6 +2399,9 @@ async function handleDeviceReport(env, request) {
     const matched = list.find(d => d.id === deviceId);
     if (!matched) return json({ ok: false, pairing_required: true, msg: "设备已解除配对" }, 404);
     if (!matched.token_sha256 || matched.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    // 设备回来上报时顺手回收卡死的任务：它自己都回来了，说明上一条早就没在跑。
+    // 只标终态不归档——归档在下一次入队时和其他终态一起做，这里没有 __storage。
+    reclaimStaleRepair(matched, Date.now());
     const staleAck=await acknowledgeStaleGatewayRollbackReport(env.__storage,matched,data);
     if(staleAck)return json(staleAck);
     if(Object.hasOwn(data,'battery_present') && data.battery_present!==null && typeof data.battery_present!=='boolean')return json({ok:false,msg:"电池存在状态无效"},400);
@@ -2182,6 +2413,10 @@ async function handleDeviceReport(env, request) {
     const gateway=isGateway(product)?gatewayStatus(data.gateway):null;
     const pixelRuntime=pixelRuntimeStatus(data.pixel_runtime,{...matched,...product});
     const proxyRuntime=proxyRuntimeStatus(data.proxy_runtime,{...matched,...product},data.managed_proxy_tasks);
+    const proxyDevice={...matched,...product};
+    const proxyNodes=proxyNodeList(data.proxy_nodes,proxyDevice,data.managed_proxy_tasks);
+    const installedApps=installedAppList(data.installed_apps,proxyDevice,data.managed_proxy_tasks);
+    const proxyApps=proxyAppList(data.proxy_apps,proxyDevice,data.managed_proxy_tasks);
     const mobileNetwork=mobileNetworkStatus(data.mobile_network,{...matched,...product},data.managed_mobile_status);
     Object.assign(matched,product);
     if (identity) matched.hardware_identity=identity;
@@ -2195,9 +2430,14 @@ async function handleDeviceReport(env, request) {
       if (old) reportLocation = old.location;
       else {
         try {
-          const google = await googleLocation(env,deviceId,data);
-          reportLocation = google.location;
-          if (data.radio) data.network_location_reason = google.reason;
+          // 大陆设备走自建转发，其余走 Google。这样分不是为了省事：Google 在大陆没有
+          // WiFi 指纹数据，2026-09-21 实测大陆那台连续 200 次上报全部 not_found，
+          // 继续发给它既拿不到结果，又白白消耗每月额度。
+          const found = mainland(env.__requestCf)
+            ? await cnLocation(env,deviceId,data)
+            : await googleLocation(env,deviceId,data);
+          reportLocation = found.location;
+          if (data.radio) data.network_location_reason = found.reason;
         } catch { if (data.radio) data.network_location_reason = 'unavailable'; }
         if (!reportLocation) reportLocation = pickLocation(data, await geoForIp(env, observedIp));
       }
@@ -2224,13 +2464,21 @@ async function handleDeviceReport(env, request) {
       list[i].last_seen = new Date().toISOString();
       list[i].online = true;
       if (fresh) {
+      // 代理能力与运行状态对所有机型都存。原来只在网关分支里赋值，
+      // 于是 D31 的上报被接受了、状态却从来没落库，面板永远是空的——
+      // 「上报 200 但面板看不到」比直接报错更难查。
+      list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
+      if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
+      // 这四项为省流量只在首轮与内容变化时上报。undefined 是「这轮没带」，保留既有值；
+      // 空数组是设备确实报了空清单，要落库。混为一谈会让面板在设备正常运行时突然空掉。
+      if(proxyNodes!==undefined)list[i].proxy_nodes=proxyNodes;
+      if(installedApps!==undefined)list[i].installed_apps=installedApps;
+      if(proxyApps!==undefined)list[i].proxy_apps=proxyApps;
       if(isGateway(list[i])){
         list[i].gateway=gateway;
         if(pixelRuntime)list[i].pixel_runtime=pixelRuntime;
-        list[i].managed_proxy_tasks=data.managed_proxy_tasks===true;
         list[i].managed_lost_message_v1=data.managed_lost_message_v1===true;
         list[i].managed_pixel_companion_v1=data.managed_pixel_companion_v1===true;
-        if(proxyRuntime)list[i].proxy_runtime=proxyRuntime;
         list[i].managed_mobile_status=data.managed_mobile_status===true;
         if(mobileNetwork)list[i].mobile_network=mobileNetwork;
         else delete list[i].mobile_network;
@@ -2273,7 +2521,10 @@ async function handleDeviceReport(env, request) {
         list[i].managed_config_tasks = data.managed_config_tasks === true;
       }
       list[i].managed_alarm_tasks = data.managed_alarm_tasks === true;
+      list[i].managed_share_link_tasks = data.managed_share_link_tasks === true;
       list[i].managed_locate_tasks = data.managed_locate_tasks === true;
+      // 定位可用性是状态不是能力：上报带了才更新，没带就保留上一次的判定。
+      if (Object.hasOwn(data, 'location_state')) list[i].location_state = normalizeLocationState(data.location_state);
       list[i].managed_lost_tasks = data.managed_lost_tasks === true;
       list[i].managed_lost_safety_v1=data.managed_lost_safety_v1===true;
       list[i].managed_lost_v2 = data.managed_lost_v2 === true; list[i].managed_wipe_v1 = data.managed_wipe_v1 === true;
@@ -2433,8 +2684,10 @@ async function handleElfReleasePublish(env, request) {
     if (!(await verifyUpdateSig(raw, sig))) return json({ ok: false, msg: "清单签名无效" }, 400);
     let m;
     try { m = JSON.parse(raw); } catch (e) { return json({ ok: false, msg: "清单不是 JSON" }, 400); }
-    const channel=validateReleaseManifest(m),vc=m.versionCode;
-    const existing=await getStore(env,releaseKey(channel,vc));
+    const channel=validateReleaseManifest(m),vc=m.versionCode,variant=releaseVariant(m.variant);
+    // 唯一性看「通道 + 版本码 + 变体」。同一版本的全量包与精简包版本码相同、哈希不同，
+    // 若仍按「通道 + 版本码」判重，第二个变体会被当成冲突制品拒掉。
+    const existing=await getStore(env,releaseKey(channel,vc,variant));
     if(existing && (existing.sha256!==m.sha256 || existing.size!==m.size || existing.versionName!==m.versionName
         || existing.certSha256!==m.certSha256))throw Error('同一通道版本码已对应其他制品，请增加版本码');
     const jobMapping=await getStore(env,'elfremote_job_'+m.job_id);
@@ -2449,7 +2702,7 @@ async function handleElfReleasePublish(env, request) {
       if(!target || deviceReleaseChannel(target,await loadDeviceModels(env))!==channel)throw Error('清单目标设备与发布通道不匹配');
     }
     const rel = {
-      channel,package:m.package,model_id:RELEASE_CHANNELS[channel].model_id,
+      channel,variant,package:m.package,model_id:RELEASE_CHANNELS[channel].model_id,
       versionCode: vc,
       versionName: String(m.versionName || ""),
       sha256: String(m.sha256 || ""),
@@ -2464,7 +2717,7 @@ async function handleElfReleasePublish(env, request) {
     if (m.device_id && data.publish_only!==true) {
       await assignReleaseToDevice(env, String(m.device_id), rel);
     }
-    await setStore(env, releaseKey(channel,vc), rel);
+    await setStore(env, releaseKey(channel,vc,variant), rel);
     const list = (await getStore(env, releaseListKey(channel))) || [];
     if (list.indexOf(vc) < 0) list.push(vc);
     await setStore(env, releaseListKey(channel), list);
@@ -2474,6 +2727,23 @@ async function handleElfReleasePublish(env, request) {
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
+}
+
+/** 取某个资产通道里最新的、未退休未过期的发布；没有就返回 null。 */
+async function latestAssetRelease(env,channel){
+  try{
+    if(!isAssetChannel(channel))return null;
+    const ids=(await getStore(env,releaseListKey(channel)))||[];
+    let best=null;
+    for(const id of ids){
+      const rel=await getStore(env,releaseKey(channel,id));
+      if(!rel||rel.retired_at||typeof rel.manifest_raw!=='string')continue;
+      const m=JSON.parse(rel.manifest_raw);
+      if(Number(m.expires_at)>0&&Number(m.expires_at)<=Date.now())continue;
+      if(!best||Number(m.versionCode)>best.versionCode)best={versionCode:Number(m.versionCode),manifest_raw:rel.manifest_raw,signature:rel.signature};
+    }
+    return best;
+  }catch(unavailable){console.error('asset_release_lookup_failed',channel);return null;}
 }
 
 async function handleElfReleaseList(env,url) {
@@ -2489,14 +2759,20 @@ async function handleElfReleaseList(env,url) {
     }
     const ids=(await getStore(env,releaseListKey(channel))) || [],out=[];
     for(const id of ids) {
-      const rel=await getStore(env,releaseKey(channel,id));if(!rel||rel.retired_at)continue;
-      const m=JSON.parse(rel.manifest_raw||'{}');
-      if(deviceId && m.device_id && m.device_id!==deviceId)continue;
-      out.push({channel,package:rel.package||RELEASE_CHANNELS[channel].package,model_id:RELEASE_CHANNELS[channel].model_id,
-        versionCode:rel.versionCode,versionName:rel.versionName,sha256:rel.sha256,size:rel.size,certSha256:rel.certSha256,
-        expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
+      // 一个版本码下可能同时存在全量包与精简包，两个都要列出来，面板才能分别下发；
+      // 缺省（无 variant）的旧记录按 full 读，既有存储键不必迁移。
+      for(const variant of RELEASE_VARIANTS) {
+        const rel=await getStore(env,releaseKey(channel,id,variant));if(!rel||rel.retired_at)continue;
+        const m=JSON.parse(rel.manifest_raw||'{}');
+        if(deviceId && m.device_id && m.device_id!==deviceId)continue;
+        out.push({channel,variant:releaseVariant(rel.variant),package:rel.package||RELEASE_CHANNELS[channel].package,
+          model_id:RELEASE_CHANNELS[channel].model_id,
+          versionCode:rel.versionCode,versionName:rel.versionName,sha256:rel.sha256,size:rel.size,certSha256:rel.certSha256,
+          expires_at:rel.expires_at,expired:Number(rel.expires_at)>0&&Number(rel.expires_at)<=Date.now()});
+      }
     }
-    out.sort((a,b)=>b.versionCode-a.versionCode);
+    // 同版本码内精简包排在前面：它是日常更新用的那个，下拉里应先被看到。
+    out.sort((a,b)=>b.versionCode-a.versionCode||(a.variant==='slim'?-1:1));
     return json({ok:true,channel,releases:out,store:env.ELF_DO?'do':'kv',
       ...(channel === 'd31' ? {auto_follow: publicD31Recommendation(await env.__storage?.get(D31_RECOMMENDATION_KEY))} : {})});
   } catch(e){return json({ok:false,msg:e.message},400);}
@@ -2505,7 +2781,15 @@ async function handleElfReleaseList(env,url) {
 async function releaseForDevice(env,device,input,version) {
   const channel=deviceReleaseChannel(device,await loadDeviceModels(env));
   if(input.channel!==undefined && releaseChannel(input.channel)!==channel)throw Error('设备与发布通道不匹配');
-  return getStore(env,releaseKey(channel,version));
+  // 没指定变体时不擅自挑：取这个版本码下实际存在的那些，
+  // 由 preferredRelease 选（有精简包就用精简包，它才是日常更新用的）。
+  if(input.variant!==undefined)return getStore(env,releaseKey(channel,version,releaseVariant(input.variant)));
+  const found=[];
+  for(const variant of RELEASE_VARIANTS){
+    const rel=await getStore(env,releaseKey(channel,version,variant));
+    if(rel)found.push({...rel,variant:releaseVariant(rel.variant)});
+  }
+  return preferredRelease(found);
 }
 
 async function handleElfAssign(env, request) {
@@ -2544,6 +2828,10 @@ async function assignReleaseToDevice(env, deviceId, rel, input = {}) {
     if (list[i].enabled === false) throw new Error("设备已停用");
     const manifest = JSON.parse(rel.manifest_raw);
     const channel=manifestChannel(manifest);
+    // 资产通道（代理核心这类裸二进制）绝不能走到这里：这条路会在设备记录上建 update 记录，
+    // 设备的更新器会消费它并按 APK 安装。22 MB 的 gz 被拿去 pm install 是必然出事的。
+    // 核心的下发走 configure_proxy 的参数，带签名清单由设备自己验签，不经更新通道。
+    if(isAssetChannel(channel))throw Error("资产通道不能指派为客户端更新");
     if(deviceReleaseChannel(list[i],await loadDeviceModels(env))!==channel)throw Error("设备与发布制品不匹配");
     if(['d31','gateway'].includes(channel) && (list[i].managed_update!==true || list[i].managed_update_v2!==true))throw Error("客户端尚未启用独立更新器");
     if(channel==='gateway'&&(list[i].app_package!==manifest.package||list[i].app_cert_sha256!==manifest.certSha256||list[i].app_abi!==manifest.abi))throw Error('网关已装应用与制品不匹配');
@@ -2627,6 +2915,9 @@ async function handleElfUpdateProgress(env, request) {
 }
 
 function addManagedTaskOffer(body, device, report, now) {
+  if(device.enabled!==false&&report.managed_share_link_tasks===true&&device.task?.managed_share_link_v1===true
+    &&device.task.type==='show_share_link'&&shouldOfferRepair(device,now))
+    body.managed_task={...repairOfferPayload(device.task),managed_share_link_v1:true};
   if(device.enabled!==false&&report.managed_contacts_page_v1===true&&device.task?.type==='contacts_page'&&shouldOfferRepair(device,now))body.managed_task={...repairOfferPayload(device.task),managed_exec_v1:true,managed_contacts_page_v1:true};
   if(device.enabled!==false&&report.managed_file_return===true&&device.task?.type==='get_file'&&device.task.managed_file_return_v1&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_file_return_v1:true};
@@ -2672,7 +2963,9 @@ function addManagedTaskOffer(body, device, report, now) {
   if(device.enabled!==false && !isGateway(device) && report.status_only===true && report.managed_config_tasks===true
       && device.task?.managed_config_v1===true && CONFIG_TYPES.includes(device.task.type) && shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_config_v1:true};
-  if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_proxy_tasks===true
+  // 这一处最要命：它是把任务真正交到设备手里的那一步。按型号挡住，任务会在服务端一直 pending 到过期，
+  // 而面板上看着是「已下发」，现场却什么都没发生——比直接报错更难查。
+  if(device.enabled!==false&&report.status_only===true&&report.managed_proxy_tasks===true
       &&device.task?.managed_proxy_v1===true&&PROXY_TASK_TYPES.includes(device.task.type)&&shouldOfferRepair(device,now))
     body.managed_task={...repairOfferPayload(device.task),managed_proxy_v1:true};
   if(device.enabled!==false&&isGateway(device)&&report.status_only===true&&report.managed_lost_message_v1===true
@@ -2710,7 +3003,7 @@ async function handleElfEnqueueTask(env, request) {
     if(data.type==='wipe_data'){data.expires_at=authorizeWipe(found,data.params);if(found.managed_lost_safety_v1)data.params={...data.params,expected_revision:found.lost_mode?.revision};}
     if(data.type==='set_lost_mode'&&!isLostSafety(data)&&found.managed_lost_safety_v1&&(!found.lost_mode?.revision||data.params?.expected_revision!==found.lost_mode.revision))return json({ok:false,msg:'设备策略已改变，请刷新后再设置'},409);
     if(data.action==='cancel') {
-      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello',PIXEL_COMPANION_TASK_TYPE,...PROXY_TASK_TYPES].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
+      if(found.task?.id!==data.task_id || !['system_config','root_exec','send_file','get_file','file_manage','configure_sip','configure_zello','show_share_link',PIXEL_COMPANION_TASK_TYPE,...PROXY_TASK_TYPES].includes(found.task?.type)) return json({ok:false,msg:'未找到该任务'},404);
       if(isNetworkTask(found.task)){const cancel_outcome=cancelNetworkTask(found.task);await saveDevices(env,list);return json({ok:true,cancel_outcome,task:publicRepair(found.task)});}
       if(['pending','claimed','running'].includes(found.task.state)) {found.task.cancel_requested=true;await saveDevices(env,list);}
       return json({ok:true,task:publicRepair(found.task)});
@@ -2723,29 +3016,8 @@ async function handleElfEnqueueTask(env, request) {
       const assigned = await assignReleaseToDevice(env, deviceId, release, data);
       return json({ok:true,kind:"update",update:publicUpdate(assigned.update)});
     }
-    const configTaskCapable=CONFIG_TYPES.includes(data.type)&&(isGateway(found)
-      ?data.type==='connect_wifi'&&found.managed_wifi_config_tasks===true
-      :found.managed_config_tasks===true);
-    if(found.status_only && !((data.type==='contacts_page'&&found.managed_contacts_page_v1===true)||(data.type==="root_exec" && found.managed_exec_tasks===true)
-        || (data.type==="file_manage" && found.managed_file_operations===true)
-        || (data.type==="system_config" && found.managed_system_settings===true)
-        || (data.type==="configure_sip" && found.managed_sip_account===true)
-        || (data.type==="configure_zello" && found.managed_zello_account===true)
-        || (data.type==="get_file" && found.managed_file_return===true)
-        || (data.type==="send_file" && found.managed_file_tasks===true)
-        || (data.type==="pull_logs" && found.managed_log_tasks===true)
-        || (data.type==="heal_network" && found.managed_heal_tasks===true)
-        || (data.type==="reboot" && found.managed_reboot_tasks===true)
-        || (data.type==="restart_adbd" && found.managed_adbd_tasks===true)
-        || (data.type==="scan_wifi" && found.managed_wifi_scan_tasks===true)
-        || (["play_alarm","stop_alarm"].includes(data.type) && found.managed_alarm_tasks===true)
-        || (data.type==="locate_now" && found.managed_locate_tasks===true)
-        || (data.type==="set_lost_mode" && found.managed_lost_tasks===true)
-        || (data.type==="wipe_data" && found.managed_wipe_v1===true)
-        || (LOST_MESSAGE_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_lost_message_v1===true)
-        || (PROXY_TASK_TYPES.includes(data.type) && isGateway(found) && found.managed_proxy_tasks===true)
-        || (data.type===PIXEL_COMPANION_TASK_TYPE && isGateway(found) && found.managed_pixel_companion_v1===true)
-        || configTaskCapable)) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
+    // 任务类型 → 能力位的对照在 control-plane.js 的 TASK_CAPABILITIES，这里不再手写 || 链。
+    if(found.status_only && !taskCapable(found,data.type,isGateway(found))) return json({ok:false,msg:"当前客户端尚未接通该任务"},409);
     if(data.type==='file_manage' && data.params?.action==='delete' && !found.managed_file_delete)return json({ok:false,msg:'客户端尚未支持删除文件'},409);
     if(data.type==='contacts_page'&&found.managed_contacts_page_v1!==true)return json({ok:false,msg:'客户端尚未支持通讯录分页',not_enqueued:true},409);
     if(LOST_MESSAGE_TASK_TYPES.includes(data.type)&&(!isGateway(found)||found.managed_lost_message_v1!==true))
@@ -2767,18 +3039,47 @@ async function handleElfEnqueueTask(env, request) {
     }
     let params = data.params,proxyDownloadTokenSha256=null;
     if(PROXY_TASK_TYPES.includes(data.type)){
-      if(!isGateway(found)||found.managed_proxy_tasks!==true)return json({ok:false,msg:'客户端尚未支持代理管理'},409);
+      if(found.managed_proxy_tasks!==true)return json({ok:false,msg:'客户端尚未支持代理管理'},409);
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
-      const existing=await findRepairTask(env.__storage,found,data.id);
-      const prepared=await proxyConfigureParams(found,params||{},data.id,existing);
-      params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
+      // 只有 configure_proxy 走这条：它要生成一次性下载地址、附上核心签名清单。
+      // select_proxy_node 与 set_proxy_apps 自带参数，交给 proxyTaskParams 校验即可；
+      // 原来整个 PROXY_TASK_TYPES 都塞进 proxyConfigureParams，那个函数对非配置任务
+      // 要求参数为空，新类型一进来就会被拒成「代理配置引用无效」。
+      if(data.type==='configure_proxy'){
+        const existing=await findRepairTask(env.__storage,found,data.id);
+        // 核心随配置一起下发：设备自己判断本机有没有、版本对不对，决定要不要拉。
+        // 服务端不记「这台装没装」——那份状态只有设备知道，记在服务端迟早和现场不一致。
+        const coreRelease=await latestAssetRelease(env,'d31-proxy-core');
+        const prepared=await proxyConfigureParams(found,params||{},data.id,existing,'https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host,coreRelease);
+        params=prepared.params;proxyDownloadTokenSha256=prepared.token_sha256;
+      }
     }
     if(data.type===PIXEL_COMPANION_TASK_TYPE){
       data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
       const deadline=Date.now()+30*60*1000,requested=Number(data.expires_at);
       data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
+    }
+    if(data.type==='show_share_link'){
+      // 链接由服务端现生成后推给设备，设备只负责画二维码，不必用设备令牌反向申请。
+      // 信封的 expires_at 是任务领取期限（五分钟），链接有效期另放 params.link_expires_at：
+      // 两者含义不同不能共用一个名字，设备离线很久后再上线也不该突然弹出二维码。
+      data.id=String(data.id||'').trim()||('t'+crypto.randomUUID().replaceAll('-',''));
+      const deadline=Date.now()+5*60*1000,requested=Number(data.expires_at);
+      data.expires_at=Math.min(deadline,Number.isFinite(requested)&&requested>0?requested:deadline);
+      const origin='https://'+new URL(env.ELF_BASE_URL||'https://v.elfradio.net').host;
+      // 有效期沿用分享弹窗上那个下拉框的取值，不传就用默认的一小时。
+      // 不接这个参数的话，面板上选了「6 小时」却照样发一小时的链接，界面就是在骗人。
+      let shareTtl; try { shareTtl=ttlFromInput(params?.ttl); }
+      catch(invalid) { return json({ok:false,msg:invalid.message},400); }
+      const {link}=await shareCreateLink(env.__storage,{deviceId,ttlMs:shareTtl,source:'admin',requestId:data.id});
+      const linkUrl=shareUrl(origin,link.token);
+      // 固定免密：二维码会画在可能摆在公共位置的座机屏幕上，载荷里绝不放口令。
+      // qr_text 全大写是因为二维码字母数字模式不收小写，路由已经大小写都收。
+      const requestedDisplay=Number(params?.display_ms);
+      params={url:linkUrl,qr_text:linkUrl.toUpperCase(),link_expires_at:link.expires_at,
+        ...(Number.isFinite(requestedDisplay)&&requestedDisplay>0?{display_ms:requestedDisplay}:{})};
     }
     if(data.type==='set_lost_mode'&&params?.version===2)params={...params,paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0};
     if(data.type==='configure_sip' && params?.source!==undefined){
@@ -2808,6 +3109,8 @@ async function handleElfEnqueueTask(env, request) {
       if(data.type==='contacts_page'&&['CONTACTS_SNAPSHOT_BUSY','CONTACTS_SNAPSHOT_GONE'].includes(queued.reason))return json({ok:false,code:queued.reason,not_enqueued:true,msg:queued.reason==='CONTACTS_SNAPSHOT_BUSY'?'已有联系人快照，请先关闭或等待到期':'联系人快照已失效，请重新读取'},409);
       const msg = queued.reason === "unknown-type" ? "未开通该任务类型"
         : queued.reason === "inflight" ? "已有任务进行中"
+          + (queued.inflight ? "：" + queued.inflight.type + " " + queued.inflight.id
+            + (queued.inflight.releases_at ? "，最迟 " + Math.max(1, Math.ceil((queued.inflight.releases_at - Date.now()) / 60000)) + " 分钟后自动释放" : "") : "")
         : queued.reason === "expired" ? "任务已过期"
         : queued.reason === "idempotency-conflict" ? "该任务编号已用于不同的操作，请创建新任务"
         : "无法入队";
@@ -2823,13 +3126,14 @@ async function handleElfEnqueueTask(env, request) {
     if(!queued.duplicate && found.status_only && data.type==="restart_adbd") found.task.managed_adbd_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="scan_wifi") found.task.managed_wifi_scan_v1=true;
     if(!queued.duplicate && found.status_only && isGateway(found) && data.type==="connect_wifi") found.task.managed_wifi_config_v1=true;
-    if(!queued.duplicate && found.status_only && isGateway(found) && PROXY_TASK_TYPES.includes(data.type)){
+    if(!queued.duplicate && found.status_only && found.managed_proxy_tasks===true && PROXY_TASK_TYPES.includes(data.type)){
       found.task.managed_proxy_v1=true;
       if(data.type==='configure_proxy')found.task.proxy_download_token_sha256=proxyDownloadTokenSha256;
     }
     if(!queued.duplicate && found.status_only && isGateway(found) && LOST_MESSAGE_TASK_TYPES.includes(data.type)) found.task.managed_lost_message_v1=true;
     if(!queued.duplicate && found.status_only && isGateway(found) && data.type===PIXEL_COMPANION_TASK_TYPE) found.task.managed_pixel_companion_v1=true;
     if(!queued.duplicate && found.status_only && ["play_alarm","stop_alarm"].includes(data.type)) found.task.managed_alarm_v1=true;
+    if(!queued.duplicate && found.status_only && data.type==="show_share_link") found.task.managed_share_link_v1=true;
     if(!queued.duplicate && found.status_only && data.type==="locate_now") found.task.managed_locate_v1=true;
     if(!queued.duplicate && ["set_lost_mode","wipe_data"].includes(data.type)) found.task.managed_lost_v1=true;
     if(data.type==='set_lost_mode'&&found.task.params?.version===2)Object.assign(found.task.params,{paired:found.paired!==false,unpaired_at_ms:found.unpaired_at_ms||0});
@@ -2840,6 +3144,304 @@ async function handleElfEnqueueTask(env, request) {
   } catch (e) {
     return json({ ok: false, msg: e.message }, 400);
   }
+}
+
+// 设备侧「连接」按钮在本机没有配置时走这条，向服务端要一份配置下发参数。
+// 与管理员下发的 configure_proxy 互不干扰：授权记在 device.proxy_offer，不碰 device.task。
+async function handleProxyConfigOffer(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const requestId = String(data.request_id || "").trim();
+    if (!deviceId || !token || !requestId) return json({ ok: false, msg: "缺少设备凭证或请求编号" }, 400);
+    const tokenSha = await sha256Hex(token);
+    const list = await loadDevices(env);
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== deviceId) continue;
+      if (!list[i].token_sha256 || list[i].token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+      if (list[i].managed_proxy_tasks !== true) return json({ ok: false, msg: "客户端尚未支持代理管理" }, 409);
+      const coreRelease = await latestAssetRelease(env, 'd31-proxy-core');
+      let granted;
+      try {
+        granted = await proxyOfferGrant(list[i], requestId, Date.now(),
+          'https://' + new URL(env.ELF_BASE_URL || 'https://v.elfradio.net').host, coreRelease);
+      } catch (e) { return json({ ok: false, msg: e.message }, 409); }
+      if (!granted.reused) await saveDevices(env, list);
+      return json({ ok: true, reused: granted.reused, params: granted.params });
+    }
+    return json({ ok: false, msg: "未找到设备" }, 404);
+  } catch (e) { return json({ ok: false, msg: e.message }, 400); }
+}
+
+/**
+ * 设备来问：我这个精简包要的那份原生库，去哪儿下。
+ *
+ * 按哈希点名，不按版本：设备要的是它自己 APK 里写死的那一份，服务端只负责
+ * 在已发布的资产里找到对得上的那条，找不到就直说。之所以敢这么简单——
+ * 完整性不在这条应答里，设备下完之后拿自己 APK 内的哈希校验字节，
+ * 那个哈希在 APK 签名覆盖范围内，服务端改不动。这里即使整个被攻破，
+ * 能做到的也只是让设备白下一次、然后丢掉。
+ */
+async function handleMediaNativeOffer(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || "").trim();
+    const token = String(data.token || "");
+    const sha256 = String(data.sha256 || "").toLowerCase();
+    if (!deviceId || !token) return json({ ok: false, msg: "缺少设备凭证" }, 400);
+    if (!/^[0-9a-f]{64}$/.test(sha256)) return json({ ok: false, msg: "缺少原生库指纹" }, 400);
+    const tokenSha = await sha256Hex(token);
+    const device = (await loadDevices(env)).find(d => d.id === deviceId);
+    if (!device) return json({ ok: false, msg: "未找到设备" }, 404);
+    if (!device.token_sha256 || device.token_sha256 !== tokenSha) return json({ ok: false, msg: "设备凭证无效" }, 401);
+    const found = await assetReleaseBySha(env, MEDIA_NATIVE_CHANNEL, sha256);
+    // 没有对应资产是运维漏了发布，不是设备的错；说清楚，别让现场去猜「通信怎么灰的」。
+    if (!found) return json({ ok: false, msg: "服务端尚未发布该原生库" }, 404);
+    return json({ ok: true, url: found.url, size: found.size, sha256: found.sha256 });
+  } catch (e) { return json({ ok: false, msg: e.message }, 400); }
+}
+
+const MEDIA_NATIVE_CHANNEL = 'd22-media-native';
+/** 在某个资产通道里按内容哈希找已发布记录；退休或过期的不算。 */
+async function assetReleaseBySha(env, channel, sha256) {
+  try {
+    if (!isAssetChannel(channel)) return null;
+    const ids = (await getStore(env, releaseListKey(channel))) || [];
+    for (const id of ids) {
+      const rel = await getStore(env, releaseKey(channel, id));
+      if (!rel || rel.retired_at || typeof rel.manifest_raw !== 'string') continue;
+      const m = JSON.parse(rel.manifest_raw);
+      if (m.sha256 !== sha256) continue;
+      if (Number(m.expires_at) > 0 && Number(m.expires_at) <= Date.now()) continue;
+      return { url: m.url, size: Number(m.size), sha256: m.sha256, versionCode: Number(m.versionCode) };
+    }
+    return null;
+  } catch (unavailable) { console.error('media_native_lookup_failed'); return null; }
+}
+
+// MCP 使用计数攒在这里，满 20 次或 1 分钟才落盘一次。
+// 放模块级而不是 DO 实例上：键是令牌哈希，不同设备不会撞；进程重启丢掉的最多是
+// 最后那一批计数，而计数本来就只用于判断「这个令牌最近有没有人在用」。
+const mcpUsage = new Map();
+// 一个令牌同时只让一个 agent 连着：两个 agent 共用同一个令牌会互相覆盖任务槽、
+// 抢对方的结果，现场表现是命令莫名其妙丢失。会话只存内存，与 ADB/媒体会话一致。
+const mcpSessions = new Map();
+
+function mcpOrigin(env) {
+  return 'https://' + new URL(env.ELF_BASE_URL || 'https://v.elfradio.net').host;
+}
+
+/** 令牌管理：列出 / 新建。鉴权与设备范围裁决已在上游完成（分享用户只能碰自己那台）。 */
+async function handleMcpTokens(env, request, url, method) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  try {
+    if (method === 'GET') {
+      const deviceId = String(url.searchParams.get('device_id') || '');
+      if (!deviceId) return json({ ok: false, msg: '设备编号无效' }, 400);
+      return json({ ok: true, tokens: await mcpListTokens(storage, deviceId),
+        scopes: MCP_SCOPES, ttls: Object.keys(MCP_TTL_PRESETS), server_time: Date.now() });
+    }
+    const data = await request.json();
+    const device = (await loadDevices(env)).find(d => d.id === String(data.device_id || ''));
+    if (!device) return json({ ok: false, msg: '未找到设备' }, 404);
+    // 分享页建的令牌要记住来源链接：删掉那条链接时连带吊销，否则链接收回了钥匙还在。
+    const share = env.__ctx?.kind === 'share';
+    const created = await mcpCreateToken(storage, { deviceId: device.id, deviceName: device.name,
+      name: data.name, ttl: data.ttl, scopes: data.scopes,
+      source: share ? 'share' : 'admin', link_token: share ? env.__ctx.link_token : null });
+    // secret 是唯一一次能拿到明文的机会；服务器这边只留了哈希。
+    return json({ ok: true, secret: created.secret, token: created.token,
+      server_name: created.server_name, endpoint: mcpOrigin(env) + '/api/mcp' });
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+async function handleMcpTokenDelete(env, request) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  try {
+    const data = await request.json();
+    const removed = await mcpRevokeToken(storage, String(data.device_id || ''), String(data.id || ''));
+    return removed ? json({ ok: true }) : json({ ok: false, msg: '未找到该令牌' }, 404);
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+/** 面板断开：agent 崩掉时会话要等十五分钟才自己过期，这里让人一键放行。 */
+async function handleMcpRelease(env, request) {
+  try {
+    const data = await request.json();
+    const deviceId = String(data.device_id || '');
+    if (!deviceId) return json({ ok: false, msg: '设备编号无效' }, 400);
+    return json({ ok: true, released: mcpReleaseDevice(mcpSessions, deviceId) });
+  } catch (error) { return json({ ok: false, msg: error.message }, 400); }
+}
+
+/**
+ * 工具实现：一律回头走自己的路由表，和网页调的是同一段代码。
+ * 总计划里写死的形态是「薄封装，不复制另一份业务流程」——这里就是那句话的字面落实。
+ */
+async function mcpToolCall(env, device, name, args) {
+  const route = async (path, method, payload) => {
+    const response = await app.fetch(new Request('https://elf-store' + path, { method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) }), env);
+    const text = await response.text();
+    if (!response.ok) { let msg = text; try { msg = JSON.parse(text).msg || text; } catch {} throw Error(msg); }
+    return text;
+  };
+  const enqueue = async (type, params) => {
+    const id = 'mcp-' + crypto.randomUUID();
+    const raw = await route('/api/elfremote/task', 'POST', { device_id: device.id, type, id, params });
+    const task = JSON.parse(raw).task || {};
+    // 立刻推送唤醒。网页下发时这一步在外层 Worker 里做（见 /api/elfremote/task 那段），
+    // 而这里是在 DO 内部直接走路由表，绕过了它——不补上的话任务要躺到设备下一次
+    // 定时上报才被领走，五分钟一条命令没法用。
+    // 用一个自持 stub 复用 pushHttp 本身，而不是把它那段逻辑再抄一遍：
+    // stub.fetch 只是把 /__push/* 转成对 pushState 的直接调用，不产生对自己的重入请求。
+    try {
+      const selfStub = { fetch: (target, init) => pushState(env.__storage,
+        new Request(target, init), () => loadDevices(env)) };
+      await pushHttp(env, new Request('https://elf-store/api/devices/request-status',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: device.id }) }), selfStub);
+    } catch (unreachable) { console.error('mcp_wake_failed'); }
+    // 不在这里等结果：整个 DO 的请求是串行的，等三十秒等于把这台设备的所有流量一起卡住。
+    return JSON.stringify({ task_id: task.id || id, state: task.state || 'pending',
+      下一步: '用 task_status 查这个 task_id，通常三到十秒出结果' }, null, 1);
+  };
+  if (name === 'device_info') {
+    const caps = {};
+    for (const [key, value] of Object.entries(device))
+      if (key.startsWith('managed_') && typeof value === 'boolean') caps[key] = value;
+    return JSON.stringify({ 设备: device.name || device.id, 编号: device.id,
+      客户端版本: device.app_version || null, 在线: device.online === true,
+      最后上报: device.last_reported_at || null, 电量: device.battery ?? null,
+      网络: device.network || null, 定位: device.location || null,
+      发布通道: device.update_channel || null, 已启用: device.enabled !== false,
+      能力位: caps }, null, 1);
+  }
+  if (name === 'releases')
+    return route('/api/elfremote/releases?device_id=' + encodeURIComponent(device.id), 'GET');
+  if (name === 'task_status') {
+    const id = String(args.task_id || '');
+    if (!id) throw Error('缺少 task_id');
+    return route('/api/elfremote/tasks?device_id=' + encodeURIComponent(device.id)
+      + '&task_id=' + encodeURIComponent(id), 'GET');
+  }
+  if (name === 'install') {
+    const versionCode = Number(args.versionCode);
+    if (!Number.isSafeInteger(versionCode) || versionCode <= 0) throw Error('versionCode 无效');
+    return route('/api/elfremote/assign', 'POST', { device_id: device.id,
+      channel: device.update_channel, versionCode,
+      ...(args.variant ? { variant: args.variant } : {}), request_id: crypto.randomUUID() });
+  }
+  if (name === 'run') {
+    const command = String(args.command || '').trim();
+    if (!command) throw Error('缺少 command');
+    const timeout = Math.min(120, Math.max(5, Number(args.timeout) || 30));
+    return enqueue('root_exec', { command, timeout, cwd: '/' });
+  }
+  if (name === 'pull_logs') return enqueue('pull_logs', {});
+  if (name === 'files') return enqueue('file_manage', args.params || {});
+  if (name === 'system_config') return enqueue('system_config', args.params || {});
+  throw Error('没有实现这个工具：' + name);
+}
+
+/** MCP 端点。凭 Authorization: Bearer 认证，不认管理员会话——它是给 agent 用的。 */
+async function handleMcp(env, request, method = 'POST') {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const rpcError = (code, message, status) =>
+    json({ jsonrpc: '2.0', id: null, error: { code, message } }, status);
+  // 只从请求头读，绝不接受放在 URL 查询串里——URL 会进各种访问日志。
+  const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  let record;
+  try { record = await mcpAuthenticate(storage, bearer); }
+  catch (error) { return rpcError(-32001, error.message, error.status || 401); }
+  const device = (await loadDevices(env)).find(d => d.id === record.device_id);
+  if (!device) return rpcError(-32002, '这个令牌指向的设备已不存在', 404);
+  if (device.enabled === false) return rpcError(-32002, '这台设备已停用', 409);
+  // 会话编号按 MCP 规范放在 Mcp-Session-Id 头里。
+  const sessionId = request.headers.get('Mcp-Session-Id') || '';
+  if (method === 'DELETE') {
+    mcpReleaseSession(mcpSessions, record, sessionId);
+    return new Response(null, { status: 204 });
+  }
+  let body;
+  try { body = await request.json(); } catch { return rpcError(-32700, '请求不是合法 JSON', 400); }
+
+  const ctx = { scopes: record.scopes, deviceName: device.name || device.id, guide: mcpGuide,
+    call: (name, args) => mcpToolCall(env, device, name, args) };
+  const batch = Array.isArray(body);
+  const messages = batch ? body : [body];
+  // 握手就是「占用」，其余请求必须带着自己那个会话编号——带错或没带，就是另一个 agent。
+  const handshake = messages.some(m => m && m.method === 'initialize');
+  let session = null;
+  try {
+    session = handshake ? mcpClaimSession(mcpSessions, record, sessionId).session
+      : mcpTouchSession(mcpSessions, record, sessionId);
+  } catch (error) { return rpcError(-32003, error.message, error.status || 409); }
+  const replies = [];
+  let called = false;
+  for (const message of messages) {
+    if (message && message.method === 'tools/call') called = true;
+    const reply = await mcpDispatch(message, ctx);
+    if (reply) replies.push(reply);
+  }
+  if (called && mcpNoteUsage(mcpUsage, record.token_sha256, Date.now()))
+    await mcpFlushUsage(storage, mcpUsage, record.token_sha256);
+  // 全是通知时没有回包：按 JSON-RPC 规范回 202，不能回一个空 body 的 200。
+  const headers = session ? { 'Mcp-Session-Id': session.id } : {};
+  if (!replies.length) return new Response(null, { status: 202, headers });
+  return json(batch ? replies : replies[0], 200, headers);
+}
+
+/**
+ * 管理员只读：设备列表在存储里的真实字节数。
+ * DO 存储单值上限 128 KiB，remote_devices 是整表一个键——越限那一刻所有写入一起失败。
+ * 拆键之前先量，拆键之后用它盯索引键有没有再长回去。
+ */
+async function handleStoreSize(env) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const list = (await storage.get('remote_devices')) || [];
+  const indexBytes = JSON.stringify(list).length;
+  const ext = [...await storage.list({ prefix: 'device_ext/' })];
+  const extBytes = ext.reduce((n, [, v]) => n + JSON.stringify(v).length, 0);
+  const devices = list.map(d => ({ id: d.id, name: d.name, bytes: JSON.stringify(d).length,
+    ext_bytes: JSON.stringify(ext.find(([k]) => k === 'device_ext/' + d.id)?.[1] ?? null).length }))
+    .sort((a, b) => b.bytes - a.bytes);
+  return json({ ok: true, limit: 131072, index_bytes: indexBytes,
+    index_ratio: Number((indexBytes / 131072).toFixed(3)), ext_keys: ext.length, ext_bytes: extBytes, devices });
+}
+
+/**
+ * 健康摘要，管理员只读。「无需维护」不等于「无人知晓」：想看的时候打开就是，不发邮件。
+ * 只汇总已有的事实（每台最后上报、存储体积、未配对数、agent 连接、额度快照），不新增采集。
+ */
+async function handleAdminHealth(env) {
+  const storage = env.__storage;
+  if (!storage) return json({ ok: false, msg: '设备存储不可用' }, 503);
+  const now = Date.now();
+  const devices = await loadDevices(env);
+  const list = (await storage.get('remote_devices')) || [];
+  const indexBytes = JSON.stringify(list).length;
+  let usage = null;
+  try { usage = await (await cfUsageResponse(env)).json(); } catch { usage = null; }
+  const metrics = Array.isArray(usage?.metrics) ? usage.metrics
+    .filter(m => m && m.limit && typeof m.value === 'number')
+    .map(m => ({ id: m.id, ratio: Number((m.value / m.limit).toFixed(3)) })) : [];
+  return json({ ok: true, server_time: now,
+    storage: { index_bytes: indexBytes, index_ratio: Number((indexBytes / 131072).toFixed(3)), limit: 131072 },
+    devices: devices.filter(d => d && d.id).map(d => ({ id: d.id, name: d.name, paired: d.paired !== false,
+      enabled: d.enabled !== false, app_version: d.app_version || null, last_reported_at: d.last_reported_at || null,
+      silent_ms: d.last_reported_at ? Math.max(0, now - Date.parse(d.last_reported_at)) : null,
+      task: d.task ? { id: d.task.id, type: d.task.type, state: d.task.state } : null,
+      mcp_session: mcpDeviceSession(mcpSessions, d.id, now) })),
+    unpaired: devices.filter(d => d && d.paired === false).length,
+    quota: metrics, quota_generated_at: usage?.generatedAt || null,
+    retention: (await storage.get(RETENTION_LAST_KEY)) || null });
 }
 
 async function handleElfTaskProgress(env, request) {
@@ -2935,118 +3537,10 @@ async function handleElfApk(env, pathname) {
   });
 }
 
-function json(data, status = 200, headers = {}) {
+export function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8", ...headers }
-  });
-}
-
-function b64EncodeUnicode(str) {
-  return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
-    return String.fromCharCode('0x' + p1);
-  }));
-}
-
-async function handleSubscription(request, url, env) {
-  const token = url.searchParams.get("token") || url.pathname.split("/").pop();
-  const configuredToken = (await getStore(env, "sub_token")) || DEFAULT_TOKEN;
-  if (token !== configuredToken) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const nodes = (await getStore(env, "nodes")) || [];
-  const globalCfIp = (await getStore(env, "cf_preferred_ip")) || "104.16.80.80";
-
-  // 格式识别：支持 ?type=v2ray 或 ?type=clash，或通过 User-Agent 智能自适应
-  const reqType = (url.searchParams.get("type") || url.searchParams.get("format") || "").toLowerCase();
-  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
-
-  let isV2ray = false;
-  if (reqType === "v2ray" || reqType === "base64") {
-    isV2ray = true;
-  } else if (reqType === "clash" || reqType === "mihomo") {
-    isV2ray = false;
-  } else if (ua.includes("v2rayng") || ua.includes("v2rayn") || ua.includes("nekobox") || ua.includes("shadowrocket")) {
-    isV2ray = true;
-  }
-
-  // 1. v2rayNG / 通用 Base64 格式
-  if (isV2ray) {
-    let links = [];
-    for (const node of nodes) {
-      const srv = node.custom_ip || globalCfIp || node.server;
-      const sni = node.sni || node.server;
-      const path = node.path || "/";
-      const port = node.port || 443;
-      const link = "vless://" + node.uuid + "@" + srv + ":" + port +
-        "?encryption=none&security=tls&type=ws" +
-        "&host=" + encodeURIComponent(sni) +
-        "&sni=" + encodeURIComponent(sni) +
-        "&path=" + encodeURIComponent(path) +
-        "#" + encodeURIComponent(node.name);
-      links.push(link);
-    }
-    const rawText = links.join("\n");
-    const base64Content = b64EncodeUnicode(rawText);
-    return new Response(base64Content, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache",
-        "Profile-Update-Interval": "1"
-      }
-    });
-  }
-
-  // 2. Clash / Mihomo YAML 格式 (默认给 D31 座机)
-  let proxiesYaml = "";
-  let proxyNames = "";
-
-  for (const node of nodes) {
-    const srv = node.custom_ip || globalCfIp || node.server;
-    proxyNames += "      - \"" + node.name + "\"\n";
-    proxiesYaml +=
-      "  - name: \"" + node.name + "\"\n" +
-      "    type: " + (node.type || "vless") + "\n" +
-      "    server: " + srv + "\n" +
-      "    port: " + (node.port || 443) + "\n" +
-      "    uuid: " + node.uuid + "\n" +
-      "    network: ws\n" +
-      "    tls: true\n" +
-      "    udp: true\n" +
-      "    servername: \"" + (node.sni || node.server) + "\"\n" +
-      "    ws-opts:\n" +
-      "      path: \"" + (node.path || "/") + "\"\n" +
-      "      headers:\n" +
-      "        Host: \"" + (node.sni || node.server) + "\"\n\n";
-  }
-
-  const yaml =
-    "# D31 FreePBX 代理订阅 - " + new Date().toISOString() + "\n" +
-    "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: warning\nipv6: false\n\n" +
-    "tun:\n  enable: true\n  stack: gvisor\n  dns-hijack:\n    - \"any:53\"\n  auto-route: true\n  auto-detect-interface: true\n\n" +
-    "proxies:\n" + (proxiesYaml || "  []\n") +
-    "proxy-groups:\n" +
-    "  - name: \"PROXY-MODE\"\n    type: select\n    proxies:\n      - \"AUTO-FASTEST\"\n      - \"DIRECT\"\n" + proxyNames +
-    "  - name: \"AUTO-FASTEST\"\n    type: url-test\n    proxies:\n      - \"DIRECT\"\n" + proxyNames +
-    "    url: 'http://cp.cloudflare.com/generate_204'\n    interval: 60\n    tolerance: 15\n\n" +
-    "rules:\n" +
-    "  - DOMAIN-SUFFIX,telegram.org,PROXY-MODE\n" +
-    "  - DOMAIN-SUFFIX,t.me,PROXY-MODE\n" +
-    "  - IP-CIDR,91.108.4.0/22,PROXY-MODE\n" +
-    "  - IP-CIDR,149.154.160.0/20,PROXY-MODE\n" +
-    "  - GEOIP,lan,DIRECT\n" +
-    "  - IP-CIDR,192.168.0.0/16,DIRECT\n" +
-    "  - IP-CIDR,10.0.0.0/8,DIRECT\n" +
-    "  - MATCH,PROXY-MODE\n";
-
-  return new Response(yaml, {
-    headers: {
-      "Content-Type": "text/yaml; charset=utf-8",
-      "Content-Disposition": "attachment; filename=\"d31_sub.yaml\"",
-      "Cache-Control": "no-cache",
-      "Profile-Update-Interval": "1"
-    }
   });
 }
 
@@ -3067,300 +3561,10 @@ function logoResponse() {
 function brandHtml() {
   return [
     '<a href="/" style="display:flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit">',
-    '<img src="/logo.png" alt="elfRadio" width="36" height="36" style="width:36px;height:36px;border-radius:.55rem;object-fit:cover;flex-shrink:0">',
-    '<span style="font-weight:700;font-size:1.05rem;white-space:nowrap">elfRadio SIP/VPN Manage</span>',
+    '<img src="/logo.png" alt="elfRemote" width="36" height="36" style="width:36px;height:36px;border-radius:.55rem;object-fit:cover;flex-shrink:0">',
+    '<span style="font-weight:700;font-size:1.05rem;white-space:nowrap">elfRemote Manager</span>',
     '</a>'
   ].join("");
-}
-
-function renderHtml() {
-  return [
-    '<!DOCTYPE html>',
-    '<html lang="zh-CN">',
-    '<head>',
-    '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
-    '<meta charset="UTF-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
-    '<link rel="icon" type="image/png" href="/logo.png">',
-    '<script src="https://cdn.tailwindcss.com"><\/script>',
-    '<style>',
-    cfUsageStyle,
-    'body{background:#0f172a;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
-    '.card{background:rgba(30,41,59,.7);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(12px)}',
-    '.inp{width:100%;padding:.6rem .9rem;border-radius:.5rem;background:#0f172a;border:1px solid #334155;color:#fff;outline:none;box-sizing:border-box}',
-    '.inp:focus{border-color:#3b82f6}',
-    '.btn-blue{padding:.55rem 1.1rem;background:#2563eb;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
-    '.btn-blue:hover{background:#1d4ed8}',
-    '.btn-purple{padding:.55rem 1.1rem;background:#7c3aed;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.85rem;white-space:nowrap}',
-    '.btn-purple:hover{background:#6d28d9}',
-    '.btn-green{padding:.5rem 1rem;background:#059669;color:#fff;border-radius:.5rem;cursor:pointer;font-weight:600;border:none;font-size:.8rem}',
-    '.btn-green:hover{background:#047857}',
-    '.btn-gray{padding:.4rem .8rem;background:#334155;color:#cbd5e1;border-radius:.5rem;cursor:pointer;border:none;font-size:.8rem}',
-    '.btn-gray:hover{background:#475569}',
-    '.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:50}',
-    'table{width:100%;border-collapse:collapse}',
-    'th{text-align:left;padding:.7rem 1rem;font-size:.75rem;color:#94a3b8;background:rgba(15,23,42,.6);white-space:nowrap}',
-    'td{padding:.7rem 1rem;font-size:.85rem;border-top:1px solid #1e293b}',
-    'tr:hover td{background:rgba(30,41,59,.5)}',
-    '<\/style>',
-    '<\/head>',
-    '<body>',
-
-    // 登录模态框
-    '<div id="loginWrap" class="modal-bg">',
-    '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
-    '<div style="text-align:center;margin-bottom:1.5rem">',
-    '<img src="/logo.png" alt="elfRadio" width="64" height="64" style="width:64px;height:64px;border-radius:.8rem;object-fit:cover;margin-bottom:.6rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage</h2>',
-    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">默认账号 admin / admin888</p>',
-    '<\/div>',
-    '<div style="margin-bottom:1rem">',
-    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">账号<\/label>',
-    '<input id="lu" type="text" value="admin" class="inp">',
-    '<\/div>',
-    '<div style="margin-bottom:1.2rem">',
-    '<label style="display:block;font-size:.8rem;color:#cbd5e1;margin-bottom:.3rem">密码<\/label>',
-    '<input id="lp" type="password" value="admin888" class="inp">',
-    '<\/div>',
-    '<button class="btn-blue" style="width:100%;padding:.7rem" onclick="doLogin()">登 录<\/button>',
-    '<p id="lerr" style="color:#f87171;font-size:.8rem;margin-top:.6rem;text-align:center;display:none"><\/p>',
-    '<\/div>',
-    '<\/div>',
-
-    // 主导航
-    '<header style="border-bottom:1px solid #1e293b;background:rgba(15,23,42,.8);position:sticky;top:0;z-index:30;padding:0 1.5rem">',
-    '<div style="max-width:1100px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
-    '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">',
-    brandHtml(),
-    '<span style="font-size:.7rem;padding:.2rem .5rem;border-radius:.3rem;background:rgba(16,185,129,.15);color:#34d399">Serverless<\/span>',
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">SIP 管理<\/a>',
-    '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600">设备管理<\/a>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem">',
-    '<button class="btn-gray" onclick="openSettings()">&#9881; 全局设置<\/button>',
-    cfUsageMarkup,
-    '<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/header>',
-
-    // 订阅卡片 (分别独立显示两个格式的输入框和专属复制按钮)
-    '<main style="max-width:1100px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;flex-direction:column;gap:1.2rem">',
-    '<div>',
-    '<h3 style="font-weight:700;font-size:1.1rem;margin-bottom:.3rem">&#128225; 订阅中心 (分格式专属链接)<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">根据不同设备与客户端类型，直接复制对应的专用订阅链接<\/p>',
-    '<\/div>',
-
-    // 1. Mihomo / Clash 专属卡片
-    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(59,130,246,.25)">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
-    '<div style="display:flex;align-items:center;gap:.5rem">',
-    '<span style="font-size:.9rem;font-weight:600;color:#60a5fa">&#128752; Mihomo / Clash 订阅源<\/span>',
-    '<span style="font-size:.75rem;color:#94a3b8">（专供 D31 智能座机 / TUN 全局透明代理）<\/span>',
-    '<\/div>',
-    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(59,130,246,.15);color:#93c5fd;font-weight:600">YAML 格式<\/span>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem;align-items:center">',
-    '<input id="clashUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#93c5fd">',
-    '<button class="btn-blue" onclick="copyMihomo()">复制 Mihomo 订阅<\/button>',
-    '<\/div>',
-    '<\/div>',
-
-    // 2. v2rayNG 专属卡片
-    '<div style="background:rgba(15,23,42,.6);padding:1rem 1.2rem;border-radius:.8rem;border:1px solid rgba(124,58,237,.25)">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">',
-    '<div style="display:flex;align-items:center;gap:.5rem">',
-    '<span style="font-size:.9rem;font-weight:600;color:#c084fc">&#128640; v2rayNG / 通用 订阅源<\/span>',
-    '<span style="font-size:.75rem;color:#94a3b8">（专供 手机 Android / 电脑 v2rayN 客户端）<\/span>',
-    '<\/div>',
-    '<span style="font-size:.7rem;padding:.15rem .5rem;border-radius:.3rem;background:rgba(124,58,237,.15);color:#d8b4fe;font-weight:600">Base64 VLESS<\/span>',
-    '<\/div>',
-    '<div style="display:flex;gap:.6rem;align-items:center">',
-    '<input id="v2rayUrl" type="text" readonly class="inp" style="flex:1;font-size:.8rem;font-family:monospace;color:#d8b4fe">',
-    '<button class="btn-purple" onclick="copyV2ray()">复制 v2rayNG 订阅<\/button>',
-    '<\/div>',
-    '<\/div>',
-
-    '<\/div>',
-    '<\/div>',
-
-    // 节点管理卡片
-    '<div class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem;padding-bottom:1rem;border-bottom:1px solid #1e293b">',
-    '<div>',
-    '<h3 style="font-weight:700;margin-bottom:.3rem">&#128257; 代理服务器节点池<\/h3>',
-    '<p style="font-size:.8rem;color:#64748b">管理甲骨文 VPS 节点及 3 个月轮换的 GCP 节点<\/p>',
-    '<\/div>',
-    '<button class="btn-green" onclick="openAdd()">+ 添加新节点<\/button>',
-    '<\/div>',
-    '<div style="overflow-x:auto">',
-    '<table>',
-    '<thead><tr>',
-    '<th>节点名称<\/th><th>协议/端口<\/th><th>服务器域名 (SNI)<\/th><th>WS 路径<\/th><th>优选 IP<\/th><th style="text-align:right">操作<\/th>',
-    '<\/tr><\/thead>',
-    '<tbody id="ntb"><tr><td colspan="6" style="text-align:center;color:#475569;padding:2rem">暂无节点，点击右上角添加<\/td><\/tr><\/tbody>',
-    '<\/table>',
-    '<\/div>',
-    '<\/div>',
-    '<\/main>',
-
-    // 节点编辑模态框
-    '<div id="nodeWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">',
-    '<h3 id="nodeTitle" style="font-weight:700;margin-bottom:1rem">添加节点<\/h3>',
-    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">节点名称<\/label><input id="nName" type="text" placeholder="如: Oracle-Osaka-Tunnel" class="inp"><\/div>',
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">服务器域名<\/label><input id="nServer" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">端口<\/label><input id="nPort" type="number" value="443" class="inp"><\/div>',
-    '<\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">UUID<\/label><input id="nUuid" type="text" placeholder="11111111-2222-3333-4444-555555555555" class="inp" style="font-family:monospace"><\/div>',
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">WebSocket 路径<\/label><input id="nPath" type="text" value="/stream-proxy" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">SNI 域名<\/label><input id="nSni" type="text" placeholder="stream.elfradio.net" class="inp"><\/div>',
-    '<\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">独立 CF 优选 IP（留空则继承全局）<\/label><input id="nIp" type="text" placeholder="172.64.32.1" class="inp"><\/div>',
-    '<\/div>',
-    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
-    '<button class="btn-gray" onclick="closeNode()">取消<\/button>',
-    '<button class="btn-green" onclick="saveNode()">保存节点<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/div>',
-
-    // 设置模态框
-    '<div id="setWrap" class="modal-bg" style="display:none">',
-    '<div class="card" style="padding:1.5rem;border-radius:1rem;width:100%;max-width:420px">',
-    '<h3 style="font-weight:700;margin-bottom:1rem">全局设置<\/h3>',
-    '<div style="display:flex;flex-direction:column;gap:.8rem;font-size:.85rem">',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">全局 CF 优选 IP<\/label><input id="sCfIp" type="text" class="inp"><\/div>',
-    '<div><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">订阅 Token<\/label><input id="sToken" type="text" class="inp" style="font-family:monospace"><\/div>',
-    '<div style="border-top:1px solid #1e293b;padding-top:.8rem"><label style="display:block;color:#cbd5e1;margin-bottom:.3rem">修改密码（留空不修改）<\/label><input id="sPass" type="password" placeholder="输入新密码" class="inp"><\/div>',
-    '<\/div>',
-    '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
-    '<button class="btn-gray" onclick="closeSettings()">取消<\/button>',
-    '<button class="btn-blue" onclick="saveSettings()">保存<\/button>',
-    '<\/div>',
-    '<\/div>',
-    '<\/div>',
-
-    // 核心 JavaScript - 全部用普通函数和 DOM API，零模板字符串
-    '<script src="/admin-session.js"><\/script>',
-    '<script>',
-    'var D = {nodes:[], sub_token:"d31", cf_ip:"", admin_user:""};',
-    'var editIdx = -1;',
-
-    'function $(id){return document.getElementById(id)}',
-    'function show(id){$(id).style.display="flex"}',
-    'function hide(id){$(id).style.display="none"}',
-
-    'function checkAuth(){',
-    '  adminSession.check(loadData);',
-    '}',
-
-    'function doLogin(){',
-    '  var u = $("lu").value, p = $("lp").value;',
-    '  $("lerr").style.display="none";',
-    '  fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})})',
-    '  .then(function(r){return r.json();})',
-    '  .then(function(d){',
-    '    if(d.ok){ adminSession.accept(); hide("loginWrap"); loadData(); }',
-    '    else{ $("lerr").innerText = d.msg||"登录失败"; $("lerr").style.display="block"; }',
-    '  })',
-    '  .catch(function(e){ $("lerr").innerText="网络错误:"+e.message; $("lerr").style.display="block"; });',
-    '}',
-
-    'function logout(){ return adminSession.logout(); }',
-
-    'function loadData(){',
-    '  fetch("/api/data").then(function(r){return r.json();}).then(function(d){',
-    '    D = d;',
-    '    $("clashUrl").value = location.origin+"/sub/"+d.sub_token;',
-    '    $("v2rayUrl").value = location.origin+"/sub/"+d.sub_token+"?type=v2ray";',
-    '    renderNodes();',
-    '  });',
-    '}',
-
-    'function renderNodes(){',
-    '  var tb = $("ntb");',
-    '  if(!D.nodes || D.nodes.length===0){',
-    '    tb.innerHTML = "<tr><td colspan=\\"6\\" style=\\"text-align:center;color:#475569;padding:2rem\\">暂无节点，点击右上角添加<\\/td><\\/tr>";',
-    '    return;',
-    '  }',
-    '  var html = "";',
-    '  for(var i=0;i<D.nodes.length;i++){',
-    '    var n = D.nodes[i];',
-    '    var ip = n.custom_ip || D.cf_ip || "全局默认";',
-    '    html += "<tr>";',
-    '    html += "<td><span style=\\"color:#34d399\\">&#9679;<\\/span> "+n.name+"<\\/td>";',
-    '    html += "<td><span style=\\"background:rgba(59,130,246,.2);color:#60a5fa;padding:.1rem .4rem;border-radius:.3rem;font-family:monospace\\">VLESS<\\/span>:"+n.port+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;font-size:.8rem\\">"+(n.sni||n.server)+"<\\/td>";',
-    '    html += "<td style=\\"font-family:monospace;color:#94a3b8;font-size:.8rem\\">"+n.path+"<\\/td>";',
-    '    html += "<td style=\\"color:#fbbf24;font-size:.8rem\\">"+ip+"<\\/td>";',
-    '    html += "<td style=\\"text-align:right;white-space:nowrap\\">";',
-    '    html += "<button class=\\"btn-purple\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"copySingleLink("+i+")\\">复制单链<\\/button>";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;margin-right:.3rem\\" onclick=\\"editNode("+i+")\\">编辑<\\/button>";',
-    '    html += "<button class=\\"btn-gray\\" style=\\"padding:.2rem .5rem;color:#f87171\\" onclick=\\"delNode("+i+")\\">删除<\\/button>";',
-    '    html += "<\\/td>";',
-    '    html += "<\\/tr>";',
-    '  }',
-    '  tb.innerHTML = html;',
-    '}',
-
-    'function openAdd(){ editIdx=-1; $("nodeTitle").innerText="添加新节点"; $("nName").value=""; $("nServer").value=""; $("nPort").value=443; $("nUuid").value=""; $("nPath").value="/stream-proxy"; $("nSni").value=""; $("nIp").value=""; show("nodeWrap"); }',
-
-    'function editNode(i){ editIdx=i; var n=D.nodes[i]; $("nodeTitle").innerText="编辑节点"; $("nName").value=n.name||""; $("nServer").value=n.server||""; $("nPort").value=n.port||443; $("nUuid").value=n.uuid||""; $("nPath").value=n.path||"/stream-proxy"; $("nSni").value=n.sni||""; $("nIp").value=n.custom_ip||""; show("nodeWrap"); }',
-
-    'function closeNode(){ hide("nodeWrap"); }',
-
-    'function saveNode(){',
-    '  var n = { name:$("nName").value||"Node-"+(D.nodes.length+1), server:$("nServer").value.trim(), port:parseInt($("nPort").value)||443, uuid:$("nUuid").value.trim(), path:$("nPath").value.trim()||"/stream-proxy", sni:$("nSni").value.trim(), custom_ip:$("nIp").value.trim(), type:"vless", tls:true };',
-    '  if(!n.server||!n.uuid){ alert("服务器域名和 UUID 不能为空"); return; }',
-    '  if(editIdx>=0){ D.nodes[editIdx]=n; } else { D.nodes.push(n); }',
-    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})});',
-    '  closeNode(); renderNodes();',
-    '}',
-
-    'function delNode(i){ if(confirm("确认删除该节点？")){ D.nodes.splice(i,1); fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes:D.nodes})}); renderNodes(); } }',
-
-    'function openSettings(){ $("sCfIp").value=D.cf_ip||"104.16.80.80"; $("sToken").value=D.sub_token||"d31"; $("sPass").value=""; show("setWrap"); }',
-    'function closeSettings(){ hide("setWrap"); }',
-
-    'function saveSettings(){',
-    '  var payload = { cf_ip:$("sCfIp").value, sub_token:$("sToken").value||"d31" };',
-    '  if($("sPass").value) payload.new_password = $("sPass").value;',
-    '  D.cf_ip = payload.cf_ip; D.sub_token = payload.sub_token;',
-    '  fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){ if(!d.ok) throw new Error(d.msg||"保存失败"); if(d.credentials_changed) adminSession.expire(); alert("设置已保存"); }).catch(function(e){ alert(e.message); });',
-    '  $("clashUrl").value = location.origin+"/sub/"+D.sub_token;',
-    '  $("v2rayUrl").value = location.origin+"/sub/"+D.sub_token+"?type=v2ray";',
-    '  closeSettings();',
-    '  renderNodes();',
-    '}',
-
-    'function copyMihomo(){ var u=$("clashUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("Mihomo / Clash 订阅链接已复制:\\n"+u); }); }',
-    'function copyV2ray(){ var u=$("v2rayUrl").value; navigator.clipboard.writeText(u).then(function(){ alert("v2rayNG / 通用 订阅链接已复制:\\n"+u); }); }',
-
-    'function copySingleLink(i){',
-    '  var n=D.nodes[i];',
-    '  var srv = n.custom_ip || D.cf_ip || n.server;',
-    '  var sni = n.sni || n.server;',
-    '  var path = n.path || "/";',
-    '  var link = "vless://" + n.uuid + "@" + srv + ":" + (n.port||443) + "?encryption=none&security=tls&type=ws&host=" + encodeURIComponent(sni) + "&sni=" + encodeURIComponent(sni) + "&path=" + encodeURIComponent(path) + "#" + encodeURIComponent(n.name);',
-    '  navigator.clipboard.writeText(link).then(function(){ alert("VLESS 节点单链已复制，可在 v2rayNG 中点击「+」->「从剪贴板导入」:\\n" + link); });',
-    '}',
-
-    // 监听回车键登录
-    'document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("loginWrap").style.display!=="none"){ doLogin(); } });',
-
-    'checkAuth();',
-    '<\/script>',
-    '<\/body>',
-    '<\/html>'
-  ].join('\n');
 }
 
 function renderSipHtml() {
@@ -3371,7 +3575,7 @@ function renderSipHtml() {
     '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
+    '<title>elfRemote Manager</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<script src="https://cdn.tailwindcss.com"><\/script>',
     '<style>',
@@ -3419,9 +3623,9 @@ function renderSipHtml() {
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
     '<div style="text-align:center;margin-bottom:1rem">',
-    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
-    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">SIP 管理登录<\/p>',
+    '<img src="/logo.png" alt="elfRemote" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRemote Manager<\/h2>',
+    '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">电话管理登录<\/p>',
     '<\/div>',
     '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
     '<input id="lp" type="password" value="admin888" class="inp" style="margin-bottom:1rem">',
@@ -3433,8 +3637,8 @@ function renderSipHtml() {
     '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
     '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
     brandHtml(),
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="https://s.elfradio.net/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">电话管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:1rem">',
@@ -3447,7 +3651,7 @@ function renderSipHtml() {
     '<main style="max-width:1280px;margin:2rem auto;padding:0 1.5rem;display:flex;flex-direction:column;gap:1.5rem">',
     '<div class="card" style="padding:1.5rem;border-radius:1rem">',
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">',
-    '<div><h3 style="font-weight:700">大阪 SIP 机运行状态<\/h3>',
+    '<div><h3 style="font-weight:700">服务器运行状态<\/h3>',
     '<p id="staleHint" style="font-size:.8rem;color:#64748b;margin-top:.3rem">等待心跳...<\/p><\/div>',
     '<button class="btn-gray" onclick="loadSip()">刷新<\/button>',
     '<\/div>',
@@ -3508,7 +3712,7 @@ function renderSipHtml() {
     '<div><label style="font-size:.8rem;color:#cbd5e1">振铃超时（秒）<\/label><input id="eRing" type="number" class="inp" value="60"><\/div>',
     '<div id="eBanBox" style="display:none"><select id="eBanAction" class="inp" aria-label="IP封禁状态" onchange="changeSipBan()"><option value="unban">正常<\/option><option value="ban">封禁<\/option><option value="unknown" hidden>状态未知<\/option><\/select><div id="eBanInfo" style="font-size:.75rem;color:#94a3b8;overflow-wrap:anywhere;margin-top:.35rem"><\/div><div id="eBanResult" style="font-size:.75rem;color:#94a3b8;margin-top:.35rem" role="status"><\/div><\/div>',
     '<\/div>',
-    '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到大阪 SIP 机，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
+    '<p style="font-size:.75rem;color:#94a3b8;margin-top:.8rem">保存后会自动同步到服务器，通常几秒内生效。传输方式由话机实际注册决定，不能在这里指定。<\/p>',
     '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem">',
     '<button class="btn-gray" onclick="hide(\'extWrap\')">取消<\/button>',
     '<button class="btn-green" onclick="saveExt()">保存并同步<\/button>',
@@ -3588,7 +3792,7 @@ function renderDevicesHtml() {
     '<meta name="elf-panel-version" content="__ELF_PANEL_VERSION__"><script src="/panel-lifecycle.js" defer><\/script><script src="/cf-usage.js" defer><\/script>',
     '<meta charset="UTF-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-    '<title>elfRadio SIP/VPN Manage</title>',
+    '<title>elfRemote Manager</title>',
     '<link rel="icon" type="image/png" href="/logo.png">',
     '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">',
     '<link rel="stylesheet" href="/terminal.css">',
@@ -3659,12 +3863,12 @@ function renderDevicesHtml() {
     '.system-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 22px;margin-top:18px}.system-setting-row{display:grid;grid-template-columns:minmax(72px,1fr) minmax(80px,1.4fr) auto;gap:8px;align-items:center;min-width:0}.system-setting-row .inp{width:100%;min-width:0}.system-setting-section{margin-top:22px;padding-top:16px;border-top:1px solid #29364a}.system-setting-section h4{font-size:12px;font-weight:500;margin:0 0 10px;color:#cbd5e1}.system-content select.inp{font-size:12px;height:34px;padding:4px 8px}.system-setting-section .ops-actions{flex-wrap:wrap}@media(max-width:950px){.system-settings-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:600px){.system-setting-row{grid-template-columns:1fr auto}.system-setting-row label{grid-column:1/-1}.system-content select.inp{max-width:100%}.system-setting-section table{min-width:0}}',
     '.system-layout{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;min-height:230px}.system-tabs{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;padding-right:16px;border-right:1px solid #334155}.system-tabs .btn-gray{font-size:12px;font-weight:400;text-align:left;line-height:18px;padding:8px 10px;border-radius:6px;background:transparent;color:#aebcce}.system-tabs .btn-gray:hover{background:#233148}.system-tabs .btn-gray.active{background:#253e60;color:#b9d8ff}.system-content{min-width:0;font-size:12px;line-height:1.8;color:#d4deec}.system-content .muted,.system-content button,.system-content input,.system-content td,.system-content th{font-size:12px;line-height:1.8}.system-content .ops-actions{gap:8px;align-items:center}.system-content .btn-gray,.system-content .btn-green{padding:5px 10px;font-weight:400;min-height:30px}.system-content input.inp{padding:6px 10px;min-width:0;height:34px}.system-content table{width:100%;border-collapse:collapse}.system-content th,.system-content td{padding:8px 10px;font-weight:400;text-align:left}.system-content th{color:#94a3b8}.system-content td:first-child{overflow-wrap:anywhere}.system-content p{margin:10px 0 0}.system-items>div{padding:10px 0;border-bottom:1px solid #29364a;min-height:42px;align-items:center}.system-table-scroll{overflow-x:auto}.system-content table{min-width:420px}.system-content td:first-child{min-width:130px}.system-content .ops-actions input{flex:1 1 120px}@media(max-width:600px){.system-layout{grid-template-columns:92px minmax(0,1fr);gap:12px}.system-tabs{padding-right:10px}.system-tabs .btn-gray{padding:7px 4px;font-size:11px}.system-content th,.system-content td{padding:7px 5px}.system-content .ops-actions{flex-wrap:wrap}.system-content .ops-actions input{width:100%;max-width:none!important;flex-basis:100%}}',
     '.fn-page h4{margin:0 0 .35rem;font-size:.95rem}',
-    '.fn-page{font-size:12px;line-height:1.8;color:#d4deec}.function-section{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;padding:0 0 18px;margin-bottom:18px;border-bottom:1px solid #29364a}.function-section:last-child{margin:0;padding-bottom:0;border-bottom:0}.function-section>h4{font-size:12px;font-weight:400;color:#aebcce;margin:0;padding:8px 16px 8px 10px;border-right:1px solid #334155}.function-content{min-width:0}.function-content .muted,.function-content button,.function-content input,.function-content label,.function-content td,.function-content th{font-size:12px;line-height:1.8}.function-content .ops-actions{gap:8px;margin-top:0!important;align-items:center}.function-content button,.function-content a.btn-gray{font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px}.function-content input.inp{font-size:12px;height:34px;padding:6px 10px;min-width:0}.function-content p{margin:10px 0}.function-content table{width:100%;border-collapse:collapse;min-width:380px}.function-content th,.function-content td{padding:8px 10px;text-align:left;font-weight:400;overflow-wrap:anywhere}.function-content th{color:#94a3b8}.function-table{overflow:auto;margin-top:12px}.function-content td button{white-space:nowrap}.update-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.update-facts .kv{background:transparent;border:0;border-bottom:1px solid #29364a;border-radius:0;padding:8px 0}.update-facts .kv .v{font-size:12px;font-weight:400;overflow-wrap:anywhere}.function-content .adb-term{height:150px;font-size:12px;line-height:1.8;background:#101827;color:#d4deec}.function-content .task-result{height:auto;max-height:180px;margin:10px 0;border:1px solid #29364a;border-radius:6px}.function-content .adb-row{background:#111c2c}.function-content .adb-cmd{height:30px!important}.function-content .adb-prompt{font-size:12px;color:#93c5fd}.function-extra{margin-top:18px;border-top:1px solid #29364a;padding-top:12px}.function-extra summary{color:#94a3b8;cursor:pointer;margin-bottom:12px}.function-content .fn-live{min-height:70px;font-size:12px}.function-content .ops-actions label{display:flex;align-items:center;gap:6px;white-space:nowrap;width:auto;flex-shrink:0}.function-content .ops-actions label input{width:190px;flex-shrink:0}.function-content #mName{max-width:200px}.function-content #mNote{max-width:260px}.function-content .ops-actions label input{max-width:200px}.function-content #lostMessage{flex:1;min-width:160px}@media(max-width:600px){.function-section{grid-template-columns:92px minmax(0,1fr);gap:12px}.function-section>h4{font-size:11px;padding:7px 10px 7px 4px}.update-facts{grid-template-columns:1fr}.function-content .ops-actions input{width:100%;max-width:none!important}.function-content .ops-actions label{flex-wrap:wrap;max-width:100%}.function-content .ops-actions label input{width:100%;max-width:100%}.function-content .adb-row{flex-wrap:wrap}.function-content #lostMessage{min-width:0;flex-basis:100%}}',
+    '.fn-page{font-size:12px;line-height:1.8;color:#d4deec}.function-section{display:grid;grid-template-columns:136px minmax(0,1fr);gap:20px;padding:0 0 18px;margin-bottom:18px;border-bottom:1px solid #29364a}.function-section:last-child{margin:0;padding-bottom:0;border-bottom:0}.function-section>h4{font-size:12px;font-weight:400;color:#aebcce;margin:0;padding:8px 16px 8px 10px;border-right:1px solid #334155}.function-section>.function-nav{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin:0;padding:8px 10px 8px 0;border-right:1px solid #334155}.function-section>.function-nav .btn-gray{font-size:12px;font-weight:400;text-align:left;line-height:18px;padding:8px 10px;border-radius:6px;background:transparent;color:#aebcce;min-height:0}.function-section>.function-nav .btn-gray:hover{background:#233148}.function-section>.function-nav .btn-gray.active{background:#253e60;color:#b9d8ff}.function-content{min-width:0}.function-content .muted,.function-content button,.function-content input,.function-content label,.function-content td,.function-content th{font-size:12px;line-height:1.8}.function-content .ops-actions{gap:8px;margin-top:0!important;align-items:center}.function-content button,.function-content a.btn-gray{font-weight:400;min-height:30px;padding:5px 10px;border-radius:6px}.function-content input.inp{font-size:12px;height:34px;padding:6px 10px;min-width:0}.function-content p{margin:10px 0}.function-content table{width:100%;border-collapse:collapse;min-width:380px}.function-content th,.function-content td{padding:8px 10px;text-align:left;font-weight:400;overflow-wrap:anywhere}.function-content th{color:#94a3b8}.function-table{overflow:auto;margin-top:12px}.function-content td button{white-space:nowrap}.update-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.update-facts .kv{background:transparent;border:0;border-bottom:1px solid #29364a;border-radius:0;padding:8px 0}.update-facts .kv .v{font-size:12px;font-weight:400;overflow-wrap:anywhere}.function-content .adb-term{height:150px;font-size:12px;line-height:1.8;background:#101827;color:#d4deec}.function-content .task-result{height:auto;max-height:180px;margin:10px 0;border:1px solid #29364a;border-radius:6px}.function-content .adb-row{background:#111c2c}.function-content .adb-cmd{height:30px!important}.function-content .adb-prompt{font-size:12px;color:#93c5fd}.function-extra{margin-top:18px;border-top:1px solid #29364a;padding-top:12px}.function-extra summary{color:#94a3b8;cursor:pointer;margin-bottom:12px}.function-content .fn-live{min-height:70px;font-size:12px}.function-content .ops-actions label{display:flex;align-items:center;gap:6px;white-space:nowrap;width:auto;flex-shrink:0}.function-content .ops-actions label input{width:190px;flex-shrink:0}.function-content #mName{max-width:200px}.function-content #mNote{max-width:260px}.function-content .ops-actions label input{max-width:200px}.function-content #lostMessage{flex:1;min-width:160px}@media(max-width:600px){.function-section{grid-template-columns:92px minmax(0,1fr);gap:12px}.function-section>h4{font-size:11px;padding:7px 10px 7px 4px}.function-section>.function-nav{padding:7px 4px 7px 0}.function-section>.function-nav .btn-gray{font-size:11px;padding:7px 6px}.update-facts{grid-template-columns:1fr}.function-content .ops-actions input{width:100%;max-width:none!important}.function-content .ops-actions label{flex-wrap:wrap;max-width:100%}.function-content .ops-actions label input{width:100%;max-width:100%}.function-content .adb-row{flex-wrap:wrap}.function-content #lostMessage{min-width:0;flex-basis:100%}}',
     '.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.monitor{min-width:0;display:flex;flex-direction:column;border:1px solid #334155;border-radius:9px;overflow:hidden;background:#111c2c}.monitor h4{font-size:12px;font-weight:400;line-height:20px;margin:0;padding:10px 12px;border-bottom:1px solid #29364a;color:#b9c8da}.monitor>.ops-actions{box-sizing:border-box;min-height:76px;margin:0!important;padding:10px 12px;align-content:center;gap:6px}.monitor .ops-actions button,.monitor .adb-row button{font-size:12px;font-weight:400;padding:5px 9px;min-height:30px}.monitor .ops-actions .muted{font-size:11px}.monitor .adb-box{display:contents}.monitor .adb-term{height:340px;min-height:340px;max-height:340px;flex-shrink:0;box-sizing:border-box;background:#080f1c;color:#cbd5e1;font-size:12px;line-height:1.8;padding:12px;border-top:1px solid #29364a}.monitor .adb-row,.monitor-footer{margin:0;min-height:46px;box-sizing:border-box;background:#111c2c;border-top:1px solid #29364a;padding:6px 12px;display:flex;align-items:center;gap:8px}.monitor-footer a{font-size:12px;color:#93c5fd}.monitor .adb-prompt{font-size:12px;color:#93c5fd}.monitor input.adb-cmd{font-size:12px;line-height:1.8;height:30px}.monitor .adb-row button{flex-shrink:0}@media(max-width:900px){.monitor-grid{grid-template-columns:1fr}}',
     '.monitor h4{box-sizing:border-box;height:48px;display:flex;align-items:center}.monitor .monitor-heading{justify-content:space-between;gap:8px}.monitor-heading button{font-size:12px;font-weight:400;padding:4px 9px;min-height:28px}.monitor-footer{flex-wrap:wrap;min-height:50px}.monitor-footer .ops-actions{margin:0!important;gap:6px}.monitor-footer button{font-size:12px;font-weight:400;min-height:30px;padding:4px 9px}.monitor-footer .muted{font-size:11px}.monitor .adb-row{min-height:50px}',
     '.monitor-footer button:disabled{background:#334155;color:#e2e8f0;opacity:1;cursor:default}.maintenance-status{font-size:11px;color:#94a3b8;margin-left:4px}.maintenance-status.maintenance-success{color:#34d399}',
-    '.desktop-view{display:flex;flex-direction:column;height:340px;min-height:340px;max-height:340px;background:#000;border-top:1px solid #29364a}.desktop-stage{position:relative;flex:1;min-height:0}.desktop-screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;outline:none;touch-action:none;user-select:none;cursor:crosshair}.desktop-canvas{max-width:100%;max-height:100%;width:auto;height:auto;display:block}.desktop-tools{position:absolute;left:0;top:0;bottom:0;width:48px;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 6px;box-sizing:border-box;background:rgba(15,23,42,.85);border-right:1px solid #29364a;overflow:hidden}.desktop-tools button{width:36px;height:36px;min-height:36px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#1e293b;color:#e2e8f0;border:0;border-radius:8px;cursor:pointer;flex-shrink:0}.desktop-tools button svg{width:20px;height:20px}.desktop-tools button:hover,.desktop-tools button:focus-visible{background:#3b82f6;color:#fff}.desktop-unfold{position:absolute;left:0;top:50%;transform:translateY(-50%);width:40px;height:110px;padding:0;border:0;border-radius:0 12px 12px 0;background:rgba(59,130,246,.85);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4)}.desktop-unfold:hover{background:#3b82f6}.desktop-unfold svg{width:26px;height:26px}.desktop-unfold[hidden]{display:none}.desktop-info{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:2px;padding:6px 10px;border-radius:6px;background:rgba(15,23,42,.85);color:#cbd5e1;font-size:12px;line-height:1.5;max-width:60%;pointer-events:none}.desktop-info[hidden]{display:none}.desktop-info span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desktop-ime{position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;resize:none;border:0;padding:0;margin:0;pointer-events:none}.desktop-view.capturing .desktop-screen{outline:2px solid #3b82f6;outline-offset:-2px}.desktop-kbd-hint{position:absolute;left:56px;bottom:8px;padding:3px 8px;border-radius:5px;background:rgba(15,23,42,.85);color:#93c5fd;font-size:11px;pointer-events:none;display:none}.desktop-view.capturing .desktop-kbd-hint{display:block}.desktop-keys{position:absolute;left:56px;top:8px;display:flex;flex-wrap:wrap;gap:6px;max-width:calc(100% - 64px);padding:8px;border-radius:8px;background:rgba(15,23,42,.92);border:1px solid #29364a;z-index:5}.desktop-keys[hidden]{display:none}.desktop-keys button{height:30px;min-height:30px;padding:0 10px;border:0;border-radius:6px;background:#1e293b;color:#e2e8f0;font-size:12px;cursor:pointer}.desktop-keys button:hover{background:#3b82f6;color:#fff}.desktop-foot{display:none}',
-    '.share-mode .btn-add,.share-mode .ops-head-actions .action-disable,.share-mode .ops-head-actions .action-enable,.share-mode .ops-head-actions .action-unpair,.share-mode .ops-head-actions .action-pair,.share-mode .fn-btn[data-fn=model],.share-mode .admin-only{display:none!important}.share-mode #shareDeviceName{font-weight:700;font-size:1.05rem;white-space:nowrap}.share-mode .share-brand-sub{color:#93c5fd;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.4rem}.file-send-wrap .file-send-dialog.share-dialog{width:760px;max-width:calc(100vw - 32px);max-height:none;overflow:visible;padding:22px 24px;font-size:14px;color:#e2e8f0;background:linear-gradient(180deg,#0f1a2e 0%,#0b1424 100%);border:1px solid #2b3a52;box-shadow:0 20px 60px rgba(0,0,0,.55)}.share-dialog h3{font-size:17px;font-weight:600;letter-spacing:.2px}.share-dialog .btn-close.share-close{background:#b91c1c;border:0;color:#fff;width:30px;height:30px;border-radius:8px;font-size:18px;line-height:1}.share-panel{margin-top:16px;padding:16px 18px;border-radius:12px;background:#111c30;border:1px solid #223047}.share-panel-title{font-size:13px;color:#8fa3bf;margin-bottom:12px;letter-spacing:.3px}.share-panel-title code{color:#93c5fd;font-family:ui-monospace,Consolas,monospace}.share-form-row{display:flex;align-items:center;gap:12px;flex-wrap:nowrap}.share-form-row label{display:flex;align-items:center;gap:10px;font-size:14px;color:#e2e8f0;white-space:nowrap}.share-form-row label.share-ttl{margin-left:16px}.share-form-row input.inp,.share-form-row select.inp{box-sizing:border-box;width:190px;height:32px;font-size:13px;line-height:30px;padding:0 10px;margin:0;border-radius:6px;background:#0b1220;border:1px solid #2b3a52;color:#e2e8f0}.share-form-row input.inp:focus,.share-form-row select.inp:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25)}.share-form-actions{margin-left:auto;display:flex;gap:8px}.share-btn{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:32px;min-height:32px;padding:0 12px;border:0;border-radius:6px;font-size:12px;font-weight:500;line-height:16px;color:#fff;cursor:pointer;white-space:nowrap}.share-btn:hover{filter:brightness(1.1)}.share-btn-primary{background:var(--device-ui-green)}.share-btn-ghost{background:#334155}.share-btn-danger{background:var(--device-ui-red);flex-shrink:0}.share-list-title{margin:20px 0 10px;font-size:13px;color:#8fa3bf;letter-spacing:.3px;display:flex;align-items:center;gap:8px}.share-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#1e293b;color:#cbd5e1;font-size:12px}.share-list{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto;padding-right:2px}.share-item{position:relative;display:flex;align-items:center;gap:12px;padding:7px 12px 7px 16px;border:1px solid #223047;border-radius:8px;background:#0f1a2e;transition:border-color .15s,background .15s}.share-item::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:4px;border-radius:0 4px 4px 0;background:#334155}.share-item:hover{border-color:#3b82f6;background:#132038}.share-item.on{border-color:#3b82f6;background:#152444}.share-item.on::before{background:#3b82f6}.share-item.live{animation:shareLive 1.8s ease-in-out infinite}.share-item.live::before{background:#22c55e}@keyframes shareLive{0%,100%{background:#0f1a2e}50%{background:#163a2a}}.share-item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}.share-item-link{display:flex;align-items:center;gap:10px;min-width:0}.share-link{font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:20px;color:#93c5fd;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.share-link:hover{text-decoration:underline}.share-copy{flex-shrink:0;background:none;border:0;padding:0 4px;color:#60a5fa;font-size:12px;cursor:pointer}.share-copy:hover{text-decoration:underline}.share-item-meta{font-size:12px;line-height:18px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.share-live-badge{flex-shrink:0;padding:3px 8px;border-radius:6px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#86efac;font-size:12px;white-space:nowrap}.share-qr-pop{position:fixed;z-index:3000;padding:8px;background:#fff;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none}.share-qr-pop svg{width:180px;height:180px;display:block}.share-qr-pop[hidden]{display:none}.share-empty{color:#8fa3bf;padding:14px;border:1px dashed #2b3a52;border-radius:12px;text-align:center}.share-error{margin:8px 0 0;color:#fbbf24}.share-lock-tag{margin-left:10px;padding:2px 8px;border-radius:5px;background:#3b2f0b;color:#fbbf24;font-size:12px;white-space:nowrap}.action-share{background:#3b6fa8}',
+    '.desktop-view{display:flex;flex-direction:column;height:340px;min-height:340px;max-height:340px;background:#000;border-top:1px solid #29364a}.desktop-view.desktop-expanded{position:fixed;inset:0;z-index:2000;height:auto;min-height:0;max-height:none;border-top:0}body.desktop-expanded-host .card{backdrop-filter:none}body.desktop-expanded-host{overflow:hidden}.desktop-stage{position:relative;flex:1;min-height:0}.desktop-screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;outline:none;touch-action:none;user-select:none;cursor:crosshair}.desktop-canvas{max-width:100%;max-height:100%;width:auto;height:auto;display:block}.desktop-tools{position:absolute;left:0;top:0;bottom:0;width:48px;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 6px;box-sizing:border-box;background:rgba(15,23,42,.85);border-right:1px solid #29364a;overflow:hidden}.desktop-tools button{width:36px;height:36px;min-height:36px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#1e293b;color:#e2e8f0;border:0;border-radius:8px;cursor:pointer;flex-shrink:0}.desktop-tools button svg{width:20px;height:20px}.desktop-tools button:hover,.desktop-tools button:focus-visible{background:#3b82f6;color:#fff}.desktop-unfold{position:absolute;left:0;top:50%;transform:translateY(-50%);width:40px;height:110px;padding:0;border:0;border-radius:0 12px 12px 0;background:rgba(59,130,246,.85);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.4)}.desktop-unfold:hover{background:#3b82f6}.desktop-unfold svg{width:26px;height:26px}.desktop-unfold[hidden]{display:none}.desktop-info{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:2px;padding:6px 10px;border-radius:6px;background:rgba(15,23,42,.85);color:#cbd5e1;font-size:12px;line-height:1.5;max-width:60%;pointer-events:none}.desktop-info[hidden]{display:none}.desktop-info span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desktop-ime{position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;resize:none;border:0;padding:0;margin:0;pointer-events:none}.desktop-view.capturing .desktop-screen{outline:2px solid #3b82f6;outline-offset:-2px}.desktop-kbd-hint{position:absolute;left:56px;bottom:8px;padding:3px 8px;border-radius:5px;background:rgba(15,23,42,.85);color:#93c5fd;font-size:11px;pointer-events:none;display:none}.desktop-view.capturing .desktop-kbd-hint{display:block}.desktop-keys{position:absolute;left:56px;top:8px;display:flex;flex-wrap:wrap;gap:6px;max-width:calc(100% - 64px);padding:8px;border-radius:8px;background:rgba(15,23,42,.92);border:1px solid #29364a;z-index:5}.desktop-keys[hidden]{display:none}.desktop-keys button{height:30px;min-height:30px;padding:0 10px;border:0;border-radius:6px;background:#1e293b;color:#e2e8f0;font-size:12px;cursor:pointer}.desktop-keys button:hover{background:#3b82f6;color:#fff}.desktop-foot{display:none}',
+    '.share-mode .btn-add,.share-mode .ops-head-actions .action-disable,.share-mode .ops-head-actions .action-enable,.share-mode .ops-head-actions .action-unpair,.share-mode .ops-head-actions .action-pair,.share-mode .fn-btn[data-fn=model],.share-mode .admin-only{display:none!important}.share-mode #shareDeviceName{font-weight:700;font-size:1.05rem;white-space:nowrap}.share-mode .share-brand-sub{color:#93c5fd;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.4rem}.file-send-wrap .file-send-dialog.share-dialog{width:760px;max-width:calc(100vw - 32px);max-height:none;overflow:visible;padding:22px 24px;font-size:14px;color:#e2e8f0;background:linear-gradient(180deg,#0f1a2e 0%,#0b1424 100%);border:1px solid #2b3a52;box-shadow:0 20px 60px rgba(0,0,0,.55)}.share-dialog h3{font-size:17px;font-weight:600;letter-spacing:.2px}.share-dialog .btn-close.share-close{background:#b91c1c;border:0;color:#fff;width:30px;height:30px;border-radius:8px;font-size:18px;line-height:1}.share-panel{margin-top:16px;padding:16px 18px;border-radius:12px;background:#111c30;border:1px solid #223047}.share-panel-title{font-size:13px;color:#8fa3bf;margin-bottom:12px;letter-spacing:.3px}.share-panel-title code{color:#93c5fd;font-family:ui-monospace,Consolas,monospace}.share-form-row{display:flex;align-items:center;gap:12px;flex-wrap:nowrap}.share-form-row label{display:flex;align-items:center;gap:10px;font-size:14px;color:#e2e8f0;white-space:nowrap}.share-form-row label.share-ttl{margin-left:16px}.share-form-row input.inp,.share-form-row select.inp{box-sizing:border-box;width:190px;height:32px;font-size:13px;line-height:30px;padding:0 10px;margin:0;border-radius:6px;background:#0b1220;border:1px solid #2b3a52;color:#e2e8f0}.share-form-row input.inp:focus,.share-form-row select.inp:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25)}.share-form-actions{margin-left:auto;display:flex;gap:8px}.share-btn{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:32px;min-height:32px;padding:0 12px;border:0;border-radius:6px;font-size:12px;font-weight:500;line-height:16px;color:#fff;cursor:pointer;white-space:nowrap}.share-btn:hover{filter:brightness(1.1)}.share-btn-primary{background:var(--device-ui-green)}.share-btn-ghost{background:#334155}.share-btn-danger{background:var(--device-ui-red);flex-shrink:0}.share-list-title{margin:20px 0 10px;font-size:13px;color:#8fa3bf;letter-spacing:.3px;display:flex;align-items:center;gap:8px}.share-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#1e293b;color:#cbd5e1;font-size:12px}.share-list{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto;padding-right:2px}.share-item{position:relative;display:flex;align-items:center;gap:12px;padding:7px 12px 7px 16px;border:1px solid #223047;border-radius:8px;background:#0f1a2e;transition:border-color .15s,background .15s}.share-item::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:4px;border-radius:0 4px 4px 0;background:#334155}.share-item:hover{border-color:#3b82f6;background:#132038}.share-item.on{border-color:#3b82f6;background:#152444}.share-item.on::before{background:#3b82f6}.share-item.live{animation:shareLive 1.8s ease-in-out infinite}.share-item.live::before{background:#22c55e}@keyframes shareLive{0%,100%{background:#0f1a2e}50%{background:#163a2a}}.share-item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}.share-item-link{display:flex;align-items:center;gap:10px;min-width:0}.share-link{font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:20px;color:#93c5fd;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.share-link:hover{text-decoration:underline}.share-copy{flex-shrink:0;background:none;border:0;padding:0 4px;color:#60a5fa;font-size:12px;cursor:pointer}.share-copy:hover{text-decoration:underline}.share-item-meta{font-size:12px;line-height:18px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.share-live-badge{flex-shrink:0;padding:3px 8px;border-radius:6px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#86efac;font-size:12px;white-space:nowrap}.share-qr-pop{position:fixed;z-index:3000;padding:8px;background:#fff;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none}.share-qr-pop svg{width:180px;height:180px;display:block}.share-qr-pop[hidden]{display:none}.share-empty{color:#8fa3bf;padding:14px;border:1px dashed #2b3a52;border-radius:12px;text-align:center}.share-error{margin:8px 0 0;color:#fbbf24}.share-lock-tag{margin-left:10px;padding:2px 8px;border-radius:5px;background:#3b2f0b;color:#fbbf24;font-size:12px;white-space:nowrap}.action-share{background:#3b6fa8}.action-mcp{background:#6d28d9}',
     '.terminal-title{white-space:nowrap;flex-shrink:0}.terminal-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;margin-left:auto}.terminal-actions button{white-space:nowrap;font-size:11px;padding:4px 7px;min-height:28px}.terminal-actions button:disabled{background:#334155;color:#aebcce;opacity:1}.monitor-heading{overflow-x:auto}.file-send-wrap{display:none;position:fixed;inset:0;z-index:2200;background:rgba(2,6,23,.72);align-items:center;justify-content:center;padding:20px}.file-send-dialog{box-sizing:border-box;width:530px;max-width:100%;background:#111c2c;border:1px solid #334155;border-radius:10px;padding:20px;color:#d4deec;font-size:12px;line-height:1.8}.file-send-dialog h3{font-size:15px;font-weight:400;margin:0}.file-send-fields{display:grid;gap:14px;margin-top:18px}.file-send-fields>label{display:grid;gap:6px}.file-send-fields input.inp{font-size:12px;height:34px;width:100%}.file-options{display:flex;gap:14px;flex-wrap:wrap}.file-options label{display:flex;align-items:center;gap:5px}.file-send-fields button{font-size:12px;font-weight:400;padding:5px 12px}.file-send-fields p{margin:0;color:#aebcce;overflow-wrap:anywhere}',
     '.monitor .adb-term,.monitor .adb-term .xterm-viewport{scrollbar-width:none;-ms-overflow-style:none}.monitor .adb-term::-webkit-scrollbar,.monitor .adb-term .xterm-viewport::-webkit-scrollbar{display:none;width:0;height:0}.monitor .adb-term,.monitor .adb-term .xterm,.monitor .adb-term .xterm-viewport{background:#080f1a}.monitor .monitor-heading .adb-connecting:disabled{background:#059669;color:#fff;opacity:1}.monitor-footer a.log-download{display:inline;padding:0;border:0;border-radius:0;background:none;color:#93c5fd;font-size:12px;text-decoration:none}.monitor-footer a.log-download:hover{text-decoration:underline}',
     '.terminal-status{display:flex;align-items:center;gap:10px;padding-top:6px;font-size:11px;line-height:18px}.terminal-status .log-download{font-size:11px;color:#93c5fd;text-decoration:none}.terminal-status .log-download:hover{text-decoration:underline}',
@@ -3706,8 +3910,8 @@ function renderDevicesHtml() {
     '<div id="loginWrap" class="modal-bg">',
     '<div class="card" style="padding:2rem;border-radius:1rem;width:100%;max-width:420px">',
     '<div style="text-align:center;margin-bottom:1rem">',
-    '<img src="/logo.png" alt="elfRadio" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
-    '<h2 style="font-size:1.3rem;font-weight:700">elfRadio SIP/VPN Manage<\/h2>',
+    '<img src="/logo.png" alt="elfRemote" width="56" height="56" style="width:56px;height:56px;border-radius:.7rem;object-fit:cover;margin-bottom:.5rem">',
+    '<h2 style="font-size:1.3rem;font-weight:700">elfRemote Manager<\/h2>',
     '<p style="font-size:.8rem;color:#94a3b8;margin-top:.3rem">设备管理登录<\/p>',
     '<\/div>',
     '<input id="lu" type="text" value="admin" class="inp" style="margin-bottom:1rem">',
@@ -3719,8 +3923,8 @@ function renderDevicesHtml() {
     '<div style="max-width:1280px;margin:0 auto;height:4rem;display:flex;align-items:center;justify-content:space-between">',
     '<div style="display:flex;align-items:center;gap:.8rem;flex-wrap:nowrap">',
     brandHtml(),
-    '<a href="/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
-    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">SIP 管理<\/a>',
+    '<a href="https://s.elfradio.net/" style="margin-left:.6rem;padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">代理节点<\/a>',
+    '<a href="/sip" style="padding:.35rem .7rem;border-radius:.4rem;color:#cbd5e1;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">电话管理<\/a>',
     '<a href="/devices" style="padding:.35rem .7rem;border-radius:.4rem;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:.85rem;font-weight:600;white-space:nowrap">设备管理<\/a>',
     '<\/div>',
     '<div style="display:flex;align-items:center;gap:12px">'+cfUsageMarkup+'<button class="btn-gray" style="color:#f87171" onclick="logout()">退出<\/button><\/div>',

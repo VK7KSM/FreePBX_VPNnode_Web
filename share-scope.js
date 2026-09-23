@@ -1,14 +1,6 @@
-// 单设备分享的范围与动作矩阵：纯函数，供 Worker 两道鉴权门调用。表来自
-// remote/docs/2026-09-18-单设备分享-接口盘点与动作矩阵.md；改路由先改表再改这里。
-const DEVICE_ID_QUERY=new Set(['/api/devices/status-request','/api/devices/traffic','/api/devices/history','/api/devices/trajectory-media','/api/elfremote/tasks','/api/elfremote/task-log','/api/elfremote/file-return','/api/elfremote/file-return/received','/api/elfremote/report-photo','/api/elfremote/media-recordings','/api/elfremote/files','/api/elfremote/media/session','/api/elfremote/adb/session','/api/elfremote/adb-tunnel/session','/api/elfremote/desktop/session','/api/share/links']);
-const DEVICE_ID_BODY=new Set(['/api/devices/request-status','/api/elfremote/task','/api/elfremote/assign','/api/elfremote/media/session','/api/elfremote/adb/session','/api/elfremote/adb-tunnel/session','/api/elfremote/desktop/session','/api/elfremote/files','/api/elfremote/file-return','/api/share/links','/api/share/links/update','/api/share/links/delete']);
-const DEVICE_ID_BODY_ID=new Set(['/api/devices/update','/api/devices/delete']);
-// 独立页一律拒绝：全局资源、返回全站凭据或不属于本设备的操作。
-const SHARE_FORBIDDEN=[['POST','/api/devices'],['POST','/api/device-models'],['POST','/api/devices/delete'],['POST','/api/devices/pair'],['GET','/api/devices/recovery'],['GET','/api/devices/sip-directory'],['POST','/api/elfremote/releases'],['POST','/api/elfremote/releases/prune'],['PUT','/api/elfremote/releases/upload'],['POST','/api/elfremote/proxy-config'],['GET','/api/cf-usage'],['GET','/api/admin/legacy-store'],['POST','/api/admin/legacy-store'],['POST','/api/admin/prepare-kv'],['POST','/api/sip'],['POST','/api/sip/ban'],['POST','/api/sip/save'],['POST','/api/save']];
-// 独立页无设备范围但允许的只读路由。
-const SHARE_GLOBAL_READ=new Set(['/api/devices','/api/device-models','/api/elfremote/releases','/api/devices/events','/api/share/session','/api/share/logout','/api/share/login','/api/session','/api/logout']);
-// 独立用户在线时总后台仍允许的明确动作。
-const OBSERVER_ALLOWED=[['POST','/api/devices/update'],['POST','/api/devices/delete'],['POST','/api/devices/pair'],['POST','/api/devices'],['POST','/api/device-models'],['POST','/api/share/links'],['POST','/api/share/links/update'],['POST','/api/share/links/delete'],['POST','/api/elfremote/releases'],['POST','/api/elfremote/releases/prune'],['PUT','/api/elfremote/releases/upload'],['POST','/api/elfremote/proxy-config']];
+// 单设备分享的范围与动作矩阵：纯函数，供 Worker 两道鉴权门调用。矩阵原文在
+// remote/docs/2026-09-18-单设备分享-接口盘点与动作矩阵.md；表本身在 route-table.js，改路由只改那里。
+import {DEVICE_ID_QUERY,DEVICE_ID_BODY,DEVICE_ID_BODY_ID,SHARE_FORBIDDEN,SHARE_GLOBAL_READ,OBSERVER_ALLOWED} from './route-table.js';
 const OBSERVER_TASK_TYPES=/^(lost_|safety_|cancel_lost|lost)/;
 const OBSERVER_ADB_OBSERVE=new Set(['/api/elfremote/adb/observer']);
 export const DEVICE_UPDATE_FIELDS=new Set(['id','name','enabled','model_id','ip','note']);

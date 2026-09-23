@@ -322,7 +322,9 @@ public final class SystemSettings {
             android.telephony.TelephonyManager phone=(android.telephony.TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE);
             if(Build.VERSION.SDK_INT>=24){
                 int subscription=android.telephony.SubscriptionManager.getDefaultDataSubscriptionId();
-                if(!android.telephony.SubscriptionManager.isValidSubscriptionId(subscription))throw new IOException("默认移动数据订阅不可用");
+                // isValidSubscriptionId 是 API 29，而外层只挡到 24、D22 是 27，调用它会 NoSuchMethodError。
+                // 该方法的实现就是 subId > INVALID_SUBSCRIPTION_ID，后者恒为 -1，所以等价判断是 >= 0。
+                if(subscription<0)throw new IOException("默认移动数据订阅不可用");
                 phone=phone.createForSubscriptionId(subscription);
             }
             return readDataEnabled(phone);

@@ -14,6 +14,7 @@ const ICONS = [
   ['paste', '粘贴', 'M9 4h6v3H9zM6 6h12v14H6zM9 12h6M9 16h6'],
   ['keys', '特殊按键', 'M3 7h18v10H3zM7 11h.01M11 11h.01M15 11h.01M7 14h10'],
   ['info', '连接信息', 'M12 8h.01M11 12h1v4h1M12 3a9 9 0 110 18 9 9 0 010-18z'],
+  ['expand', '占满窗口', 'M4 9V4h5M20 15v5h-5M4 15v5h5M20 9V4h-5'],
   ['fold', '折叠工具栏', 'M11 18l-6-6 6-6M18 18l-6-6 6-6'],
 ];
 let active = null, lastMessage = '';
@@ -50,9 +51,45 @@ const KEYMAP = (() => {
   for (let i = 1; i <= 12; i++) m['F' + i] = 130 + i;
   return m;
 })();
+const ASCII_ONLY = /^[\x20-\x7e\n]*$/;
 const META_SHIFT = 0x1 | 0x40, META_ALT = 0x2 | 0x10, META_CTRL = 0x1000 | 0x2000, META_CAPS = 0x100000;
 function metaOf(e) { return (e.shiftKey ? META_SHIFT : 0) | (e.altKey ? META_ALT : 0) | (e.ctrlKey ? META_CTRL : 0) | (e.getModifierState && e.getModifierState('CapsLock') ? META_CAPS : 0); }
-const SPECIAL_KEYS = [['电源', 26], ['音量+', 24], ['音量-', 25], ['静音', 164], ['搜索', 84], ['相机', 27], ['通话', 5], ['挂断', 6]];
+// 特殊按键按机型给。原来是一份写死的通用清单，里面大半在三台机器上都是死键——
+// 2026-09-20 用 adb（D31/Pixel）与核心 root 通道（D22）逐个实测，结论：
+//
+//              D31(安卓6)      D22(安卓8.1)    Pixel3(安卓12)
+//   电源 26     熄屏/亮屏        同左            同左          ← 短按只是开关屏幕，不是关机菜单，照实改名
+//   音量± 24/25 有效(铃声流)     有效            有效(媒体流)
+//   静音 164    无反应           无反应          有效(媒体静音开关)
+//   搜索 84     无反应           无反应          无反应
+//   相机 27     无反应           无反应          无反应
+//   通话 5      无反应           无反应          无反应
+//   挂断 6      等同休眠         无反应          无反应        ← 与电源键重复，且黑屏后按它叫不醒
+//   菜单 82     弹出启动器菜单    焦点切换        只收通知栏
+//   通知栏      有，但要 Win+N    未验证          shell 命令可展开
+//               唤出（所有者告知）                 （scrcpy 那条控制消息本身尚未实测）
+//
+// 所以：搜索/相机/通话/挂断 全部去掉；静音只留给 Pixel。
+// 通知栏这一条暂不放进来：Pixel 上我验证的是 shell 命令，不是 scrcpy 真正走的那条
+// 控制消息；D31 上 service call statusbar 1 实测打不开（截图前后一致，而同一套截图
+// 比对能正确反映开设置页的变化，说明观测量本身没问题）。等两条路都实测过再加，
+// 宁可少一个键，也不再往面板上放没验证过的东西。
+// 菜单键实测有效，但**左侧工具栏第一个按钮就是它**（act==='menu' 发的正是 82），
+// 这里不能再放一个，否则是同一个键的两个入口。
+// 没测过的机型只给三台都验过的那三个键，宁可少给也不给死键。
+const KEY_POWER = 26, KEY_VOL_UP = 24, KEY_VOL_DOWN = 25, KEY_MUTE = 164, KEY_MENU = 82, KEY_POUND = 18;
+// 熄屏/亮屏：注入的是短按。长按才会出关机菜单，但那是台远端设备——真按到「关机」就再也
+// 叫不回来了，所以不做这个按钮；要加得先想清楚怎么远程开机。
+const BASE_KEYS = [['熄屏/亮屏', [KEY_POWER]], ['音量+', [KEY_VOL_UP]], ['音量-', [KEY_VOL_DOWN]]];
+// D31 的「应用设置」（改桌面图标那一页）没有能直接拉起的入口：EditAppActivity 冷启动会让
+// 启动器崩溃，实测过。厂商的办法是连按 11 次 # 解锁、再按一次菜单键调出菜单，实测有效。
+const D31_APP_SETTINGS = new Array(11).fill(KEY_POUND).concat([KEY_MENU]);
+const MODEL_KEYS = {
+  mdl_d31: BASE_KEYS.concat([['应用设置', D31_APP_SETTINGS]]),
+  mdl_d22: BASE_KEYS,
+  mdl_pixel3: BASE_KEYS.concat([['静音', [KEY_MUTE]]]),
+};
+function specialKeys(device) { return MODEL_KEYS[device && device.model_id] || BASE_KEYS; }
 
 function buildNode(s) {
   const node = document.createElement('div'); node.className = 'desktop-view'; node.dataset.deviceId = s.device.id;
@@ -60,15 +97,28 @@ function buildNode(s) {
     + '<textarea class="desktop-ime" aria-label="键盘输入" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>'
     + '<div class="desktop-tools" role="toolbar" aria-label="远程桌面工具">' + ICONS.map(i => '<button type="button" data-act="' + i[0] + '" title="' + i[1] + '" aria-label="' + i[1] + '">' + icon(i[2]) + '</button>').join('') + '</div>'
     + '<button type="button" class="desktop-unfold" title="展开工具栏" aria-label="展开工具栏" hidden>' + icon('M6 6l6 6-6 6M13 6l6 6-6 6') + '</button>'
-    + '<div class="desktop-keys" hidden>' + SPECIAL_KEYS.map(k => '<button type="button" data-key="' + k[1] + '">' + k[0] + '</button>').join('') + '</div>'
+    + '<div class="desktop-keys" hidden>' + specialKeys(s.device).map((k, i) => '<button type="button" data-key="' + i + '">' + k[0] + '</button>').join('') + '</div>'
     + '<div class="desktop-info"><span class="desktop-status" role="status"></span><span class="desktop-stats"></span></div>'
     + '<div class="desktop-kbd-hint">键盘已接管，点击画面外释放</div></div>';
   const screen = node.querySelector('.desktop-screen'), tools = node.querySelector('.desktop-tools'), unfold = node.querySelector('.desktop-unfold'), ime = node.querySelector('.desktop-ime'), keysPanel = node.querySelector('.desktop-keys');
   let folded = false; try { folded = localStorage.getItem('elf-desktop-folded') === '1'; } catch {}
   const applyFold = () => { tools.hidden = folded; unfold.hidden = !folded; try { localStorage.setItem('elf-desktop-folded', folded ? '1' : '0'); } catch {} };
   applyFold();
-  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
-  keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); key(s, Number(b.dataset.key)); });
+  let expanded = false; try { expanded = localStorage.getItem('elf-desktop-expanded') === '1'; } catch {}
+  const expandBtn = node.querySelector('button[data-act="expand"]');
+  // 占满浏览器窗口而不是调 Fullscreen API：这是运维工具，多半要一边看画面一边看旁边的终端和日志，
+  // 全屏会把面板其它部分藏掉、要按 ESC 才能退出，还有用户手势与退出键的兼容问题。
+  // 清晰度按下一次连接生效：scrcpy 改不了运行中的分辨率，改了要重启服务端并重来一遍解码器。
+  const applyExpand = () => {
+    node.classList.toggle('desktop-expanded', expanded);
+    // 卡片的毛玻璃会成为 fixed 定位的包含块，撑满窗口前要先在 body 上解除它，否则只撑满那张卡片。
+    document.body.classList.toggle('desktop-expanded-host', expanded);
+    if (expandBtn) { const t = expanded ? '退出占满窗口' : '占满窗口（清晰度下次连接时生效）'; expandBtn.title = t; expandBtn.setAttribute('aria-label', t); }
+    try { localStorage.setItem('elf-desktop-expanded', expanded ? '1' : '0'); } catch {}
+  };
+  applyExpand();
+  tools.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); if (b.dataset.act === 'fold') { folded = true; applyFold(); return; } if (b.dataset.act === 'expand') { expanded = !expanded; applyExpand(); if (active === s && s.id && !s.closed) resize(s); return; } if (b.dataset.act === 'info') { s.infoOpen = !s.infoOpen; updateInfoPanel(s); return; } if (b.dataset.act === 'keys') { keysPanel.hidden = !keysPanel.hidden; return; } action(s, b.dataset.act); });
+  keysPanel.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); pressSpecial(s, specialKeys(s.device)[Number(b.dataset.key)]); });
   unfold.onclick = () => { folded = false; applyFold(); };
   // 鼠标→触摸：按实际画面矩形换算，黑边不发；右键=返回，中键=桌面；失焦/离开/断线释放触点。
   let down = false, lastMove = 0;
@@ -109,7 +159,7 @@ function buildNode(s) {
   const flushText = async () => {
     const text = ime.value; ime.value = ''; if (!text || !s.controller || !s.inputReady) return;
     s.lastInput = Date.now(); send(s, { type: 'activity' });
-    try { if (/^[\x20-\x7e\n]*$/.test(text)) await s.controller.injectText(text); else await s.controller.setClipboard({ sequence: 0n, content: text, paste: true }); }
+    try { await sendText(s, text); }
     catch (e) { log(s, '文本输入失败：' + (e.message || e)); }
   };
   ime.addEventListener('compositionend', () => { setTimeout(flushText, 0); });
@@ -118,6 +168,58 @@ function buildNode(s) {
   window.addEventListener('blur', s.release); document.addEventListener('visibilitychange', () => { if (document.hidden) s.release(); });
   return node;
 }
+// 把文本送进设备。纯 ASCII 走 injectText（键盘打字那条通路，实测可用）；
+// 含非 ASCII 只能过剪贴板，由 scrcpy 服务端自己注入 KEYCODE_PASTE（setClipboard 传 paste:true）。
+//
+// 绝对不要自己注入 Ctrl+V / Ctrl+C 这类带修饰键的组合。
+// 2026-09-20 实测截图：D31 的 Telegram 输入框里出现了
+// 「c://v.elfradio.net/devicesvvvvvvvvvvv」——每点一次粘贴就多一个字面量 v，
+// 和更早「复制」注入 Ctrl+C 打出一个 c 是同一回事。
+//
+// 决定性因素是**当前绑定的是哪个输入法**，不是软键盘显不显示。D31-dev 做过 A→B→A 受控对照，
+// 同一个输入框、同一套注入、同一组事件，只切输入法：
+//   拼音输入法 → Ctrl+A/C/V 全部变成字面量 a/c/v；换 LatinIME → 三个全部正常；切回拼音 → 复现。
+// 中文输入法为了组词要拿到所有字母键，在 IME 阶段就 commitText，事件到不了 post-IME 的
+// onKeyShortcut，metaState 里有没有 Ctrl 根本没人看。
+//
+// 两个要命的推论，别再踩：
+// 1. 不要想着「提示用户先收起键盘」。实测 mInputShown=false 时 mBoundToMethod 仍然是 true，
+//    输入法照样消费按键，粘贴照样失败。键盘不可见 ≠ 输入法没在拦。
+// 2. 这不是 Android 6 或 D31 特有的。任何机型只要前台绑着中文输入法就是这个结果，
+//    D22 和网关现在能用很可能只是因为常用英文输入法。所以这条路本来就不该走。
+//
+// 纯 ASCII 的 injectText 不受影响：输入法同样吃掉按键，但它 commit 出来的就是该有的字符。
+//
+// KEYCODE_PASTE(279) 是 API 24 才加的，D31 是 API 23，注入它只是个未定义键码，
+// 不会产生任何字符，安全。D22/Pixel(API>=24) 上它是有效的——数字 3/4 的剪贴板绕行
+// 用的就是 paste:true，在 D22 上实测可用。于是同一份代码：新系统一键粘贴，
+// 老系统内容照样进剪贴板，由用户在输入框里长按选「粘贴」，这是 D31 上唯一真正可行的做法。
+async function sendText(s, text) {
+  if (ASCII_ONLY.test(text)) { await s.controller.injectText(text); return 'typed'; }
+  await s.controller.setClipboard({ sequence: 0n, content: text, paste: true });
+  return 'clipboard';
+}
+
+// 设备剪贴板按设备 id 存在模块级，不挂在会话对象上。
+// 2026-09-19 23:30 起，点「占满窗口」会整个断开重连（分辨率只能在建会话时定），
+// 而 start() 每次都新建一个会话对象，挂在旧对象上的剪贴板内容就跟着没了。
+// 结果是：在设备上复制过文字，只要中途切过一次全屏，再点「复制」就永远是
+// 「设备尚未复制过文本」——看着就是复制键失效。所有者当晚正是在反复试全屏。
+const deviceClipboards = new Map();
+function rememberDeviceClipboard(s, text) { if (s?.device?.id) deviceClipboards.set(s.device.id, text); }
+function recallDeviceClipboard(s) { return s?.device?.id ? deviceClipboards.get(s.device.id) : undefined; }
+
+// 特殊键有两种：单个键码，以及要按顺序连发的一串键码（D31 的应用设置）。
+async function pressSpecial(s, entry) {
+  if (!entry || !s.controller || !s.inputReady) return;
+  const [label, what] = entry;
+  s.lastInput = Date.now(); send(s, { type: 'activity' });
+  try {
+    for (const code of what) await key(s, code);
+    if (what.length > 1) log(s, '已发送「' + label + '」按键序列 ' + what.length + ' 次');
+  } catch (e) { log(s, '「' + label + '」发送失败：' + (e.message || e)); }
+}
+
 async function key(s, code) { if (!s.controller || !s.inputReady) return; s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Down, keyCode: code, repeat: 0, metaState: 0 }); await s.controller.injectKeyCode({ action: AndroidKeyEventAction.Up, keyCode: code, repeat: 0, metaState: 0 }); }
 async function action(s, act) {
   try {
@@ -125,8 +227,17 @@ async function action(s, act) {
     else if (act === 'recent') await key(s, AndroidKeyCode.AndroidAppSwitch);
     else if (act === 'home') await key(s, AndroidKeyCode.AndroidHome);
     else if (act === 'back') await key(s, AndroidKeyCode.AndroidBack);
-    else if (act === 'copy') { const text = s.deviceClipboard; if (text === undefined) { log(s, '设备尚未复制过文本；请先在设备画面中选择文字并用安卓的复制'); return; } await navigator.clipboard.writeText(text); log(s, '已取回设备剪贴板 ' + text.length + ' 字'); }
-    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); await s.controller.setClipboard({ sequence: 0n, content: text, paste: true }); log(s, '已粘贴 ' + text.length + ' 字到设备'); }
+    else if (act === 'copy') {
+      // 这里不要注入 Ctrl+C。原实现就是「取回设备剪贴板」，设备侧的剪贴板变化会由 scrcpy
+      // 自动同步上来，这条路本来是好用的。2026-09-19 我改成先注入 Ctrl+C 再取回，结果更差：
+      // 设备上没有选中文字时，TextView 的快捷键分发不消费这个组合键，事件继续走普通按键处理，
+      // 于是在输入框里打出一个 c。粘贴要注入按键是因为没有别的触发方式，复制没有这个必要。
+      const text = recallDeviceClipboard(s);
+      if (text === undefined) { log(s, '本机还没收到过设备剪贴板内容；请在设备画面中选中文字、用安卓自己的复制菜单复制一次，状态栏出现「设备剪贴板已更新」后再点这里'); return; }
+      await navigator.clipboard.writeText(text);
+      log(s, '已取回设备剪贴板 ' + text.length + ' 字');
+    }
+    else if (act === 'paste') { const text = await navigator.clipboard.readText(); if (!text) { log(s, '电脑剪贴板为空'); return; } if (text.length > 30000) { log(s, '剪贴板文本过长'); return; } s.lastInput = Date.now(); send(s, { type: 'activity' }); const how = await sendText(s, text); log(s, how === 'typed' ? ('已输入 ' + text.length + ' 字') : ('含中文等非 ASCII，已送进设备剪贴板 ' + text.length + ' 字；安卓 7 以下（含 D31）没法由电脑触发粘贴，请在设备的输入框里长按、选「粘贴」')); }
   } catch (e) { log(s, (act === 'copy' || act === 'paste' ? '剪贴板操作失败：' : '操作失败：') + (e.message || e)); }
 }
 
@@ -165,7 +276,7 @@ async function attach(s) {
   stream.pipeThrough(options.createMediaStreamTransformer()).pipeThrough(counted).pipeTo(s.decoder.writable).catch(e => { if (active === s && !s.closed) log(s, '视频流结束：' + (e?.message || e)); });
   s.controller = new ScrcpyControlMessageWriter(channelWritable(s.controlDc).getWriter(), options);
   (async () => { const b = new BufferedReadableStream(channelReadable(s.controlDc, s)); try { while (true) { const id = (await b.readExactly(1))[0]; await options.deviceMessageParsers.parse(id, b); } } catch {} })();
-  options.clipboard?.pipeTo(new WritableStream({ write(text) { s.deviceClipboard = text; log(s, '设备剪贴板已更新（' + text.length + ' 字），点“复制”取回'); } })).catch(() => {});
+  options.clipboard?.pipeTo(new WritableStream({ write(text) { rememberDeviceClipboard(s, text); log(s, '设备剪贴板已更新（' + text.length + ' 字），点“复制”取回'); } })).catch(() => {});
   s.inputReady = true; updateReady(s);
 }
 function updateReady(s) {
@@ -184,14 +295,40 @@ function tick(s) {
   if (Date.now() - s.lastInput < 30000 && Date.now() - (s.lastActivitySent || 0) >= 30000) { send(s, { type: 'activity' }); s.lastActivitySent = Date.now(); }
 }
 
-async function start(d) {
+// 播放区的物理像素尺寸。把宽高两个数都报上去，由设备和自己的屏幕做 contain 计算：
+// 手机是竖屏，放进横向播放区里上下顶满、左右留黑边，真正约束的是高度；窗口又窄又高时
+// 约束才变成宽度。这个判断要同时知道手机屏幕和播放区，只有设备两边都知道，所以不在这里算。
+// 之前这里只报了播放区长边，等于在横向窗口下把宽度当成了约束边，编出来的画面白白多了一截宽、
+// 高度反而不够，表现就是放大后锯齿明显。量不到就不报，服务端不下发相关字段，设备走自己的默认值。
+function displayBox(node) {
+  try {
+    const r = node?.querySelector('.desktop-stage')?.getBoundingClientRect();
+    let w = Math.round(r?.width || 0), h = Math.round(r?.height || 0);
+    if (!w || !h) {
+      // 节点还没完成布局时按视口估一个，绝不能一个字段都不发。
+      // 发不出去的后果不是「退回旧行为」而是「设备走自己的保守默认值」，
+      // 于是全屏和小窗编出来一模一样、跟窗口完全无关，正是设备日志里 box=0x0 那次的现象。
+      let expanded = false; try { expanded = localStorage.getItem('elf-desktop-expanded') === '1'; } catch {}
+      w = Math.round(document.documentElement.clientWidth || window.innerWidth || 0);
+      h = expanded ? Math.round(document.documentElement.clientHeight || window.innerHeight || 0) : 340;
+    }
+    if (!w || !h) return null;
+    const ratio = window.devicePixelRatio || 1;
+    return { w: Math.round(w * ratio), h: Math.round(h * ratio) };
+  } catch { return null; }
+}
+
+async function start(d, initialMessage) {
   if (!d || d.managed_desktop_v1 !== true || d.enabled === false) return;
   if (active && active.device.id === d.id) return;
   if (active) await stop('已切换设备');
-  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: '正在连接…' };
-  active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, '正在唤醒设备…');
+  const s = { device: d, bytes: 0, frames: 0, lastBytes: 0, lastFrames: 0, videoW: 0, videoH: 0, geometryEpoch: 0, frameEpoch: 0, generation: 1, startedAt: performance.now(), lastInput: Date.now(), closed: false, message: initialMessage || '正在连接…' };
+  active = s; lastMessage = ''; s.node = buildNode(s); render(); log(s, initialMessage || '正在唤醒设备…');
   try {
-    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
+    // 等一帧再量：render() 之后布局未必已经完成，量到 0 就会退回估算，白白损失准确度。
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const box = displayBox(s.node);
+    const result = await json('/api/elfremote/desktop/session', { device_id: d.id, display_w: box?.w, display_h: box?.h, quality: (d.network || '').toLowerCase().includes('cell') || /移动|蜂窝|4g|lte/i.test(d.network || '') ? 'cellular' : 'wifi' });
     if (active !== s) { await json('/api/elfremote/desktop/session', { session_id: result.session_id }, 'DELETE').catch(() => {}); return; }
     s.id = result.session_id;
     s.ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/elfremote/desktop/browser?session_id=' + s.id);
@@ -209,12 +346,32 @@ async function message(s, p) {
   else if (p.type === 'status') { if (p.stage === 'failed') log(s, '设备报告失败：' + (p.message || '')); else if (p.stage === 'starting') log(s, '设备正在启动屏幕服务…'); else if (p.stage === 'ice_failed') log(s, '设备侧网络连接失败'); }
   else if (p.type === 'closed') { s.closeMessage = p.message; stop(p.message || '远程桌面已结束'); }
 }
+// 切换占满窗口之后自动重连一次。
+// 分辨率在建会话时就定死了，scrcpy 改不了运行中的分辨率，所以不重连的话点全屏只会把
+// 原有画面拉大、反而更糊，正好和点它的目的相反。所有者此前是靠手动刷新页面才拿到清晰画面的，
+// 等于这件事他已经在做，只是方式很别扭。
+// 代价很低：实测首帧 1484 毫秒、ICE 一秒内 CONNECTED，是一次约一秒半的闪断，
+// 换来分辨率按新窗口重算（实测 336 变 936）。
+// 不做会话内改分辨率：那要重启 scrcpy 服务端、产生新的 SPS/PPS、解码器重来一遍，
+// 中断时长和重连同一量级，却要两边都加协商，而 restart 还限了 4 次，不划算。
+// 拖动窗口不触发这条：拖动过程中反复重连会很烦，只在这种离散切换上重连。
+async function resize(s) {
+  const d = s.device;
+  await stop('切换显示大小');
+  // 点下去立刻给出「重新连接中」，收到 ready 时自然被连接信息取代。
+  // 画面会黑一秒多，没有提示的话分不清是在重连还是卡死了。失败时 start 自己会落到
+  // stop(具体原因)，所以不会一直转——今晚那次「转一会儿然后断开」正是无声失败，不能重演。
+  await start(d, '重新连接中…');
+}
+
 async function stop(text) {
   const s = active; if (!s) return; active = null; s.closed = true; lastMessage = text || '';
   clearInterval(s.timer); try { s.release?.(); } catch {}
   try { send(s, { type: 'stop' }); } catch {}
   try { s.ws?.close(); } catch {} try { await s.controller?.close(); } catch {} try { s.decoder?.dispose(); } catch {} try { s.pc?.close(); } catch {}
   if (s.id) json('/api/elfremote/desktop/session', { session_id: s.id }, 'DELETE').catch(() => {});
+  // 桌面关掉之后 body 上的标记必须收回，否则页面会一直禁止滚动、卡片也一直没有毛玻璃。
+  document.body.classList.remove('desktop-expanded-host');
   render();
 }
 // 供设备页调用：按钮状态、把保留的桌面节点挂回终端区域。

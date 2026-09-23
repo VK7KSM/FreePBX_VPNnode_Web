@@ -1,8 +1,23 @@
 import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
 import worker from './worker.js';
 import {createHash} from 'node:crypto';
-export const STATIC_ROUTES={'/':'index.html','/devices':'devices.html','/sip':'sip.html','/panel-events.js':'panel-events.js','/panel-lifecycle.js':'panel-lifecycle.js','/cf-usage.js':'cf-usage.js','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/desktop-client.js':'desktop-client.js','/share-client.js':'share-client.js','/fault-client.js':'fault-client.js','/evidence-client.js':'evidence-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
+// 管理面板没有首页：代理面板搬去 s.elfradio.net 之后，v 上的 / 只是跳到 /devices，
+// 这里不再生成 index.html，静态资源缺这一条，/ 就会落到 Worker 上去跳转。
+// 面板页面的安全响应头。面板大量把服务端数据拼进 innerHTML，esc() 用得勤，
+// 但这是第二道防线：别的站点不能把面板套进 iframe，浏览器不猜内容类型，
+// 明文 HTTP 直接升级。CSP 先用 Report-Only 跑，看一周误报再转正——
+// 页面里到处是 onclick= 内联脚本，直接上强制版会把面板打瘫。
+export const CSP_REPORT_ONLY="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://cdn.jsdelivr.net; font-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'";
+export const STATIC_HEADERS='/*\n  Cache-Control: no-cache\n  X-Content-Type-Options: nosniff\n'
+  +'  X-Frame-Options: DENY\n  Referrer-Policy: strict-origin-when-cross-origin\n'
+  +'  Strict-Transport-Security: max-age=31536000\n'
+  +'  Content-Security-Policy-Report-Only: '+CSP_REPORT_ONLY+'\n';
+export const STATIC_ROUTES={'/devices':'devices.html','/sip':'sip.html','/panel-events.js':'panel-events.js','/panel-lifecycle.js':'panel-lifecycle.js','/cf-usage.js':'cf-usage.js','/admin-session.js':'admin-session.js','/devices-client.js':'devices-client.js','/media-client.js':'media-client.js','/desktop-client.js':'desktop-client.js','/share-client.js':'share-client.js','/fault-client.js':'fault-client.js','/evidence-client.js':'evidence-client.js','/file-hash.js':'file-hash.js','/terminal.js':'terminal.js','/terminal.css':'terminal.css','/logo.png':'logo.png','/favicon.ico':'favicon.ico'};
 export async function buildAssets(directory='.generated-assets'){
+ // 先清空：这个目录整份上传给 Workers Assets，上一轮留下的文件不会自动消失。
+ // 2026-09-20 把首页从清单里去掉后，旧的 index.html 仍留在磁盘上，照样被传了上去，
+ // v.elfradio.net 的首页于是还是那张代理面板。
+ await fs.rm(directory,{recursive:true,force:true});
  await fs.mkdir(directory,{recursive:true});const files=[];
  for(const [route,file] of Object.entries(STATIC_ROUTES)){
   const response=await worker.fetch(new Request('https://assets-build.invalid'+route),{});
@@ -18,7 +33,7 @@ export async function buildAssets(directory='.generated-assets'){
  const version=hash.digest('hex').slice(0,20);
  for(const item of files.filter(item=>item.file.endsWith('.html'))){const target=path.join(directory,item.file);await fs.writeFile(target,(await fs.readFile(target,'utf8')).replaceAll('__ELF_PANEL_VERSION__',version));}
  await fs.writeFile(path.join(directory,'panel-version.json'),JSON.stringify({version}));
- await fs.writeFile(path.join(directory,'_headers'),'/*\n  Cache-Control: no-cache\n  X-Content-Type-Options: nosniff\n');
+ await fs.writeFile(path.join(directory,'_headers'),STATIC_HEADERS);
  return files;
 }
 if(process.argv[1]&&pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url)console.log(JSON.stringify(await buildAssets()));
