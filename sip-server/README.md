@@ -36,7 +36,9 @@ sudo bash install.sh
 3. 若面板状态要从本机读：Cloudflare Tunnel 指到 `127.0.0.1:8080`，token 放 `/etc/cloudflared/token`（本脚本不写这个文件）。
 4. 打开 https://v.elfradio.net/sip 保存一次配置。最多约 30 秒，本机会拉到分机密码和通话组。
 
-`sip-statusd` 负责拉配置和给面板提供状态。`sip-heartbeat.timer` 默认关掉，不必开。
+`sip-statusd` 负责拉配置和给面板提供状态，是本机唯一需要常驻的服务。
+
+`/etc/sip-heartbeat.token` 名字里虽带 heartbeat，**实际是 `sip-statusd` 拉 `/api/sip/pull` 的认证凭据**（请求头 `X-Heartbeat-Token`）。不能照名字当成废弃物删掉或吊销，否则本机拉不到配置，分机密码与通话组变更都下发不下去。
 
 ## 不进 Git 的东西
 
@@ -122,7 +124,7 @@ echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.
 |---|---|
 | `install.sh` | 一键安装 |
 | `secrets.example` | 复制为 `secrets.env` |
-| `files/usr/local/sbin/sip-heartbeat.py` | 把面板配置写成 Asterisk 配置（含只改组不重载） |
+| `files/usr/local/sbin/sip-heartbeat.py` | 把面板配置写成 Asterisk 配置（含只改组不重载）。**只作为库被 `sip-statusd` 导入**（`apply_config` / `write_rev` / `write_err`），直接运行会报错退出 |
 | `files/usr/local/sbin/sip-statusd.py` | 每 30 秒拉面板配置、在 `127.0.0.1:8080` 提供本机状态 |
 | `files/usr/local/sbin/sip_bans.py` | 汇总 Fail2Ban 封禁状态供面板显示与解封 |
 | `files/usr/local/sbin/sms-queue.py` | 离线短信队列（SQLite），上线后补投 |
@@ -130,7 +132,7 @@ echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.
 | `files/etc/asterisk/pjsip.auth.conf` | 仅占位密码 `CHANGE_ME`，以面板同步为准 |
 | `files/etc/fail2ban/`、`files/etc/iptables/` | 防护规则。`rules.v4` 是按生产机同步的基线，已去掉 fail2ban 的自建链、跳转规则和历史封禁条目，这些由 fail2ban 启动时自行重建，不应带到新机 |
 | `files/etc/sysctl.d/99-bbr.conf` | 开启 BBR |
-| `files/etc/systemd/system/` | `sip-statusd` 与 `sip-heartbeat` 服务。**不含 `sip-heartbeat.timer`**：`sip-statusd.py` 直接 import 心跳模块自带节拍，那个 timer 从未启用过，留着只会让人误以为心跳靠它，2026-09-23 已从仓库与生产机删除 |
+| `files/etc/systemd/system/` | 只有 `sip-statusd` 服务与 Asterisk 的 drop-in。2026-09-23 删除了 `sip-heartbeat.timer` 与 `sip-heartbeat.service`：它们触发的 `POST /api/sip/heartbeat` 最后一次运行在 2026-09-02，面板那个接口只验令牌、不写任何状态（面板在线状态来自 `/api/sip/live`，由 Worker 经隧道读本机），服务端已标为废弃 |
 | `files/etc/letsencrypt/renewal-hooks/deploy/elfremote-sip` | 证书续签后装进 Asterisk 并重载 PJSIP 的钩子 |
 | `test_sip_bans.py`、`test_sms_queue.py` | 封禁汇总与短信队列的单元测试 |
 | `封禁管理交接.md` | 封禁管理的设计与交接说明 |

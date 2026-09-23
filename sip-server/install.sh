@@ -40,7 +40,6 @@ chmod 660 /var/lib/sip-panel/sms_queue.sqlite
 chgrp asterisk /var/lib/sip-panel 2>/dev/null || true
 chmod 775 /var/lib/sip-panel 2>/dev/null || true
 install -m 644 "$FILES/etc/systemd/system/sip-statusd.service" /etc/systemd/system/sip-statusd.service
-install -m 644 "$FILES/etc/systemd/system/sip-heartbeat.service" /etc/systemd/system/sip-heartbeat.service
 install -m 644 "$FILES/etc/systemd/system/asterisk.service.d/openssl-compat.conf" \
   /etc/systemd/system/asterisk.service.d/openssl-compat.conf
 install -m 644 "$FILES/etc/fail2ban/jail.d/asterisk.local" /etc/fail2ban/jail.d/asterisk.local
@@ -107,6 +106,10 @@ systemctl enable --now asterisk fail2ban sip-statusd.service certbot.timer
 # 这个 timer 从未启用过，留着只会让人以为心跳靠它。
 systemctl disable --now sip-heartbeat.timer >/dev/null 2>&1 || true
 rm -f /etc/systemd/system/sip-heartbeat.timer   # 旧机器上残留的也一并清掉
+# 它触发的 sip-heartbeat.service 同样是死路径：POST /api/sip/heartbeat 已废弃，面板只验令牌不写状态。
+# sip-heartbeat.py 保留，作为库被 sip-statusd 导入（apply_config / write_rev / write_err）。
+systemctl disable sip-heartbeat.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/sip-heartbeat.service
 systemctl restart asterisk fail2ban sip-statusd.service
 
 echo

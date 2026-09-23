@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import json, os, socket, subprocess, time, urllib.request, urllib.error, sys
 
+# 令牌文件名里虽带 heartbeat，实际是 sip-statusd 拉 /api/sip/pull 的认证凭据，不能删、不能吊销。
 TOKEN_PATH = "/etc/sip-heartbeat.token"
-URL = "https://v.elfradio.net/api/sip/heartbeat"
 
 
 def sh(cmd):
@@ -791,87 +791,11 @@ def apply_config(exts, groups=None, gateways=None):
     return True
 
 
-def main():
-    token = open(TOKEN_PATH).read().strip()
-    used, total, mpct = mem()
-    dused, dtotal, dpct = disk()
-    load = " ".join(open("/proc/loadavg").read().split()[:3])
-    up_s = float(open("/proc/uptime").read().split()[0])
-    days = int(up_s // 86400)
-    hours = int((up_s % 86400) // 3600)
-    cs = contacts()
-    if cs is None:
-        payload_contacts_ok = False
-        payload_contacts = None
-    else:
-        payload_contacts_ok = True
-        payload_contacts = cs
-    applied = read_rev()
-    err = ""
-    try:
-        err = open(ERR_PATH).read().strip()
-    except Exception:
-        err = ""
-    payload = {
-        "hostname": socket.gethostname(),
-        "uptime": "%dd %dh" % (days, hours),
-        "load": load,
-        "cpu_pct": cpu_pct(),
-        "mem_used": used,
-        "mem_total": total,
-        "mem_pct": mpct,
-        "disk_used": dused,
-        "disk_total": dtotal,
-        "disk_pct": dpct,
-        "asterisk": sh("systemctl is-active asterisk") or "unknown",
-        "cdr": cdr_rows(),
-        "applied_rev": applied,
-        "apply_error": err,
-        "contacts_ok": payload_contacts_ok,
-    }
-    rx_b, tx_b, net_label = net()
-    calls, chans = call_stats()
-    payload["rx_bytes"] = rx_b
-    payload["tx_bytes"] = tx_b
-    payload["net"] = net_label
-    payload["active_calls"] = calls
-    payload["active_channels"] = chans
-    if payload_contacts is not None:
-        payload["contacts"] = payload_contacts
-    req = urllib.request.Request(
-        URL,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "X-Heartbeat-Token": token,
-            "User-Agent": "sip-heartbeat/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        sys.stderr.write("heartbeat http %s %s\n" % (e.code, e.read()[:300].decode("utf-8", "replace")))
-        return
-    except Exception as e:
-        sys.stderr.write("heartbeat error %s\n" % e)
-        return
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return
-    if not data.get("ok"):
-        return
-    if data.get("pending") and (isinstance(data.get("extensions"), list) or isinstance(data.get("gateways"), list)):
-        try:
-            apply_config(data.get("extensions") or [], data.get("groups") or [], data.get("gateways") or [])
-            write_rev(data.get("config_rev") or applied)
-            write_err("")
-        except Exception as e:
-            write_err(str(e))
 
-
+# 2026-09-23：原来的 main() 采集主机状态并 POST /api/sip/heartbeat，只由 sip-heartbeat.timer
+# 触发；该 timer 从未启用过，最后一次运行是 2026-09-02，面板那个接口也只验令牌、不写任何状态
+# （面板在线状态来自 /api/sip/live，由 Worker 经隧道读本机 sip-statusd）。已删除 main() 与 URL。
+# 本文件现在只作为库被 sip-statusd 导入，使用 apply_config / write_rev / write_err。
 if __name__ == "__main__":
-    main()
-
+    sys.stderr.write("sip-heartbeat.py 不再单独运行：心跳接口已废弃，配置下发由 sip-statusd 导入 apply_config 完成。"+chr(10))
+    sys.exit(1)
