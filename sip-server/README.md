@@ -74,7 +74,9 @@ sudo bash install.sh
 
 二是属主与权限。oracle1 是 `root:mosquitto 0640`；这台机的 Asterisk 以 `asterisk` 身份运行，所以装成 `asterisk:asterisk`，证书 0600、私钥 0640，与原有文件一致。
 
-钩子先写 `.new` 再 `mv`，避免 Asterisk 读到写了一半的文件；最后 `asterisk -rx "module reload res_pjsip.so"`。**这次重载会让 5061 上的注册短暂抖动**，所以首次签发要挑低峰时段。
+钩子先写 `.new` 再 `mv`，避免 Asterisk 读到写了一半的文件；最后 `asterisk -rx "module reload res_pjsip.so"`。重载后 5061 对**新连接**发出新证书，已建立的 TLS 连接不会被断开，终端下次重连时自然换上新证书（2026-09-23 实测：6 个注册全程在线，外部新握手拿到的已是新序列号）。
+
+**`certonly` 不执行目录里的部署钩子，只有 `renew` 执行。** 这一点容易想当然：2026-09-23 首次 `certonly` 成功后，`/etc/asterisk/keys/` 的文件时间与序列号都没变，证书只落在 certbot 自己的目录里，Asterisk 仍读旧证书。certbot 源码中目录钩子只在续签路径 `hooks.py` 的 `renew_hook` 里调用。所以首次签发后要走一次真实续签路径把证书装进去，这同时也验证了将来定时续签能否装上：
 
 **密钥类型必须是 RSA 4096，不能用 certbot 的默认值。** certbot 2.x 默认签 ECDSA，而现有证书是 RSA 4096，接入的终端里有靠 `openssl-compat.cnf` 放行 TLS 1.0 才能注册的老设备（D31），未必支持 ECDHE-ECDSA 套件。按默认签发、换上 ECDSA 证书，这类设备会 TLS 握手失败、注册掉线。要注意的是 `--dry-run` **发现不了这个问题**：它只验证 Let's Encrypt 能否从公网连进来，不验证客户端兼容性，用 ECDSA 演练照样显示成功。`--key-type` 会写进 `renewal/sip.elfradio.net.conf`，之后续签沿用 RSA。
 
@@ -84,7 +86,17 @@ sudo bash install.sh
 
 ```bash
 certbot certonly --standalone -d sip.elfradio.net --key-type rsa --rsa-key-size 4096   --agree-tos --register-unsafely-without-email -n
+# certonly 不跑部署钩子，用真实续签路径装进 Asterisk（会重载 PJSIP）：
+certbot renew --cert-name sip.elfradio.net --force-renewal -n
 certbot renew --dry-run
+```
+
+`renew` 在没有终端的环境下（ssh 不带 `-t`、systemd 定时器）会先**随机等待 1～480 秒**再续签，日志里是 `Non-interactive renewal: random delay of N seconds`。这是 certbot 为分散服务器负载的正常行为，不是卡住；手工执行时用 `ssh -t` 分配终端即可跳过。
+
+验收不要只看文件：要从外部新建一次握手，确认 5061 实际发出的序列号与 `/etc/letsencrypt/live/` 一致：
+
+```bash
+echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.net 2>/dev/null   | openssl x509 -noout -serial -enddate
 ```
 
 `--dry-run` 不能只看它说没说成功，要确认钩子真的跑了、`/etc/asterisk/keys/` 里的文件时间变了、`pjsip show transports` 仍有 `transport-tls`。
