@@ -15,7 +15,10 @@ function prefix(device) { return "history/" + encodeURIComponent(device) + "/"; 
 export function normalizeReportEvent(value) {
   if(value==null)return null;
   if(value.type==='movement'){
-    if(!Number.isInteger(value.distance_m)||value.distance_m<=3000||value.distance_m>21000000)throw new Error('位移事件无效');
+    // 只校验形状，不再复制客户端的业务门槛：以前这里写死 >3000 米，客户端 2026-09-22 把阈值降到一公里后，
+    // 1–3 公里的位移事件全部被这里以 400 拒掉、设备把报告压进重试队列每分钟重发——
+    // 表现就是「移动检测从没生效、轨迹一条直线」（D22-JJ 2026-09-23 上午 155 次 400）。
+    if(!Number.isInteger(value.distance_m)||value.distance_m<=0||value.distance_m>21000000)throw new Error('位移事件无效');
     const at=timestamp(value.at);if(!at)throw new Error('位移事件缺少时间');
     return {type:'movement',distance_m:value.distance_m,at};
   }
