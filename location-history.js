@@ -27,6 +27,12 @@ export function normalizeReportEvent(value) {
   return {type:"low_battery",thresholds:[...value.thresholds].sort((a,b)=>b-a),level:value.level,at};
 }
 
+export function reportInterval(data) {
+  const declared = data?.report_interval_ms;
+  if (typeof declared === 'number' && Number.isInteger(declared) && declared >= 60000 && declared <= 86400000) return declared;
+  return data?.network === 'wifi' || data?.network === 'ethernet' ? 900000 : 3600000;
+}
+
 export async function appendLocationHistory(storage, device, data, ip, loc, now = Date.now(), installation = null) {
   const supplied = data.report_id;
   if (supplied != null && (typeof supplied !== "string" || !/^[a-zA-Z0-9_.:-]{1,96}$/.test(supplied))) throw new Error("上报编号无效");
@@ -60,7 +66,10 @@ export async function appendLocationHistory(storage, device, data, ip, loc, now 
     timeline_at: timeline, sample_at: timestamp(loc?.at), network: String(data.network || "unknown").slice(0,32),
     battery: data.battery!=null&&Number.isFinite(Number(data.battery))?Math.max(0,Math.min(100,Math.round(Number(data.battery)))):null,
     charging:typeof data.charging==='boolean'?data.charging:null,battery_present:typeof data.battery_present==='boolean'?data.battery_present:null,
-    report_interval_ms:data.network==='wifi'||data.network==='ethernet'?900000:3600000,
+    // 上报节奏以设备自报为准（[60 秒, 24 小时]），面板据此判断轨迹断点（相邻间隔 > 2 倍即断）。
+    // 以前按 network 查表写死 15 分钟/1 小时：Pixel Gateway 实际每 60 秒报一次，阈值被放宽 30 倍，
+    // 停报 8 分钟面板也不显示断点。老客户端不报这个字段时仍回退查表。
+    report_interval_ms:reportInterval(data),
     ip, ip_observed_at: received, location: loc, location_status: loc ? (loc.source === "ip" ? "ip_area" : (loc.at ? "sampled" : "sample_time_unknown")) : "unavailable",
     location_reason: String(data.location_reason || "").slice(0,120), ...(data.network_location_reason ? {network_location_reason:String(data.network_location_reason).slice(0,40)} : {}), legacy_report: !supplied, traffic,...(event?{report_event:event}:{}) };
   const key = prefix(device) + timeline + "/" + id;
