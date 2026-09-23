@@ -46,6 +46,8 @@ android {
         versionName nameText
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         buildConfigField "boolean", "STATUS_ONLY", project.hasProperty("elfStatusOnly") ? Boolean.parseBoolean("$elfStatusOnly").toString() : "true"
+        // 回滚演练包：故意永不写 health.ok，让更新器走「健康超时 → 回滚」那条路。只用于真机演练，正式包一律 false。
+        buildConfigField "boolean", "ROLLBACK_DRILL", project.hasProperty("elfRollbackDrill") ? Boolean.parseBoolean("$elfRollbackDrill").toString() : "false"
         def controlUrl = project.findProperty("elfControlUrl") ?: "https://v.elfradio.net"
         def endpoint = new URI(controlUrl)
         if (endpoint.scheme != "https" || !endpoint.host || endpoint.userInfo || endpoint.query || endpoint.fragment || (endpoint.path && endpoint.path != "/")) {

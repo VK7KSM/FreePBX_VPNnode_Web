@@ -1548,6 +1548,12 @@ public final class ReportService extends Service {
                 return;
             }
             if (!UpdatePolicy.ST_WAIT_HEALTH.equals(disk)) return;
+            if (BuildConfig.ROLLBACK_DRILL) {
+                // 演练包：健康检查永远不过，等更新器 150 秒超时后回滚到 last_good。
+                RuntimeLog.event("update_health_drill refusing health.ok on purpose");
+                if (worker != null) worker.postDelayed(healthCheck, 5000L);
+                return;
+            }
             int want = st.optInt("versionCode", 0);
             String wantName = st.optString("versionName", "");
             android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
