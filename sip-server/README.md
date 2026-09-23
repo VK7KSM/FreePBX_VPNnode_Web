@@ -76,10 +76,14 @@ sudo bash install.sh
 
 钩子先写 `.new` 再 `mv`，避免 Asterisk 读到写了一半的文件；最后 `asterisk -rx "module reload res_pjsip.so"`。**这次重载会让 5061 上的注册短暂抖动**，所以首次签发要挑低峰时段。
 
-首次签发（云安全组必须先放行 TCP 80）：
+**密钥类型必须是 RSA 4096，不能用 certbot 的默认值。** certbot 2.x 默认签 ECDSA，而现有证书是 RSA 4096，接入的终端里有靠 `openssl-compat.cnf` 放行 TLS 1.0 才能注册的老设备（D31），未必支持 ECDHE-ECDSA 套件。按默认签发、换上 ECDSA 证书，这类设备会 TLS 握手失败、注册掉线。要注意的是 `--dry-run` **发现不了这个问题**：它只验证 Let's Encrypt 能否从公网连进来，不验证客户端兼容性，用 ECDSA 演练照样显示成功。`--key-type` 会写进 `renewal/sip.elfradio.net.conf`，之后续签沿用 RSA。
+
+不填账号邮箱：Let's Encrypt 自 2025 年 6 月起不再发到期提醒邮件，填了没有作用。续签失败可以从面板 SIP 页的 5061 状态看到。
+
+首次签发（云安全组必须先放行 TCP 80，**源端口留空、目的端口 80**，两栏填反的话规则无效）：
 
 ```bash
-certbot certonly --standalone -d sip.elfradio.net --agree-tos -m <邮箱> -n
+certbot certonly --standalone -d sip.elfradio.net --key-type rsa --rsa-key-size 4096   --agree-tos --register-unsafely-without-email -n
 certbot renew --dry-run
 ```
 
