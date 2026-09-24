@@ -552,7 +552,7 @@ function renderFirewall(){
   for(var i=0;i<bans.length;i++){
     var b=bans[i], exts=(b.exts||[]).map(function(e){return e.exists?esc(e.ext):'<span style="color:#94a3b8">'+esc(e.ext)+"（不存在）</span>";});
     var left=b.until==null?"永久":fwDur(b.until-now);
-    html+="<tr><td>"+twoLine(esc(b.ip),esc(b.geo||"未知"))+"</td>";
+    html+="<tr><td>"+twoLine(esc(b.ip),b.geo==null?"查询中":esc(b.geo||"未知"))+"</td>";
     html+="<td style=\"white-space:normal\">"+(exts.length?exts.join("、"):'<span style="color:#94a3b8">无</span>')+"</td>";
     html+="<td>"+fmtSeen(new Date(b.since*1000).toISOString())+"</td>";
     html+="<td style=\"white-space:nowrap\">"+left+"</td>";

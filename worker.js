@@ -1070,7 +1070,7 @@ const app = {
       const bundle = await loadSipBundle(env);
       const osaka = await fetchOsakaStatus(env);
       let status = osaka.status;
-      if (status && status.bans) status = Object.assign({}, status, { bans: await sipBanView(status.bans, bundle) });
+      if (status && status.bans) status = Object.assign({}, status, { bans: sipBanView(status.bans, bundle, ctx) });
       const geo = await geoForStatus(env, status);
       const config_rev = (await getStore(env, "sip_config_rev")) || 0;
       const applied_rev = (status && status.applied_rev) || 0;
@@ -1137,7 +1137,7 @@ const app = {
         status = Object.assign({}, status);
         delete status.cdr;
         delete status.history;
-        if (status.bans) status.bans = await sipBanView(status.bans, await loadSipBundle(env));
+        if (status.bans) status.bans = sipBanView(status.bans, await loadSipBundle(env), ctx);
       }
       return json({
         ok: true,
@@ -1692,25 +1692,22 @@ function attachHistory(prev, body) {
 }
 
 // 防火墙封禁的多是扫号器，地址每天几十个且一小时后解封，归属地只放隔离内存，不写 KV。
-const SIP_BAN_GEO = new Map();
-async function sipBanGeo(ip) {
-  if (SIP_BAN_GEO.has(ip)) return SIP_BAN_GEO.get(ip);
-  let label = isPrivateIp(ip) ? "内网" : "";
-  if (!label) {
-    try {
-      const r = await fetch("http://ip-api.com/json/" + encodeURIComponent(ip) + "?lang=zh-CN&fields=status,country,regionName,city", {signal: AbortSignal.timeout(3000)});
-      const j = await r.json();
-      label = j && j.status === "success" ? [j.country, j.regionName, j.city].filter(Boolean).join(" ") : "";
-    } catch (e) {}
-  }
-  // 查询失败也记下，免得每 2 秒的实时轮询反复打外部接口。
-  if (SIP_BAN_GEO.size >= 500) SIP_BAN_GEO.delete(SIP_BAN_GEO.keys().next().value);
-  SIP_BAN_GEO.set(ip, label);
-  return label;
+// 实时轮询路径不等外部接口：缺的归属地交给 waitUntil 在后台查，下一次轮询再带上。
+const SIP_BAN_GEO = new Map();          // ip -> 归属地；"" 表示查过但没查到
+const SIP_BAN_GEO_PENDING = new Set();
+function sipBanGeoLookup(ip) {
+  if (SIP_BAN_GEO.has(ip) || SIP_BAN_GEO_PENDING.has(ip)) return null;
+  SIP_BAN_GEO_PENDING.add(ip);
+  const looked = isPrivateIp(ip) ? Promise.resolve({label: "内网"})
+    : Promise.race([fetchIpGeo(ip), new Promise(resolve => setTimeout(resolve, 5000, null))]);
+  return looked.catch(() => null).then(g => {
+    if (SIP_BAN_GEO.size >= 500) SIP_BAN_GEO.delete(SIP_BAN_GEO.keys().next().value);
+    SIP_BAN_GEO.set(ip, (g && g.label) || "");
+  }).finally(() => SIP_BAN_GEO_PENDING.delete(ip));
 }
 
 // 分机目录只显示现有分机；防火墙卡片的关联分机来自同一份映射，并标出是否存在。
-async function sipBanView(bans, bundle) {
+function sipBanView(bans, bundle, ctx) {
   const valid = new Set([...bundle.extensions.map(x => String(x.ext)), ...bundle.gateways.map(g => String(g.ext))]);
   const view = Object.assign({}, bans);
   if (bans.endpoints && typeof bans.endpoints === "object") {
@@ -1718,16 +1715,17 @@ async function sipBanView(bans, bundle) {
     for (const [k, v] of Object.entries(bans.endpoints)) if (valid.has(k)) view.endpoints[k] = v;
   }
   if (bans.firewall && Array.isArray(bans.firewall.bans)) {
-    let lookups = 0;
-    const list = [];
-    for (const b of bans.firewall.bans) {
-      const geo = SIP_BAN_GEO.has(b.ip) ? SIP_BAN_GEO.get(b.ip) : (lookups++ < 3 ? await sipBanGeo(b.ip) : "");
-      list.push(Object.assign({}, b, {
-        geo,
+    let started = 0;
+    view.firewall = Object.assign({}, bans.firewall, {bans: bans.firewall.bans.map(b => {
+      if (!SIP_BAN_GEO.has(b.ip) && started < 3) {
+        const job = sipBanGeoLookup(b.ip);
+        if (job) { started++; if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
+      }
+      return Object.assign({}, b, {
+        geo: SIP_BAN_GEO.has(b.ip) ? SIP_BAN_GEO.get(b.ip) : null,
         exts: (b.exts || []).map(e => ({ext: String(e), exists: valid.has(String(e))}))
-      }));
-    }
-    view.firewall = Object.assign({}, bans.firewall, {bans: list});
+      });
+    })});
   }
   return view;
 }
@@ -3747,14 +3745,14 @@ function renderSipHtml() {
     '<\/div>',
 
     '<div id="fwBox" class="card" style="padding:1.5rem;border-radius:1rem">',
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;gap:1rem;flex-wrap:wrap">',
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;gap:1rem;flex-wrap:wrap">',
     '<h3 style="font-weight:700;line-height:2.2rem;margin:0">防火墙<\/h3>',
     '<div id="fwState" style="font-size:.8rem;color:#cbd5e1"><\/div>',
     '<\/div>',
-    '<div id="fwInfo" style="font-size:.75rem;color:#94a3b8;line-height:1.7;margin-bottom:.8rem"><\/div>',
     '<div style="overflow-x:auto"><table class="sip-table" style="min-width:560px"><colgroup><col style="width:30%"><col><col style="width:110px"><col style="width:110px"><col style="width:80px"><\/colgroup><thead><tr>',
     '<th>封禁 IP<\/th><th>尝试的分机<\/th><th>封禁于<\/th><th>剩余<\/th><th><\/th>',
     '<\/tr><\/thead><tbody id="fwtb"><\/tbody><\/table><\/div>',
+    '<div id="fwInfo" style="font-size:.75rem;color:#94a3b8;line-height:1.7;margin-top:.8rem"><\/div>',
     '<\/div>',
     '<\/main>',
 

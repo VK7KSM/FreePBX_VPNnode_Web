@@ -40,6 +40,8 @@ sudo bash install.sh
 
 `/etc/sip-heartbeat.token` 名字里虽带 heartbeat，**实际是 `sip-statusd` 拉 `/api/sip/pull` 的认证凭据**（请求头 `X-Heartbeat-Token`）。不能照名字当成废弃物删掉或吊销，否则本机拉不到配置，分机密码与通话组变更都下发不下去。
 
+同一个令牌也是反方向的凭据：Worker 用它调用本机 `sip-statusd` 的 `/status`、`/api/sip/ban` 和 `/api/sip/firewall`（封禁、解封），也就是大阪防火墙接口的凭据。它一旦泄露，别人就能解封 IP，所以轮换时两端要一起换。
+
 ## 不进 Git 的东西
 
 分机密码、心跳 token、TLS 私钥、Cloudflare Tunnel token 都不在这里，由 `sip-server/.gitignore` 挡住。`pjsip.auth.conf` 里是占位密码 `CHANGE_ME`，真实密码只存在面板 KV，首次同步后由本机脚本写入。
