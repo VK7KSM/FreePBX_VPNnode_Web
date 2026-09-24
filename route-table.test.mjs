@@ -48,7 +48,7 @@ test('独立页五张表与 share-scope.js 并表前一致', () => {
   same(SHARE_FORBIDDEN.map(x=>x.join(' ')),['POST /api/devices','POST /api/device-models','POST /api/devices/delete','POST /api/devices/pair','GET /api/devices/recovery',
     'GET /api/devices/sip-directory','POST /api/elfremote/releases','POST /api/elfremote/releases/prune','PUT /api/elfremote/releases/upload','POST /api/elfremote/proxy-config',
     'GET /api/cf-usage','GET /api/admin/legacy-store','GET /api/admin/store-size','GET /api/admin/health','POST /api/admin/legacy-store','POST /api/admin/prepare-kv',
-    'POST /api/sip/ban','POST /api/sip/save','POST /api/save','POST /api/admin/password'],'forbidden');
+    'POST /api/sip/ban','POST /api/sip/firewall','POST /api/sip/save','POST /api/save','POST /api/admin/password'],'forbidden');
   same(SHARE_GLOBAL_READ,['/api/devices','/api/device-models','/api/elfremote/releases','/api/devices/events','/api/share/session','/api/share/logout','/api/share/login','/api/session','/api/logout'],'global');
   same(OBSERVER_ALLOWED.map(x=>x.join(' ')),['POST /api/devices/update','POST /api/devices/delete','POST /api/devices/pair','POST /api/devices','POST /api/device-models',
     'POST /api/share/links','POST /api/share/links/update','POST /api/share/links/delete','POST /api/elfremote/releases','POST /api/elfremote/releases/prune',
