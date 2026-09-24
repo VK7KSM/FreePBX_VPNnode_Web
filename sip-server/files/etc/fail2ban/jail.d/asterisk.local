@@ -2,7 +2,11 @@
 enabled = true
 filter = asterisk
 logpath = /var/log/asterisk/messages
-maxretry = 5
+# 2026-09-24 由 5 放宽到 15。一次失败的 REGISTER 在日志里不止一行：注册一个不存在的分机时
+# 每次尝试记为两条 No matching endpoint found 加一条 Failed to authenticate，共 3 次匹配。
+# 门槛为 5 时，自家设备配错分机号、客户端自动重试一两轮就会被封（西安 D31 当天即因此被误封）。
+# 15 约等于这种情况下 5 次尝试；扫号器每分钟成百上千次，仍会在几秒内被封。
+maxretry = 15
 findtime = 600
 bantime = 3600
 backend = auto
