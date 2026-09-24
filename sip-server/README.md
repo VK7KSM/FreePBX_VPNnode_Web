@@ -52,7 +52,7 @@ sudo bash install.sh
 - 只有加/删分机、改密码、改 SIP 账号文件时才重载 PJSIP。
 - 网关 300 不跑 OPTIONS；面板按是否有注册联系人判断网关在线。
 - 只放行 TCP 22、TCP 80（证书续签）、TLS 5061 与 RTP 10000–20000；明文 5060 不对公网开放（Asterisk 仍监听，但被防火墙挡住）。
-- Fail2Ban 看守 5060/5061 的连接尝试；`IGNOREIP` 里的地址永不封。封禁状态由 `sip_bans.py` 汇总给面板，面板可手动解封，细节见 `封禁管理交接.md`。
+- Fail2Ban 看守 5060/5061 的连接尝试；`IGNOREIP` 里的地址永不封。封禁状态由 `sip_bans.py` 汇总给面板，面板可手动解封；SIP 页「防火墙」卡片显示运行状态、规则、SIP 端口、白名单和每个被封 IP，并可按 IP 解封（`POST /api/sip/firewall`），细节见 `封禁管理交接.md`。
 - 短信在目标分机离线时写入本机 SQLite 队列（`sms-queue.py`），目标上线后自动补投。
 - Asterisk 使用 `openssl-compat.cnf`（允许 TLS 1.0），D31 才能注册。
 - 拨号：内网分机互打看通话组；公网外呼看「组有出口 + 分机允许外呼」。网关呼入电话走 `SIP/gwin`，入站短信走 `SIP/gwsms`，两者必须指向同一通话组。
@@ -127,6 +127,7 @@ echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.
 | `files/usr/local/sbin/sip-heartbeat.py` | 把面板配置写成 Asterisk 配置（含只改组不重载）。**只作为库被 `sip-statusd` 导入**（`apply_config` / `write_rev` / `write_err`），直接运行会报错退出 |
 | `files/usr/local/sbin/sip-statusd.py` | 每 30 秒拉面板配置、在 `127.0.0.1:8080` 提供本机状态 |
 | `files/usr/local/sbin/sip_bans.py` | 汇总 Fail2Ban 封禁状态供面板显示与解封 |
+| `files/usr/local/sbin/sip_parse.py` | 解析 `pjsip show contacts`（用注册库完整 URI 判定传输方式）、Fail2Ban 封禁时间与白名单、iptables SIP 端口 |
 | `files/usr/local/sbin/sms-queue.py` | 离线短信队列（SQLite），上线后补投 |
 | `files/etc/asterisk/` | PJSIP、拨号方案、RTP、日志、CDR 配置 |
 | `files/etc/asterisk/pjsip.auth.conf` | 仅占位密码 `CHANGE_ME`，以面板同步为准 |
