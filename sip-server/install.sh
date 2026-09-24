@@ -30,6 +30,8 @@ install -d -m 755 /usr/local/sbin /etc/asterisk/keys \
 
 install -m 755 "$FILES/usr/local/sbin/sip-heartbeat.py" /usr/local/sbin/sip-heartbeat.py
 install -m 755 "$FILES/usr/local/sbin/sip-statusd.py" /usr/local/sbin/sip-statusd.py
+install -m 644 "$FILES/usr/local/sbin/sip_bans.py" /usr/local/sbin/sip_bans.py
+install -m 644 "$FILES/usr/local/sbin/sip_parse.py" /usr/local/sbin/sip_parse.py
 install -m 755 "$FILES/usr/local/sbin/sms-queue.py" /usr/local/sbin/sms-queue.py
 install -d -m 755 /usr/share/asterisk/agi-bin /var/lib/asterisk/agi-bin
 ln -sfn /usr/local/sbin/sms-queue.py /usr/share/asterisk/agi-bin/sms-queue.agi

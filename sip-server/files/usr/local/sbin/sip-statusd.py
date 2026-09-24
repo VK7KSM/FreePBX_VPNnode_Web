@@ -16,6 +16,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from sip_bans import BanManager
+from sip_parse import parse_contacts
 
 TOKEN_PATH = "/etc/sip-heartbeat.token"
 DB_PATH = "/var/lib/sip-panel/status.sqlite"
@@ -205,41 +206,9 @@ def call_stats():
 
 
 def contacts():
-    raw = sh("asterisk -rx 'pjsip show contacts'")
-    if "Objects found" not in raw and "Aor/ContactUri" not in raw:
-        return None
-    out = []
-    for line in raw.splitlines():
-        if "Contact:" not in line or "Aor/ContactUri" in line or "===" in line:
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        uri = parts[1]
-        ext = uri.split("/")[0]
-        u = uri.upper()
-        if "TRANSPORT=TLS" in u:
-            transport = "TLS"
-        elif "TRANSPORT=TCP" in u:
-            transport = "TCP"
-        else:
-            transport = "UDP"
-        m = re.search(r"@(\d+\.\d+\.\d+\.\d+)(?::(\d+))?", uri)
-        ip = m.group(1) if m else ""
-        port = m.group(2) if m and m.group(2) else ""
-        status = parts[-2]
-        rtt = parts[-1]
-        try:
-            rtt_ms = round(float(rtt), 1)
-            if rtt_ms != rtt_ms:
-                rtt_ms = None
-        except Exception:
-            rtt_ms = None
-        out.append({
-            "ext": ext, "uri": uri, "ip": ip, "port": port,
-            "transport": transport, "status": status, "rtt": rtt_ms,
-        })
-    return out
+    # The CLI table truncates long URIs (";transport=TL"); the registrar keeps the full one.
+    return parse_contacts(sh("asterisk -rx 'pjsip show contacts'"),
+                          sh("asterisk -rx 'database show registrar/contact'"))
 
 
 def parse_qos(userfield):
@@ -511,7 +480,11 @@ def status_payload(live=False):
         host["last_seen"] = kv_get("last_seen") or {}
         bans = kv_get("ban_status") or {}
         if live and isinstance(bans.get("endpoints"), dict):
-            filtered = {k: v for k, v in bans["endpoints"].items() if v.get("source") == "contact"}
+            # Keep failed-registration sources only while their address is banned: the rows and
+            # the firewall card must name the same extensions.
+            held = set(bans.get("banned_ips") or [])
+            filtered = {k: v for k, v in bans["endpoints"].items()
+                        if v.get("source") == "contact" or v.get("ip") in held}
             bans = dict(bans)
             bans["endpoints"] = filtered
         host["bans"] = bans
@@ -628,7 +601,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path != "/api/sip/ban":
+        if self.path not in ("/api/sip/ban", "/api/sip/firewall"):
             self._send(404, {"ok": False, "msg": "not found"})
             return
         if not TOKEN or self.headers.get("X-Heartbeat-Token") != TOKEN:
@@ -639,10 +612,18 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 2048:
                 raise ValueError("请求长度无效")
             data = json.loads(self.rfile.read(length))
-            result = BANS.action(str(data.get("ext", "")), data.get("action"), data.get("ip"))
+            if not isinstance(data, dict):
+                raise ValueError("请求格式无效")
+            if self.path == "/api/sip/firewall":
+                if data.get("action") != "unban":
+                    raise ValueError("防火墙只支持解封")
+                result = BANS.unban_ip(data.get("ip"))
+            else:
+                result = BANS.action(str(data.get("ext", "")), data.get("action"), data.get("ip"))
             self._send(200, result)
         except (ValueError, TypeError):
-            self._send(400, {"ok": False, "msg": "操作无效或出口 IP 已变化，请刷新后重试"})
+            self._send(400, {"ok": False, "msg": "该 IP 当前未被封禁或地址无效，请刷新后重试"
+                             if self.path == "/api/sip/firewall" else "操作无效或出口 IP 已变化，请刷新后重试"})
         except Exception:
             self._send(503, {"ok": False, "msg": "服务器封禁操作失败，请刷新核对"})
 

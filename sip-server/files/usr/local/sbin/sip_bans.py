@@ -6,6 +6,10 @@ import subprocess
 import threading
 import time
 
+from sip_parse import parse_bans, parse_ignoreip, parse_sip_ports
+
+SETTINGS_SEC = 60
+
 
 class BanManager:
     def __init__(self, get, put, commit, state_lock):
@@ -15,15 +19,49 @@ class BanManager:
         self.offset = None
         self.inode = None
         self.pending = b""
+        self.settings = {}
+        self.settings_at = 0
 
     def command(self, *args):
         return subprocess.check_output(
             ["fail2ban-client", *args], text=True, timeout=5,
             stderr=subprocess.STDOUT).strip()
 
+    def iptables(self):
+        return subprocess.check_output(
+            ["iptables", "-S", "INPUT"], text=True, timeout=5,
+            stderr=subprocess.STDOUT)
+
+    def current_bans(self):
+        return parse_bans(self.command("get", "asterisk", "banip", "--with-time"))
+
     def addresses(self):
-        return sorted({str(ipaddress.ip_address(x)) for x in
-                       self.command("get", "asterisk", "banip").split()})
+        return sorted(b["ip"] for b in self.current_bans())
+
+    def read_settings(self):
+        """Jail thresholds, whitelist and open SIP ports change rarely; read them once a minute."""
+        now = time.time()
+        if self.settings and now - self.settings_at < SETTINGS_SEC:
+            return self.settings
+        settings = {}
+        try:
+            settings["rules"] = {k: int(self.command("get", "asterisk", k))
+                                 for k in ("maxretry", "findtime", "bantime")}
+            settings["ignoreip"] = parse_ignoreip(self.command("get", "asterisk", "ignoreip"))
+        except Exception:
+            pass
+        try:
+            settings["ports"] = parse_sip_ports(self.iptables())
+        except Exception:
+            pass
+        self.settings, self.settings_at = settings, now
+        return settings
+
+    def firewall(self, bans, known, error=""):
+        """Firewall card data. Extensions per banned IP come from the same map the rows use."""
+        return dict(self.read_settings(), service="error" if error else "running",
+                    bans=[dict(b, exts=sorted(e for e, v in known.items() if v.get("ip") == b["ip"]))
+                          for b in bans])
 
     def refresh(self, contacts):
         with self.lock:
@@ -61,17 +99,37 @@ class BanManager:
                     known[str(c["ext"])] = {"ip": addr, "source": "contact", "observed_at": now}
             known = {e: v for e, v in known.items() if now - v.get("observed_at", 0) < 30 * 86400}
             try:
-                banned = self.addresses()
+                bans = self.current_bans()
                 error = ""
             except Exception:
-                banned, error = [], "无法读取服务器封禁状态"
-            state = {"available": not error, "error": error, "checked_at": now,
-                     "banned_ips": banned, "endpoints": known}
+                bans, error = [], "无法读取服务器封禁状态"
+            return self.publish(known, bans, error, now)
+
+    def publish(self, known, bans, error="", now=None):
+        state = {"available": not error, "error": error, "checked_at": now or time.time(),
+                 "banned_ips": sorted(b["ip"] for b in bans), "endpoints": known,
+                 "firewall": self.firewall(bans, known, error)}
+        with self.state_lock:
+            self.put("ban_endpoints", known)
+            self.put("ban_status", state)
+            self.commit()
+        return state
+
+    def unban_ip(self, addr):
+        """Firewall card: release one address that the asterisk jail currently holds."""
+        addr = str(ipaddress.ip_address(str(addr or "")))
+        with self.lock:
+            if addr not in self.addresses():
+                raise ValueError("该 IP 当前未被封禁，请刷新后重试")
+            self.command("set", "asterisk", "unbanip", addr)
+            bans = self.current_bans()
+            if any(b["ip"] == addr for b in bans):
+                raise RuntimeError("服务器未确认解封")
             with self.state_lock:
-                self.put("ban_endpoints", known)
-                self.put("ban_status", state)
-                self.commit()
-            return state
+                known = self.get("ban_endpoints") or {}
+            self.publish(known, bans)
+            return {"ok": True, "ip": addr, "banned": False,
+                    "affected": sorted(e for e, v in known.items() if v.get("ip") == addr)}
 
     def action(self, ext, action, expected_ip):
         if not re.fullmatch(r"\d{3,6}", str(ext)) or action not in ("ban", "unban"):
@@ -85,13 +143,10 @@ class BanManager:
                 raise ValueError("分机出口 IP 已变化或未知，请刷新后重试")
             ipaddress.ip_address(addr)
             self.command("set", "asterisk", "banip" if action == "ban" else "unbanip", addr)
-            banned = self.addresses()
+            bans = self.current_bans()
+            banned = [b["ip"] for b in bans]
             if (addr in banned) != (action == "ban"):
                 raise RuntimeError("服务器未确认封禁状态变化")
-            with self.state_lock:
-                state = self.get("ban_status") or {}
-                state.update(available=True, error="", banned_ips=banned, checked_at=time.time())
-                self.put("ban_status", state)
-                self.commit()
+            self.publish(known, bans)
             return {"ok": True, "ip": addr, "banned": addr in banned,
                     "affected": sorted(e for e, v in known.items() if v.get("ip") == addr)}
