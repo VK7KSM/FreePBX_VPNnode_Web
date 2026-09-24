@@ -72,6 +72,7 @@ function applySipStatus(d, full){
   renderStatus();
   renderAll();
   renderBanEditor();
+  renderFirewall();
   if(full) renderSync();
 }
 var sipLoading=null,sipPollFailures=0,sipPollAt=0,sipFullAt=0,sipRetryAt=0;
@@ -81,7 +82,7 @@ function readSip(full){
   sipLoading=fetch(full?'/api/sip':'/api/sip/live').then(function(r){
     if(!r.ok){var retry=r.headers&&r.headers.get('Retry-After'),seconds=Number(retry);if(retry&&!Number.isFinite(seconds))seconds=(Date.parse(retry)-Date.now())/1000;if(seconds>0)sipRetryAt=Date.now()+Math.min(seconds,2147483)*1000;throw Error('读取失败');}return r.json();
   }).then(function(d){if(!d.ok)throw Error('读取失败');applySipStatus(d,full);sipPollFailures=0;sipRetryAt=0;if(full)sipFullAt=Date.now();})
-    .catch(function(){sipPollFailures++;STALE=true;renderStatus();})
+    .catch(function(){sipPollFailures++;STALE=true;renderStatus();renderFirewall();})
     .finally(function(){sipLoading=null;});
   return sipLoading;
 }
@@ -165,6 +166,13 @@ function isOnline(ext, live){
 function fmtRtt(L){
   if(!L || L.rtt==null || !isFinite(Number(L.rtt))) return "-";
   return Number(L.rtt)+" ms";
+}
+function trLabel(online, L){
+  var t = online && L && L.transport ? String(L.transport).toUpperCase() : "";
+  return /^(TLS|TCP|UDP|WSS|WS)$/.test(t) ? t : "-";
+}
+function esc(v){
+  return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];});
 }
 function twoLine(a,b){
   return "<div class=\"cell2\"><div class=\"cell2a\">"+(a||"-")+"</div><div class=\"cell2b\">"+(b||"\u00a0")+"</div></div>";
@@ -285,8 +293,9 @@ function extRowHtml(x, live){
   var online = isOnline(x.ext, live);
   var talking = !!talkingSet()[String(x.ext)];
   var dot = online ? "<span class=\"dot dot-on\" title=\"在线\"></span>" : "<span class=\"dot dot-off\" title=\"离线\"></span>";
-  var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
-  if (sipBanInfo(x.ext).banned) tr = '<span style="color:#f87171;font-weight:600">封禁</span>';
+  var tr = trLabel(online, L);
+  var ban = sipBanInfo(x.ext);
+  if (ban.banned) tr = '<span style="color:#f87171;font-weight:600" title="'+esc((ban.source==="register_failure"?"最近注册失败来自 ":"出口 ")+ban.ip+"，已被防火墙封禁")+'">封禁</span>';
   var ipCell = (online && L && L.ip) ? twoLine(L.ip, GEO[L.ip] || "查询中") : twoLine("-", "\u00a0");
   var rtt = (online && L) ? fmtRtt(L) : "-";
   var last=(ST && ST.last_seen)||{};
@@ -331,7 +340,7 @@ function renderGatewaysTable(){
     var online=isOnline(x.ext, live);
     var talking = !!talkingSet()[String(x.ext)];
     var dot = online ? "<span class=\"dot dot-on\"></span>" : "<span class=\"dot dot-off\"></span>";
-    var tr = online && L && L.transport ? String(L.transport).toUpperCase() : "-";
+    var tr = trLabel(online, L);
     var rtt = (online && L) ? fmtRtt(L) : "-";
     var used = groupsUsingGw(x.ext);
     var cls = (selGw===String(x.ext)?"sel":"")+(talking?" talking":"");
@@ -480,8 +489,8 @@ function sipBanInfo(ext){
   var ip=record&&record.ip||"";
   var source=record&&record.source||"";
   var ipBanned=!!(fresh&&ip&&(s.banned_ips||[]).indexOf(ip)>=0);
-  var banned=ipBanned && source!=="register_failure";
-  return {available:fresh,ip:ip,source:source,ipBanned:ipBanned,banned:banned,
+  // 与防火墙卡片同一规则：分机映射到的 IP 正在封禁中，行里就显示封禁。
+  return {available:fresh,ip:ip,source:source,ipBanned:ipBanned,banned:ipBanned,
     affected:ip?E.filter(function(x){var r=s.endpoints[String(x.ext)];return r&&r.ip===ip;}).map(function(x){return x.ext;}):[]};
 }
 function renderBanEditor(){
@@ -493,7 +502,7 @@ function renderBanEditor(){
   } else if(!b.ip){
     $("eBanInfo").textContent="暂无出口 IP";
   } else if(b.source==="register_failure"){
-    $("eBanInfo").textContent="外部试探 IP："+b.ip+(b.ipBanned?"（已被防火墙拦截）":"（未拦截）")+" · 分机未成功注册";
+    $("eBanInfo").textContent="最近注册失败来自 IP："+b.ip+(b.ipBanned?"（已被防火墙封禁）":"（未封禁）")+" · 分机当前未注册";
   } else {
     $("eBanInfo").textContent="IP："+b.ip+" · 同出口分机："+b.affected.join("、")+" · 立即生效";
   }
@@ -515,6 +524,53 @@ async function changeSipBan(){
     await loadSipLive();
   }catch(e){if(editingExt===ext)$("eBanResult").textContent=e.message;}
   finally{sipBanBusy=false;renderBanEditor();}
+}
+var sipFwBusy="",sipFwMsg="";
+function fwDur(sec){
+  sec=Math.max(0,Math.round(sec));
+  if(sec>=3600){var h=Math.floor(sec/3600),m=Math.floor(sec%3600/60);return h+" 小时"+(m?" "+m+" 分":"");}
+  if(sec>=60)return Math.floor(sec/60)+" 分 "+(sec%60)+" 秒";
+  return sec+" 秒";
+}
+function renderFirewall(){
+  var box=$("fwBox"); if(!box) return;
+  var s=ST&&ST.bans, f=s&&s.firewall;
+  var now=Date.now()/1000, fresh=!!(s&&s.available&&!STALE&&now-s.checked_at<45);
+  var state;
+  if(!f) state='<span style="color:#94a3b8">暂无防火墙数据</span>';
+  else if(!fresh) state='<span style="color:#fbbf24">状态未更新</span>';
+  else if(f.service==="running") state='<span class="dot dot-on"></span> <span style="color:#34d399">运行中</span>';
+  else state='<span class="dot dot-off"></span> <span style="color:#f87171">无法读取 fail2ban</span>';
+  var bans=f&&fresh&&f.bans||[];
+  $("fwState").innerHTML=state+(f&&fresh?" · 封禁中 "+bans.length+" 个 IP":"")+(s&&s.checked_at?" · 更新于 "+esc(fmtSydney(new Date(s.checked_at*1000).toISOString()).slice(11)):"")+(sipFwMsg?" · "+esc(sipFwMsg):"");
+  var info=[];
+  if(f&&f.rules){var r=f.rules;info.push("规则：SIP 注册 "+Math.round(r.findtime/60)+" 分钟内失败 "+r.maxretry+" 次，封禁 "+fwDur(r.bantime));}
+  if(f&&f.ports){var p=f.ports;info.push("SIP 端口：TLS 5061 "+(p.tls_5061?"开放":"关闭")+" · UDP 5060 "+(p.udp_5060?"开放":"关闭")+" · TCP 5060 "+(p.tcp_5060?"开放":"关闭")+(p.rtp&&p.rtp.length?" · 媒体 UDP "+p.rtp.join("、").replace(/:/g,"-"):""));}
+  if(f&&f.ignoreip)info.push("白名单（永不封禁）："+(f.ignoreip.length?f.ignoreip.join("、"):"无"));
+  $("fwInfo").innerHTML=info.map(function(x){return "<div>"+esc(x)+"</div>";}).join("");
+  var html="";
+  for(var i=0;i<bans.length;i++){
+    var b=bans[i], exts=(b.exts||[]).map(function(e){return e.exists?esc(e.ext):'<span style="color:#94a3b8">'+esc(e.ext)+"（不存在）</span>";});
+    var left=b.until==null?"永久":fwDur(b.until-now);
+    html+="<tr><td>"+twoLine(esc(b.ip),esc(b.geo||"未知"))+"</td>";
+    html+="<td style=\"white-space:normal\">"+(exts.length?exts.join("、"):'<span style="color:#94a3b8">无</span>')+"</td>";
+    html+="<td>"+fmtSeen(new Date(b.since*1000).toISOString())+"</td>";
+    html+="<td style=\"white-space:nowrap\">"+left+"</td>";
+    html+="<td><button class=\"btn-gray\" "+(sipFwBusy?"disabled":"")+" onclick=\"fwUnban('"+esc(b.ip)+"')\">"+(sipFwBusy===b.ip?"解封中…":"解封")+"</button></td></tr>";
+  }
+  if(!html)html='<tr><td colspan="5" style="color:#94a3b8;text-align:center">'+(f&&fresh?"当前没有被封禁的 IP":"—")+"</td></tr>";
+  $("fwtb").innerHTML=html;
+}
+async function fwUnban(ip){
+  if(sipFwBusy)return;
+  sipFwBusy=ip;sipFwMsg="";renderFirewall();
+  try{
+    var r=await fetch('/api/sip/firewall',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'unban',ip:ip})});
+    var d=await r.json();if(!r.ok||!d.ok)throw Error(d.msg||"解封失败");
+    sipFwMsg="已解封 "+ip;
+    await loadSipLive();
+  }catch(e){sipFwMsg=e.message;}
+  finally{sipFwBusy="";renderFirewall();}
 }
 function saveExt(){
   var n={ ext:$("eExt").value.trim(), name:$("eName").value.trim(), group_id:$("eGroup").value, outbound:$("eOut").value==="1", sms:$("eSms").value==="1", cf:$("eCf").value.trim(), cf_busy:$("eCfb").value.trim(), cf_noreply:$("eCfu").value.trim(), ringtimer:parseInt($("eRing").value,10)||60 };

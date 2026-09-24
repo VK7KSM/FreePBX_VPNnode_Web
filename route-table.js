@@ -31,6 +31,7 @@ export const ROUTES=Object.freeze([
   r('GET','/api/sip/live',{kv:true}),
   r('POST','/api/sip/save',{share:'forbidden',kv:true}),
   r('POST','/api/sip/ban',{share:'forbidden'}),
+  r('POST','/api/sip/firewall',{share:'forbidden'}),
   r('GET','/api/sip/pull',{who:'device',kv:true}),
   // ── 设备列表与型号 ──
   r('GET','/api/devices',{share:'global',store:'read'}),
