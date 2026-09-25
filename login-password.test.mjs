@@ -81,3 +81,20 @@ test('电话管理、设备管理页头部有「全局设置」，分享页没�
   const session=fs.readFileSync(new URL('./admin-session.js',import.meta.url),'utf8');
   assert.match(session,/state\.openSettings = function/);assert.match(session,/\/api\/admin\/password/);
 });
+
+// 2026-09-25：会话校验的登录资料在实例内缓存 60 秒，电话管理页每 2 秒轮询不再每次读 2 次 KV
+test('会话校验：同一实例重复请求不再读 KV；别的实例改了密码，新会话第一次请求也不会被旧缓存误判', async () => {
+  const f=await migrated();
+  const reads=[];const get=f.env.SUB_STORE_KV.get;f.env.SUB_STORE_KV.get=async(k,o)=>{reads.push(k);return get(k,o);};
+  const cookie=(await mainWorker.fetch(request('/api/login','POST',{username:'admin',password:'fixture-password'}),f.env)).headers.get('Set-Cookie').split(';')[0];
+  await mainWorker.fetch(request('/api/session','GET',undefined,cookie),f.env);
+  reads.length=0;
+  for(let i=0;i<30;i++)assert.equal((await mainWorker.fetch(request('/api/session','GET',undefined,cookie),f.env)).status,200);
+  assert.equal(reads.length,0,'30 次会话校验一次 KV 都不读：'+reads.length);
+  // 模拟「另一实例」改了密码：直接改 KV 里的登录资料，本实例缓存仍是旧的
+  const other={...f.env,SUB_STORE_KV:{...f.env.SUB_STORE_KV}};
+  const r=await mainWorker.fetch(request('/api/admin/password','POST',{current_password:'fixture-password',new_password:'long-enough-pass'},cookie),other);
+  assert.equal(r.status,200,await r.clone().text());
+  const fresh=(await mainWorker.fetch(request('/api/login','POST',{username:'admin',password:'long-enough-pass'}),f.env)).headers.get('Set-Cookie').split(';')[0];
+  assert.equal((await mainWorker.fetch(request('/api/session','GET',undefined,fresh),f.env)).status,200,'新口令登录后的会话不能因本实例旧缓存判成未登录');
+});

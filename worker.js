@@ -166,7 +166,7 @@ const legacyChecked = new Set();
  */
 export async function changeAdminPassword(env, request, data) {
   if (!data || typeof data.new_password !== "string" || !data.new_password) return authJson({ ok: false, msg: "缺少新密码" }, 400);
-  const auth = panelEnabled(env) ? await kvJson(env, "panel/auth", { request }) : await getStore(env, "admin_auth");
+  const auth = panelEnabled(env) ? await kvJson(env, "panel/auth", { request, fresh: true }) : await getStore(env, "admin_auth");
   if (!await verifyPasswordAgainst(auth, data.current_password)) return authJson({ ok: false, msg: "当前密码不正确，未修改" }, 403);
   return adminRpc(env, request, "password", { password: data.new_password });
 }

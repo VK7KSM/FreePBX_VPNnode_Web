@@ -210,7 +210,9 @@ export async function handleKvAuth(env,request,action,body,now=Date.now(),storag
   if(action!=='login'&&!/^(?:[a-f0-9]{64}|v2\.[A-Za-z0-9_-]{1,1800}\.[a-f0-9]{64})$/.test(token)){
    return action==='logout'?authJson({ok:true},200,{'Set-Cookie':cookie('',0)}):authJson({ok:false,msg:'请先登录'},401);
   }
-  const auth=await kvJson(env,'panel/auth',{request});
+  // 登录和改密码读最新口令；其余只是核对会话，用 60 秒的实例缓存（见 panel-kv.js AUTH_TTL）。
+  const fresh=action==='login'||action==='password'||env.__authFresh===true;
+  const auth=await kvJson(env,'panel/auth',{request,fresh});
   if(!auth?.hash||!auth.session_key)return authJson({ok:false,msg:'登录资料正在同步，请稍后重试'},503,{'Retry-After':'30'});
   if(action==='login'){
    const input=body===undefined?await jsonInput(request):body;
@@ -236,7 +238,7 @@ export async function handleKvAuth(env,request,action,body,now=Date.now(),storag
     try{entry=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));}catch{}
     if(entry&&await kvJson(env,'panel/revoked/'+await digest(token),{request}))entry=null;
    }
-  }else if(/^[a-f0-9]{64}$/.test(token))entry=await kvJson(env,'panel/legacy-session/'+await digest(token),{request});
+  }else if(/^[a-f0-9]{64}$/.test(token))entry=await kvJson(env,'panel/legacy-session/'+await digest(token),{request,fresh});
   if(action==='logout'){
    if(entry?.expires>now){
     if(token.startsWith('v2.'))await putKvJson(env,'panel/revoked/'+await digest(token),true,{expirationTtl:Math.max(60,Math.ceil((entry.expires-now)/1000))});
@@ -244,7 +246,12 @@ export async function handleKvAuth(env,request,action,body,now=Date.now(),storag
    }
    return authJson({ok:true},200,{'Set-Cookie':cookie('',0)});
   }
-  if(!entry||entry.expires<=now||entry.revision!==auth.revision)return authJson({ok:false,msg:'请先登录'},401);
+  if(!entry||entry.expires<=now||entry.revision!==auth.revision){
+   // 缓存里的登录资料可能比另一实例刚改的旧（例如刚改完密码、用新口令登录后第一次请求落到别的实例）：
+   // 判不过时用最新资料重核一次再下结论，只在失败时多读一次 KV，不会把新会话误判成未登录。
+   if(!fresh)return handleKvAuth({...env,__authFresh:true},request,action,body,now,storage);
+   return authJson({ok:false,msg:'请先登录'},401);
+  }
   if(action==='session')return authJson({ok:true});
   if(action==='password'){
    const input=body===undefined?await jsonInput(request):body,password=input.password;

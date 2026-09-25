@@ -7,7 +7,11 @@ export const panelEnabled=env=>env.PANEL_KV_ENABLED==='1';
 export function panelGroup(key){return Object.keys(PANEL_GROUPS).find(group=>PANEL_GROUPS[group].includes(key));}
 const namespaces=new WeakMap();
 const requestReads=new WeakMap();
-const MAX_READS=128,CONFIG_TTL=15000,ERROR_TTL=2000;
+// 登录资料（panel/auth、吊销标记、旧会话）在实例内存里缓存 60 秒：每个已登录请求本来要读 2 次 KV，
+// 电话管理页每 2 秒一次的轮询一整天就逼近 10 万次/日的免费读额度（2026-09-24 实测 5.3 万次）。
+// 代价：别的实例上的退出或改密码，最多 60 秒后才在本实例生效；本实例内的写入会立即作废缓存。
+// 登录与改密码这两处要读最新口令，调用方传 fresh:true，不走这层缓存。
+const MAX_READS=128,CONFIG_TTL=15000,AUTH_TTL=60000,ERROR_TTL=2000;
 function readState(kv){let state=namespaces.get(kv);if(!state){state={reads:new Map(),epoch:0};namespaces.set(kv,state);}return state;}
 function authKey(key){return key==='panel/auth'||key.startsWith('panel/revoked/')||key.startsWith('panel/legacy-session/');}
 const copy=value=>value===undefined?undefined:structuredClone(value);
@@ -38,8 +42,7 @@ export async function kvJson(env,key,{request,fresh=false}={}){
   const current=entry;
   entry.promise=Promise.resolve().then(()=>readKv(kv,key)).then(value=>{
    if(current.invalidated||current.epoch!==state.epoch)return kvJson(env,key);
-   current.pending=false;current.until=Date.now()+(authKey(key)?0:CONFIG_TTL);
-   if(authKey(key)&&state.reads.get(key)===current)state.reads.delete(key);
+   current.pending=false;current.until=Date.now()+(authKey(key)?AUTH_TTL:CONFIG_TTL);
    return value;
   },error=>{
    if(current.invalidated||current.epoch!==state.epoch)return kvJson(env,key);
