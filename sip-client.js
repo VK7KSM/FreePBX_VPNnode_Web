@@ -88,10 +88,21 @@ function readSip(full){
 }
 function loadSip(){return readSip(true);}
 function loadSipLive(){return readSip(false);}
+// 页面开着但没人操作时放慢刷新：内嵌浏览器窗格隐藏后 document.hidden 仍为 false，
+// 所以不能只靠可见性，要以鼠标、键盘、触摸和切回前台作为活跃信号。
+var SIP_IDLE_AFTER=120000,SIP_IDLE_POLL=20000,sipActiveAt=Date.now();
+function sipIdle(){return Date.now()-sipActiveAt>=SIP_IDLE_AFTER;}
 function sipPollDelay(){
   if(sipRetryAt>Date.now())return Math.max(0,sipRetryAt-sipPollAt);
   if(sipPollFailures)return Math.min(300000,15000*Math.pow(2,Math.min(5,sipPollFailures-1)));
-  return 2000;
+  if(ST&&ST.active_calls>0)return 2000;
+  return sipIdle()?SIP_IDLE_POLL:2000;
+}
+function sipTouch(){
+  var wasIdle=sipIdle();
+  sipActiveAt=Date.now();
+  // 从空闲回到活跃时立即补一次，不必等到下一个 20 秒
+  if(wasIdle&&adminSession.authenticated&&!document.hidden&&Date.now()-sipPollAt>=sipPollDelay()-500)loadSipLive();
 }
 function saveAll(done){
   window._sipSaved = true;
@@ -725,5 +736,7 @@ document.addEventListener("keydown", function(e){ if(e.key==="Enter" && $("login
 setInterval(function(){
   if(adminSession.authenticated&&!document.hidden&&Date.now()-sipPollAt>=sipPollDelay()-500)readSip(false);
 },2000);
-document.addEventListener('visibilitychange',function(){if(!document.hidden&&adminSession.authenticated&&Date.now()-sipPollAt>=sipPollDelay()-500)loadSipLive();});
+document.addEventListener('visibilitychange',function(){if(!document.hidden){sipTouch();if(adminSession.authenticated&&Date.now()-sipPollAt>=sipPollDelay()-500)loadSipLive();}});
+['mousemove','mousedown','keydown','touchstart','wheel'].forEach(function(ev){document.addEventListener(ev,sipTouch,{passive:true,capture:true});});
+if(typeof window!=="undefined"&&window.addEventListener)window.addEventListener('focus',sipTouch);
 checkAuth();
