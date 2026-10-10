@@ -153,14 +153,19 @@ echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.
 | `/usr/local/bin/atcpool` | Rust 静态程序 | 归 root，755 |
 | 用户 `atcpool` | 塔台录音存储池的目标节点 | 公钥是 `restrict,command="/usr/local/bin/atcpool store"`，只能在 `/srv/atcpool`（750）里做固定的几种操作；写入时实时保证剩余空间不少于 5 GB，单批最多 2 GB、4 万个条目 |
 | 用户 `aptfetch` | 替家里的 K5 查 adsb.lol | 公钥是 `restrict,command="/usr/local/bin/atcpool fetch"`，参数只能是 `apt` 或 `wide` |
+| `atcpool-mirror.service`（2026-10-11 起） | 塔台历史记录的只读备用站，oracle3 和 161 同时挂掉时网页改读 `atc-c.elfradio.net` | 以 `atcmirror` 用户运行（`atcpool` 组只读），只监听 `127.0.0.1:8097`；发送合计 ≤512 KB/s（`/etc/atcpool-mirror.toml` 的 `send_kbps`），CPUQuota=10%、MemoryMax=64M；代查询（/far、/q、/metar）最多 2 个同时回源。不需要认证，路径白名单在隧道上 |
+| `/srv/atcpool/mirror` | oracle3 每分钟复制来的文字（通话记录、索引、航线），永不删除，每天约 5 MB | 平时不收录音：oracle3 配置里本机只在 `text_to`（不在 `mirror`）。K5 应急时才送最近两天的录音（限速 2 MB/s）；备用录音合计超过 8 GiB 就拒收 |
+| `atcpool` 的第二把公钥（K5） | `restrict,command="/usr/local/bin/atcpool store --mirror-only"` | 只能执行 mirror、mdays、mls，不能删除 |
 | `atcpool-node.service` | 给 flight 的 Worker 查 adsb.lol 的常驻节点 | 以 `atcnode` 用户运行，只监听 `127.0.0.1:8099`，必须带密钥头（`/etc/atcpool-node.key`，600）；MemoryMax=32M、CPUQuota=10%，读不到录音目录 |
 
-这些组件不改 sshd、防火墙、Asterisk、fail2ban、sip-statusd，也不改 cloudflared 的本地配置。如果 flight 以后在本机的远程管理隧道上加主机名，必须保留现有的 `api.elfradio.net → http://127.0.0.1:8080`，加完要验证 SIP 管理页。
+这些组件不改 sshd、防火墙、Asterisk、fail2ban、sip-statusd，也不改 cloudflared 的本地配置。远程管理隧道上现在依次是：`api.elfradio.net → 8080`（SIP 管理页的状态、封禁、解封接口）、`n-fpbx.elfradio.net → 8099`（套 Access）、`atc-c.elfradio.net → 8097`（公开只读），以及兜底 404。以后改隧道时必须保留第一条，改完要验证 SIP 管理页。
 
 撤销：
 
 ```
-sudo systemctl disable --now atcpool-node
+sudo systemctl disable --now atcpool-mirror atcpool-node
+sudo rm /etc/systemd/system/atcpool-mirror.service /etc/atcpool-mirror.toml
+sudo userdel atcmirror
 sudo rm /etc/systemd/system/atcpool-node.service /etc/atcpool-node.toml /etc/atcpool-node.key
 sudo userdel atcnode
 sudo userdel -r aptfetch
