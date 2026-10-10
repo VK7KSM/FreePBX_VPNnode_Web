@@ -112,6 +112,8 @@ public final class GatewayRemoteService extends Service {
                     .putBoolean("push_connected",push!=null&&push.optBoolean("connected")).apply();
             try {
                 JSONObject assets=GatewayPixelAssets.verify(this);
+                // 先自检恢复被停用的限充和音频模块（Magisk 安全模式会把它们一起停掉），再读健康状态，上报的就是恢复后的样子。
+                try{GatewayCoreClient.pixelModuleRepair(this);}catch(Exception ignored){}
                 JSONObject modules=GatewayCoreClient.pixelModuleHealth(this);
                 store.prefs.edit().putBoolean("pixel_assets_verified",assets.optBoolean("verified"))
                         .putString("pixel_module_health",modules.toString()).remove("pixel_module_error").apply();

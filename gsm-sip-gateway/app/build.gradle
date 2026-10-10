@@ -16,8 +16,8 @@ android {
         applicationId "org.onetwoone.gateway"
         minSdkVersion 23
         targetSdkVersion 27
-        versionCode 78
-        versionName "1.5.0-gateway-alpha71-report-cadence"
+        versionCode 79
+        versionName "1.5.0-gateway-alpha72-module-selfheal"
 
         // NDK build config
         externalNativeBuild {

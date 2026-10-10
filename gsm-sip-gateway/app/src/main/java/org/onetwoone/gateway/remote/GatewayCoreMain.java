@@ -25,6 +25,8 @@ public final class GatewayCoreMain {
         GatewayCorePush push=null;try{if(context!=null)push=new GatewayCorePush(context,new File(GatewayCoreClient.DIR));}catch(Exception ignored){}
         GatewayProxyRuntime proxy=new GatewayProxyRuntime();
         GatewayDesktopLauncher desktop=new GatewayDesktopLauncher();
+        GatewayPixelModuleRepair moduleRepair=GatewayPixelModuleRepair.system();
+        GatewayRollingLog repairLog=new GatewayRollingLog(new File(GatewayCoreClient.DIR,"log"),32768,2);
         boolean running=true;
         try {
             while (running) {
@@ -39,6 +41,14 @@ public final class GatewayCoreMain {
                                     .put("uptime_ms",SystemClock.elapsedRealtime()-started).put("update_ready",true)
                                     .put("independent_push",push!=null).put("push_connected",push!=null&&push.status().optBoolean("connected"));
                         else if("pixel-module-health".equals(operation))response.put("pixel_modules",GatewayPixelLegacyHealth.snapshot());
+                        else if("pixel-module-repair".equals(operation)){
+                            JSONObject repaired=moduleRepair.check(System.currentTimeMillis());
+                            String charge=repaired.optString("charge_bypass"),audio=repaired.optString("sip_audio_access");
+                            if(!java.util.Arrays.asList("ok","throttled").contains(charge)||!java.util.Arrays.asList("ok","throttled").contains(audio))
+                                repairLog.write(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",java.util.Locale.ROOT).format(new java.util.Date())
+                                        +" pixel-module-repair charge_bypass="+charge+" sip_audio_access="+audio);
+                            response.put("pixel_repair",repaired);
+                        }
                         else if("pixel-runtime-health".equals(operation))response.put("pixel_health",GatewayPixelRuntimeHealth.snapshot());
                         else if("mobile-status".equals(operation)){
                             try {response.put("mobile_status",context==null
