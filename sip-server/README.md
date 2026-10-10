@@ -143,3 +143,28 @@ echo | openssl s_client -connect sip.elfradio.net:5061 -servername sip.elfradio.
 ## 和 Web 面板的关系
 
 推送 `sip-server/` **不会**重载 Cloudflare Worker，面板代码在仓库根目录（`worker.js`、`sip-client.js` 等）。分机密码只存在 KV，不在这份备份里。改动本目录前后都应与生产机逐字节核对，不要把未上线的试验值提交进来。
+
+## 本机上的其它项目组件（flight 项目，2026-10-10 起）
+
+所有者决定 4 台甲骨文 VPS 都参与 flight 项目（飞行器追踪），本机也装了它的组件。源码、单元文件和安装脚本都在 flight 仓库（`atcpool/`、`tools/history/`），不在本仓库。经 SIP-dev 审查（flight 提交 `d34f65f`），边界如下：
+
+| 组件 | 内容 | 边界 |
+| --- | --- | --- |
+| `/usr/local/bin/atcpool` | Rust 静态程序 | 归 root，755 |
+| 用户 `atcpool` | 塔台录音存储池的目标节点 | 公钥是 `restrict,command="/usr/local/bin/atcpool store"`，只能在 `/srv/atcpool`（750）里做固定的几种操作；写入时实时保证剩余空间不少于 5 GB，单批最多 2 GB、4 万个条目 |
+| 用户 `aptfetch` | 替家里的 K5 查 adsb.lol | 公钥是 `restrict,command="/usr/local/bin/atcpool fetch"`，参数只能是 `apt` 或 `wide` |
+| `atcpool-node.service` | 给 flight 的 Worker 查 adsb.lol 的常驻节点 | 以 `atcnode` 用户运行，只监听 `127.0.0.1:8099`，必须带密钥头（`/etc/atcpool-node.key`，600）；MemoryMax=32M、CPUQuota=10%，读不到录音目录 |
+
+这些组件不改 sshd、防火墙、Asterisk、fail2ban、sip-statusd，也不改 cloudflared 的本地配置。如果 flight 以后在本机的远程管理隧道上加主机名，必须保留现有的 `api.elfradio.net → http://127.0.0.1:8080`，加完要验证 SIP 管理页。
+
+撤销：
+
+```
+sudo systemctl disable --now atcpool-node
+sudo rm /etc/systemd/system/atcpool-node.service /etc/atcpool-node.toml /etc/atcpool-node.key
+sudo userdel atcnode
+sudo userdel -r aptfetch
+sudo userdel -r atcpool
+sudo rm -rf /srv/atcpool /usr/local/bin/atcpool
+```
+
