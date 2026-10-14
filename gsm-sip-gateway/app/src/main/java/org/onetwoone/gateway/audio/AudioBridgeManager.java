@@ -214,6 +214,14 @@ public class AudioBridgeManager {
         }
     }
 
+    /**
+     * The SIP call is disconnected: pjsua2 has already freed its media objects. Drop the reference
+     * so neither ringback nor the bridge ever touches the freed media again.
+     */
+    public synchronized void forgetCallMedia() {
+        currentCallMedia = null;
+    }
+
     /** Send call-progress audio to SIP while the cellular leg is dialing. */
     public synchronized void startRingback() {
         ringbackRequested = true;
@@ -255,10 +263,10 @@ public class AudioBridgeManager {
             return;
         }
 
+        // No stopTransmit() to the call media: it may already be freed (SIP side hung up), which
+        // aborted the gateway in pjmedia_conf_disconnect_port (tombstones 09-04..09, 10-14 13:33).
+        // Deleting the generator removes its conference port and all of its connections.
         try {
-            if (currentCallMedia != null) {
-                ringbackGenerator.stopTransmit(currentCallMedia);
-            }
             ringbackGenerator.stop();
             Log.i(TAG, "SIP ringback stopped");
         } catch (Exception e) {

@@ -20,4 +20,10 @@ public interface SipCallService {
 
     /** Called for RFC2833/in-band digits received on an established SIP call. */
     void onDtmfDigit(GatewayCall call, String digit);
+
+    /**
+     * Called once when the call reaches DISCONNECTED, before any other handling and even if the
+     * call was already disposed. Its media is gone; the call object must be released later.
+     */
+    void onCallDisconnected(GatewayCall call);
 }

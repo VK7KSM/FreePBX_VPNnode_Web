@@ -424,6 +424,15 @@ public class PjsipSipService extends Service implements SipCallService {
         }
     }
 
+    // Callback from GatewayCall (SipCallService interface), pjsip thread, before other handling.
+    @Override
+    public void onCallDisconnected(GatewayCall call) {
+        audioBridge.forgetCallMedia();
+        // Free the native object on the main thread (pjlib-registered) once the callback has
+        // returned, instead of leaving it to the finalizer thread.
+        mainHandler.postDelayed(call::release, 1000);
+    }
+
     @Override
     public void onDtmfDigit(GatewayCall call, String digit) {
         mainHandler.post(() -> callManager.onDtmfDigit(call, digit));

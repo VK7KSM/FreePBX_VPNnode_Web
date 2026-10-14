@@ -296,9 +296,9 @@ public class CallManager {
                 currentSipCall = null;
             }
 
-            // DON'T delete the call object - PJSIP manages the native lifecycle.
-            // Calling delete() crashes because PJSIP may still reference it.
-            // The call object will be GC'd eventually - the disposed flag prevents callback issues.
+            // Don't delete the call object here (we are inside its own callback). PjsipSipService
+            // .onCallDisconnected() releases it on the main thread once this callback has returned;
+            // leaving it to the GC crashed the gateway (finalizer thread + reused call id).
 
             if (state != CallState.IDLE) {
                 terminateAllCalls();
@@ -480,8 +480,8 @@ public class CallManager {
             Log.e(TAG, "Error hanging up SIP call: " + e.getMessage());
         }
 
-        // DON'T delete - let PJSIP manage the native object lifecycle
-        // The disposed flag prevents any further callback processing
+        // Not deleted here: the DISCONNECTED callback that follows the hangup releases it
+        // (GatewayCall.onCallState -> PjsipSipService.onCallDisconnected).
     }
 
     /**
