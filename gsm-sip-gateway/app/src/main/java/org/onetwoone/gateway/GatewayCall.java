@@ -24,6 +24,7 @@ public class GatewayCall extends Call {
         super(account);
         this.service = service;
         this.owner = service;
+        CallReleaser.track(this);
     }
 
     /**
@@ -33,6 +34,7 @@ public class GatewayCall extends Call {
         super(account, callId);
         this.service = service;
         this.owner = service;
+        CallReleaser.track(this);
     }
 
     /**
@@ -101,7 +103,7 @@ public class GatewayCall extends Call {
      */
     public String release() {
         return CallReleaser.release(new CallReleaser.Target() {
-            @Override public boolean idInUse() { return isActive(); }
+            @Override public boolean idInUse() { return getId() >= 0 && isActive(); }
             @Override public void free() { delete(); }
         }, this);
     }
