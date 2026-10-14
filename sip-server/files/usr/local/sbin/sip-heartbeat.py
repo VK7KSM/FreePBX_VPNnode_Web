@@ -316,7 +316,7 @@ def template_aor(ext, gateway=False):
         "remove_existing=yes\n"
         "maximum_expiration=7200\n"
         "minimum_expiration=60\n"
-        "qualify_frequency=%s\n\n" % (ext, ext, "0" if gateway else "15")
+        "qualify_frequency=%s\n\n" % (ext, ext, "60" if gateway else "15")
     )
 
 
@@ -756,7 +756,8 @@ def apply_config(exts, groups=None, gateways=None):
         keep = []
         for name, body in parts:
             if name in desired:
-                qf = "0" if desired[name].get("_role") == "gateway" else "15"
+                # 网关也要探测：服务器主动发出的请求可能悄悄失效，靠探测发现（gateway_watch.py）
+                qf = "60" if desired[name].get("_role") == "gateway" else "15"
                 body = set_kv(body, "qualify_frequency", qf)
                 keep.append((name, body))
         for ext in desired:

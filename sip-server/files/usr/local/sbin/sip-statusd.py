@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from sip_bans import BanManager
 from sip_parse import parse_contacts
+from gateway_watch import GatewayWatch
 
 TOKEN_PATH = "/etc/sip-heartbeat.token"
 DB_PATH = "/var/lib/sip-panel/status.sqlite"
@@ -411,6 +412,11 @@ def flush_sms_queue(contacts):
 def collect_asterisk():
     cs = contacts()
     prev_cs = kv_get("contacts") or []
+    if cs is not None:
+        try:
+            GW_WATCH.check(cs, gateway_exts(), time.time())
+        except Exception:
+            pass
     if cs is None:
         cs = prev_cs
     BANS.refresh(cs)
@@ -646,6 +652,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 BANS = BanManager(kv_get, kv_set, CON.commit, LOCK)
+GW_WATCH = GatewayWatch()
 
 
 def main():
