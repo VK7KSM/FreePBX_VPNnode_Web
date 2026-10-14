@@ -44,7 +44,7 @@ public final class GatewayCoreMain {
                         else if("pixel-module-repair".equals(operation)){
                             JSONObject repaired=moduleRepair.check(System.currentTimeMillis());
                             String charge=repaired.optString("charge_bypass"),audio=repaired.optString("sip_audio_access");
-                            if(!java.util.Arrays.asList("ok","throttled").contains(charge)||!java.util.Arrays.asList("ok","throttled").contains(audio))
+                            if(!java.util.Arrays.asList("ok","throttled","held").contains(charge)||!java.util.Arrays.asList("ok","throttled","held").contains(audio))
                                 repairLog.write(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",java.util.Locale.ROOT).format(new java.util.Date())
                                         +" pixel-module-repair charge_bypass="+charge+" sip_audio_access="+audio);
                             response.put("pixel_repair",repaired);

@@ -103,6 +103,49 @@ public class GatewayPixelModuleRepairTest {
         assertEquals(Collections.singletonList("pixel_sip_audio_access"),started);
     }
 
+    @Test public void breakerStopsAfterThreeRestoresInADayAndSurvivesRestart() throws Exception {
+        File root=modules(),history=new File(temporary.getRoot(),"module-repair.json");
+        running.add(new File(root,"pixel_charge_bypass/service.sh").getPath());
+        long t=1_800_000_000_000L,step=GatewayPixelModuleRepair.RETRY_MS;
+        GatewayPixelModuleRepair repair=new GatewayPixelModuleRepair(root,s->{started.add(s.getParentFile().getName());},running::contains,history);
+        for(int i=0;i<3;i++){
+            assertTrue(new File(root,"pixel_sip_audio_access/disable").createNewFile());
+            assertEquals("restored",repair.check(t+i*step).getString("sip_audio_access"));
+        }
+        assertTrue(history.isFile());
+        // 第 4 次：保持停用，只报一次 tripped，之后安静地 held
+        assertTrue(new File(root,"pixel_sip_audio_access/disable").createNewFile());
+        assertEquals("tripped",repair.check(t+3*step).getString("sip_audio_access"));
+        assertEquals("held",repair.check(t+4*step).getString("sip_audio_access"));
+        assertTrue("熔断后不能再去掉停用标记",new File(root,"pixel_sip_audio_access/disable").exists());
+        // 模拟开机循环后核心重新启动：记录从文件读回，照样不恢复
+        GatewayPixelModuleRepair afterReboot=new GatewayPixelModuleRepair(root,s->{started.add(s.getParentFile().getName());},running::contains,history);
+        assertEquals("tripped",afterReboot.check(t+5*step).getString("sip_audio_access"));
+        assertTrue(new File(root,"pixel_sip_audio_access/disable").exists());
+        assertEquals(3,java.util.Collections.frequency(started,"pixel_sip_audio_access"));
+        // 另一个模块不受影响
+        assertTrue(new File(root,"pixel_charge_bypass/disable").createNewFile());
+        assertEquals("restored",afterReboot.check(t+5*step).getString("charge_bypass"));
+        // 第一次恢复满 24 小时后，窗口里只剩 2 次，可以再恢复
+        assertEquals("restored",afterReboot.check(t+GatewayPixelModuleRepair.BREAKER_WINDOW_MS+1).getString("sip_audio_access"));
+    }
+
+    @Test public void restartingAStoppedChargeLoopDoesNotCountTowardsTheBreaker() throws Exception {
+        File root=modules(),history=new File(temporary.getRoot(),"module-repair.json");
+        GatewayPixelModuleRepair repair=new GatewayPixelModuleRepair(root,s->{started.add(s.getParentFile().getName());},running::contains,history);
+        long t=1_800_000_000_000L;
+        for(int i=0;i<5;i++)assertEquals("started",repair.check(t+i*GatewayPixelModuleRepair.RETRY_MS).getString("charge_bypass"));
+        assertFalse("只记录去掉停用标记的恢复",history.isFile());
+    }
+
+    @Test public void corruptHistoryIsIgnored() throws Exception {
+        File root=modules(),history=new File(temporary.getRoot(),"module-repair.json");
+        java.nio.file.Files.write(history.toPath(),"{not json".getBytes("UTF-8"));
+        running.add(new File(root,"pixel_charge_bypass/service.sh").getPath());
+        assertTrue(new File(root,"pixel_sip_audio_access/disable").createNewFile());
+        assertEquals("restored",new GatewayPixelModuleRepair(root,s->{},running::contains,history).check(1_000_000L).getString("sip_audio_access"));
+    }
+
     @Test public void scriptScanMatchesWholeArgumentsOnly() {
         assertFalse(GatewayPixelModuleRepair.scriptRunning("/data/adb/modules/pixel_charge_bypass/service.sh-no-such"));
     }
